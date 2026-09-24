@@ -1,0 +1,18 @@
+dot-not-commit
+.DS_Store
+.worktrees/
+docs/*
+orchestrate-workspace
+code-review-workspace
+dev-docs
+.harness/*
+!.harness/knowledge/
+!.harness/README.md
+.env
+.env.local
+.env.harness
+.env.local
+
+# Python bytecode
+__pycache__/
+*.pyc

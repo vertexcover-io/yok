@@ -1,0 +1,142 @@
+{
+  "skill_name": "tdd",
+  "evals": [
+    {
+      "id": 1,
+      "name": "new-feature-email-validation",
+      "prompt": "Add email validation to the user registration function. It should reject empty emails, emails without an @ sign, and emails with spaces. The project uses pytest.",
+      "expected_output": "A failing test is written first for each validation rule, then minimum implementation code is added to pass each test, with refactoring assessed after each green phase",
+      "files": [],
+      "expectations": [
+        "Writes a failing test before writing any production/implementation code",
+        "Runs the test after writing it and confirms it fails before implementing",
+        "The test failure is because the feature is missing, not due to a syntax error or import error",
+        "Writes minimum code to make the failing test pass — no extra validation rules beyond what the current test demands",
+        "Runs the test again after implementation to confirm it passes",
+        "Follows multiple RED-GREEN-REFACTOR cycles — one per validation rule (empty, missing @, spaces) rather than implementing all at once",
+        "Assesses whether refactoring is needed after each green phase",
+        "All tests pass at the end of the workflow with clean output"
+      ],
+      "anti_expectations": [
+        "Does not write implementation code before a failing test exists",
+        "Does not implement all three validation rules at once before writing tests",
+        "Does not skip running the test in the RED phase to confirm failure",
+        "Does not add anticipatory features beyond what failing tests demand (e.g., DNS validation, disposable email checking)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "bug-fix-duplicate-entries",
+      "prompt": "There's a bug where duplicate items are being added to the shopping cart when the user clicks 'Add to Cart' quickly. Fix it using TDD. The project uses Jest for testing.",
+      "expected_output": "A reproduction test is written first that demonstrates the duplicate-entry bug, then a minimal fix is implemented to make the test pass",
+      "files": [],
+      "expectations": [
+        "Investigates the relevant code before writing any test or fix — reads the cart logic to understand actual behavior",
+        "Writes a reproduction test that demonstrates the duplicate-entry bug before writing any fix",
+        "Runs the reproduction test and confirms it fails with the same symptom as the reported bug",
+        "Fixes the bug with minimum code to make the reproduction test pass",
+        "Runs all tests after the fix to confirm nothing else broke",
+        "Does not modify production code before the reproduction test fails",
+        "Assesses refactoring after the fix is green"
+      ],
+      "anti_expectations": [
+        "Does not fix the bug first and write tests afterward",
+        "Does not skip the investigation step and jump straight to coding a fix",
+        "Does not write a test that passes immediately without demonstrating the bug"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "refactor-extract-helper-with-existing-tests",
+      "prompt": "The formatCurrency function in utils.ts is 45 lines long with duplicated logic for different locales. Refactor it into smaller functions. Tests already exist in utils.test.ts.",
+      "expected_output": "Existing tests are run first as a safety net, then structural changes are made one at a time with tests confirmed green after each step",
+      "files": [],
+      "expectations": [
+        "Runs all existing tests first before making any structural changes to confirm they pass",
+        "Makes one structural change at a time (extract, rename, move) rather than rewriting everything at once",
+        "Runs tests after each individual refactoring step to confirm they still pass",
+        "Does not add new behavior during the refactoring — only changes structure",
+        "Does not add new tests during the refactoring phase (new tests belong in the next RED phase)",
+        "If a test breaks during refactoring, undoes the change and takes a smaller step"
+      ],
+      "anti_expectations": [
+        "Does not rewrite the entire function in one step without running tests between changes",
+        "Does not add new features or behavior under the guise of refactoring",
+        "Does not skip running tests between structural changes"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "untestable-notification-service-with-integration-signals",
+      "prompt": "Write tests for the NotificationService in skills/tdd/evals/files/eval1_notification_service.py. I need coverage for send, quiet hours deferral, and flush_deferred.",
+      "expected_output": "Identifies multiple testability barriers (singleton, Redis in constructor, SMTP/HTTP calls inside private methods, module-level mutable _sent_log) and suggests refactoring. Also detects integration test signals (Redis, external APIs). If tests are written, they use dependency injection and factory functions.",
+      "files": [
+        "skills/tdd/evals/files/eval1_notification_service.py"
+      ],
+      "expectations": [
+        "Performs a testability assessment before writing any tests",
+        "Identifies the singleton pattern (get_instance / _instance) as a testability barrier causing shared state across tests",
+        "Identifies that Redis is instantiated directly in __init__ (hidden dependency) and suggests injecting a storage interface",
+        "Identifies that _send_email imports and uses smtplib.SMTP directly — a side effect mixed with logic that should be behind an abstraction",
+        "Identifies the module-level _sent_log as shared mutable global state that causes test interference",
+        "Assesses test level and explicitly tells the user that Redis, SMTP, Twilio, and FCM integrations mean unit tests alone are insufficient",
+        "Suggests separating the pure quiet-hours logic (_is_quiet_hours) from the I/O-dependent send method so it can be unit tested independently",
+        "If tests are written, uses factory functions for notification request data rather than inline dicts"
+      ],
+      "anti_expectations": [
+        "Does not write tests that mock every Redis call and SMTP interaction without first flagging the testability problems",
+        "Does not proceed to write heavily mocked tests without suggesting refactoring the singleton and hidden dependencies",
+        "Does not ignore the _sent_log global mutable state as acceptable test design",
+        "Does not test only the happy path while skipping error cases (missing email, missing phone, unknown channel)"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "behavior-focused-inventory-tests",
+      "prompt": "Add tests for the InventoryManager class in skills/tdd/evals/files/eval2_inventory.py. Cover reserve, restock, get_status, and discontinue.",
+      "expected_output": "Recognizes the code is well-structured with injected storage dependency. Writes behavior-focused tests using Arrange-Act-Assert, factory functions for Product data, covers happy paths, edge cases (zero stock, max capacity cap, discontinued products), and error cases (unknown SKU, negative quantity).",
+      "files": [
+        "skills/tdd/evals/files/eval2_inventory.py"
+      ],
+      "expectations": [
+        "Performs a testability assessment and notes the code is well-structured with an injectable storage dependency",
+        "Creates a factory function (e.g., make_product) that returns complete Product instances with sensible defaults and partial overrides",
+        "Tests are named by behavior (e.g., 'reserve reduces available quantity', 'restock caps at max quantity') not by implementation",
+        "Tests follow Arrange-Act-Assert structure with clear separation of phases",
+        "Covers reserve edge cases: reserving exact remaining quantity, reserving more than available (InsufficientStockError), reserving from discontinued product",
+        "Covers restock edge case: restocking beyond max_quantity is capped",
+        "Covers get_status transitions: in_stock, low_stock (at threshold), out_of_stock (zero), discontinued",
+        "Uses a fake or simple stub for the storage dependency rather than deep MagicMock chains"
+      ],
+      "anti_expectations": [
+        "Does not assert on storage.update_quantity call arguments as the primary assertion — asserts on the returned dict values instead",
+        "Does not create a 1:1 test file mapping (one test class per method) instead of organizing by behavior",
+        "Does not skip error path tests (unknown SKU raising KeyError, negative quantity raising ValueError)",
+        "Does not share mutable Product instances across test methods"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "detect-shared-state-and-implementation-coupling",
+      "prompt": "Review the tests in skills/tdd/evals/files/eval3_fragile_tests.py. These tests pass individually but fail intermittently in CI. What's wrong and how should they be fixed?",
+      "expected_output": "Identifies shared mutable state (shared_items list mutated by test_empty_cart), tests that assert on mock interactions instead of computed values, tests that mirror if-else code structure rather than describing behaviors, and test names that describe code paths not user-facing outcomes.",
+      "files": [
+        "skills/tdd/evals/files/eval3_fragile_tests.py"
+      ],
+      "expectations": [
+        "Identifies shared_items as module-level shared mutable state and pinpoints test_empty_cart calling shared_items.clear() as the cause of intermittent CI failures",
+        "Identifies that test_apply_discounts_calls_get_tier, test_apply_discounts_calls_validate_when_promo_code_given, and test_apply_discounts_does_not_call_validate_without_promo assert on mock interactions rather than business outcomes",
+        "Identifies that tests like test_gold_tier_path and test_percent_promo_path mirror the internal if-else structure rather than testing user-facing behavior",
+        "Notes that test_gold_tier_path only checks discount_source but never verifies the actual discount amount or final_total — the most important business values",
+        "Suggests using factory functions to create fresh CartItem lists per test instead of sharing a module-level list",
+        "Suggests rewriting tests to assert on final_total and discount_applied values as primary assertions",
+        "Suggests behavior-oriented test names like 'gold members get 10 percent off subtotal' or 'larger of loyalty and promo discount is applied'"
+      ],
+      "anti_expectations": [
+        "Does not approve the existing tests as adequate or well-written",
+        "Does not suggest adding more mock-call-assertion tests in the same pattern",
+        "Does not miss the shared_items.clear() mutation as the root cause of the intermittent failures"
+      ]
+    }
+  ]
+}

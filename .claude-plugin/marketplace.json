@@ -1,0 +1,17 @@
+{
+  "name": "main",
+  "owner": {
+    "name": "Vertexcover Labs"
+  },
+  "plugins": [
+    {
+      "name": "harness",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/vertexcover-io/harness-engineering.git",
+        "ref": "v1.32.0"
+      },
+      "description": "Systematic software engineering pipeline — brainstorm, plan, TDD, quality gates, code review, and full orchestration from spec to PR."
+    }
+  ]
+}
