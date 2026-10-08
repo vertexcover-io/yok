@@ -56,9 +56,9 @@ jobs:
       - run: npm run test:hooks
 
       # The e2e tests drive tmux sessions, yok run's doctor needs ffmpeg and agent-browser, the
-      # viewer tests drive a real browser, and the bash guard calls rg.
+      # viewer tests drive a real browser, and the bash guard calls rg and ast-grep.
       - run: sudo apt-get update && sudo apt-get install -y tmux ffmpeg ripgrep
-      - run: npm i -g agent-browser && agent-browser install --with-deps
+      - run: npm i -g agent-browser @ast-grep/cli && agent-browser install --with-deps
 
       # Tests commit in temp repos, and a runner has no git identity of its own.
       - run: git config --global user.name "yok ci" && git config --global user.email "ci@yok.invalid"
@@ -184,7 +184,7 @@ jobs:
 
       # binary.e2e drives yok run, whose doctor needs these tools.
       - run: sudo apt-get update && sudo apt-get install -y tmux ffmpeg ripgrep
-      - run: npm i -g agent-browser && agent-browser install --with-deps
+      - run: npm i -g agent-browser @ast-grep/cli && agent-browser install --with-deps
       - run: git config --global user.name "yok ci" && git config --global user.email "ci@yok.invalid"
 
       - run: bun install --frozen-lockfile
