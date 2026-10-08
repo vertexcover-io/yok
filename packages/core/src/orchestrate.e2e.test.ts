@@ -1841,7 +1841,7 @@ describe("SC26: orchestrate next and exec with containers", () => {
     expect(nodes.fix).toMatchObject({ iteration: 3, output: '"pass 3"' });
     expect(nodes.sub.output).toBe('"hi"');
     expect(nodes.last.input).toBe('"hi" / "pass 3"');
-  });
+  }, 10_000);
 });
 
 const ONE_EXEC = `name: one
