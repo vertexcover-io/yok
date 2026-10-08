@@ -44,7 +44,7 @@ export const runCommand = () =>
     .requiredOption("--prompt <text>", "first message sent to the agent")
     .option("--name <name>", "run name (default: derived from the prompt)")
     .option("--input <key=value>", "extra input, repeatable", collectInput, {})
-    .option("--attach", "attach to the session's terminal once it starts")
+    .option("--no-attach", "do not attach to the session's terminal once it starts")
     .option("--config <file>", "orchestrate config file the run reads (default: the checkout's)")
     .option("--no-open", "do not open the run's page in the browser")
     .action(async (workflowArg, opts) => {
@@ -102,7 +102,9 @@ export const runCommand = () =>
       console.log(`view: ${result.value.view}`);
       openForPerson(result.value.view, opts.open === false);
 
-      if (opts.attach === true) {
+      // A script, CI job or test has no terminal for tmux to attach to.
+      const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+      if (opts.attach && hasTerminal) {
         const [command, ...args] = result.value.attach;
         // Without TMUX, the attach also works from inside the user's own tmux.
         const exitCode = await spawnInteractive(command as string, args, {

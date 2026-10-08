@@ -27,7 +27,7 @@ yok-dev --version
 Check the machine with `yok-dev doctor`, then try a run that needs no agent work:
 
 ```bash
-yok-dev run demo-workflows/step-demo.yaml --prompt "hello" --attach
+yok-dev run demo-workflows/step-demo.yaml --prompt "hello"
 ```
 
 ## Repo layout
