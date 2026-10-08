@@ -147,7 +147,7 @@ Do this once per repository.
 yok run task --prompt "Add rate limiting to the API"
 ```
 
-`yok run` starts the yok server, opens an agent session in tmux, and sends it the `orchestrate` skill. It prints a run id, an attach command, and a URL, and opens the run's page in your browser.
+`yok run` starts the yok server, opens an agent session in tmux, and sends it the `orchestrate` skill. It prints a run id, an attach command, and a URL, opens the run's page in your browser, and puts your terminal in the agent's session. Pass `--no-attach` to get your terminal back right away.
 
 The design and planning stages ask you questions in the agent's terminal and show you pages to approve. After that it runs on its own. A full run takes about an hour.
 
@@ -156,7 +156,7 @@ The design and planning stages ask you questions in the agent's terminal and sho
 ```bash
 yok attach RUN_NAME                   # the agent's terminal; detach with Ctrl-b d
 yok view RUN_NAME                     # reopen the run's page in the browser
-yok run task --prompt "…" --attach    # attach from the start
+yok run task --prompt "…" --no-attach # start without attaching
 ```
 
 ### What you get
@@ -203,7 +203,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 
 | Command | What it does |
 |---|---|
-| `yok run WORKFLOW --prompt TEXT` | Start a run. `--name`, `--input key=value`, `--config FILE`, `--attach`, `--no-open` |
+| `yok run WORKFLOW --prompt TEXT` | Start a run. `--name`, `--input key=value`, `--config FILE`, `--no-attach`, `--no-open` |
 | `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
 | `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
 | `yok verify WORKFLOW` | Compile a workflow and report the first error |

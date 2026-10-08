@@ -85,7 +85,7 @@ EOF
 Then:
 
 ```bash
-yok-dev run demo-workflows/step-demo.yaml --prompt "hello" --config /tmp/yok-local.yaml --attach
+yok-dev run demo-workflows/step-demo.yaml --prompt "hello" --config /tmp/yok-local.yaml
 ```
 
 Drop `--config …` if you have the Slack variables in `.env`.
@@ -94,7 +94,7 @@ What you will see, in order:
 
 1. The CLI compiles the workflow, runs the doctor, and starts the server. The first time, that takes a few seconds.
 2. It prints a run id like `r-1a2b3c4d`, an attach command, and a `view:` URL, and opens the URL in your browser.
-3. Because of `--attach`, your terminal becomes the agent's tmux window. You watch Claude read the orchestrate skill, run `yok orchestrate init`, then `next`, `exec`, `next`, `exec`, and so on.
+3. Your terminal becomes the agent's tmux window. `yok run` attaches by default; `--no-attach` skips it. You watch Claude read the orchestrate skill, run `yok orchestrate init`, then `next`, `exec`, `next`, `exec`, and so on.
 4. Claude says the run finished with `completed`.
 
 Detach with `Ctrl-b d`. The session keeps running without you. Reattach any time:

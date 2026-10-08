@@ -184,6 +184,14 @@ const waitFor = (predicate: () => boolean, timeoutMs = 5000): void => {
 };
 
 describe("yok run", () => {
+  test("SC2: yok run attaches by default, so its help offers --no-attach and no --attach", () => {
+    const help = yok(process.cwd(), process.env, "run", "--help");
+
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain("--no-attach");
+    expect(help.stdout).not.toMatch(/--attach\b/);
+  });
+
   test(
     "a supplied --name reaches the launched agent without replacing the prompt input",
     () => {
