@@ -54,7 +54,24 @@ const fakeAgents = (agents: readonly string[]): string => {
   return bin
 }
 
-type Installed = { readonly code: number | null; readonly stdout: string; readonly stderr: string }
+// A stand-in gh in BIN that logs its arguments and, for `release download`, writes FILES into
+// the -D folder; with FILES null it fails the way gh does for a repo the account cannot see.
+const fakeGh = (bin: string, files: Readonly<Record<string, string>> | null): string => {
+  const store = temp("yok-gh-release-")
+  Object.entries(files ?? {}).forEach(([name, body]) => writeFileSync(join(store, name), body))
+  const fetch = files === null ? 'echo "HTTP 404: Not Found" >&2; exit 1' : `cp "${store}"/* "$dir"/`
+  const script = [
+    "#!/bin/sh",
+    `echo "$*" >> "${join(bin, "gh.log")}"`,
+    'dir=""; prev=""; for arg in "$@"; do [ "$prev" = "-D" ] && dir="$arg"; prev="$arg"; done',
+    fetch,
+  ].join("\n")
+  writeFileSync(join(bin, "gh"), `${script}\n`)
+  chmodSync(join(bin, "gh"), 0o755)
+  return bin
+}
+
+type Installed ={ readonly code: number | null; readonly stdout: string; readonly stderr: string }
 
 // Async, because the release server answers from this same process.
 const install = (home: string, url: string, agentBin: string, env: Record<string, string> = {}): Promise<Installed> =>
@@ -143,5 +160,33 @@ describe("install.sh", () => {
     assert.equal(spawnSync(binary, ["--version"], { encoding: "utf8" }).stdout.trim(), "0.0.2")
     assert.equal(logLines(log).filter((line) => line.endsWith("plugin install --agent claude")).at(-1), "0.0.2 plugin install --agent claude")
     assert.equal(pathLines(home), 1)
+  })
+
+  test("with no release URL, downloads through gh, so only an account that can see the private repo installs", async () => {
+    const log = join(temp("yok-install-log-"), "log")
+    const agents = fakeGh(fakeAgents(["claude"]), releaseFiles("0.0.9", log))
+    const ghLog = join(agents, "gh.log")
+
+    const pinned = await install(temp("yok-install-home-"), "", agents, { YOK_VERSION: "v0.0.9" })
+    const latest = await install(temp("yok-install-home-"), "", agents)
+
+    assert.equal(pinned.code, 0, pinned.stderr)
+    assert.equal(latest.code, 0, latest.stderr)
+    const calls = logLines(ghLog)
+    const download = `-R vertexcover-io/yok -p ${ASSET} -p checksums.txt -D `
+    assert.ok(calls[0]?.startsWith(`release download v0.0.9 ${download}`), calls[0])
+    assert.ok(calls[1]?.startsWith(`release download ${download}`), calls[1])
+  })
+
+  test("when gh cannot see the repo, stops, says how to get access, and installs nothing", async () => {
+    const home = temp("yok-install-home-")
+    const agents = fakeGh(fakeAgents(["claude"]), null)
+
+    const result = await install(home, "", agents)
+
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /gh auth login/)
+    assert.match(result.stderr, /vertexcover-io\/yok/)
+    assert.deepEqual(readdirSync(home), [])
   })
 })

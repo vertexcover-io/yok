@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs or upgrades yok: the binary for this machine, then the agent plugin at its version.
-#   curl -fsSL https://raw.githubusercontent.com/vertexcover-io/yok/main/install.sh | sh
+#   gh api repos/vertexcover-io/yok/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+# The repo is private: it needs gh, logged in with an account that can see it.
 # YOK_VERSION=vX.Y.Z picks a release; YOK_AGENTS="claude" limits the plugin install.
 set -eu
 
@@ -24,11 +25,20 @@ asset_name() {
   printf 'yok-%s-%s' "$os" "$arch"
 }
 
-release_url() {
-  if [ -n "${YOK_RELEASE_URL:-}" ]; then printf '%s' "$YOK_RELEASE_URL"
-  elif [ -n "${YOK_VERSION:-}" ]; then printf 'https://github.com/%s/releases/download/%s' "$REPO" "$YOK_VERSION"
-  else printf 'https://github.com/%s/releases/latest/download' "$REPO"
+NO_ACCESS="yok is private: install the GitHub CLI and run gh auth login with an account that can see $REPO"
+
+# Puts the asset and checksums.txt in $2. The repo is private, so gh downloads with the user's
+# GitHub access; YOK_RELEASE_URL is a plain server, for tests.
+download_release() {
+  if [ -n "${YOK_RELEASE_URL:-}" ]; then
+    curl -fsSL "$YOK_RELEASE_URL/$1" -o "$2/$1" || die "could not download $1 from $YOK_RELEASE_URL"
+    curl -fsSL "$YOK_RELEASE_URL/checksums.txt" -o "$2/checksums.txt" || die "could not download checksums.txt from $YOK_RELEASE_URL"
+    return 0
   fi
+  command -v gh >/dev/null 2>&1 || die "$NO_ACCESS"
+  # shellcheck disable=SC2086 # an empty YOK_VERSION must vanish, so gh takes the latest release
+  gh release download ${YOK_VERSION:-} -R "$REPO" -p "$1" -p checksums.txt -D "$2" ||
+    die "could not download $1 from $REPO. $NO_ACCESS"
 }
 
 sha256_of() {
@@ -39,11 +49,9 @@ sha256_of() {
 
 install_binary() {
   asset=$(asset_name)
-  base=$(release_url)
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL "$base/$asset" -o "$tmp/$asset" || die "could not download $asset from $base"
-  curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" || die "could not download checksums.txt from $base"
+  download_release "$asset" "$tmp"
   # awk, not grep: it matches the asset name as a whole field.
   want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/checksums.txt")
   [ -n "$want" ] || die "checksums.txt has no line for $asset; nothing installed"

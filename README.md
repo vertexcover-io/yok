@@ -52,8 +52,12 @@ macOS or Linux. The `yok` binary has no runtime of its own, but a run uses these
 
 ### 1. Install the binary and the plugin
 
+yok is private, so installing it needs the GitHub CLI logged in with an account that can see `vertexcover-io/yok`. `gh auth setup-git` lets git use that login too, which the plugin install needs.
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vertexcover-io/yok/main/install.sh | sh
+gh auth login
+gh auth setup-git
+gh api repos/vertexcover-io/yok/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
 ```
 
 This downloads the `yok` binary for your machine, verifies it against the release's `checksums.txt`, installs it to `~/.yok/bin`, adds that folder to `PATH` in your shell's start file, and installs the yok plugin into every agent it finds (`claude`, `codex`).
@@ -93,6 +97,8 @@ Run the install command again, or:
 yok update --agent claude                 # newest stable release, plugin moved with it
 yok update --agent claude --pre-release   # release candidates too
 ```
+
+`yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints.
 
 The binary and the plugin always ship at the same version. `yok doctor` and `yok run` stop when they differ. `yok plugin install --agent claude` puts the plugin back at the binary's version. Running agent sessions keep the old skills until `/reload-plugins` or a restart.
 

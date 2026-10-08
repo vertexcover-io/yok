@@ -29,9 +29,10 @@ const ReleasesSchema = z.array(
     tag_name: z.string(),
     draft: z.boolean(),
     prerelease: z.boolean(),
-    assets: z.array(z.object({ name: z.string() })),
+    assets: z.array(z.object({ name: z.string(), url: z.string() })),
   }),
 );
+type Releases = z.infer<typeof ReleasesSchema>;
 
 // GitHub lists releases newest first, so the first match is the newest.
 export const pickRelease = (
@@ -90,8 +91,31 @@ export const pluginCommand = () =>
       .action(async ({ agent }) => (isCompiled ? installAll(agent) : fail(DEV_PLUGIN))),
   );
 
-const download = async (url: string): Promise<Uint8Array> => {
-  const response = await fetch(url);
+const ghAuthToken = (): string | null => {
+  const result = Bun.spawnSync(["gh", "auth", "token"], { stdout: "pipe", stderr: "ignore" });
+  return result.success ? result.stdout.toString() : null;
+};
+
+// The repo is private, so every API call needs a token from someone who can see it.
+export const githubToken = (
+  env: Readonly<Record<string, string | undefined>>,
+  gh: () => string | null = ghAuthToken,
+): string | null => {
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN || gh()?.trim();
+  return token ? token : null;
+};
+
+const authorization = (token: string | null): Record<string, string> =>
+  token === null ? {} : { Authorization: `Bearer ${token}` };
+
+// An asset's API URL redirects to storage that rejects a second credential, so the token goes
+// only to the API and the redirect is followed without it.
+const download = async (url: string, token: string | null): Promise<Uint8Array> => {
+  const headers = { ...authorization(token), Accept: "application/octet-stream" };
+  const first = await fetch(url, { headers, redirect: "manual" });
+  const location = first.headers.get("location");
+  const response =
+    first.status >= 300 && first.status < 400 && location ? await fetch(location) : first;
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 };
@@ -102,25 +126,32 @@ const sha256 = (bytes: Uint8Array): string =>
 export type UpdateTarget = Readonly<{
   execPath: string;
   releasesUrl: string;
-  downloadBase: string;
+  token: string | null;
   version: string;
 }>;
 
-const GITHUB: Omit<UpdateTarget, "execPath" | "version"> = {
-  releasesUrl: `https://api.github.com/repos/${YOK_REPO}/releases?per_page=30`,
-  downloadBase: `https://github.com/${YOK_REPO}/releases/download`,
+const RELEASES_URL = `https://api.github.com/repos/${YOK_REPO}/releases?per_page=30`;
+
+const NO_ACCESS = `yok is private: run gh auth login with an account that can see ${YOK_REPO}, or set GH_TOKEN`;
+
+const assetUrl = (releases: Releases, tag: string, name: string): string => {
+  const url = releases.find((r) => r.tag_name === tag)?.assets.find((a) => a.name === name)?.url;
+  if (url === undefined) throw new Error(`release ${tag} has no ${name}`);
+  return url;
 };
 
 // Returns the problem, or null once the new binary is in place. Nothing is written on a mismatch.
 const replaceBinary = async (
   target: UpdateTarget,
+  releases: Releases,
   tag: string,
   asset: string,
 ): Promise<string | null> => {
-  const base = `${target.downloadBase}/${tag}`;
   const [binary, checksums] = await Promise.all([
-    download(`${base}/${asset}`),
-    download(`${base}/checksums.txt`).then((bytes) => new TextDecoder().decode(bytes)),
+    download(assetUrl(releases, tag, asset), target.token),
+    download(assetUrl(releases, tag, "checksums.txt"), target.token).then((bytes) =>
+      new TextDecoder().decode(bytes),
+    ),
   ]);
   if (checksumFor(checksums, asset) !== sha256(binary)) {
     return `checksum mismatch for ${asset}; the installed yok is unchanged`;
@@ -146,15 +177,21 @@ export const runUpdate = async (
   preRelease: boolean,
 ): Promise<number> => {
   const asset = assetName(process.platform, process.arch);
-  const listed = await fetch(target.releasesUrl);
-  if (!listed.ok) return report(`could not list releases: HTTP ${listed.status}`);
-  const tag = pickRelease(await listed.json(), asset, preRelease);
+  const listed = await fetch(target.releasesUrl, {
+    headers: { ...authorization(target.token), Accept: "application/vnd.github+json" },
+  });
+  if (!listed.ok) {
+    const hint = listed.status === 404 || listed.status === 401 ? `\n${NO_ACCESS}` : "";
+    return report(`could not list releases: HTTP ${listed.status}${hint}`);
+  }
+  const releases = ReleasesSchema.parse(await listed.json());
+  const tag = pickRelease(releases, asset, preRelease);
   if (tag === null) return report(`no release has ${asset}`);
   // Not newer is not the same tag: a pre-release is ahead of the newest stable release.
   if (Bun.semver.order(tag.slice(1), target.version) <= 0) {
     console.log(`yok ${target.version} is up to date: the newest release is ${tag}`);
   } else {
-    const problem = await replaceBinary(target, tag, asset);
+    const problem = await replaceBinary(target, releases, tag, asset);
     if (problem !== null) return report(problem);
     console.log(`yok ${target.version} replaced by ${tag}`);
   }
@@ -169,6 +206,11 @@ export const updateCommand = () =>
     .addOption(agentOption())
     .action(async ({ agent, preRelease }) => {
       if (!isCompiled) return fail(DEV_UPDATE);
-      const target = { ...GITHUB, execPath: process.execPath, version: VERSION };
+      const target = {
+        releasesUrl: RELEASES_URL,
+        token: githubToken(process.env),
+        execPath: process.execPath,
+        version: VERSION,
+      };
       process.exitCode = await runUpdate(target, agent, preRelease === true);
     });

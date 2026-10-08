@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assetName, checksumFor, pickRelease, runUpdate } from "./plugin.ts";
+import { assetName, checksumFor, githubToken, pickRelease, runUpdate } from "./plugin.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -28,7 +28,7 @@ const release = (tag: string, assets: readonly string[], extra: Record<string, b
   tag_name: tag,
   draft: false,
   prerelease: false,
-  assets: assets.map((name) => ({ name })),
+  assets: assets.map((name) => ({ name, url: `https://api.example/assets/${name}` })),
   ...extra,
 });
 
@@ -89,22 +89,44 @@ afterEach(() => {
 
 type Published = Readonly<{ tag: string; script: string; checksum?: string }>;
 
+const TOKEN = "t0k";
+
+// A private repo's API: the release list and each asset answer 404 without the token, and an
+// asset redirects to storage that must not receive it, as GitHub's does.
 const serveReleases = (published: Published) => {
-  const files: Record<string, string> = {
-    [`/download/${published.tag}/${ASSET}`]: published.script,
-    [`/download/${published.tag}/checksums.txt`]: `${published.checksum ?? sha256(published.script)}  ${ASSET}\n`,
+  const stored: Record<string, string> = {
+    [`/storage/${ASSET}`]: published.script,
+    "/storage/checksums.txt": `${published.checksum ?? sha256(published.script)}  ${ASSET}\n`,
   };
+  const tokensAtStorage: (string | null)[] = [];
   const server = Bun.serve({
     port: 0,
     fetch: (request) => {
-      const path = new URL(request.url).pathname;
-      if (path === "/releases") return Response.json([release(published.tag, [ASSET])]);
-      const body = files[path];
-      return body === undefined ? new Response("", { status: 404 }) : new Response(body);
+      const { origin, pathname: path } = new URL(request.url);
+      if (path.startsWith("/storage/")) {
+        tokensAtStorage.push(request.headers.get("authorization"));
+        const body = stored[path];
+        return body === undefined ? new Response("", { status: 404 }) : new Response(body);
+      }
+      if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) {
+        return new Response("", { status: 404 });
+      }
+      if (path === "/releases") {
+        const assets = [ASSET, "checksums.txt"].map((name) => ({
+          name,
+          url: `${origin}/assets/${name}`,
+        }));
+        return Response.json([{ ...release(published.tag, []), assets }]);
+      }
+      const name = path.replace("/assets/", "");
+      if (request.headers.get("accept") !== "application/octet-stream") {
+        return Response.json({ name });
+      }
+      return Response.redirect(`${origin}/storage/${name}`, 302);
     },
   });
   servers.push(server);
-  return { releasesUrl: `${server.url}releases`, downloadBase: `${server.url}download` };
+  return { target: { releasesUrl: `${server.url}releases`, token: TOKEN }, tokensAtStorage };
 };
 
 const installed = (log: string) => {
@@ -122,11 +144,12 @@ describe("runUpdate", () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
     const script = fakeYok("0.0.2", log, 3);
-    const urls = serveReleases({ tag: "v0.0.2", script });
+    const { target, tokensAtStorage } = serveReleases({ tag: "v0.0.2", script });
 
-    const code = await runUpdate({ ...urls, execPath, version: "0.0.1" }, ["claude"], false);
+    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
 
     expect(readFileSync(execPath, "utf8")).toBe(script);
+    expect(tokensAtStorage).toEqual([null, null]);
     expect(existsSync(`${execPath}.new`)).toBe(false);
     expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
     expect(code).toBe(3);
@@ -136,14 +159,14 @@ describe("runUpdate", () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
     const before = readFileSync(execPath, "utf8");
-    const urls = serveReleases({
+    const { target } = serveReleases({
       tag: "v0.0.2",
       script: fakeYok("0.0.2", log),
       checksum: "0".repeat(64),
     });
     const errors = spyOn(console, "error").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...urls, execPath, version: "0.0.1" }, ["claude"], false);
+    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
 
     const printed = errors.mock.calls.flat();
     errors.mockRestore();
@@ -158,10 +181,10 @@ describe("runUpdate", () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
     const before = readFileSync(execPath, "utf8");
-    const urls = serveReleases({ tag: "v0.0.1", script: before });
+    const { target } = serveReleases({ tag: "v0.0.1", script: before });
     const lines = spyOn(console, "log").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...urls, execPath, version: "0.0.1" }, ["claude"], false);
+    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
 
     const printed = lines.mock.calls.flat();
     lines.mockRestore();
@@ -175,16 +198,48 @@ describe("runUpdate", () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
     const before = readFileSync(execPath, "utf8");
-    const urls = serveReleases({ tag: "v0.0.1", script: fakeYok("0.0.1-old", log) });
+    const { target } = serveReleases({ tag: "v0.0.1", script: fakeYok("0.0.1-old", log) });
     const lines = spyOn(console, "log").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...urls, execPath, version: "0.0.2-rc.1" }, ["claude"], false);
+    const code = await runUpdate({ ...target, execPath, version: "0.0.2-rc.1" }, ["claude"], false);
 
     const printed = lines.mock.calls.flat();
     lines.mockRestore();
     expect(code).toBe(0);
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(printed).toContain("yok 0.0.2-rc.1 is up to date: the newest release is v0.0.1");
+  });
+
+  test("without a token, a private repo's 404 says how to get access and leaves the binary", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const before = readFileSync(execPath, "utf8");
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    const code = await runUpdate(
+      { ...target, token: null, execPath, version: "0.0.1" },
+      ["claude"],
+      false,
+    );
+
+    const printed = errors.mock.calls.flat().join("\n");
+    errors.mockRestore();
+    expect(code).toBe(1);
+    expect(printed).toContain("could not list releases: HTTP 404");
+    expect(printed).toContain("gh auth login");
+    expect(readFileSync(execPath, "utf8")).toBe(before);
+    expect(logLines(log)).toEqual([]);
+  });
+});
+
+describe("githubToken", () => {
+  test("takes GH_TOKEN, then GITHUB_TOKEN, then what gh prints, else none", () => {
+    const gh = (printed: string | null) => () => printed;
+    expect(githubToken({ GH_TOKEN: "a", GITHUB_TOKEN: "b" }, gh("c"))).toBe("a");
+    expect(githubToken({ GITHUB_TOKEN: "b" }, gh("c"))).toBe("b");
+    expect(githubToken({}, gh("c\n"))).toBe("c");
+    expect(githubToken({ GH_TOKEN: "" }, gh(null))).toBeNull();
   });
 });
 

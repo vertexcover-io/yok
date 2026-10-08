@@ -247,6 +247,8 @@ jobs:
     timeout-minutes: 10
     env:
       TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
+      # The repo is private, so install.sh downloads through gh with this run's token.
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
         with:
