@@ -1,0 +1,54 @@
+# A short path for small, well-understood changes: no baseline, design, planning or qa.
+# A plain prompt passes through ticket-fetcher unchanged; a ticket URL or key is fetched.
+name: quick
+inputs:
+  prompt:
+    type: string
+    required: true
+doctor:
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
+nodes:
+  - id: ticket-fetcher
+    type: agent
+    stage: ticket-fetcher
+    input:
+      request: "{{ inputs.prompt }}"
+
+  - id: create-workspace
+    type: agent
+    stage: create-workspace
+    dependsOn: [ticket-fetcher]
+    input:
+      request: "{{ nodes.ticket-fetcher.output.task }}"
+
+  - id: implement
+    type: agent
+    stage: implement
+    dependsOn: [create-workspace]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      task: "{{ nodes.ticket-fetcher.output.task }}"
+
+  - id: code-review
+    type: agent
+    stage: code-review
+    dependsOn: [implement]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: commit
+    type: agent
+    stage: git-commit
+    dependsOn: [code-review]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: pr
+    type: agent
+    stage: visual-pr
+    dependsOn: [commit]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      task: "{{ nodes.ticket-fetcher.output.task }}"
