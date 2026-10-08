@@ -24,8 +24,8 @@ Codex works too. Install it with `npm i -g @openai/codex`. The rest of this page
 ## 2. Get the code
 
 ```bash
-git clone https://github.com/vertexcover-io/harness-engineering.git
-cd harness-engineering
+git clone https://github.com/vertexcover-io/yok.git
+cd yok
 git switch v2
 bun install
 ```

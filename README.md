@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://github.com/vertexcover-io/harness-engineering/stargazers"><img src="https://img.shields.io/github/stars/vertexcover-io/harness-engineering?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/vertexcover-io/yok/stargazers"><img src="https://img.shields.io/github/stars/vertexcover-io/yok?style=flat" alt="GitHub stars"></a>
   <a href="https://docs.anthropic.com/en/docs/claude-code"><img src="https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <img src="https://img.shields.io/badge/Codex-Plugin-111111" alt="Codex Plugin">
 </p>
@@ -30,7 +30,7 @@ Run the full pipeline end-to-end, or pick individual skills for smaller tasks.
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vertexcover-io/harness-engineering/v2/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vertexcover-io/yok/main/install.sh | sh
 ```
 
 This downloads the `yok` binary for your machine, checks it against the release's `checksums.txt`,

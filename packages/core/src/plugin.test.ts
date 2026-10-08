@@ -92,7 +92,7 @@ describe("pluginCheck", () => {
 
 const claudeMarket = (repo: string) => JSON.stringify([{ name: "yok", source: "github", repo }]);
 
-const REPO_URL = "https://github.com/vertexcover-io/harness-engineering.git";
+const REPO_URL = "https://github.com/vertexcover-io/yok.git";
 
 // The shape `codex plugin marketplace list --json` prints in Codex 0.159.3.
 const codexMarket = (marketplaceSource: Readonly<Record<string, string>> | undefined): string =>
@@ -104,7 +104,7 @@ describe("installPlugin", () => {
   test("SC129: Claude at 0.0.1 gets this repo's yok marketplace replaced by one at v0.0.2", async () => {
     const { exec, calls } = recordingExec({
       [LIST]: { stdout: listOf("claude", ["0.0.1"]) },
-      [MARKETS]: { stdout: claudeMarket("vertexcover-io/harness-engineering") },
+      [MARKETS]: { stdout: claudeMarket("vertexcover-io/yok") },
     });
 
     const result = await installPlugin("claude", "claude", "0.0.2", exec, "/p");
@@ -113,7 +113,7 @@ describe("installPlugin", () => {
       LIST,
       MARKETS,
       "plugin marketplace remove yok",
-      "plugin marketplace add vertexcover-io/harness-engineering#v0.0.2",
+      "plugin marketplace add vertexcover-io/yok#v0.0.2",
       "plugin install yok@yok",
     ]);
     expect(result.ok).toBe(true);
@@ -134,7 +134,7 @@ describe("installPlugin", () => {
     expect(calls).toEqual([
       LIST,
       MARKETS,
-      "plugin marketplace add vertexcover-io/harness-engineering --ref v0.0.2",
+      "plugin marketplace add vertexcover-io/yok --ref v0.0.2",
       "plugin add yok --marketplace yok",
     ]);
   });
@@ -152,7 +152,7 @@ describe("installPlugin", () => {
       LIST,
       MARKETS,
       "plugin marketplace remove yok",
-      "plugin marketplace add vertexcover-io/harness-engineering --ref v0.0.2",
+      "plugin marketplace add vertexcover-io/yok --ref v0.0.2",
       "plugin add yok --marketplace yok",
     ]);
   });
@@ -195,7 +195,7 @@ describe("installPlugin", () => {
     const { exec, calls } = recordingExec({
       [LIST]: { stdout: listOf("claude", []) },
       [MARKETS]: { stdout: "[]" },
-      "plugin marketplace add vertexcover-io/harness-engineering#v0.0.2": {
+      "plugin marketplace add vertexcover-io/yok#v0.0.2": {
         code: 1,
         stderr: "network down\nretry later",
       },

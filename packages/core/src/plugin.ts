@@ -3,7 +3,7 @@ import { isCompiled } from "@yok/sdk/internal";
 import * as z from "zod";
 import type { WorkflowAgent } from "./workflow/types.ts";
 
-export const YOK_REPO = "vertexcover-io/harness-engineering";
+export const YOK_REPO = "vertexcover-io/yok";
 
 const ClaudePluginsSchema = z.array(
   z.object({

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Installs or upgrades yok: the binary for this machine, then the agent plugin at its version.
-#   curl -fsSL https://raw.githubusercontent.com/vertexcover-io/harness-engineering/v2/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/vertexcover-io/yok/main/install.sh | sh
 # YOK_VERSION=vX.Y.Z picks a release; YOK_AGENTS="claude" limits the plugin install.
 set -eu
 
-REPO="vertexcover-io/harness-engineering"
+REPO="vertexcover-io/yok"
 BIN_DIR="$HOME/.yok/bin"
 
 say() { printf '%s\n' "$*"; }
