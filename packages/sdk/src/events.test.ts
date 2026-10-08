@@ -424,6 +424,23 @@ describe("builtInHandlers", () => {
     });
   });
 
+  test("SC308: an interrupted node keeps its run id and start, gains an end time, and has status interrupted", () => {
+    const state = project([
+      nodeEvent(1, "started", build, { nodeType: "agent", input: { n: 1 } }),
+      nodeEvent(2, "interrupted", build, { nodeType: "agent", attempts: 1 }),
+    ]);
+    expect(state.nodeRuns.build).toEqual({
+      nodeRunId: "build",
+      nodeType: "agent",
+      status: "interrupted",
+      startedAt: "2026-09-26T10:00:01Z",
+      completedAt: "2026-09-26T10:00:02Z",
+      artifacts: [],
+      input: { n: 1 },
+    });
+    expect(StateSchema.safeParse(state).success).toBe(true);
+  });
+
   test("a completed script node keeps only its output value in state; the process record stays in the event", () => {
     const state = project([
       nodeEvent(1, "started", build, { nodeType: "exec" }),

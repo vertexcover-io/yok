@@ -74,6 +74,9 @@ A node that still starts after an earlier node in its scope failed.
 **Skipped**:
 A node run the engine passed over, with the reason: its condition was false, a dependency was skipped, or no switch case matched.
 
+**Interrupted**:
+A node run that a dead session left open, ended by `yok orchestrate resume`. The next `next` starts the node again under a new node run.
+
 ## Stages
 
 **Stage**:

@@ -58,6 +58,7 @@ import {
   finishStep,
   getNodeFacts,
   initializeRun,
+  interruptOpenSteps,
   linkRunSession,
   nextStep,
 } from "./runs.ts";
@@ -221,6 +222,21 @@ const nextCommand = () =>
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
         printResult(await nextStep(run.value, MODEL_SWITCH_AGENTS));
+      }),
+    );
+
+const resumeCommand = () =>
+  new Command("resume")
+    .description(
+      "End the steps a dead session left open as interrupted, so next hands them out again. Run it only when nothing is working on them: a step it ends is handed out a second time",
+    )
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) =>
+      runWorkflowCommand(async () => {
+        const run = await requireRun(runInputFromFlags(opts));
+        if (!run.ok) return fail(run.error);
+        printResult(await interruptOpenSteps(run.value));
       }),
     );
 
@@ -812,6 +828,7 @@ export const orchestrateCommand = () =>
     .addCommand(linkSessionCommand())
     .addCommand(emitCommand())
     .addCommand(nextCommand())
+    .addCommand(resumeCommand())
     .addCommand(execCommand())
     .addCommand(doneCommand())
     .addCommand(nodeCommand())

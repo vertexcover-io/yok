@@ -8,6 +8,7 @@ import {
   createGit,
   type EmitInput,
   type EnvLayer,
+  type Event,
   type EventHandlerRefs,
   eventError,
   type IGit,
@@ -19,6 +20,7 @@ import {
   loadRunConfig,
   loadStartConfig,
   type NodeRun,
+  NodeStartedEvent,
   type ResolvedTiers,
   type Result,
   type RunRef,
@@ -43,6 +45,7 @@ import {
   type DoneStatus,
   foldModelSwitch,
   jsonlEventStore,
+  nodePath,
   type Registry,
   type StepOutcome,
   type StepReport,
@@ -68,6 +71,7 @@ import {
   decideNext,
   type Emit,
   findRunningLeaf,
+  findRunningLeaves,
   pickNodeTier,
   type RunningLeaf,
 } from "./workflow/next.ts";
@@ -365,7 +369,7 @@ export type StepReply =
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
   | Exclude<Decision, { kind: "leaf" }>;
 
-type Call = Readonly<{ command: "next" | "exec" | "done"; input: JsonValue }>;
+type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
 
 // Parsing gives the reply the type an event payload needs.
 const replyOf = (outcome: Result<unknown, string | DoneError> | Error): JsonValue => {
@@ -545,6 +549,48 @@ export const nextStep = (
 ): Promise<Result<StepReply>> =>
   logCall(run, { command: "next", input: {} }, walkToNextStep(run, modelSwitchAgents));
 
+export type ResumeReport = Readonly<{
+  interrupted: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
+}>;
+
+// Ends the step as interrupted unless it ended meanwhile; false when it had.
+const interruptStep = async (
+  run: RunRef,
+  { node, nodeRun }: RunningLeaf,
+): Promise<Result<boolean>> => {
+  const { nodeRunId } = nodeRun;
+  return appendStepEnd(run, nodeRunId, {
+    type: "workflow.node.interrupted",
+    source: "workflow",
+    nodeId: node.id,
+    nodeRunId,
+    payload: { nodeType: node.type, attempts: 1, ...buildParentsField(node.parents) },
+  });
+};
+
+// A step left open by a session that died stays running forever; interrupting it lets next hand it
+// out again. An open context step is left alone: yok completes it once the new session starts.
+const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> => {
+  const state = await readRunState(runDirOf(run.cwd, run.name));
+  const plan = await loadRunPlan(run, state);
+  if (!plan.ok) return plan;
+  const open = findRunningLeaves(plan.value.nodes, state.nodeRuns).filter(
+    ({ node }) => node.type !== "context",
+  );
+  let interrupted: ResumeReport["interrupted"] = [];
+  for (const leaf of open) {
+    const stored = await interruptStep(run, leaf);
+    if (!stored.ok) return stored;
+    if (stored.value) {
+      interrupted = [...interrupted, { nodeRunId: leaf.nodeRun.nodeRunId, nodeId: leaf.node.id }];
+    }
+  }
+  return { ok: true, value: { interrupted } };
+};
+
+export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
+  logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
+
 const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<RunningLeaf>> => {
   const state = await readRunState(runDirOf(run.cwd, run.name));
   const plan = await loadRunPlan(run, state);
@@ -602,8 +648,10 @@ const runExecStep = async (run: RunRef, nodeRunId: string): Promise<Result<StepR
   const input = step.value.nodeRun.input ?? null;
   const scriptDir = join(runDirOf(run.cwd, run.name), "scripts");
   const record = await runStepLeaf(node, input, { cwd: run.cwd, path: nodeRunId, scriptDir });
-  const stored = await appendRunEvent(run, buildStepEndEvent(step.value, record));
-  return stored.ok ? { ok: true, value: buildReport(step.value, record) } : stored;
+  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(step.value, record));
+  if (!stored.ok) return stored;
+  if (!stored.value) return { ok: false, error: `${nodeRunId} is no longer running` };
+  return { ok: true, value: buildReport(step.value, record) };
 };
 
 export const execStep = (run: RunRef, nodeRunId: string): Promise<Result<StepReport>> =>
@@ -644,8 +692,10 @@ export const completeContextStep = async (
     attempts: 1,
     output,
   };
-  const stored = await appendRunEvent(run, buildStepEndEvent(leaf.value, record));
-  return stored.ok ? { ok: true, value: buildReport(leaf.value, record) } : stored;
+  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(leaf.value, record));
+  if (!stored.ok) return stored;
+  if (!stored.value) return { ok: false, error: `${nodeRunId} is no longer running` };
+  return { ok: true, value: buildReport(leaf.value, record) };
 };
 
 const isRunningNodeRun = (runs: Readonly<Record<string, NodeRun>>, nodeRunId: string): boolean =>
@@ -654,6 +704,22 @@ const isRunningNodeRun = (runs: Readonly<Record<string, NodeRun>>, nodeRunId: st
       nodeRun.status === "running" &&
       (nodeRun.nodeRunId === nodeRunId || isRunningNodeRun(nodeRun.nodes ?? {}, nodeRunId)),
   );
+
+// Stores how a step ended only while its node run is still open, so a late ending (a script that
+// outlived a resume, a second done) never replaces the run started after it. false: it had ended.
+const appendStepEnd = async (
+  run: RunRef,
+  nodeRunId: string,
+  event: EmitInput,
+): Promise<Result<boolean>> => {
+  const stored = await appendRunEventIf(
+    run,
+    event,
+    (state) => state !== null && isRunningNodeRun(state.nodeRuns, nodeRunId),
+  );
+  if (stored.ok) return { ok: true, value: true };
+  return stored.error === "condition-failed" ? { ok: true, value: false } : stored;
+};
 
 const recordStepEnd = async (
   run: RunRef,
@@ -749,12 +815,11 @@ const storeStepEnd = async (
   artifacts: readonly ArtifactRef[],
 ): Promise<Result<StepReport, DoneError>> => {
   const nodeRunId = step.nodeRun.nodeRunId;
-  const stored = await appendRunEventIf(
-    run,
-    buildStepEndEvent(step, record, artifacts),
-    (state) => state !== null && isRunningNodeRun(state.nodeRuns, nodeRunId),
-  );
-  if (!stored.ok && stored.error === "condition-failed") {
+  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(step, record, artifacts));
+  if (!stored.ok) {
+    return { ok: false, error: { kind: "storage", retryable: false, message: stored.error } };
+  }
+  if (!stored.value) {
     return {
       ok: false,
       error: {
@@ -765,9 +830,7 @@ const storeStepEnd = async (
       },
     };
   }
-  return stored.ok
-    ? { ok: true, value: buildReport(step, record) }
-    : { ok: false, error: { kind: "storage", retryable: false, message: stored.error } };
+  return { ok: true, value: buildReport(step, record) };
 };
 
 // The log is read only when this done could be rejected.
@@ -829,11 +892,39 @@ const RejectedDoneEventSchema = z.object({
   }),
 });
 
+// The node run and the runs of its node that resume interrupted just before it. They are one
+// attempt at the step, so their rejected dones count together and a resume cannot reset the cap.
+const findAttemptRuns = (events: readonly Event[], nodeRunId: string): ReadonlySet<string> => {
+  const starts = events.flatMap((event) => {
+    const parsed = NodeStartedEvent.safeParse(event);
+    if (event.type !== "workflow.node.started" || !parsed.success) return [];
+    const { nodeId, nodeRunId: id, payload } = parsed.data;
+    return [{ id, path: nodePath(payload.parents ?? [], nodeId) }];
+  });
+  const interrupted = new Set(
+    events.flatMap((event) =>
+      event.type === "workflow.node.interrupted" && event.nodeRunId !== undefined
+        ? [event.nodeRunId]
+        : [],
+    ),
+  );
+  const index = starts.findIndex((start) => start.id === nodeRunId);
+  const path = starts[index]?.path;
+  const earlier = starts
+    .slice(0, Math.max(index, 0))
+    .filter((start) => start.path === path)
+    .reverse();
+  const end = earlier.findIndex((start) => !interrupted.has(start.id));
+  const chain = end === -1 ? earlier : earlier.slice(0, end);
+  return new Set([nodeRunId, ...chain.map((start) => start.id)]);
+};
+
 const countRejectedDones = async (run: RunDirRef, nodeRunId: string): Promise<number> => {
   const events = await jsonlEventStore(runDirOf(run.cwd, run.name)).read();
+  const attempt = findAttemptRuns(events, nodeRunId);
   return events.filter((event) => {
     const parsed = RejectedDoneEventSchema.safeParse(event);
-    return parsed.success && parsed.data.payload.input.nodeRunId === nodeRunId;
+    return parsed.success && attempt.has(parsed.data.payload.input.nodeRunId);
   }).length;
 };
 

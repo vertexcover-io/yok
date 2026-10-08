@@ -19,8 +19,12 @@ asking the user, running a long command in the background, keeping a task list, 
 
 `--workflow PATH --inputs JSON [--name NAME]`, or `--resume NAME`
 
-With `--resume NAME`, skip Step 1 (no `init`): tell the user the run is resuming, and go straight
-to Step 2's loop with that `NAME`. The reference says how a resumed session receives it.
+With `--resume NAME`, skip Step 1 (no `init`): tell the user the run is resuming, then run
+`yok orchestrate resume --run NAME`. A step the previous session left open has nobody working on
+it any more; `resume` ends it as interrupted, so `next` hands it out again, and changes nothing
+when no step is open. Run it only for steps no one is working on: a step it ends while still
+running is handed out a second time. On a non-zero exit, show its error output and stop. Then go straight to
+Step 2's loop with that `NAME`. The reference says how a resumed session receives it.
 
 ## Step 1: initialize the run
 
@@ -106,8 +110,10 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      Tell the user which, and stop.
    - `waiting`: a step is still running, and only one step runs at a time. Wait for your
      background task to finish, then go back to 1. If none of your background tasks is
-     still running, stop and report `nodeRunId`: its process ended
-     without recording a result.
+     still running, nothing is working on `nodeRunId` any more: tell the user, run
+     `yok orchestrate resume --run NAME`, then go back to 1, which hands the step out again.
+     If `resume` does not list `nodeRunId` under `interrupted` (a context step is never
+     interrupted), stop and report `nodeRunId`: nothing will end it.
    - `finished`: tell the user the run ended with `status`, then stop.
 3. Mirror each `exec`, `stage` and `agent` node into your task list (the reference names the
    tool), without spending a turn on it: make each task call in the same step as a command you run
