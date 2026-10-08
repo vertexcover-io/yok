@@ -184,7 +184,12 @@ const checkTag = (copy: string, tag: string): { readonly code: number; readonly 
   return { code: result.status ?? 1, stderr: result.stderr }
 }
 
-const EXTRA_PACKAGE = { "packages/extra/package.json": '{\n  "name": "@yok/extra",\n  "version": "0.0.0"\n}\n' }
+// The checkout's own version, so these tests keep passing after each real release bumps it.
+const CURRENT_VERSION = readVersion(readFileSync(join(repoDir, "package.json"), "utf8")) ?? "0.0.0"
+
+const EXTRA_PACKAGE = {
+  "packages/extra/package.json": `{\n  "name": "@yok/extra",\n  "version": "${CURRENT_VERSION}"\n}\n`,
+}
 
 // A release cut on the wrong runtime once silently did nothing. process.execPath is the runtime
 // running this suite, so test:scripts proves the script under Node and test:scripts:bun under Bun.
@@ -221,7 +226,7 @@ describe("the release script, run as a command", () => {
     const lock = readFileSync(join(copy, "bun.lock"), "utf8")
     const versions = [...lock.matchAll(/"packages\/[^"]+": \{\n\s+"name": "[^"]+",\n\s+"version": "([^"]*)"/g)]
     assert.equal(versions.length, PACKAGE_MANIFESTS.length)
-    versions.forEach(([, version]) => assert.equal(version, "0.0.1"))
+    versions.forEach(([, version]) => assert.equal(version, nextVersion(CURRENT_VERSION, "patch")))
     assert.equal(rootEntry(lock), rootBefore)
     assert.match(git("show", "--name-only", "--format=", "HEAD"), /^bun\.lock$/m)
     execFileSync("bun", ["install"], { cwd: copy, stdio: "pipe" })
