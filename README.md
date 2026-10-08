@@ -6,12 +6,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vertexcover-io/yok/releases/latest"><img src="https://img.shields.io/github/v/release/vertexcover-io/yok?include_prereleases&label=release" alt="Latest release"></a>
-  <a href="https://github.com/vertexcover-io/yok/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/vertexcover-io/yok/release.yml?label=release%20build" alt="Release build"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform: macOS and Linux">
   <a href="https://docs.anthropic.com/en/docs/claude-code"><img src="https://img.shields.io/badge/Claude%20Code-plugin-blueviolet" alt="Claude Code plugin"></a>
   <img src="https://img.shields.io/badge/Codex-plugin-111111" alt="Codex plugin">
-  <a href="https://github.com/vertexcover-io/yok/stargazers"><img src="https://img.shields.io/github/stars/vertexcover-io/yok?style=flat" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
