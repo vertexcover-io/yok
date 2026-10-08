@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Glob } from "bun";
+import { ArtifactRefSchema } from "./contracts";
 
 const filesContaining = (
   pattern: string,
@@ -39,6 +40,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "EventHandlerRefsSchema",
   "EventSchema",
   "EventTypeSchema",
+  "FileArtifactSchema",
   "FindingSchema",
   "GitStateSchema",
   "JsonObjectSchema",
@@ -46,6 +48,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "LimitReachedEvent",
   "LimitResumedEvent",
   "LimitWaitingEvent",
+  "LinkArtifactSchema",
   "LogLevelSchema",
   "ModelAppliedEvent",
   "ModelRequestedEvent",
@@ -186,6 +189,24 @@ describe("source boundaries", () => {
       (pattern) => filesContaining(pattern, bunRun, { excludeTests: true }),
     );
     expect(sources).toEqual([]);
+  });
+
+  test("every --artifact a skill or demo stage tells the agent to pass is one artifact JSON object", () => {
+    const files = ["skills/**/*.md", "demo-workflows/**/*"].flatMap((pattern) => [
+      ...new Glob(pattern).scanSync("."),
+    ]);
+    const texts = files.map((file) => readFileSync(file, "utf8"));
+    expect(files.filter((_, index) => /--artifact [\w-]+=/.test(texts[index] ?? ""))).toEqual([]);
+    const objects = texts.flatMap((text) =>
+      [...text.matchAll(/--artifact '([^']*)'/g)].map((match) => match[1] ?? ""),
+    );
+    expect(objects.length).toBeGreaterThan(0);
+    const invalid = objects.filter(
+      (object) =>
+        !ArtifactRefSchema.safeParse(JSON.parse(object.replace("PR_URL", "https://pr.example")))
+          .success,
+    );
+    expect(invalid).toEqual([]);
   });
 
   test("SC44: no skill text runs a script through bun run, node or orchestrate script --skill, and every script a skill declares as a reference exports main", () => {

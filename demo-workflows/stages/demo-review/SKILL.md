@@ -31,7 +31,7 @@ name.
    `.yok/RUN_NAME/artifacts/drafts/`.
 2. Write one line to `.yok/RUN_NAME/artifacts/review.md`:
    `Reviewed D drafts after N loop passes: NAME1, NAME2, …`.
-3. Finish the node with `--artifact review=artifacts/review.md`, and reply with:
+3. Finish the node with `--artifact '{"type":"review","name":"review","path":"artifacts/review.md"}'`, and reply with:
 
    ```json
    { "review": "artifacts/review.md", "drafts": D }
