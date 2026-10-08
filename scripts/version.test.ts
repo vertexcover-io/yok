@@ -213,9 +213,11 @@ describe("the release script, run as a command", () => {
 
   test("SC149: a release writes its version into bun.lock's workspace packages and commits the lock", () => {
     const copy = copyReleaseFiles()
-    const git = (...args: string[]): string =>
-      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: copy, encoding: "utf8" })
+    const git = (...args: string[]): string => execFileSync("git", args, { cwd: copy, encoding: "utf8" })
     git("init", "-q", "-b", "main")
+    // Stored in the repo, so the release script's own commit has an author on a CI machine with no git identity.
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
     git("add", ".")
     git("commit", "-qm", "init")
     const rootEntry = (lock: string): string => lock.slice(lock.indexOf('"": {'), lock.indexOf('"packages/'))
