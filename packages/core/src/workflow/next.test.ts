@@ -105,11 +105,11 @@ const locateRun = (
   return undefined;
 };
 
-// What `orchestrate exec` records when a leaf ends.
+// What `orchestrate exec` records when a leaf ends, or `orchestrate resume` when it interrupts one.
 const end = (
   state: State,
   nodeRunId: string,
-  status: "completed" | "failed",
+  status: "completed" | "failed" | "interrupted",
   extra: Readonly<Record<string, JsonValue>> = {},
 ): State => {
   const where = locateRun(state.nodeRuns, nodeRunId);
@@ -309,6 +309,28 @@ nodes:${exec("a", "\n    mode: background\n    input: {}")}${exec("b", "\n    de
     });
     const afterB = end(second.state, b.nodeRunId, "completed", { output: {} });
     expect(expectLeaf((await advance(plan, afterB)).stop).node.id).toBe("c");
+  });
+
+  test("SC309: an interrupted b is handed out again under a new node run id, and a's finished run is untouched", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const a = expectLeaf(first.stop);
+    const afterA = end(first.state, a.nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA);
+    const b = expectLeaf(second.stop);
+    const interrupted = end(second.state, b.nodeRunId, "interrupted");
+
+    const again = await advance(plan, interrupted);
+    const retried = expectLeaf(again.stop);
+    expect(retried.node.id).toBe("b");
+    expect(retried.nodeRunId).not.toBe(b.nodeRunId);
+    expect(findRun(again.state, "b")).toMatchObject({
+      nodeRunId: retried.nodeRunId,
+      status: "running",
+    });
+    expect(findRun(again.state, "a")).toEqual(findRun(afterA, "a"));
   });
 
   test("IW5 — once every node has ended the run is recorded completed, and every later call replies finished", async () => {
@@ -874,6 +896,25 @@ nodes:
     expect(inputs).toEqual(["pass 2", "out 2"]);
     const done = await advance(plan, state);
     expect(findRun(done.state, "fix")).toMatchObject({ status: "completed", output: "out 2" });
+  });
+
+  test("SC310: a body node interrupted in pass 2 is handed out again in pass 2, and the pass's finished node is kept", async () => {
+    const report = `
+      - { id: report, type: exec, runtime: sh, script: "true", dependsOn: [test], input: "{{ iteration.previous }}" }`;
+    const plan = await compilePlan(loop("{{ iteration.index >= 3 }}", 3, report));
+    const { state } = await runLeaves(plan, start(), ["completed", "completed", "completed"]);
+    const reportRun = await advance(plan, state);
+    const first = expectLeaf(reportRun.stop);
+    expect(first.node.id).toBe("report");
+    const testRun = findRun(reportRun.state, "fix", "test");
+
+    const again = await advance(plan, end(reportRun.state, first.nodeRunId, "interrupted"));
+    const retried = expectLeaf(again.stop);
+    expect(retried.node.id).toBe("report");
+    expect(retried.nodeRunId).not.toBe(first.nodeRunId);
+    expect(retried.input).toBe("out 2");
+    expect(findRun(again.state, "fix")).toMatchObject({ status: "running", iteration: 2 });
+    expect(findRun(again.state, "fix", "test")).toEqual(testRun);
   });
 
   test("a qa loop that ends BLOCKED skips the commit gated on its verdict, and the pr after it", async () => {

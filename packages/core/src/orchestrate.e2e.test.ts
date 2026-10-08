@@ -1208,6 +1208,21 @@ describe("SC26: stage verifiers", () => {
     expect(JSON.parse(next.stdout)).toEqual({ kind: "finished", status: "failed" });
   });
 
+  test("SC317: rejected dones before a resume still count, so the third rejection after it fails the node", () => {
+    const { repo, finishProducer, finish, step } = verifiedRun(`[${fn("lint", "failLong")}]`);
+    const use = finishProducer();
+    expect(refusal(finish(use.nodeRunId).stderr).retryable).toBe(true);
+    expect(refusal(finish(use.nodeRunId).stderr).retryable).toBe(true);
+
+    expect(step(["resume", "--run", "feat-x"]).code).toBe(0);
+    const again = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "stage", nodeId: "use" });
+
+    const last = finish(again.nodeRunId);
+    expect(refusal(last.stderr)).toMatchObject({ kind: "verify-exhausted", retryable: false });
+    expect(stateOf(repo).nodeRuns.use.status).toBe("failed");
+  });
+
   test("a node with allowFailure whose done is rejected for good lets the run end completed", () => {
     const workflow = STAGES_WORKFLOW.replace(
       "    dependsOn: [make]\n",
@@ -2945,5 +2960,134 @@ describe("SC26: orchestrate comments", () => {
     expect(missing.code).toBe(1);
     expect(missing.stderr).toContain("c9");
     expect(badStatus.code).toBe(1);
+  });
+});
+
+describe("SC26: orchestrate resume", () => {
+  const env = { YOK_SKILLS_DIR: STAGE_SKILLS };
+  const nodeEventTypes = async (repo: string) =>
+    (await eventsOf(repo))
+      .map((event) => event.type)
+      .filter((type) => type.startsWith("workflow.node."));
+
+  test("SC311: resume interrupts the open stage, records it as an event, and next hands the stage out again under a new id", async () => {
+    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    const first = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
+
+    const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
+    expect(resumed.code).toBe(0);
+    expect(JSON.parse(resumed.stdout)).toEqual({
+      interrupted: [{ nodeRunId: first.nodeRunId, nodeId: "make" }],
+    });
+    const interrupted = (await eventsOf(repo)).filter(
+      (event) => event.type === "workflow.node.interrupted",
+    );
+    expect(interrupted).toEqual([
+      expect.objectContaining({ nodeId: "make", nodeRunId: first.nodeRunId }),
+    ]);
+    expect(stateOf(repo).nodeRuns.make.status).toBe("interrupted");
+
+    const again = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
+    expect(again).toMatchObject({ kind: "stage", nodeId: "make" });
+    expect(again.nodeRunId).not.toBe(first.nodeRunId);
+  });
+
+  test("SC312: resume with no step open prints an empty list and records no node event", async () => {
+    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    const before = await nodeEventTypes(repo);
+
+    const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
+    expect(resumed.code).toBe(0);
+    expect(JSON.parse(resumed.stdout)).toEqual({ interrupted: [] });
+    expect(await nodeEventTypes(repo)).toEqual(before);
+  });
+
+  test("SC313: resume leaves an open context step running, since its helper finishes it", async () => {
+    const { repo, home } = startedRun(withContext("action: new"));
+    const first = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
+    const done = ["done", first.nodeRunId, "--run", "feat-x", "--output", "-"];
+    expect(orchestrate(repo, home, done, env, "ok").code).toBe(0);
+    const context = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
+    expect(context).toMatchObject({ kind: "context", nodeId: "fresh" });
+
+    const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
+    expect(JSON.parse(resumed.stdout)).toEqual({ interrupted: [] });
+    expect(stateOf(repo).nodeRuns.fresh).toMatchObject({
+      nodeRunId: context.nodeRunId,
+      status: "running",
+    });
+  });
+
+  test("SC315: a late exec result for an interrupted run is refused and leaves the newer run open", async () => {
+    const { repo, home } = startedRun(`name: slow
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: a, type: exec, runtime: sh, script: "touch started; until [ -f go ]; do sleep 0.05; done", input: {} }
+`);
+    const first = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    const late = orchestrateAsync(repo, home, ["exec", first.nodeRunId, "--run", "feat-x"]);
+    await waitFor(() => existsSync(join(repo, "started")));
+    orchestrate(repo, home, ["resume", "--run", "feat-x"]);
+    const again = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    writeFileSync(join(repo, "go"), "");
+
+    const refused = await late;
+    expect(refused.code).toBe(1);
+    expect(refused.stderr.length).toBeGreaterThan(0);
+    expect(stateOf(repo).nodeRuns.a).toMatchObject({
+      nodeRunId: again.nodeRunId,
+      status: "running",
+    });
+  });
+
+  test("SC318: resume interrupts a step inside a loop in place, and next hands it out again in the same pass", () => {
+    const { repo, home } = startedRun(`name: looped
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - id: fix
+    type: loop
+    until: "{{ iteration.index >= 2 }}"
+    maxIterations: 2
+    input: {}
+    nodes:
+      - { id: test, type: exec, runtime: sh, script: cat, input: "pass {{ iteration.index }}" }
+`);
+    const step = (args: readonly string[]) => orchestrate(repo, home, args, env);
+    const first = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(step(["exec", first.nodeRunId, "--run", "feat-x"]).code).toBe(0);
+    const second = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+
+    expect(JSON.parse(step(["resume", "--run", "feat-x"]).stdout)).toEqual({
+      interrupted: [{ nodeRunId: second.nodeRunId, nodeId: "test" }],
+    });
+    const nodes = stateOf(repo).nodeRuns;
+    expect(Object.keys(nodes)).toEqual(["fix"]);
+    expect(nodes.fix).toMatchObject({ status: "running", iteration: 2 });
+    expect(nodes.fix.nodes.test).toMatchObject({
+      nodeRunId: second.nodeRunId,
+      status: "interrupted",
+    });
+
+    const again = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "exec", nodeId: "test" });
+    expect(again.nodeRunId).not.toBe(second.nodeRunId);
+    expect(stateOf(repo).nodeRuns.fix.nodes.test).toMatchObject({
+      nodeRunId: again.nodeRunId,
+      status: "running",
+      input: "pass 2",
+    });
+  });
+
+  test("SC314: done for a node run that resume interrupted is refused as not running", () => {
+    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    const first = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
+    orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
+
+    const done = ["done", first.nodeRunId, "--run", "feat-x", "--output", "-"];
+    const late = orchestrate(repo, home, done, env, "{}");
+    expect(late.code).toBe(1);
+    expect(JSON.parse(late.stderr)).toMatchObject({ kind: "not-running", retryable: false });
   });
 });

@@ -82,6 +82,8 @@ const nodeEndedEvents = {
   ),
   skipped: nodeEvent(z.strictObject({ ...endFields, skip: SkipOutputSchema })),
   cancelled: nodeEvent(z.strictObject({ ...endFields, error: ErrorSchema.optional() })),
+  // the session working on the node died; next starts the node again
+  interrupted: nodeEvent(z.strictObject(endFields)),
 };
 
 // A loop starting its next pass: the pass number, and the result of the pass that just ended.
@@ -389,6 +391,7 @@ const callEvent = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O
 const reportOrError = z.union([StepReportSchema, ErrorSchema.extend({ kind: z.literal("error") })]);
 
 const OrchestrateNextEvent = callEvent(z.strictObject({}), z.json());
+const OrchestrateResumeEvent = callEvent(z.strictObject({}), z.json());
 const OrchestrateExecEvent = callEvent(
   z.strictObject({ nodeRunId: NonEmptyStringSchema }),
   reportOrError,
@@ -467,6 +470,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "workflow.node.completed": nodeEndedEvents.completed,
   "workflow.node.skipped": nodeEndedEvents.skipped,
   "workflow.node.cancelled": nodeEndedEvents.cancelled,
+  "workflow.node.interrupted": nodeEndedEvents.interrupted,
   "workflow.node.failed": nodeEndedEvents.failed,
   "workflow.node.iterated": NodeIteratedEvent,
   "workflow.session.replaced": SessionReplacedEvent,
@@ -486,6 +490,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "orchestrate.exec": OrchestrateExecEvent,
   "orchestrate.done": OrchestrateDoneEvent,
   "orchestrate.verifier": OrchestrateVerifierEvent,
+  "orchestrate.resume": OrchestrateResumeEvent,
   "hooks.stop.called": StopCalledEvent,
   "hooks.pre-tool-use.called": PreToolUseCalledEvent,
   "hooks.session-start.called": SessionStartCalledEvent,
@@ -684,7 +689,10 @@ const onEnded = (status: EndStatus, state: State, event: Event): State => {
   if (!parsed.success) return state;
   const { nodeId, nodeRunId, payload } = parsed.data;
   const output = endOutputOf(payload);
-  const artifacts = "artifacts" in payload ? payload.artifacts : undefined;
+  // Only a completed node lists artifacts. Asked of the union, `in` sees no artifacts field: an
+  // interrupted payload's type is a supertype of a completed one's, so the union drops the latter.
+  const artifacts =
+    status === "completed" ? nodeEndedEvents.completed.parse(event).payload.artifacts : undefined;
   const end = (current: NodeRun | undefined): NodeRun => {
     const run: NodeRun =
       current?.nodeRunId === nodeRunId
@@ -822,6 +830,7 @@ export const builtInHandlers: EventHandlers = {
   "workflow.node.failed": (state, event) => onEnded("failed", state, event),
   "workflow.node.skipped": (state, event) => onEnded("skipped", state, event),
   "workflow.node.cancelled": (state, event) => onEnded("cancelled", state, event),
+  "workflow.node.interrupted": (state, event) => onEnded("interrupted", state, event),
   "workflow.node.iterated": onIterated,
   "workspace.created": onWorkspaceCreated,
   "workspace.repository.added": onRepositoryAdded,

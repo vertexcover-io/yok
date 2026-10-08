@@ -527,7 +527,9 @@ async function executeNodes(nodes: readonly PlanNode[], walk: Walk, state: State
   for (const node of nodes) {
     const siblings = findNodeRuns(current.nodeRuns, node.parents);
     if (!node.always && findBlockingFailure(nodes, siblings) !== undefined) continue;
-    const nodeRun = findNodeRun(current, node);
+    const found = findNodeRun(current, node);
+    // an interrupted node starts again as if it never ran; the old run stays in event.jsonl
+    const nodeRun = found?.status === "interrupted" ? undefined : found;
     if (nodeRun !== undefined && nodeRun.status !== "running") continue;
     let walked: Walked;
     switch (node.type) {
@@ -581,21 +583,22 @@ export const decideNext = async (
 // A running leaf and its node run in state.json.
 export type RunningLeaf = Readonly<{ node: Leaf; nodeRun: NodeRun }>;
 
+// Every running leaf, those inside running containers included.
+export const findRunningLeaves = (
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): readonly RunningLeaf[] =>
+  nodes.flatMap((node): readonly RunningLeaf[] => {
+    const nodeRun = own(nodeRuns, node.id);
+    if (nodeRun?.status !== "running") return [];
+    if (isLeaf(node)) return [{ node, nodeRun }];
+    return findRunningLeaves(pickChildren(node, nodeRun), nodeRun.nodes ?? {});
+  });
+
 // The running leaf whose run is `nodeRunId`, for exec and done.
 export const findRunningLeaf = (
   nodes: readonly PlanNode[],
   nodeRuns: Readonly<Record<string, NodeRun>>,
   nodeRunId: string,
-): RunningLeaf | undefined => {
-  for (const node of nodes) {
-    const nodeRun = own(nodeRuns, node.id);
-    if (nodeRun?.status !== "running") continue;
-    if (isLeaf(node)) {
-      if (nodeRun.nodeRunId === nodeRunId) return { node, nodeRun };
-      continue;
-    }
-    const found = findRunningLeaf(pickChildren(node, nodeRun), nodeRun.nodes ?? {}, nodeRunId);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-};
+): RunningLeaf | undefined =>
+  findRunningLeaves(nodes, nodeRuns).find((leaf) => leaf.nodeRun.nodeRunId === nodeRunId);

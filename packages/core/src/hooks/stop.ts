@@ -25,7 +25,7 @@ import { findSessionRun } from "./common.ts";
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
 // `yok orchestrate next` or `bun …/index.ts orchestrate done`, but not a path like orchestrate/SKILL.md
-const ORCHESTRATE = /\borchestrate(?:\.ts)?\s+(?:init|link-session|emit|next|exec|done)\b/;
+const ORCHESTRATE = /\borchestrate(?:\.ts)?\s+(?:init|link-session|emit|next|resume|exec|done)\b/;
 const ASK_RULE =
   "If you need the user's input, ask the way the orchestrate skill's reference for your agent says.";
 

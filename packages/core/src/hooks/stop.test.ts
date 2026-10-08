@@ -262,6 +262,16 @@ describe("runStopHook", () => {
     expect(await runStopHook(input(runHook), (await setUp({})).deps)).toEqual({ kind: "allow" });
   });
 
+  test("SC316 — yok orchestrate resume after the prompt drives the run", async () => {
+    const resumed: TranscriptEntry[] = [
+      { kind: "prompt", text: "/yok:orchestrate --resume feat-x" },
+      { kind: "command", command: "yok orchestrate resume --run feat-x" },
+    ];
+    expect(await runStopHook(input(resumed), (await setUp({})).deps)).toMatchObject({
+      kind: "continue",
+    });
+  });
+
   test("SC12 — commands only before the last prompt do not count", async () => {
     const { deps } = await setUp({});
     const entries: TranscriptEntry[] = [
