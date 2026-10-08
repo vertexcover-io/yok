@@ -6,7 +6,7 @@ baseline: bun run check
 workspace:
   layout: mono
   path: .worktrees/{{ branch }}
-  baseBranch: v2
+  baseBranch: main
   setup: bun install
 
 notifier:

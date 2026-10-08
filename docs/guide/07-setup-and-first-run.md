@@ -26,11 +26,10 @@ Codex works too. Install it with `npm i -g @openai/codex`. The rest of this page
 ```bash
 git clone https://github.com/vertexcover-io/yok.git
 cd yok
-git switch v2
 bun install
 ```
 
-Development happens on the `v2` branch. `main` is the older skills-only version.
+Development happens on `main`.
 
 You know it worked when `bun install` ends without errors and `ls node_modules/@yok` lists `cli core sdk server`.
 

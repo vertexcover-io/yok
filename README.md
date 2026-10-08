@@ -2,291 +2,260 @@
 
 <p align="center">
   <strong>Engineering discipline for AI-assisted development</strong><br>
-  A Claude Code and Codex plugin that adds the engineering your AI skips — design docs before code, tests before implementation, quality gates before merging
+  A Claude Code and Codex plugin that adds the engineering your AI skips: design docs before code, tests before implementation, quality gates before merging
 </p>
 
 <p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/vertexcover-io/yok/releases/latest"><img src="https://img.shields.io/github/v/release/vertexcover-io/yok?include_prereleases&label=release" alt="Latest release"></a>
+  <a href="https://github.com/vertexcover-io/yok/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/vertexcover-io/yok/release.yml?label=release%20build" alt="Release build"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform: macOS and Linux">
+  <a href="https://docs.anthropic.com/en/docs/claude-code"><img src="https://img.shields.io/badge/Claude%20Code-plugin-blueviolet" alt="Claude Code plugin"></a>
+  <img src="https://img.shields.io/badge/Codex-plugin-111111" alt="Codex plugin">
   <a href="https://github.com/vertexcover-io/yok/stargazers"><img src="https://img.shields.io/github/stars/vertexcover-io/yok?style=flat" alt="GitHub stars"></a>
-  <a href="https://docs.anthropic.com/en/docs/claude-code"><img src="https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
-  <img src="https://img.shields.io/badge/Codex-Plugin-111111" alt="Codex Plugin">
 </p>
 
 <p align="center">
+  <a href="#requirements">Requirements</a> &nbsp;·&nbsp;
   <a href="#installation"><b>Installation</b></a> &nbsp;·&nbsp;
-  <a href="#the-pipeline">The Pipeline</a> &nbsp;·&nbsp;
-  <a href="#recipes">Recipes</a> &nbsp;·&nbsp;
-  <a href="#skill-reference">Skill Reference</a>
+  <a href="#project-setup">Project setup</a> &nbsp;·&nbsp;
+  <a href="#usage">Usage</a> &nbsp;·&nbsp;
+  <a href="#commands">Commands</a> &nbsp;·&nbsp;
+  <a href="#skills">Skills</a> &nbsp;·&nbsp;
+  <a href="#learn-more">Learn more</a>
 </p>
 
-AI coding tools are fast. They're also reckless — no tests, no design, no verification. Code appears in seconds and breaks in production minutes later. Yok fixes this with a full pipeline where every stage has clear inputs, outputs, and pass/fail criteria:
+## What it is
+
+AI coding tools are fast. They are also reckless: no tests, no design, no verification. Yok takes a task and a coding agent, and walks the agent through a workflow of stages until a pull request is open. Every stage has clear inputs, outputs, and pass/fail checks, and every step is written to an event log.
 
 ```
-Brainstorm → Plan → TDD → Quality Gate → Docs → PR
+Ticket → Workspace → Baseline → Design → Plan → Implement → Review → QA → Commit → PR → Retro
 ```
 
-Run the full pipeline end-to-end, or pick individual skills for smaller tasks.
+You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. Run the whole workflow, or use the individual skills (`/tdd`, `/code-review`, `/git-commit`) inside a normal agent session.
+
+To understand how it works and why it is built this way, read the [Yok guide](./docs/guide/README.md). [What it is, in 60 seconds](./docs/guide/02-what-it-is.md) is the one-minute version.
+
+## Requirements
+
+macOS or Linux. The `yok` binary has no runtime of its own, but a run uses these tools:
+
+| Tool | Needed for | Install |
+|---|---|---|
+| Claude Code or Codex | the agent | see claude.com/claude-code, or `npm i -g @openai/codex` |
+| tmux 3.3 or newer | every agent session lives in a tmux window | `brew install tmux` |
+| git | the run works in a git worktree | `brew install git` |
+| GitHub CLI, logged in | the PR stage | `brew install gh && gh auth login` |
+| jq, curl | shell steps inside skills | `brew install jq curl` |
+| ffmpeg, agent-browser | the QA stage films proof of the feature | `brew install ffmpeg`, `npm i -g agent-browser && agent-browser install` |
+
+`yok doctor` checks all of these and tells you what is missing.
 
 ## Installation
+
+### 1. Install the binary and the plugin
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vertexcover-io/yok/main/install.sh | sh
 ```
 
-This downloads the `yok` binary for your machine, checks it against the release's `checksums.txt`,
-installs it to `~/.yok/bin`, adds that folder to `PATH` in your shell's start file, and installs
-the yok plugin, at the binary's own version, into every agent it finds (`claude`, `codex`).
-Run it again to upgrade. `YOK_VERSION=v0.0.2-rc.1` installs one exact release;
-`YOK_AGENTS=claude` limits the plugin install. No bun or node is needed.
+This downloads the `yok` binary for your machine, verifies it against the release's `checksums.txt`, installs it to `~/.yok/bin`, adds that folder to `PATH` in your shell's start file, and installs the yok plugin into every agent it finds (`claude`, `codex`).
 
-Then, inside a project:
+Options:
+
+- `YOK_VERSION=v0.0.2-rc.1` installs one exact release.
+- `YOK_AGENTS=claude` limits the plugin install to one agent.
+
+### 2. Check it
+
+Open a new shell, then:
 
 ```bash
+yok --version
 yok doctor
 ```
 
-The binary and the plugin always move together. `yok update --agent claude` installs the newest
-stable release and moves the plugin to it (`--pre-release` takes release candidates too).
-`yok plugin install --agent claude` puts the plugin back at the binary's version. `yok doctor`
-and `yok run` stop when the two differ. Running agent sessions keep the old skills until
-`/reload-plugins` or a restart.
+The doctor prints one row per check marked `OK`, `WARN`, or `FAIL`, with the first fix step beside each. Fix every `FAIL`.
 
-### Extensions
+### 3. Codex only: merge the config
 
-Verifiers, hooks and schema files in your project import `@yok/sdk` and `zod`; the binary answers
-both imports itself, so they need no install. Any other package an extension imports must be in the
-project's own `node_modules`.
-
-### Running scripts
-
-`yok orchestrate script FILE [args...]` runs a `.ts`, `.js` or `.mjs` file with the same
-`@yok/sdk` and `zod` the binary serves to extensions. If the file exports `main(argv)`, yok
-calls it and a number it returns is the exit code; otherwise the import runs the file's top-level
-code, which finds its arguments in `process.argv.slice(2)`. Inside `yok orchestrate script`,
-`import.meta.main` is `false`, so export `main` or leave the top-level code unguarded. Other
-packages still need the project's own `node_modules`.
-
-A skill names no command for its scripts. It declares each one as a reference in its frontmatter
-and says in plain words when to run it; the launcher runs it with
-`yok orchestrate skill run STAGE.REF [args...]`, which applies the project's `replace` or
-`command` for that reference when the config sets one.
-
-### Codex settings
-
-Merge the config snippet into `~/.codex/config.toml` to set subagent concurrency and apply the yok permissions profile:
+Codex needs subagent concurrency and the yok permissions profile in its config:
 
 ```bash
 mkdir -p ~/.codex
 cat references/codex-config.toml >> ~/.codex/config.toml
 ```
 
-**Codex compatibility notes:**
-- Skills load from `skills/` via `.codex-plugin/plugin.json` after the plugin is installed and enabled.
-- Tool-name differences vs Claude Code are documented in [`references/codex-tools.md`](./references/codex-tools.md) (e.g. `TodoWrite` → `update_plan`, `Edit` → `apply_patch`, `WebSearch` → `web_search`).
-- Named subagent types map to TOML agent files at `.codex/agents/` (`explore.toml`, `plan.toml`, `worker.toml`).
+Tool names differ between Claude Code and Codex. The mapping is in [references/codex-tools.md](./references/codex-tools.md).
 
-### Working on yok itself
+### Upgrading
 
-A checkout installs a second command, `yok-dev`, that runs the TypeScript source directly, so an edit shows on the next run with no build. It sits next to the release `yok` and never replaces it.
+Run the install command again, or:
 
 ```bash
-cd packages/cli && bun link
-# in ~/.zshrc, once
-export PATH="$HOME/.bun/bin:$PATH"
+yok update --agent claude                 # newest stable release, plugin moved with it
+yok update --agent claude --pre-release   # release candidates too
 ```
 
-`yok-dev run …` starts runs from source, and the agent sessions it starts call `yok-dev` back whenever a skill says `yok`. To open an agent by hand the same way, use `yok-dev claude` or `yok-dev codex`; Claude also loads this checkout as its plugin. A session you open with plain `claude` uses the release `yok`.
+The binary and the plugin always ship at the same version. `yok doctor` and `yok run` stop when they differ. `yok plugin install --agent claude` puts the plugin back at the binary's version. Running agent sessions keep the old skills until `/reload-plugins` or a restart.
 
-`yok-dev` keeps its runs, server and logs in `~/.yok-dev`, apart from the release's `~/.yok`, so the two never share a server. A run started by one does not show in the other's `yok view`. Set `YOK_HOME` to point either at another folder.
+## Project setup
 
-### Releases
+Do this once per repository.
 
-Releases are cut from the `v2` branch. Actions → Release → Run workflow on `v2`, pick the bump
-(`patch`, `minor`, `major`, or `none` to count up the current release candidate), and tick
-pre-release for an `-rc.N` version. The workflow bumps every manifest, pins both marketplaces to
-the new tag, builds the four binaries, checks the Linux one on a machine without bun, publishes the
-release, and test-installs it on Linux and macOS. Or cut one locally and push it:
+1. **Add the config.** Create `orchestrate.config.yaml` at the repository root. It names the baseline command, the worktree layout, the notifier, and each package's typecheck, lint and test commands. This repo's own [orchestrate.config.yaml](./orchestrate.config.yaml) is a working example.
 
-```bash
-bun run release:version patch --pre-release   # 0.0.1 -> 0.0.2-rc.1
-bun run release:version --pre-release         # 0.0.2-rc.1 -> 0.0.2-rc.2
-bun run release:version patch                 # 0.0.2-rc.2 -> 0.0.2
-git push origin v2 --follow-tags
-```
+   ```yaml
+   version: 2
+   baseline: bun run check
+   workspace:
+     layout: mono
+     path: .worktrees/{{ branch }}
+     baseBranch: main
+     setup: bun install
+   packages:
+     app:
+       path: .
+       runner: bun
+       commands:
+         typecheck: bun run typecheck
+         lint: bun run lint
+         testAll: bun test
+         testFile: bun test {FILE}
+   ```
 
-## Quick Start
+2. **Add secrets.** Put `LINEAR_API_KEY` or `ASANA_API_KEY` in a `.env` file at the repository root if your tasks come from tickets. Slack notifications need `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID`.
 
-The `yok` CLI runs a workflow from start to finish. Inside a project:
+3. **Ignore run output.** Add `.yok/*` to `.gitignore`. Run artifacts land there.
+
+4. **Check the project.**
+
+   ```bash
+   yok doctor --workflow task
+   ```
+
+   This runs the machine checks plus the ones the `task` workflow declares.
+
+## Usage
+
+### Run the task workflow
 
 ```bash
 yok run task --prompt "Add rate limiting to the API"
 ```
 
-`task` is a workflow yok ships in the plugin's `workflows/` (this checkout's, for `yok-dev`). A
-bare name runs the shipped workflow of that name; a path, or a name ending in `.yaml` or `.yml`, runs that file from your project
-(`yok run ./my-flow.yaml …`). `yok verify` and `yok doctor --workflow` take the same.
+`yok run` starts the yok server, opens an agent session in tmux, and sends it the `orchestrate` skill. It prints a run id, an attach command, and a URL, and opens the run's page in your browser.
 
-`yok run` starts the yok server, opens an agent session, and sends it the `orchestrate`
-skill. The session then walks the workflow one stage at a time. `yok doctor` checks the tools,
-repository and config a run needs; `yok view` opens a run's page in the browser.
+The design and planning stages ask you questions in the agent's terminal and show you pages to approve. After that it runs on its own. A full run takes about an hour.
 
-For smaller tasks, use individual skills like `/tdd`, `/code-review`, or `/git-commit`.
+### Watch a run
 
-## The Pipeline
+```bash
+yok attach RUN_NAME                   # the agent's terminal; detach with Ctrl-b d
+yok view RUN_NAME                     # reopen the run's page in the browser
+yok run task --prompt "…" --attach    # attach from the start
+```
 
-`workflows/task.yaml` runs these stages, each one a skill under `skills/`:
+### What you get
+
+- A branch in a worktree under `.worktrees/`, with tidy conventional commits.
+- An open pull request with a visual change outline and a proof report.
+- A folder `.yok/RUN_NAME/` holding the design, the plan, the baseline, the QA proof, and the full event log.
+- A retro report that says what yok itself should do better next time.
+
+### What the task workflow does
+
+`task` ships with yok. It runs these stages, each one a skill under `skills/`:
 
 ```
 ticket-fetcher → create-workspace → baseline → design → planning → implement
-  → code-review → qa (loops back to implement until it passes) → git-commit → visual-pr
-  → retro (runs after a failed stage too)
+  → code-review → qa (loops back to implement until it passes, up to 4 times)
+  → git-commit → visual-pr → retro (runs after a failed stage too)
 ```
 
-`ticket-fetcher` picks its provider from the ticket URL or key in the request: Linear
-(`LINEAR_API_KEY`) or Asana (`ASANA_API_KEY`). A workflow can force one with
-`variables: { provider: NAME }` on its ticket-fetcher node. `task.yaml`'s `doctor` checks
-`LINEAR_API_KEY`; change it to `ASANA_API_KEY` for an Asana-only project.
+`ticket-fetcher` picks its provider from the ticket URL or key in the prompt: Linear or Asana. If QA ends `BLOCKED` because it could not verify the change, the commit and PR stages are skipped, so nothing unverified is published.
 
-The project's settings live in `orchestrate.config.yaml` (`version: 2`) at the repository root.
-Run artifacts land in `.yok/`.
+### Run your own workflow
 
-## Recipes
+A workflow is a YAML file of nodes. A bare name runs a shipped workflow. A path, or a name ending in `.yaml` or `.yml`, runs that file from your project:
 
-### I want to review a PR
+```bash
+yok run ./my-flow.yaml --prompt "…"
+yok verify ./my-flow.yaml              # compile it and print the first error
+yok doctor --workflow ./my-flow.yaml   # also run the checks it declares
+```
 
-Run `/code-review`. It reads the diff, reviews it across eight axes (defects, spec, security, testing, reuse, simplification, efficiency, altitude), and produces a `REVIEW.md` with a verdict: APPROVE, APPROVE WITH SUGGESTIONS, or REQUEST CHANGES. It then applies the fixes for what it found and records each one in the report.
+[workflows/task.yaml](./workflows/task.yaml) is the full example. The `demo-workflows/` folder has smaller ones that show each node type.
 
----
+### Try it without the notifier
 
-### I want to commit my changes
+To run with a project's Slack notifier turned off, pass a local config:
 
-Run `/git-commit`. It does more than `git commit`:
+```bash
+printf 'version: 2\nnotifier: { enabled: false }\n' > /tmp/yok-local.yaml
+yok run task --prompt "…" --config /tmp/yok-local.yaml
+```
 
-- Analyzes your dirty working tree
-- Groups related changes into logical commits (using hunk-level staging)
-- Writes conventional commit messages with proper prefixes (`feat`, `fix`, `refactor`, etc.)
-- Runs start to finish without asking, then names any file it left out
-
----
-
-### I want to refactor code
-
-Use `/refactor`. It assesses your code for improvement opportunities:
-
-1. Identifies extraction, simplification, and naming improvements
-2. Applies refactoring patterns (extract method, inline temp, replace conditional with polymorphism, etc.)
-3. Verifies tests still pass after each change
-
----
-
-## Always-On Skills
-
-Some skills run automatically when you're writing code — through `/tdd`, `/implement`, or directly. You never invoke them:
-
-- **code-quality** — Enforces strict types (no `any`), immutability (`readonly`), pure functions, Result types for errors, early returns over nested conditionals
-- **testing standard** — lives inside `tdd` (`references/testing.md` + `anti-patterns.md`): behavior-driven tests, factories, minimal mocking — tests verify *what* not *how*
-- **refactor** — Kicks in after tests pass (GREEN phase) to assess code for extraction, simplification, and naming improvements
-
-## Skill Reference
-
-**Slash commands you invoke:**
+## Commands
 
 | Command | What it does |
-|---------|-------------|
-| `orchestrate` | Walks a v2 workflow inside the session `yok run` starts (not typed by hand) |
-| `/planning` | Breaks work into phases with dependency graph |
-| `/adr` | Records one architecture decision in `docs/adr/`, checked by a review agent, and adds it to the index |
+|---|---|
+| `yok run WORKFLOW --prompt TEXT` | Start a run. `--name`, `--input key=value`, `--config FILE`, `--attach`, `--no-open` |
+| `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
+| `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
+| `yok verify WORKFLOW` | Compile a workflow and report the first error |
+| `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow` |
+| `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
+| `yok update --agent NAME` | Install the newest release and move the plugin to it. `--pre-release` |
+| `yok plugin install --agent NAME` | Reinstall the plugin at the binary's version |
+| `yok types` | Write the SDK's type files to `.yok/types/` for your editor |
+| `yok claude` / `yok codex` | Open an agent session by hand with the yok plugin loaded |
+| `yok orchestrate …` | Called by skills during a run, not typed by hand |
+
+## Skills
+
+Skills work on their own inside any Claude Code or Codex session, with or without a run.
+
+| Command | What it does |
+|---|---|
+| `/planning` | Breaks work into phases with a dependency graph |
+| `/adr` | Records one architecture decision in `docs/adr/` and adds it to the index |
 | `/tdd` | RED-GREEN-REFACTOR development cycle |
-| `/implement` | Manual coding entry point: TDD + code-quality, review when green |
-| `/code-review` | Reviews a PR, produces verdict in REVIEW.md, then applies the fixes |
-| `/git-commit` | Groups changes into logical conventional commits; squashes a branch's commits first when asked |
+| `/implement` | Manual coding entry point: TDD plus code-quality, review when green |
+| `/code-review` | Reviews a diff across eight axes, writes a verdict to `REVIEW.md`, then applies the fixes |
+| `/git-commit` | Groups changes into logical conventional commits |
 | `/visual-pr` | Creates or updates a PR with a visual change outline and validation evidence |
-| `/retro` | Audits a finished run's session transcripts and writes a ranked report of yok defects |
-| `/resolve-merge-conflict` | Resolves a stopped merge or rebase, or a PR that conflicts, by recovering each side's intent |
+| `/refactor` | Assesses code for extraction, simplification and naming improvements, then applies them |
+| `/retro` | Audits a finished run's transcripts and writes a ranked report of yok defects |
+| `/resolve-merge-conflict` | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent |
 
-**Run automatically (no command needed):**
-`code-quality` · `refactor` · `writing-style`
+Three skills run automatically with no command: `code-quality` (strict types, immutability, pure functions, early returns), `refactor` (after tests go green), and `writing-style` (any prose a person will read).
 
-## Structure
+## Extending yok
 
-```
-yok/
-├── .agents/
-│   └── plugins/
-│       └── marketplace.json  # Codex marketplace catalog
-├── .codex-plugin/
-│   └── plugin.json  # Codex plugin manifest
-├── .claude-plugin/
-│   └── plugin.json  # Claude Code plugin manifest
-├── CLAUDE.md        # Global instructions for Claude Code
-├── settings.json    # Permissions, hooks, and environment config
-└── skills/          # Reusable skills that extend Claude Code and Codex
-    ├── adr/
-    ├── baseline/
-    ├── code-quality/
-    ├── code-review/
-    ├── create-workspace/
-    ├── design/
-    ├── git-commit/
-    ├── retro/
-    ├── implement/
-    ├── orchestrate/
-    ├── planning/
-    ├── qa/
-    ├── refactor/
-    ├── resolve-merge-conflict/
-    ├── tdd/
-    ├── ticket-fetcher/
-    ├── visual-pr/
-    └── writing-style/
-```
-
-## Configuration
-
-**CLAUDE.md / AGENTS.md** — Global instructions followed by Claude Code and Codex:
-- TDD-first approach, strict TypeScript, Python type hints, functional style
-- Explore before implementing, plan before coding, re-plan when stuck
-- Small focused functions, early returns over nested conditionals
-
-**.claude-plugin/plugin.json** — Claude Code plugin metadata.
-
-**.codex-plugin/plugin.json** — Codex plugin metadata. It points Codex at the same `skills/` directory used by Claude Code.
-
-**.agents/plugins/marketplace.json** — Codex marketplace catalog. It exposes `yok@yok` for `codex plugin add`.
-
-**settings.json** — Claude Code runtime behavior:
-- Pre-approved read-only tools (git, grep, find, jq) and denied dangerous commands
-- Deny rules for dotfiles, `~/Library`, `/etc`, and other sensitive paths
-- [ccstatusline](https://www.npmjs.com/package/ccstatusline) integration
-
-## Writing extensions
-
-Verifiers, subscribers and schema modules are TypeScript files in your project that import the SDK:
-
-```ts
-import { NonEmptyStringSchema } from "@yok/sdk";
-import { z } from "zod";
-```
-
-You install neither package for yok: the binary answers both imports itself. For your editor
-and `tsc`, yok writes the SDK's type files to `.yok/types/` on every `yok run`, or when
-you run `yok types`. Then add one line to `tsconfig.json`, and zod for its types only:
+A project can extend yok without forking it. Verifiers, subscribers and schema modules are TypeScript files in your project that import `@yok/sdk` and `zod`. The binary answers both imports itself, so you install neither. For your editor and `tsc`, run `yok types` and add one path mapping to `tsconfig.json`:
 
 ```jsonc
 { "compilerOptions": { "paths": { "@yok/sdk": ["./.yok/types/index.d.ts"] } } }
 ```
 
-```sh
-bun add -d zod@VERSION   # yok types prints the exact version
-```
+A project can also replace one of a shipped skill's scripts, react to run events with its own subscribers, or add a stage of its own. [How to change it](./docs/guide/08-how-to-change-it.md) has one recipe per kind of change.
 
-The type files need nothing else: no `@types/bun` or `@types/node`.
+## Learn more
+
+- [The Yok guide](./docs/guide/README.md): why it exists, what it is, the core principles, the architecture, and one task followed end to end.
+- [GLOSSARY.md](./GLOSSARY.md): the project's words, one line each.
+- [docs/adr/INDEX.md](./docs/adr/INDEX.md): every architecture decision and why.
+
+## Contributing
+
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](./CONTRIBUTING.md) covers the dev setup, the checks to run, and how releases are cut.
 
 ## Inspiration
 
 The skills and CLAUDE.md in this repo were heavily inspired by these projects:
 
-- [obra/superpowers](https://github.com/obra/superpowers) — The primary reference for many of the skills here (TDD, code quality, planning, brainstorm, refactor, testing, and more). A comprehensive and well-thought-out skill collection that informed the structure and content of most skills in this repo.
-- [coelhoxyz/claude-code-global-config](https://github.com/coelhoxyz/claude-code-global-config) — Inspired the global CLAUDE.md structure and approach to shaping Claude Code's behavior across projects.
-- [abhishekray07/claude-md-templates](https://github.com/abhishekray07/claude-md-templates/blob/main/global/CLAUDE.md) — Another reference for CLAUDE.md patterns, particularly around workflow preferences and coding style directives.
-- [citypaul/.dotfiles/claude](https://github.com/citypaul/.dotfiles/tree/main/claude/.claude) — A well-organized Claude Code configuration that served as a reference for the overall repo layout and settings.
+- [obra/superpowers](https://github.com/obra/superpowers): the primary reference for many of the skills here (TDD, code quality, planning, brainstorm, refactor, testing, and more).
+- [coelhoxyz/claude-code-global-config](https://github.com/coelhoxyz/claude-code-global-config): inspired the global CLAUDE.md structure and approach to shaping Claude Code's behavior across projects.
+- [abhishekray07/claude-md-templates](https://github.com/abhishekray07/claude-md-templates/blob/main/global/CLAUDE.md): another reference for CLAUDE.md patterns, particularly around workflow preferences and coding style directives.
+- [citypaul/.dotfiles/claude](https://github.com/citypaul/.dotfiles/tree/main/claude/.claude): a well-organized Claude Code configuration that served as a reference for the overall repo layout and settings.
