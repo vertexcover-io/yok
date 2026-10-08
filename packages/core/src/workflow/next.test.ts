@@ -370,7 +370,7 @@ const stage = (id: string, name: string, extra = ""): string => `
     type: agent
     stage: stages/${name}${extra}`;
 
-const PLAN_ARTIFACT = { artifacts: [{ name: "plan", path: "artifacts/plan.md" }] };
+const PLAN_ARTIFACT = { artifacts: [{ type: "plan", name: "plan", path: "artifacts/plan.md" }] };
 
 describe("decideNext with stage and agent nodes", () => {
   test("IW13 — a stage node is handed out with its resolved input, and its reported output feeds the next node", async () => {
@@ -449,6 +449,19 @@ nodes:${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}${sta
       ...PLAN_ARTIFACT,
     });
     expect(expectLeaf((await advance(plan, withPlan)).stop).node.id).toBe("use");
+  });
+
+  test("a stage consumes an artifact by its type, whatever the artifact is named", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}${stage("make", "producer", "\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const make = expectLeaf(first.stop);
+    const named = end(first.state, make.nodeRunId, "completed", {
+      output: {},
+      artifacts: [{ type: "plan", name: "checkout-plan", path: "artifacts/plan.md" }],
+    });
+    expect(expectLeaf((await advance(plan, named)).stop).node.id).toBe("use");
   });
 
   test("a blocked stage records workflow.blocked with its node, stage and missing artifacts, under an id fixed per node", async () => {
@@ -1301,6 +1314,7 @@ describe("the shipped task workflow's qa loop", () => {
   const OUTPUTS: Readonly<Record<string, JsonObject>> = { "ticket-fetcher": { task: "do X" } };
   // Every artifact a stage in task.yaml consumes, listed on each finished node so none is blocked.
   const artifacts = ["design", "plan", "implementation"].map((name) => ({
+    type: name,
     name,
     path: `artifacts/${name}.md`,
   }));

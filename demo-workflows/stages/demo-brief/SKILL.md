@@ -25,7 +25,7 @@ A test stage for workflow runs. The input is `{ "topic": TOPIC }`.
 
 1. Write two sentences about `TOPIC` to `.yok/RUN_NAME/artifacts/brief.md`, where
    `RUN_NAME` is the run's name.
-2. Finish the node with `--artifact brief=artifacts/brief.md`, and reply with:
+2. Finish the node with `--artifact '{"type":"brief","name":"brief","path":"artifacts/brief.md"}'`, and reply with:
 
    ```json
    { "brief": "artifacts/brief.md" }
