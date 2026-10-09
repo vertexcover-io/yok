@@ -2639,6 +2639,56 @@ describe("SC26: the task workflow's ticket-fetcher stage", () => {
   });
 });
 
+describe("SC26: a question blocks the run", () => {
+  test("SC136: the real AskUserQuestion hooks block the run on the make stage in state.json, and its answer unblocks it", () => {
+    const run = startedRun(STAGES_WORKFLOW);
+    const env = { YOK_SKILLS_DIR: stageSkills() };
+    const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
+    expect(orchestrate(run.repo, run.home, link, env).code).toBe(0);
+    const next = JSON.parse(
+      orchestrate(run.repo, run.home, ["next", "--run", "feat-x"], env).stdout,
+    );
+    expect(next).toMatchObject({ kind: "stage", nodeId: "make" });
+
+    const question = "Ship the plan as is?";
+    const toolInput = {
+      questions: [
+        { question, header: "Plan", options: [{ label: "Approve" }, { label: "Revise" }] },
+      ],
+    };
+    const call = { session_id: "s1", tool_name: "AskUserQuestion", tool_use_id: "tu-1" };
+    const hook = (event: string, handler: string, input: Record<string, unknown>) =>
+      orchestrate(
+        run.repo,
+        run.home,
+        ["hook", event, "--agent", "claude", "--handler", handler],
+        { YOK_RUN_ID: "r-1" },
+        JSON.stringify({ ...call, ...input }),
+      );
+
+    expect(
+      hook("pre-tool-use", "question-notice", { tool_input: toolInput, cwd: run.repo }).code,
+    ).toBe(0);
+    expect(stateOf(run.repo)).toMatchObject({
+      status: "blocked",
+      blocker: {
+        reason: "question",
+        node: "make",
+        details: { questions: [{ question, header: "Plan", options: ["Approve", "Revise"] }] },
+      },
+    });
+
+    const answered = hook("post-tool-use", "answer-notice", {
+      tool_input: toolInput,
+      tool_response: { answers: { [question]: "Approve" } },
+    });
+    expect(answered.code).toBe(0);
+    const state = stateOf(run.repo);
+    expect(state.status).toBe("running");
+    expect(state).not.toHaveProperty("blocker");
+  });
+});
+
 describe("SC26: orchestrate hook session-start", () => {
   const RUN_ENV = { YOK_RUN_ID: "r-1" };
   const START = JSON.stringify({ session_id: "B", source: "clear", cwd: "/x" });

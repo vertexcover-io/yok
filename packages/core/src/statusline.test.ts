@@ -33,6 +33,7 @@ const agentYaml = (id: string, indent: number, stage?: string): string => {
 
 type Fixture = Readonly<{
   status?: string;
+  blocker?: Record<string, unknown>;
   nodeRuns?: Record<string, unknown>;
   workflow?: string | null;
   state?: string;
@@ -40,6 +41,7 @@ type Fixture = Readonly<{
 
 const makeRun = ({
   status = "running",
+  blocker,
   nodeRuns = {},
   workflow = `name: w\nnodes:\n${["a", "b", "c", "d"].map((id) => agentYaml(id, 2)).join("")}`,
   state,
@@ -60,6 +62,7 @@ const makeRun = ({
     startedAt: ago(10 * MINUTE),
     completedAt: null,
     status,
+    ...(blocker === undefined ? {} : { blocker }),
     workspace: {
       type: "mono",
       path: cwd,
@@ -205,4 +208,22 @@ describe("renderStatusline", () => {
       expect(isClaudeBusy(line)).toBe(false);
     }
   });
+
+  test.each([
+    ["question", { questions: [{ question: "Ship?", options: [] }] }, "needs your answer"],
+    ["usage-limit", { resumeAt: new Date(2026, 8, 26, 14, 0).toISOString() }, "paused until 14:00"],
+    ["stuck", { message: null }, "stuck"],
+    ["agent-error", { error: "authentication_failed", message: null }, "agent error"],
+  ])(
+    "SC135: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
+    async (reason, details, phrase) => {
+      const blocker = { reason, node: "design", since: ago(MINUTE), details };
+      const run = makeRun({ status: "blocked", blocker, nodeRuns: { design: node("running") } });
+      const line = await lineOf(run);
+      expect(line).toContain(`▸ ⏸ ${phrase}`);
+      expect(line).toEndWith(" · 45s");
+      expect(SPINNER_START.test(line)).toBe(false);
+      for (const word of FORBIDDEN) expect(line).not.toContain(word);
+    },
+  );
 });

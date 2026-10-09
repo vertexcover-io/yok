@@ -14,7 +14,7 @@ const agentRun = {
   summary: "Wrote the plan.",
   notify: true,
   stage: "planning",
-  agentState: { agent: "claude", model: "opus", sessionId: null, tokens: null },
+  agentState: { agent: "claude", tier: "deep", model: "opus", sessionId: null, tokens: null },
 };
 
 const validState = {
@@ -131,7 +131,7 @@ describe("StateSchema", () => {
       }),
     ],
     ["an empty summary", withRun({ summary: "" })],
-    ["agentState without stage", { ...validState, nodeRuns: { plan: runWithoutStage } }],
+    ["a stage without agentState", withRun({ agentState: undefined })],
     ["a skipped run with no reason", withRun({ status: "skipped" })],
     [
       "a skipped run with an unknown reason",
@@ -165,6 +165,42 @@ describe("StateSchema", () => {
     ["the removed options field", { ...validState, options: {} }],
     ["the removed specName field", { ...validState, specName: "add-login" }],
   ])("rejects %s", (_label, state) => {
+    expect(StateSchema.safeParse(state).success).toBe(false);
+  });
+
+  test("an agent step with no stage may carry its agentState", () => {
+    const state = { ...validState, nodeRuns: { plan: runWithoutStage } };
+    expect(StateSchema.safeParse(state).success).toBe(true);
+  });
+
+  const since = "2026-09-26T10:05:00Z";
+  const question = { question: "Ship the plan as is?", options: ["Approve", "Revise"] };
+
+  test.each([
+    ["question", { questions: [question] }],
+    ["usage-limit", { resumeAt: "2026-09-26T14:00:00Z" }],
+    ["stuck", { message: null }],
+    ["agent-error", { error: "rate_limit", message: "slow down" }],
+  ])("SC130: a blocked run with a %s blocker and its details parses", (reason, details) => {
+    const blocker = { reason, node: "plan", since, details };
+    expect(StateSchema.safeParse({ ...validState, status: "blocked", blocker }).success).toBe(true);
+  });
+
+  test.each([
+    ["a blocked run with no blocker", { ...validState, status: "blocked" }],
+    [
+      "a running run with a blocker",
+      { ...validState, blocker: { reason: "stuck", since, details: { message: null } } },
+    ],
+    [
+      "a question blocker with usage-limit details",
+      {
+        ...validState,
+        status: "blocked",
+        blocker: { reason: "question", since, details: { resumeAt: since } },
+      },
+    ],
+  ])("SC130: the state schema refuses %s", (_label, state) => {
     expect(StateSchema.safeParse(state).success).toBe(false);
   });
 });

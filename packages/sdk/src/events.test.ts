@@ -3,11 +3,19 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Event, type JsonValue, type State, StateSchema } from "./contracts.ts";
+import {
+  type Blocker,
+  type Event,
+  type JsonValue,
+  type NodeRun,
+  type State,
+  StateSchema,
+} from "./contracts.ts";
 import { jsonlEventStore, memoryEventStore } from "./event-store.ts";
 import {
   builtInHandlers,
   emitEvent,
+  findRunningLeaf,
   foldModelSwitch,
   runDirOf,
   WorkspaceCreatedEvent,
@@ -880,6 +888,226 @@ describe("hooks.pre-tool-use.called", () => {
   });
 });
 
+describe("blocker", () => {
+  const design = { nodeId: "design", nodeRunId: "design-1" };
+  const at = (seq: number) => `2026-09-26T10:01:${String(seq).padStart(2, "0")}Z`;
+  const runEvent = (seq: number, type: string, payload: JsonValue, ids = {}): Event => ({
+    schemaVersion: 1,
+    seq,
+    id: `evt-${seq}`,
+    ts: at(seq),
+    type,
+    source: "hooks",
+    runId: "r-1",
+    ...ids,
+    payload,
+  });
+  const session = { agent: "claude", sessionId: "s1" };
+  const designRunning = runEvent(1, "workflow.node.started", { nodeType: "agent" }, design);
+  const question = { question: "Ship the plan as is?", options: ["Approve", "Revise"] };
+  const resumeAt = "2026-09-26T14:00:00Z";
+  const asked = (seq: number) =>
+    runEvent(seq, "agent.question.asked", { ...session, questions: [question] });
+  const answered = (seq: number) =>
+    runEvent(seq, "agent.question.answered", {
+      ...session,
+      answers: [{ question: question.question, answer: "Approve" }],
+    });
+  const limitWaiting = (seq: number) =>
+    runEvent(seq, "agent.limit.waiting", {
+      sessionId: "s1",
+      limitEventId: "evt-0",
+      resumeAt,
+      from: "message",
+    });
+  const limitResumed = (seq: number) =>
+    runEvent(seq, "agent.limit.resumed", { sessionId: "s1", limitEventId: "evt-0" });
+  const stopCalled = (seq: number) =>
+    runEvent(seq, "hooks.stop.called", {
+      ...session,
+      touchedRun: null,
+      decision: "continue",
+      reason: "node-not-done",
+      blockStreak: 1,
+    });
+  const unblockedState = (state: State) => {
+    expect(state.status).toBe("running");
+    expect(state).not.toHaveProperty("blocker");
+  };
+
+  test("SC126: a question blocks the running design step with the questions asked, and its answer unblocks it", () => {
+    const opened = [
+      designRunning,
+      asked(2),
+      runEvent(3, "hooks.pre-tool-use.called", {
+        ...session,
+        tool: "AskUserQuestion",
+        decision: "allow",
+      }),
+      runEvent(4, "subscriber.called", {
+        subscriber: "notify",
+        eventId: "evt-2",
+        eventSeq: 2,
+        eventType: "agent.question.asked",
+        blocking: false,
+        status: "ok",
+        durationMs: 3,
+      }),
+    ];
+
+    const blocked = project(opened);
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.blocker).toEqual({
+      reason: "question",
+      node: "design",
+      since: at(2),
+      details: { questions: [question] },
+    });
+    unblockedState(project([...opened, answered(5)]));
+  });
+
+  const stuck = (seq: number, message?: string) =>
+    runEvent(seq, "agent.stuck", { ...session, ...(message === undefined ? {} : { message }) });
+  const toolCalled = (seq: number, tool: string) =>
+    runEvent(seq, "hooks.pre-tool-use.called", {
+      ...session,
+      tool,
+      handler: "record-guard",
+      decision: "allow",
+    });
+  const onDesign = { node: "design", since: at(2) };
+  const openings: readonly (readonly [string, Event, Blocker])[] = [
+    [
+      "agent.question.asked",
+      asked(2),
+      { ...onDesign, reason: "question", details: { questions: [question] } },
+    ],
+    [
+      "agent.limit.waiting",
+      limitWaiting(2),
+      { ...onDesign, reason: "usage-limit", details: { resumeAt } },
+    ],
+    [
+      "agent.stuck with a message",
+      stuck(2, "sent back 5 times"),
+      { ...onDesign, reason: "stuck", details: { message: "sent back 5 times" } },
+    ],
+    [
+      "agent.stuck without a message",
+      stuck(2),
+      { ...onDesign, reason: "stuck", details: { message: null } },
+    ],
+    [
+      "agent.stopped",
+      runEvent(2, "agent.stopped", {
+        ...session,
+        error: "authentication_failed",
+        message: "Invalid API key",
+      }),
+      {
+        ...onDesign,
+        reason: "agent-error",
+        details: { error: "authentication_failed", message: "Invalid API key" },
+      },
+    ],
+  ];
+  const progress: readonly (readonly [string, Event])[] = [
+    [
+      "workflow.node.completed",
+      runEvent(3, "workflow.node.completed", { nodeType: "agent", attempts: 1 }, design),
+    ],
+    [
+      "orchestrate.done",
+      runEvent(3, "orchestrate.done", {
+        input: { nodeRunId: "design-1", artifacts: [], output: "done" },
+        output: { kind: "error", message: "boom" },
+        status: "error",
+      }),
+    ],
+    [
+      "orchestrate.exec",
+      runEvent(3, "orchestrate.exec", {
+        input: { nodeRunId: "design-1" },
+        output: { kind: "error", message: "boom" },
+      }),
+    ],
+    ["a Bash hooks.pre-tool-use.called", toolCalled(3, "Bash")],
+  ];
+  const noise: readonly (readonly [string, Event])[] = [
+    ["orchestrate.next", runEvent(3, "orchestrate.next", { input: {}, output: { kind: "wait" } })],
+    ["hooks.stop.called", stopCalled(3)],
+    ["an AskUserQuestion hooks.pre-tool-use.called", toolCalled(3, "AskUserQuestion")],
+  ];
+  const pairs = (after: readonly (readonly [string, Event])[]) =>
+    openings.flatMap(([name, opening]) =>
+      after.map(([next, event]) => [name, next, opening, event] as const),
+    );
+
+  test.each(openings)(
+    "SC127: %s blocks the running run with its own reason and details",
+    (_name, opening, expected) => {
+      const state = project([designRunning, opening]);
+      expect(state.status).toBe("blocked");
+      expect(state.blocker).toEqual(expected);
+    },
+  );
+
+  test.each(pairs(progress))(
+    "SC127: %s then %s puts the run back to running with no blocker",
+    (_name, _next, opening, event) => {
+      unblockedState(project([designRunning, opening, event]));
+    },
+  );
+
+  test.each(pairs(noise))(
+    "SC127: %s then %s leaves the run blocked",
+    (_name, _next, opening, event) => {
+      expect(project([designRunning, opening, event]).status).toBe("blocked");
+    },
+  );
+
+  test("SC127: a question asked inside qa-loop names the running leaf qa-loop.qa as its node", () => {
+    const loopStarted = runEvent(
+      1,
+      "workflow.node.started",
+      { nodeType: "loop" },
+      { nodeId: "qa-loop", nodeRunId: "qa-loop-1" },
+    );
+    const qaStarted = runEvent(
+      2,
+      "workflow.node.started",
+      { nodeType: "agent", parents: ["qa-loop"] },
+      { nodeId: "qa", nodeRunId: "qa-1" },
+    );
+    expect(project([loopStarted, qaStarted, asked(3)]).blocker?.node).toBe("qa-loop.qa");
+  });
+
+  test("SC128: agent.limit.resumed clears a usage-limit blocker", () => {
+    unblockedState(project([designRunning, limitWaiting(2), limitResumed(3)]));
+  });
+
+  test("SC128: a question blocker survives agent.limit.resumed, and a newer question replaces a usage-limit blocker", () => {
+    expect(project([designRunning, asked(2), limitResumed(3)]).blocker).toMatchObject({
+      reason: "question",
+      since: at(2),
+    });
+    expect(project([designRunning, limitWaiting(2), asked(3)]).blocker).toMatchObject({
+      reason: "question",
+      since: at(3),
+    });
+  });
+
+  test("SC129: agent.stuck after the run completed changes nothing, and workflow.failed on a blocked run drops its blocker", () => {
+    const completed = project([designRunning, runEvent(2, "workflow.completed", {}), stuck(3)]);
+    expect(completed.status).toBe("completed");
+    expect(completed).not.toHaveProperty("blocker");
+
+    const failed = project([designRunning, asked(2), runEvent(3, "workflow.failed", {})]);
+    expect(failed.status).toBe("failed");
+    expect(failed).not.toHaveProperty("blocker");
+  });
+});
+
 describe("usage-limit events", () => {
   test.each([
     ["agent.limit.reached", { agent: "claude", sessionId: "s1" }],
@@ -894,6 +1122,35 @@ describe("usage-limit events", () => {
       expect(await store.read()).toEqual([]);
     },
   );
+});
+
+describe("findRunningLeaf", () => {
+  const nodeRun = (status: NodeRun["status"], extra: Partial<NodeRun> = {}): NodeRun => ({
+    nodeRunId: "n",
+    nodeType: "exec",
+    status,
+    startedAt: null,
+    completedAt: null,
+    artifacts: [],
+    ...extra,
+  });
+  const qa = nodeRun("running", { nodeRunId: "qa" });
+
+  test.each([
+    {
+      given: "qa-loop running qa",
+      nodes: { plan: nodeRun("completed"), "qa-loop": nodeRun("running", { nodes: { qa } }) },
+      found: { path: "qa-loop.qa", run: qa },
+    },
+    {
+      given: "qa-loop running with no running child",
+      nodes: { "qa-loop": nodeRun("running", { nodeRunId: "loop", nodes: {} }) },
+      found: { path: "qa-loop", run: nodeRun("running", { nodeRunId: "loop", nodes: {} }) },
+    },
+    { given: "no running node", nodes: { plan: nodeRun("completed") }, found: undefined },
+  ])("SC113: the running leaf of $given is the deepest running node", ({ nodes, found }) => {
+    expect(findRunningLeaf(nodes)).toEqual(found);
+  });
 });
 
 describe("foldModelSwitch", () => {

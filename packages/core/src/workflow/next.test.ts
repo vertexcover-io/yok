@@ -424,6 +424,27 @@ nodes:${stage("say", "tuned", `\n    input: {}\n    variables: { audience: "${va
     });
   });
 
+  test("SC133: next on a run blocked on an agent error after design completed hands out planning, and its start puts the run back to running", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${stage("design", "plain", "\n    input: {}")}${stage("planning", "plain", "\n    dependsOn: [design]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const designed = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", {
+      output: {},
+    });
+    const blocked = apply(designed, {
+      type: "agent.stopped",
+      source: "hooks",
+      payload: { agent: "claude", sessionId: "s1", error: "authentication_failed" },
+    });
+    expect(blocked.status).toBe("blocked");
+
+    const { stop, state } = await advance(plan, blocked);
+    expect(expectLeaf(stop).node.id).toBe("planning");
+    expect(state.status).toBe("running");
+    expect(state).not.toHaveProperty("blocker");
+  });
+
   test("IW14 — a stage whose producer completed without its artifact is blocked, and is handed out once the producer lists it", async () => {
     const plan = await compilePlan(`name: t
 nodes:${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}${stage("make", "producer", "\n    input: {}")}
@@ -748,6 +769,61 @@ nodes:${stage("make", "quick", "\n    input: {}")}${stage("tidy", "plain", "\n  
       OPUS_HIGH,
     );
     expect(stop).toEqual({ kind: "model", nodeId: "tidy", model: "opus-x", effort: "high" });
+  });
+
+  const CLAUDE_TIERS: ResolvedTiers = {
+    default: "fast",
+    models: { fast: { model: "claude-sonnet-5-5" }, deep: { model: "claude-opus-5-5" } },
+  };
+  const DESIGN_THEN_LINT = `name: t
+nodes:${stage("design", "thinker", "\n    input: {}")}${exec("lint", "\n    dependsOn: [design]\n    input: {}")}
+`;
+  const withSession = (state: State): Logged => ({
+    state: { ...state, activeSessions: [{ agent: "claude", sessionId: "s1" }] },
+    log: [],
+  });
+
+  test("SC131: a deep stage started after the switch to claude-opus-5-5 records agent claude, tier deep, that model and session s1; the exec after it records neither field", async () => {
+    const plan = await compilePlan(DESIGN_THEN_LINT);
+    const requested = await advanceTiered(plan, withSession(start()), CLAUDE_TIERS);
+    const switched = record(requested.run, {
+      type: "workflow.model.applied",
+      source: "orchestrate",
+      payload: {
+        requestSeq: lastSeq(requested.run),
+        node: "design",
+        model: "claude-opus-5-5",
+        applied: true,
+      },
+    });
+    const design = await advanceTiered(plan, switched, CLAUDE_TIERS);
+
+    expect(design.run.state.nodeRuns.design).toMatchObject({
+      stage: "thinker",
+      agentState: {
+        agent: "claude",
+        tier: "deep",
+        model: "claude-opus-5-5",
+        sessionId: "s1",
+        tokens: null,
+      },
+    });
+    const ended = end(design.run.state, expectLeaf(design.stop).nodeRunId, "completed", {
+      output: {},
+    });
+    const lint = await advanceTiered(plan, { ...design.run, state: ended }, CLAUDE_TIERS);
+    expect(expectLeaf(lint.stop).node.id).toBe("lint");
+    expect(lint.run.state.nodeRuns.lint).not.toHaveProperty("stage");
+    expect(lint.run.state.nodeRuns.lint).not.toHaveProperty("agentState");
+  });
+
+  test.each([
+    ["the run's default tier fast and its model", CLAUDE_TIERS, "fast", "claude-sonnet-5-5"],
+    ["a null tier and model with no tiers", null, null, null],
+  ])("SC132: a run that cannot switch models records %s", async (_label, tiers, tier, model) => {
+    const plan = await compilePlan(DESIGN_THEN_LINT);
+    const { run } = await advanceTiered(plan, withSession({ ...start(), tiers }), null);
+    expect(run.state.nodeRuns.design?.agentState).toMatchObject({ tier, model });
   });
 });
 

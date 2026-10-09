@@ -1,7 +1,7 @@
 // The engine's side of the sdk: core, server and cli import these. Extension code uses
 // @yok/sdk; a skill script never imports this file.
 export { resolveTiers, uniqueNames } from "./config.ts";
-export { pickTierModel } from "./contracts.ts";
+export { isRunLive, pickTierModel } from "./contracts.ts";
 export {
   type EventDraft,
   type IEventStore,
@@ -21,6 +21,7 @@ export {
   DoneStatusSchema,
   emitEvent,
   findNodeRuns,
+  findRunningLeaf,
   foldModelSwitch,
   type IEventEmitter,
   type ModelSwitch,

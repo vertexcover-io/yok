@@ -11,7 +11,7 @@ import {
   type TierModel,
   tierLaunch,
 } from "@yok/sdk";
-import { findNodeRuns, type ModelSwitch, nodePath } from "@yok/sdk/internal";
+import { findNodeRuns, isRunLive, type ModelSwitch, nodePath } from "@yok/sdk/internal";
 import { z } from "zod";
 import { own } from "../stage.ts";
 import { findConsumedArtifacts } from "./done.ts";
@@ -34,6 +34,7 @@ import {
   type PlanStage,
   type PlanSwitchNode,
   type PlanWaitNode,
+  type WorkflowAgent,
   WorkflowError,
   type WorkflowPlan,
 } from "./types.ts";
@@ -52,7 +53,7 @@ export type Decision =
   | (Readonly<{ kind: "model"; nodeId: string }> & TierModel)
   | Readonly<{ kind: "waiting"; nodeRunId: string }>
   | Readonly<{ kind: "blocked"; nodeId: string; stage: string; missing: readonly string[] }>
-  | Readonly<{ kind: "finished"; status: Exclude<State["status"], "running"> }>;
+  | Readonly<{ kind: "finished"; status: Exclude<State["status"], "running" | "blocked"> }>;
 
 // Saves one event and gives back the state with it applied.
 export type Emit = (state: State, event: EmitInput) => Promise<State>;
@@ -80,6 +81,7 @@ const NO_MODELS: ModelInputs = {
 type Walk = ModelInputs &
   Readonly<{
     emit: Emit;
+    agent: WorkflowAgent;
     inputs: JsonValue;
     loop: Readonly<{ index: number; max: number; previous: JsonValue }> | undefined;
   }>;
@@ -352,6 +354,24 @@ export const pickNodeTier = (
   return { tier: runDefault, setBy: "the run's default" };
 };
 
+// Who runs an agent step and on what. A run that cannot switch models runs every step on its
+// launch model, the default tier's; by the time a switching run starts a step, findModelSwitch
+// has put its session on the step's tier.
+const pickAgentFields = (node: PlanAgentNode, walk: Walk, state: State) => {
+  const sessionId = state.activeSessions.find((s) => s.agent === walk.agent)?.sessionId ?? null;
+  const stage = node.stage === undefined ? {} : { stage: node.stage.name };
+  if (walk.tiers === null) {
+    const launched =
+      state.tiers === null ? undefined : own(state.tiers.models, state.tiers.default);
+    const tier = state.tiers?.default ?? null;
+    const model = launched?.model ?? null;
+    return { ...stage, agentState: { agent: walk.agent, tier, model, sessionId, tokens: null } };
+  }
+  const { tier } = pickNodeTier(node, walk.tiers.default);
+  const model = walk.switching.current?.model ?? null;
+  return { ...stage, agentState: { agent: walk.agent, tier, model, sessionId, tokens: null } };
+};
+
 // The model an agent node's tier asks for when the session is on another one; undefined when the
 // node can start on the model it has, or a failure when the run has no such tier.
 const findModelSwitch = (node: Leaf, walk: Walk): TierModel | NodeFailure | undefined => {
@@ -425,7 +445,9 @@ const executeLeaf = async (
   if (target instanceof NodeFailure) return recordSkipOrFail(node, target, walk, state);
   if (target !== undefined) return requestModel(node, target, walk, state);
   const { input, variables } = start;
-  const started = await recordStart(node, { input, notify: postsToThread(node) }, walk, state);
+  const agentFields = node.type === "agent" ? pickAgentFields(node, walk, state) : {};
+  const notify = postsToThread(node);
+  const started = await recordStart(node, { input, notify, ...agentFields }, walk, state);
   const { nodeRunId } = started.nodeRun;
   return { state: started.state, step: { kind: "leaf", node, nodeRunId, input, variables } };
 };
@@ -566,13 +588,13 @@ export const decideNext = async (
   emit: Emit,
   models: ModelInputs = NO_MODELS,
 ): Promise<Readonly<{ state: State; decision: Decision }>> => {
-  if (state.status !== "running") {
+  if (!isRunLive(state.status)) {
     return { state, decision: { kind: "finished", status: state.status } };
   }
   const inputs = resolveWorkflowInputs(plan.inputs, state.input);
   const walked = await executeNodes(
     plan.nodes,
-    { emit, inputs, loop: undefined, ...models },
+    { emit, agent: plan.agent, inputs, loop: undefined, ...models },
     state,
   );
   if (walked.step.kind === "rewalk") {

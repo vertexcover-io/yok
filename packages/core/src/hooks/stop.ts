@@ -16,6 +16,7 @@ import {
 import {
   appendRunEvent,
   foldModelSwitch,
+  isRunLive,
   jsonlEventStore,
   type ModelSwitch,
 } from "@yok/sdk/internal";
@@ -129,7 +130,7 @@ const openNodeMessage = (run: RunRef, leaf: ActiveLeaf): string => {
 };
 
 const positionOf = (state: State): Position => {
-  if (state.status !== "running") return { kind: "finished" };
+  if (!isRunLive(state.status)) return { kind: "finished" };
   const leaf = findActiveLeaf(state.nodeRuns);
   return leaf === undefined ? { kind: "between-nodes" } : { kind: "open-node", leaf };
 };

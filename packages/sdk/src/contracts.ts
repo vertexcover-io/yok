@@ -72,10 +72,45 @@ export const TokenUsageSchema = z.strictObject({
 
 export const AgentStateSchema = z.strictObject({
   agent: NonEmptyStringSchema,
-  model: NonEmptyStringSchema,
+  // null when the run cannot switch models and has no tiers, so the model is unknown
+  tier: NonEmptyStringSchema.nullable(),
+  model: NonEmptyStringSchema.nullable(),
   sessionId: NonEmptyStringSchema.nullable(),
   tokens: TokenUsageSchema.nullable(),
 });
+
+export const AskedQuestionSchema = z.strictObject({
+  question: NonEmptyStringSchema,
+  header: z.string().optional(),
+  options: z.array(z.string()),
+});
+export type AskedQuestion = z.infer<typeof AskedQuestionSchema>;
+
+// Why a running run waits on the person. node is the step that was running, when one was.
+const blockerFields = { node: NonEmptyStringSchema.optional(), since: z.iso.datetime() };
+export const BlockerSchema = z.discriminatedUnion("reason", [
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("question"),
+    details: z.strictObject({ questions: z.array(AskedQuestionSchema).min(1) }),
+  }),
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("usage-limit"),
+    details: z.strictObject({ resumeAt: z.iso.datetime() }),
+  }),
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("stuck"),
+    details: z.strictObject({ message: z.string().nullable() }),
+  }),
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("agent-error"),
+    details: z.strictObject({ error: NonEmptyStringSchema, message: z.string().nullable() }),
+  }),
+]);
+export type Blocker = z.infer<typeof BlockerSchema>;
 
 export const LayoutSchema = z.enum(["mono", "multi"]);
 export const NodeTypeSchema = z.enum([
@@ -144,11 +179,11 @@ export type NodeRun = z.infer<typeof NodeRunFieldsSchema> & {
 export const NodeRunSchema: z.ZodType<NodeRun> = NodeRunFieldsSchema.extend({
   nodes: z.lazy(() => z.record(NonEmptyStringSchema, NodeRunSchema)).optional(),
 }).superRefine((run, context) => {
-  if ((run.stage === undefined) !== (run.agentState === undefined)) {
+  if (run.stage !== undefined && run.agentState === undefined) {
     context.addIssue({
       code: "custom",
       path: ["agentState"],
-      message: "Stage and agentState must appear together",
+      message: "A stage step needs its agentState",
     });
   }
   if (run.status === "skipped" && !SkipOutputSchema.safeParse(run.output).success) {
@@ -237,41 +272,58 @@ export const SubscriberRefSchema = z.union([
 ]);
 export const SubscriberRefsSchema = z.record(EventTypeSchema, z.array(SubscriberRefSchema));
 
-export const StateSchema = z.strictObject({
-  schemaVersion: z.literal(1),
-  lastEventSeq: z.int().nonnegative(),
-  runId: NonEmptyStringSchema,
-  runName: SlugSchema,
-  runDir: AbsolutePathSchema,
-  version: NonEmptyStringSchema,
-  workflow: WorkflowRefSchema,
-  input: JsonObjectSchema,
-  scope: z.null(),
-  startedAt: z.iso.datetime(),
-  completedAt: z.iso.datetime().nullable(),
-  status: z.enum(["running", "completed", "failed", "cancelled"]),
-  workspace: WorkspaceSchema,
-  ticket: TicketSchema.optional(),
-  notification: NotificationSchema.optional(),
-  nodeRuns: z.record(NonEmptyStringSchema, NodeRunSchema),
-  // The Stop hook's last check. blockStreak: times in a row it sent the agent back at this spot.
-  // seq: that check's own event; with no progress after it, the agent is still at that spot.
-  stopHook: z
-    .strictObject({ blockStreak: z.int().nonnegative(), seq: z.int().positive() })
-    .optional(),
-  // agent sessions working on the run now; a context node's new session replaces the old one
-  activeSessions: z.array(SessionRefSchema).default([]),
-  // Written once by init; null when the run's agent has no tiers.
-  tiers: ResolvedTiersSchema.nullable(),
-  custom: JsonObjectSchema.optional(),
-  eventHandlers: EventHandlerRefsSchema.default({}),
-  subscribers: SubscriberRefsSchema.default({}),
-  // Set by init: the config file (null = the default config) and the folder its paths resolve
-  // against. Optional because older runs lack it; they search their checkout instead.
-  config: z
-    .strictObject({ path: AbsolutePathSchema.nullable(), root: AbsolutePathSchema })
-    .optional(),
-});
+export const StateSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    lastEventSeq: z.int().nonnegative(),
+    runId: NonEmptyStringSchema,
+    runName: SlugSchema,
+    runDir: AbsolutePathSchema,
+    version: NonEmptyStringSchema,
+    workflow: WorkflowRefSchema,
+    input: JsonObjectSchema,
+    scope: z.null(),
+    startedAt: z.iso.datetime(),
+    completedAt: z.iso.datetime().nullable(),
+    status: z.enum(["running", "blocked", "completed", "failed", "cancelled"]),
+    // present exactly while status is "blocked"
+    blocker: BlockerSchema.optional(),
+    workspace: WorkspaceSchema,
+    ticket: TicketSchema.optional(),
+    notification: NotificationSchema.optional(),
+    nodeRuns: z.record(NonEmptyStringSchema, NodeRunSchema),
+    // The Stop hook's last check. blockStreak: times in a row it sent the agent back at this spot.
+    // seq: that check's own event; with no progress after it, the agent is still at that spot.
+    stopHook: z
+      .strictObject({ blockStreak: z.int().nonnegative(), seq: z.int().positive() })
+      .optional(),
+    // agent sessions working on the run now; a context node's new session replaces the old one
+    activeSessions: z.array(SessionRefSchema).default([]),
+    // Written once by init; null when the run's agent has no tiers.
+    tiers: ResolvedTiersSchema.nullable(),
+    custom: JsonObjectSchema.optional(),
+    eventHandlers: EventHandlerRefsSchema.default({}),
+    subscribers: SubscriberRefsSchema.default({}),
+    // Set by init: the config file (null = the default config) and the folder its paths resolve
+    // against. Optional because older runs lack it; they search their checkout instead.
+    config: z
+      .strictObject({ path: AbsolutePathSchema.nullable(), root: AbsolutePathSchema })
+      .optional(),
+  })
+  .superRefine((state, context) => {
+    if ((state.status === "blocked") !== (state.blocker !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocker"],
+        message: "A blocked run needs a blocker, and only a blocked run has one",
+      });
+    }
+  });
+
+// A blocked run is still going: its agent is mid-step, waiting on the person or a limit.
+export const isRunLive = (
+  status: z.infer<typeof StateSchema>["status"],
+): status is "running" | "blocked" => status === "running" || status === "blocked";
 
 export const EventSchema = z
   .strictObject({
