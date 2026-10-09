@@ -295,7 +295,7 @@ Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/h
 
 It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. A turn that ends while a background task runs is never counted toward that limit and never records `agent.stuck`. Claude lists those tasks in the Stop hook's `background_tasks` input; with Codex, or a Claude Code too old to send it, the hook behaves as if none were running. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
 
-A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L61) is a PreToolUse hook that refuses any tool call writing to `state.json`, `event.jsonl`, or `registry.json`. The agent may read them. Only `next`, `exec`, and `done` may write them.
+A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L85) is a PreToolUse hook that refuses any tool call writing to `state.json`, `event.jsonl`, or `registry.json`. The agent may read them. Only `next`, `exec`, and `done` may write them. When it lets a call through on a blocked run, it records `agent.resumed`, which puts the run back to `running`.
 
 ## Hop 10. The end
 

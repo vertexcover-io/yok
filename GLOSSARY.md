@@ -171,7 +171,7 @@ A function that folds one event type into the run's state.
 _Avoid_: Reducer, subscriber
 
 **Blocker**:
-Why a run's status is `blocked`: the agent is waiting on the person for a question, a usage limit, a stuck turn or an agent error. It clears when that cause clears or work moves on.
+Why a run's status is `blocked`: the agent is waiting on the person for a question, a usage limit, a stuck turn or an agent error. It clears when that cause clears (the answer, the limit resuming), when the agent's next Bash call or file edit goes through (`agent.resumed`), or when the workflow ends.
 
 **Custom state**:
 Values a subscriber or skill keeps in a run's state between calls, under its own key.

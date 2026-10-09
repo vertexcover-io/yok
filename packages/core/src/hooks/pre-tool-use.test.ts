@@ -1,16 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type JsonValue,
   noopLogger,
   type PreToolUseHandler,
+  readState,
   registryPath,
   runDirOf,
+  type State,
   type ToolCall,
   type ToolUse,
 } from "@yok/sdk";
-import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { bashAntipatterns, protectedRecordOf, recordGuard, runPreToolUse } from "./pre-tool-use.ts";
 
 describe("protectedRecordOf", () => {
@@ -202,6 +205,108 @@ describe("recordGuard through runPreToolUse", () => {
 
     expect(verdict.kind).toBe("deny");
     expect(await jsonlEventStore(runDir).read()).toEqual([]);
+  });
+});
+
+describe("recordGuard on a blocked run", () => {
+  const running = (runDir: string, cwd: string): State => ({
+    schemaVersion: 1,
+    lastEventSeq: 0,
+    runId: "r-1",
+    runName: "feat-x",
+    runDir,
+    version: "2.0.0",
+    workflow: { name: "feature", path: "workflow.yaml" },
+    input: {},
+    scope: null,
+    startedAt: "2026-09-26T10:00:00Z",
+    completedAt: null,
+    status: "running",
+    workspace: {
+      type: "mono",
+      path: cwd,
+      repositories: { app: { path: cwd, git: { branch: "b", baseBranch: "main", startSha: "a" } } },
+    },
+    nodeRuns: {},
+    activeSessions: [],
+    tiers: null,
+    eventHandlers: {},
+    subscribers: {},
+  });
+  // setUp's run with a running state.json, blocked by the given agent event when one is given.
+  const runBlockedBy = async (type?: string, payload?: JsonValue) => {
+    const setup = await setUp();
+    const state = running(setup.runDir, setup.cwd);
+    await writeFile(join(setup.runDir, "state.json"), JSON.stringify(state));
+    const run = { id: "r-1", cwd: setup.cwd, name: "feat-x" };
+    if (type !== undefined && payload !== undefined) {
+      expect((await appendRunEvent(run, { type, source: "hooks", payload })).ok).toBe(true);
+    }
+    return setup;
+  };
+  const limitWaiting = {
+    sessionId: "s1",
+    limitEventId: "evt-0",
+    resumeAt: "2026-09-26T14:00:00Z",
+    from: "message",
+  };
+  const question = {
+    agent: "claude",
+    sessionId: "s1",
+    questions: [{ question: "Ship it?", options: ["Yes", "No"] }],
+  };
+  const resumedEvents = async (runDir: string) =>
+    (await jsonlEventStore(runDir).read()).filter((event) => event.type === "agent.resumed");
+
+  test.each([
+    ["usage-limit", "agent.limit.waiting", limitWaiting],
+    ["question", "agent.question.asked", question],
+  ] as const)(
+    "SC143: an allowed Bash call on a run blocked by %s appends one agent.resumed with that reason, and the run reads running",
+    async (reason, type, payload) => {
+      const { cwd, runDir, deps } = await runBlockedBy(type, payload);
+      expect((await readState(runDir))?.status).toBe("blocked");
+
+      const verdict = await runPreToolUse(
+        use(cwd, shell("bun test"), { toolName: "Bash" }),
+        recordGuard,
+        deps,
+      );
+
+      expect(verdict).toEqual({ kind: "allow" });
+      expect((await resumedEvents(runDir)).map((event) => event.payload)).toEqual([
+        { agent: "claude", sessionId: "s1", reason, tool: "Bash" },
+      ]);
+      const state = await readState(runDir);
+      expect(state?.status).toBe("running");
+      expect(state).not.toHaveProperty("blocker");
+    },
+  );
+
+  test("SC143: an allowed Write on a running run appends nothing", async () => {
+    const { cwd, runDir, deps } = await runBlockedBy();
+
+    const verdict = await runPreToolUse(use(cwd, write("notes.md")), recordGuard, deps);
+
+    expect(verdict).toEqual({ kind: "allow" });
+    expect(await jsonlEventStore(runDir).read()).toEqual([]);
+  });
+
+  test("SC143: a denied call on a blocked run appends only its deny log, and the run stays blocked", async () => {
+    const { cwd, runDir, deps } = await runBlockedBy("agent.limit.waiting", limitWaiting);
+
+    const verdict = await runPreToolUse(
+      use(cwd, write(".yok/feat-x/state.json")),
+      recordGuard,
+      deps,
+    );
+
+    expect(verdict.kind).toBe("deny");
+    expect((await jsonlEventStore(runDir).read()).map((event) => event.type)).toEqual([
+      "agent.limit.waiting",
+      "hooks.pre-tool-use.called",
+    ]);
+    expect((await readState(runDir))?.status).toBe("blocked");
   });
 });
 
