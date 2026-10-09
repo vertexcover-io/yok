@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
 import { VERSION } from "@yok/sdk/internal";
+import { restartServer, yokClient } from "./client.ts";
 
 const TIMEOUT_MS = 40_000;
 // Bun would load the repo's .env into the CLI, and from there the server and tmux, by itself.
@@ -741,6 +742,58 @@ describe("yok run", () => {
       expect(Object.keys(registry.runs).sort()).toEqual(
         [idA, idB].filter((id) => id !== undefined).sort(),
       );
+      expect(serverPids(home)).toHaveLength(1);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "from source, a run replaces the server an earlier command started, so it runs the new code",
+    () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const pid = (): string => yok(repo, env, "server", "status").stdout.split(",")[0] ?? "";
+
+      expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
+      const first = pid();
+      expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
+      const second = pid();
+
+      expect(first).toMatch(/^pid \d+$/);
+      expect(second).toMatch(/^pid \d+$/);
+      expect(second).not.toBe(first);
+      expect(serverPids(home)).toHaveLength(1);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "restartServer replaces a running server and leaves a stopped one down",
+    async () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const self = process.env.YOK_SELF;
+      process.env.YOK_SELF = JSON.stringify(["bun", NO_DOTENV, CLI]);
+      cleanups.push(() => {
+        if (self === undefined) delete process.env.YOK_SELF;
+        else process.env.YOK_SELF = self;
+      });
+      const client = yokClient(home);
+
+      await restartServer(home);
+      expect((await client.health()).ok).toBe(false);
+
+      expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
+      const before = await client.health();
+      await restartServer(home);
+      const after = await client.health();
+
+      expect(before.ok && after.ok).toBe(true);
+      expect(after.ok && after.value.pid).not.toBe(before.ok && before.value.pid);
       expect(serverPids(home)).toHaveLength(1);
 
       stopServer(repo, env);

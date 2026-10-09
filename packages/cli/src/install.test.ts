@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -12,7 +13,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assetName, checksumFor, githubToken, pickRelease, runUpdate } from "./plugin.ts";
+import {
+  assetName,
+  checksumFor,
+  githubToken,
+  pickRelease,
+  removeInstall,
+  runUpdate,
+} from "./install.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -140,19 +148,24 @@ const logLines = (log: string): readonly string[] =>
   existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
 
 describe("runUpdate", () => {
-  test("SC146: swaps in v0.0.2 and returns the exit code of its plugin install", async () => {
+  test("SC146: swaps in v0.0.2 and returns the exit code of its plugin install, with the binary ready even when that install fails", async () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
     const script = fakeYok("0.0.2", log, 3);
     const { target, tokensAtStorage } = serveReleases({ tag: "v0.0.2", script });
 
-    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
+    const { code, binaryReady } = await runUpdate(
+      { ...target, execPath, version: "0.0.1" },
+      ["claude"],
+      false,
+    );
 
     expect(readFileSync(execPath, "utf8")).toBe(script);
     expect(tokensAtStorage).toEqual([null, null]);
     expect(existsSync(`${execPath}.new`)).toBe(false);
     expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
     expect(code).toBe(3);
+    expect(binaryReady).toBe(true);
   });
 
   test("SC147: keeps the 0.0.1 binary and runs no plugin install when the checksum is wrong", async () => {
@@ -166,7 +179,11 @@ describe("runUpdate", () => {
     });
     const errors = spyOn(console, "error").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
+    const { code, binaryReady } = await runUpdate(
+      { ...target, execPath, version: "0.0.1" },
+      ["claude"],
+      false,
+    );
 
     const printed = errors.mock.calls.flat();
     errors.mockRestore();
@@ -174,6 +191,7 @@ describe("runUpdate", () => {
     expect(existsSync(`${execPath}.new`)).toBe(false);
     expect(printed).toContain(`checksum mismatch for ${ASSET}; the installed yok is unchanged`);
     expect(code).toBe(1);
+    expect(binaryReady).toBe(false);
     expect(logLines(log)).toEqual([]);
   });
 
@@ -184,11 +202,16 @@ describe("runUpdate", () => {
     const { target } = serveReleases({ tag: "v0.0.1", script: before });
     const lines = spyOn(console, "log").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
+    const { code, binaryReady } = await runUpdate(
+      { ...target, execPath, version: "0.0.1" },
+      ["claude"],
+      false,
+    );
 
     const printed = lines.mock.calls.flat();
     lines.mockRestore();
     expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(printed).toContain("yok 0.0.1 is up to date: the newest release is v0.0.1");
     expect(logLines(log)).toEqual(["0.0.1 plugin install --agent claude"]);
@@ -201,11 +224,16 @@ describe("runUpdate", () => {
     const { target } = serveReleases({ tag: "v0.0.1", script: fakeYok("0.0.1-old", log) });
     const lines = spyOn(console, "log").mockImplementation(() => undefined);
 
-    const code = await runUpdate({ ...target, execPath, version: "0.0.2-rc.1" }, ["claude"], false);
+    const { code, binaryReady } = await runUpdate(
+      { ...target, execPath, version: "0.0.2-rc.1" },
+      ["claude"],
+      false,
+    );
 
     const printed = lines.mock.calls.flat();
     lines.mockRestore();
     expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(printed).toContain("yok 0.0.2-rc.1 is up to date: the newest release is v0.0.1");
   });
@@ -217,7 +245,7 @@ describe("runUpdate", () => {
     const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
     const errors = spyOn(console, "error").mockImplementation(() => undefined);
 
-    const code = await runUpdate(
+    const { code, binaryReady } = await runUpdate(
       { ...target, token: null, execPath, version: "0.0.1" },
       ["claude"],
       false,
@@ -226,10 +254,50 @@ describe("runUpdate", () => {
     const printed = errors.mock.calls.flat().join("\n");
     errors.mockRestore();
     expect(code).toBe(1);
+    expect(binaryReady).toBe(false);
     expect(printed).toContain("could not list releases: HTTP 404");
     expect(printed).toContain("gh auth login");
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(logLines(log)).toEqual([]);
+  });
+});
+
+const INSTALL_SH = join(import.meta.dir, "..", "..", "..", "install.sh");
+
+describe("removeInstall", () => {
+  test("deletes the yok home with its binary and the PATH line install.sh added, keeping the rest of the rc file", async () => {
+    const root = temp("yok-uninstall-");
+    const home = join(root, ".yok");
+    mkdirSync(join(home, "bin"), { recursive: true });
+    const execPath = join(home, "bin", "yok");
+    writeFileSync(execPath, "binary");
+    writeFileSync(join(home, "registry.json"), "{}");
+    const pathLine = /^\s*line='(.*)'$/m.exec(readFileSync(INSTALL_SH, "utf8"))?.[1];
+    const rc = join(root, ".zshrc");
+    writeFileSync(rc, `alias ll='ls -l'\n\n${pathLine}\nexport EDITOR=vim\n`);
+    const missing = join(root, ".bashrc");
+
+    const done = await removeInstall({ execPath, installDir: home, rcFiles: [rc, missing] });
+
+    expect(pathLine).toContain(".yok/bin");
+    expect(existsSync(home)).toBe(false);
+    expect(readFileSync(rc, "utf8")).toBe("alias ll='ls -l'\nexport EDITOR=vim\n");
+    expect(existsSync(missing)).toBe(false);
+    expect(done).toEqual([`removed ${home}`, `removed the yok PATH line from ${rc}`]);
+  });
+
+  test("deletes a binary installed outside the yok home as well", async () => {
+    const root = temp("yok-uninstall-");
+    const home = join(root, ".yok");
+    mkdirSync(home);
+    const execPath = join(root, "yok");
+    writeFileSync(execPath, "binary");
+
+    const done = await removeInstall({ execPath, installDir: home, rcFiles: [] });
+
+    expect(existsSync(execPath)).toBe(false);
+    expect(existsSync(home)).toBe(false);
+    expect(done).toEqual([`removed ${execPath}`, `removed ${home}`]);
   });
 });
 
@@ -259,8 +327,8 @@ const fromSource = (args: readonly string[]) => {
   return { code: result.status, output: result.stdout + result.stderr, calls: logLines(log) };
 };
 
-describe("the plugin commands from source", () => {
-  test("SC137: yok-dev refuses plugin install and update, points at the checkout and runs no claude", () => {
+describe("the plugin, update and uninstall commands from source", () => {
+  test("SC137: yok-dev refuses plugin install, update and uninstall, points at the checkout and runs no claude", () => {
     const install = fromSource(["plugin", "install", "--agent", "claude"]);
     expect(install.code).toBe(1);
     expect(install.output).toContain("claude --plugin-dir");
@@ -270,6 +338,11 @@ describe("the plugin commands from source", () => {
     expect(update.code).toBe(1);
     expect(update.output).toContain("git pull");
     expect(update.calls).toEqual([]);
+
+    const uninstall = fromSource(["uninstall", "--plugin"]);
+    expect(uninstall.code).toBe(1);
+    expect(uninstall.output).toContain("nothing to uninstall");
+    expect(uninstall.calls).toEqual([]);
   }, 30_000);
 
   test("SC150: --agent foo is refused by plugin install and by update, before any agent runs", () => {

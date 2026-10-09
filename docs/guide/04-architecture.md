@@ -70,7 +70,7 @@ A Hono app on a Unix socket in the yok home. Two routes matter: `GET /health` an
 
 ### `@yok/cli`: commands for people
 
-`run`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `server start|stop|status`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.
+`run`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `uninstall`, `server start|stop|status`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.
 
 ### `skills/`: what the agent reads
 

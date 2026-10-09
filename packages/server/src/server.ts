@@ -76,6 +76,7 @@ export const startServer = async ({
     viewerOrigin: viewer.origin,
     pid: process.pid,
     version,
+    startedAt: Date.now(),
   });
 
   const server = Bun.serve({ unix: socket, fetch: app.fetch });

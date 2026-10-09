@@ -2,7 +2,7 @@
 
 This page gets Yok running from source on your laptop and takes you through your first run. Budget thirty minutes. Every command is exact. "You know it worked when" lines tell you what to expect.
 
-You are setting up the **dev build**, `yok-dev`, which runs the TypeScript in this checkout directly. It lives beside the release `yok` and never replaces it. Edits show on the next run with no build step.
+You are setting up the **dev build**, `yok-dev`, which runs the TypeScript in this checkout directly. It lives beside the release `yok` and never replaces it. Edits show on the next run with no build step, and each `yok-dev run` or `yok-dev view` restarts the server so it runs them too.
 
 ## 1. Install the tools
 

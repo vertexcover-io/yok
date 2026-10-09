@@ -45,6 +45,7 @@ export {
   enabledVersions,
   installPlugin,
   pluginCheck,
+  uninstallPlugin,
   YOK_REPO,
 } from "./plugin.ts";
 export { getNodeFacts, loadStartEnv } from "./runs.ts";

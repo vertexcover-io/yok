@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -438,5 +439,24 @@ esac
     expect(run.stderr).toContain("claude-plugin: claude has yok 0.0.0-other");
     expect(run.stderr).toContain("yok plugin install --agent claude");
     expect(existsSync(log)).toBe(false);
+  }, 60_000);
+
+  test("uninstall deletes ~/.yok and leaves a YOK_HOME pointing elsewhere alone", () => {
+    const user = temp("yok-user-");
+    const installed = join(user, ".yok", "bin", "yok");
+    mkdirSync(dirname(installed), { recursive: true });
+    copyFileSync(BIN, installed);
+    const precious = join(user, "precious");
+    writeFiles(precious, { "keep.txt": "mine" });
+
+    const result = spawnSync(installed, ["uninstall", "--no-plugin"], {
+      cwd: user,
+      encoding: "utf8",
+      env: { ...baseEnv(), PATH: cleanPath(), HOME: user, YOK_HOME: precious },
+    });
+
+    expect(result.status).toBe(0);
+    expect(existsSync(join(user, ".yok"))).toBe(false);
+    expect(readFileSync(join(precious, "keep.txt"), "utf8")).toBe("mine");
   }, 60_000);
 });

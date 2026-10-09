@@ -81,6 +81,7 @@ const buildDeps = async (
     viewerOrigin: "http://localhost:1",
     pid: 4242,
     version: "0.0.0-test",
+    startedAt: 1_700_000_000_000,
   };
 };
 
@@ -589,7 +590,10 @@ describe("createYokClient", () => {
       const client = createYokClient({ home });
 
       const health = await client.health();
-      expect(health).toEqual({ ok: true, value: { pid: 4242, version: "0.0.0-test" } });
+      expect(health).toEqual({
+        ok: true,
+        value: { pid: 4242, version: "0.0.0-test", startedAt: 1_700_000_000_000 },
+      });
 
       const started = await client.run({ workflow: "ok", env: {}, workflowPath, inputs: {}, cwd });
       expect(started.ok && started.value.run.sessions).toEqual([]);

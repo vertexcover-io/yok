@@ -28,6 +28,7 @@ export type AppDeps = RunDeps &
     log: ILogger;
     pid: number;
     version: string;
+    startedAt: number;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the
@@ -42,7 +43,9 @@ export const createApp = (deps: AppDeps) =>
       c.get("log").error({ err: error }, "request failed with an unexpected error");
       return errorResponse(c, 500, "internal", error.message);
     })
-    .get("/health", (c) => c.json({ pid: deps.pid, version: deps.version }, 200))
+    .get("/health", (c) =>
+      c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
+    )
     .route("/runs", runRoutes(deps));
 
 export type AppType = ReturnType<typeof createApp>;

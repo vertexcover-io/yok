@@ -108,7 +108,7 @@ Two things the picture makes plain. First, every arrow back to `next` goes throu
 
 **It runs the doctor.** [runDoctor](../../packages/cli/src/run.ts#L62) checks tmux, the agent binary, the Yok plugin, and whatever the workflow asked for in its `doctor:` block. For `task` that is `LINEAR_API_KEY`, `bun`, and `gh`. One failing check prints `BLOCKED` with the fix and stops.
 
-**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L101) calls `GET /health` on the socket at `~/.yok-dev/yok.sock` (or `~/.yok/yok.sock` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers.
+**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L133) calls `GET /health` on the socket at `~/.yok-dev/yok.sock` (or `~/.yok/yok.sock` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers. From source (`yok-dev`), a server that started before this command is stopped and started again, so it runs the current code; two commands started together do not restart each other's server.
 
 Then it sends one request: `POST /runs` with the workflow name and path, the inputs, your repo root, the agent to use, the environment, and the model tiers.
 
