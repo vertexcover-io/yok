@@ -1011,7 +1011,9 @@ describe("blocker", () => {
       },
     ],
   ];
-  const progress: readonly (readonly [string, Event])[] = [
+  // Tool calls and step moves only log what happened; only the blocker's own closing event,
+  // agent.resumed, or the workflow ending clears it.
+  const nonClosing: readonly (readonly [string, Event])[] = [
     [
       "workflow.node.completed",
       runEvent(3, "workflow.node.completed", { nodeType: "agent", attempts: 1 }, design),
@@ -1032,8 +1034,6 @@ describe("blocker", () => {
       }),
     ],
     ["a Bash hooks.pre-tool-use.called", toolCalled(3, "Bash")],
-  ];
-  const noise: readonly (readonly [string, Event])[] = [
     ["orchestrate.next", runEvent(3, "orchestrate.next", { input: {}, output: { kind: "wait" } })],
     ["hooks.stop.called", stopCalled(3)],
     ["an AskUserQuestion hooks.pre-tool-use.called", toolCalled(3, "AskUserQuestion")],
@@ -1052,19 +1052,51 @@ describe("blocker", () => {
     },
   );
 
-  test.each(pairs(progress))(
-    "SC127: %s then %s puts the run back to running with no blocker",
+  test.each(pairs(nonClosing))(
+    "SC127: %s then %s leaves the run blocked with the same blocker",
     (_name, _next, opening, event) => {
-      unblockedState(project([designRunning, opening, event]));
+      const before = project([designRunning, opening]);
+      const after = project([designRunning, opening, event]);
+      expect(after.status).toBe("blocked");
+      expect(after.blocker).toEqual(before.blocker);
     },
   );
 
-  test.each(pairs(noise))(
-    "SC127: %s then %s leaves the run blocked",
-    (_name, _next, opening, event) => {
-      expect(project([designRunning, opening, event]).status).toBe("blocked");
+  const resumed = (seq: number, reason: string) =>
+    runEvent(seq, "agent.resumed", { ...session, reason, tool: "Bash" });
+
+  test.each(openings)(
+    "SC142: %s then agent.resumed with its own reason puts the run back to running with no blocker",
+    (_name, opening, expected) => {
+      unblockedState(project([designRunning, opening, resumed(3, expected.reason)]));
     },
   );
+
+  test.each(openings)(
+    "SC142: %s then agent.resumed with another reason leaves the run blocked with the same blocker",
+    (_name, opening, expected) => {
+      const other = expected.reason === "question" ? "usage-limit" : "question";
+      const state = project([designRunning, opening, resumed(3, other)]);
+      expect(state.status).toBe("blocked");
+      expect(state.blocker).toEqual(expected);
+    },
+  );
+
+  test("SC142: agent.resumed on a running run leaves it running with no blocker", () => {
+    unblockedState(project([designRunning, resumed(2, "usage-limit")]));
+  });
+
+  test("SC142: agent.resumed with a reason that is not a blocker reason is refused and nothing is stored", async () => {
+    const store = memoryEventStore();
+    const payload = { ...session, reason: "progress", tool: "Bash" };
+    const result = await emitEvent(store, "r-1", {
+      type: "agent.resumed",
+      source: "hooks",
+      payload,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("agent.resumed") });
+    expect(await store.read()).toEqual([]);
+  });
 
   test("SC127: a question asked inside qa-loop names the running leaf qa-loop.qa as its node", () => {
     const loopStarted = runEvent(

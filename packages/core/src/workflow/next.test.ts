@@ -424,7 +424,8 @@ nodes:${stage("say", "tuned", `\n    input: {}\n    variables: { audience: "${va
     });
   });
 
-  test("SC133: next on a run blocked on an agent error after design completed hands out planning, and its start puts the run back to running", async () => {
+  // Only agent.resumed, from the Bash call that ran next, puts the run back to running.
+  test("SC133: next on a run blocked on an agent error after design completed hands out planning, and its start leaves the agent-error blocker in place", async () => {
     const plan = await compilePlan(`name: t
 nodes:${stage("design", "plain", "\n    input: {}")}${stage("planning", "plain", "\n    dependsOn: [design]\n    input: {}")}
 `);
@@ -441,8 +442,8 @@ nodes:${stage("design", "plain", "\n    input: {}")}${stage("planning", "plain",
 
     const { stop, state } = await advance(plan, blocked);
     expect(expectLeaf(stop).node.id).toBe("planning");
-    expect(state.status).toBe("running");
-    expect(state).not.toHaveProperty("blocker");
+    expect(state.status).toBe("blocked");
+    expect(state.blocker).toEqual(blocked.blocker);
   });
 
   test("IW14 — a stage whose producer completed without its artifact is blocked, and is handed out once the producer lists it", async () => {

@@ -164,7 +164,7 @@ An event is one line in `event.jsonl`: `seq`, `ts`, `type`, `source`, `runId`, o
 
 `state.json` is the fold of every event through [applyEvent](../../packages/sdk/src/state.ts#L33). Its fields: `status`, `blocker`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is rewritten atomically after every event. Nobody edits it.
 
-A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, got stuck, or stopped on an agent error. `blocker` says which (`question`, `usage-limit`, `stuck`, `agent-error`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, or the error. A question's answer clears a `question` blocker and the limit resuming clears a `usage-limit` one; any step starting or ending, the agent running a step's command (`exec`) or finishing a stage (`done`), or the agent calling any tool other than AskUserQuestion, clears any blocker and puts the run back to `running`. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
+A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, got stuck, or stopped on an agent error. `blocker` says which (`question`, `usage-limit`, `stuck`, `agent-error`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, or the error. A question's answer clears a `question` blocker and the limit resuming clears a `usage-limit` one. When the agent's next Bash call or file edit goes through on a blocked run, the PreToolUse hook records `agent.resumed` with the blocker's reason, which clears it and puts the run back to `running`; this also closes a question the person dismissed without answering. The workflow completing or failing drops any blocker. Nothing else clears one; the agent moves the workflow only through `yok orchestrate` Bash calls, which the hook hears first. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
 
 ## Subscriber
 
@@ -188,7 +188,7 @@ A point in the agent's own session where it calls out and waits for an answer. Y
 | SessionStart | `link-session` | records the session id on the run |
 | Stop | `continue-workflow` | sends the agent back when it ends a turn with work owed |
 | StopFailure | `resume-after-limit`, `record-agent-error` | on an API error that is a usage limit, pauses and resumes the run; otherwise records the error |
-| PreToolUse | `record-guard`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records, flags risky shell, records a question being asked |
+| PreToolUse | `record-guard`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records (and records `agent.resumed` when it allows a call on a blocked run), flags risky shell, records a question being asked |
 | PostToolUse | `answer-notice` | records the person's answers to questions |
 
 Agent hooks are about the session. Subscribers are about the run. They are different things with the same English word. The handlers live in [packages/core/src/hooks](../../packages/core/src/hooks).

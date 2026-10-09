@@ -4,7 +4,9 @@ import {
   type EmitInput,
   type HookDeps,
   type PreToolUseHandler,
+  readState,
   registryPath,
+  runDirOf,
   spawn,
   type ToolCall,
   type ToolUse,
@@ -57,17 +59,41 @@ const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   return call.kind === "shell" ? shellWriteTargets(call.command, base) : [];
 };
 
+// A call that gets through on a blocked run shows its agent working again, so it closes the
+// blocker. Never throws: the call is already allowed, and a failed record must not refuse it.
+const recordResumed = async (use: ToolUse, deps: HookDeps): Promise<void> => {
+  try {
+    const run = await findSessionRun(use, deps);
+    if (run === undefined) return;
+    const state = await readState(runDirOf(run.cwd, run.name));
+    if (state?.status !== "blocked" || state.blocker === undefined) return;
+    const payload = {
+      agent: use.agent,
+      sessionId: use.sessionId,
+      reason: state.blocker.reason,
+      tool: use.toolName,
+    };
+    const stored = await appendRunEvent(run, { type: "agent.resumed", source: "hooks", payload });
+    if (!stored.ok) deps.log.warn({ error: stored.error }, "agent.resumed not recorded");
+  } catch (error) {
+    deps.log.warn({ err: error }, "agent.resumed not recorded");
+  }
+};
+
 // Refuses a call that writes, moves or deletes a run's state.json or event.jsonl, or the registry.
+// Both agents register it for Bash and every file write, so it alone records agent.resumed.
 export const recordGuard: PreToolUseHandler = {
   name: "record-guard",
-  run: async ({ cwd, call }, { env }) => {
-    const base = { cwd, home: homedir(), yokHome: yokHome(env) };
-    const record = callTargets(call, base)
+  run: async (use, deps) => {
+    const base = { cwd: use.cwd, home: homedir(), yokHome: yokHome(deps.env) };
+    const record = callTargets(use.call, base)
       .map((target) => protectedRecordOf(target, base))
       .find((found) => found !== undefined);
-    return record === undefined
-      ? ALLOW
-      : { kind: "deny", message: recordMessage(record), path: record.path };
+    if (record !== undefined) {
+      return { kind: "deny", message: recordMessage(record), path: record.path };
+    }
+    await recordResumed(use, deps);
+    return ALLOW;
   },
 };
 

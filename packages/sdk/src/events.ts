@@ -7,6 +7,7 @@ import {
   ArtifactRefSchema,
   AskedQuestionSchema,
   type Blocker,
+  BlockerSchema,
   ERROR_MESSAGE_LIMIT,
   ErrorSchema,
   type Event,
@@ -275,6 +276,16 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
+// The agent is working again after a block of this reason; tool is the call that showed it.
+export const AgentResumedEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    reason: z.enum(BlockerSchema.options.map((option) => option.shape.reason.value)),
+    tool: NonEmptyStringSchema,
+  }),
+});
+
 // next found a stage it cannot hand out until the artifacts it consumes exist.
 export const WorkflowBlockedEvent = z.object({
   payload: z.strictObject({
@@ -387,7 +398,7 @@ const StepReportSchema = z.strictObject({
 export type StepReport = z.infer<typeof StepReportSchema>;
 
 // A call of orchestrate next, exec or done: what it was called with, and the reply it printed, or
-// the error it failed with. state.json takes nothing from them; exec and done only clear a blocker.
+// the error it failed with. state.json takes nothing from them.
 const callEvent = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O) =>
   z.object({ payload: z.strictObject({ input, output }) });
 const reportOrError = z.union([StepReportSchema, ErrorSchema.extend({ kind: z.literal("error") })]);
@@ -506,6 +517,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
+  "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,
   "notification.thread.started": NotificationThreadStartedEvent,
   "custom.state.updated": CustomStateUpdatedEvent,
@@ -851,10 +863,8 @@ const blockerBase = (state: State, event: Event) => {
 const block = (state: State, blocker: Blocker): State =>
   isRunLive(state.status) ? { ...state, status: "blocked", blocker } : state;
 
-const unblock = (state: State, reason?: Blocker["reason"]): State => {
-  if (state.blocker === undefined || (reason !== undefined && state.blocker.reason !== reason)) {
-    return state;
-  }
+const unblock = (state: State, reason: Blocker["reason"]): State => {
+  if (state.blocker?.reason !== reason) return state;
   const { blocker: _, ...rest } = state;
   return { ...rest, status: "running" };
 };
@@ -892,26 +902,9 @@ const onAgentStopped: EventHandler = (state, event) => {
   return block(state, { ...blockerBase(state, event), reason: "agent-error", details });
 };
 
-const PROGRESS_EVENTS: ReadonlySet<string> = new Set([
-  "workflow.node.started",
-  "workflow.node.completed",
-  "workflow.node.failed",
-  "workflow.node.skipped",
-  "workflow.node.cancelled",
-  "workflow.node.iterated",
-  "orchestrate.exec",
-  "orchestrate.done",
-]);
-
-// Work moving on clears whatever blocked the run, including a blocker the agent moved past without
-// its closing event. orchestrate.next is not progress: next logs it after every walk, even one that
-// only reports a step still waiting. A tool call is, except AskUserQuestion, which opens a question.
-export const clearBlockerOnProgress = (state: State, event: Event): State => {
-  if (PROGRESS_EVENTS.has(event.type)) return unblock(state);
-  if (event.type !== "hooks.pre-tool-use.called") return state;
-  const toolUse = PreToolUseCalledEvent.safeParse(event);
-  if (!toolUse.success || toolUse.data.payload.tool === "AskUserQuestion") return state;
-  return unblock(state);
+const onAgentResumed: EventHandler = (state, event) => {
+  const parsed = AgentResumedEvent.safeParse(event);
+  return parsed.success ? unblock(state, parsed.data.payload.reason) : state;
 };
 
 export const builtInHandlers: EventHandlers = {
@@ -931,6 +924,7 @@ export const builtInHandlers: EventHandlers = {
   "agent.limit.resumed": (state) => unblock(state, "usage-limit"),
   "agent.stuck": onAgentStuck,
   "agent.stopped": onAgentStopped,
+  "agent.resumed": onAgentResumed,
   "workspace.created": onWorkspaceCreated,
   "workspace.repository.added": onRepositoryAdded,
   "workspace.repository.removed": onRepositoryRemoved,

@@ -123,6 +123,7 @@ export {
 } from "./contracts.ts";
 export { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
 export {
+  AgentResumedEvent,
   AgentStoppedEvent,
   AgentStuckEvent,
   type AnsweredQuestion,
