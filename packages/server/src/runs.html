@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yok runs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Tokens match viewer.html so the list and the run page read as one product. */
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --panel-2: #edf1ef; --line: #d9e0dc;
+  --fg: #18211d; --muted: #5a6862; --accent: #1d6b62; --accent-fg: #ffffff; --accent-soft: #d9eeea;
+  --del: #b2362d; --del-soft: #fbe2df;
+  --ok: #2d7a32; --ok-soft: #e0f1e1; --info: #2b5ca4; --info-soft: #e0eaf8; --warn: #915f00; --warn-soft: #faeed3;
+  --ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+    --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+    --del: #f07f75; --del-soft: #3b1d1a;
+    --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+  --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+  --del: #f07f75; --del-soft: #3b1d1a;
+  --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--ui); }
+[hidden] { display: none !important; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: inherit; }
+
+.bar { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: .01em; }
+.brand-mark { width: 18px; height: 18px; border-radius: 4px; background: var(--accent); position: relative; }
+.brand-mark::after { content: ""; position: absolute; inset: 5px 4px; border-top: 2px solid var(--accent-fg); border-bottom: 2px solid var(--accent-fg); }
+.note { font-size: 12.5px; color: var(--muted); }
+.search { margin-left: auto; flex: 0 1 280px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; background: var(--bg); font-size: 13px; }
+.search::placeholder { color: var(--muted); }
+
+.tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
+.tab { border: 0; background: transparent; padding: 8px 12px; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.tab .n { font-family: var(--mono); font-size: 11px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--panel-2); }
+
+main { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0; }
+.empty { color: var(--muted); padding: 32px 0; text-align: center; }
+.empty code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 4px; }
+
+.item { position: relative; }
+.open { text-decoration: none; font-weight: 600; }
+.open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.item:hover { background: var(--panel-2); }
+.copy, .pr { position: relative; z-index: 1; }
+.copy { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 1px 8px; font-size: 12px; color: var(--muted); }
+.copy:hover { color: var(--fg); border-color: var(--muted); }
+.pr { color: var(--accent); text-decoration: none; }
+.pr:hover { text-decoration: underline; }
+
+.card { border: 1px solid var(--line); border-left: 4px solid var(--info); border-radius: 8px; background: var(--panel); padding: 10px 12px; margin-bottom: 10px; }
+.card[data-status="starting"] { border-left-color: var(--line); }
+.card[data-status="blocked"] { border-left-color: var(--warn); }
+.blocker { color: var(--warn); margin-top: 4px; }
+.banner { display: flex; gap: 6px 10px; align-items: baseline; flex-wrap: wrap; background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.banner a { font-weight: 600; }
+.line1 { display: flex; gap: 6px 10px; align-items: baseline; flex-wrap: wrap; }
+.line1 .right { margin-left: auto; display: flex; gap: 10px; align-items: baseline; }
+.dim { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 12px; }
+.prompt { color: var(--muted); font-style: italic; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now { margin-top: 4px; }
+.st { font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+.st .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.st[data-tone="info"] .dot { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+[data-tone="info"] { color: var(--info); }
+[data-tone="ok"] { color: var(--ok); }
+[data-tone="warn"] { color: var(--warn); }
+[data-tone="del"] { color: var(--del); }
+[data-tone="muted"] { color: var(--muted); }
+
+.rows { border-top: 1px solid var(--line); }
+.row { display: grid; grid-template-columns: 22px minmax(0, 1.8fr) minmax(0, .8fr) 56px 64px minmax(0, .9fr) minmax(0, 1fr) auto; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; align-items: center; }
+.row.head { color: var(--muted); font-family: var(--ui); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.row.head:hover { background: transparent; }
+.row .name { font-family: var(--ui); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .search { flex-basis: 100%; margin-left: 0; }
+  .row { grid-template-columns: 18px minmax(0, 1fr) 56px auto; }
+  .row > .wide { display: none; }
+  .line1 .right { margin-left: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st .dot { animation: none; }
+}
+</style>
+
+<header class="bar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>yok runs</div>
+  <span class="note" id="conn" role="status" hidden>reconnecting…</span>
+  <input class="search" id="search" type="search" placeholder="/ search name, prompt, folder" aria-label="Search runs" autocomplete="off">
+</header>
+<div class="tabs" id="tabs" role="tablist" aria-label="Run status"></div>
+<main id="list" aria-live="polite"><p class="empty">Loading runs…</p></main>
+
+<script type="module">
+import { formatDuration, RUN_STATUS_WORDS } from "/assets/shared.js";
+
+// section: "active" runs are cards at the top, "recent" ones are one-line rows below.
+// tab: the status tab that counts the run. An unknown status falls back to UNKNOWN.
+const STATUS = {
+  starting: { section: "active", tab: "active", tone: "muted", glyph: "○" },
+  running: { section: "active", tab: "active", tone: "info", glyph: "●" },
+  blocked: { section: "active", tab: "needs", tone: "warn", glyph: "✋" },
+  completed: { section: "recent", tab: "done", tone: "ok", glyph: "✓" },
+  failed: { section: "recent", tab: "failed", tone: "del", glyph: "✗" },
+  cancelled: { section: "recent", tab: "other", tone: "muted", glyph: "■" },
+  missing: { section: "recent", tab: "other", tone: "muted", glyph: "?" },
+  unreadable: { section: "recent", tab: "other", tone: "muted", glyph: "!" },
+  gone: { section: "recent", tab: "other", tone: "muted", glyph: "■" },
+};
+const UNKNOWN = { section: "recent", tab: "other", tone: "muted", glyph: "·" };
+const TABS = [["all", "All"], ["active", "Active"], ["needs", "Needs you"], ["failed", "Failed"], ["done", "Done"], ["other", "Other"]];
+
+const view = { runs: null, tab: "all", query: "" };
+const $ = (id) => document.getElementById(id);
+
+const statusOf = (run) => ({ ...(STATUS[run.status] ?? UNKNOWN), label: RUN_STATUS_WORDS[run.status] ?? run.status });
+
+// Active counts every run in the active section, so a blocked run shows under Active and Needs you.
+const inTab = (run, tab) => {
+  if (tab === "all") return true;
+  return tab === "active" ? statusOf(run).section === "active" : statusOf(run).tab === tab;
+};
+
+const el = (tag, props = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+};
+const span = (className, text) => el("span", { className, textContent: text ?? "" });
+
+// A run that stopped without finishing, such as one whose agent is gone, has no end to measure to.
+const duration = (run, now) => {
+  if (run.completedAt === null && statusOf(run).section !== "active") return "—";
+  const end = run.completedAt === null ? now : Date.parse(run.completedAt);
+  return formatDuration(end - Date.parse(run.startedAt));
+};
+const startedText = (run) =>
+  new Date(run.startedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const stepsText = (run) => `${run.steps.done}/${run.steps.total ?? "?"}`;
+const displayName = (run) => run.name ?? run.id;
+
+const matches = (run, query) =>
+  [run.name, run.id, run.workflow, run.folder, run.prompt]
+    .some((field) => typeof field === "string" && field.toLowerCase().includes(query));
+
+const copyButton = (run) => {
+  const command = `yok attach --run-id ${run.id}`;
+  const button = el("button", { type: "button", className: "copy", textContent: "copy", title: command });
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const copied = await (navigator.clipboard?.writeText(command) ?? Promise.reject()).then(() => true, () => false);
+    // On failure the title, which already holds the command, is the way to copy it by hand.
+    button.textContent = copied ? "copied" : "copy failed";
+    setTimeout(() => { button.textContent = "copy"; }, 1200);
+  });
+  return button;
+};
+
+const openLink = (run, className = "open") =>
+  el("a", { className, href: `/runs/${encodeURIComponent(run.id)}`, textContent: displayName(run) });
+
+const statusMark = (run) => {
+  const status = statusOf(run);
+  const mark = el("span", { className: "st" }, [span("dot"), status.label]);
+  mark.dataset.tone = status.tone;
+  return mark;
+};
+
+const blockerText = (blocker) => {
+  const { reason, details } = blocker;
+  const text =
+    reason === "question" ? details.questions[0].question
+    : reason === "usage-limit"
+      ? `hit its usage limit; resumes at ${new Date(details.resumeAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
+    : reason === "stuck" ? (details.message ?? "stopped making progress")
+    : reason === "agent-error" ? (details.message ?? details.error)
+    : reason;
+  return blocker.node === undefined ? text : `${text} · in ${blocker.node}`;
+};
+
+const banner = (run) =>
+  el("div", { className: "banner" }, [
+    "✋", openLink(run, ""), span("", `needs you — ${blockerText(run.blocker)}`), copyButton(run),
+  ]);
+
+const prLink = (url) =>
+  el("a", { className: "pr", href: url, target: "_blank", rel: "noopener", textContent: `PR #${url.split("/").pop()} ↗` });
+
+const card = (run, now) => {
+  const folder = span("dim", run.folder);
+  folder.title = run.cwd;
+  const right = el("span", { className: "right" }, [
+    span("mono dim", `${stepsText(run)} steps · ${duration(run, now)}`),
+    copyButton(run),
+  ]);
+  right.title = `started ${startedText(run)}`;
+  const node = el("article", { className: "card item" }, [
+    el("div", { className: "line1" }, [
+      statusMark(run), openLink(run), span("dim", run.workflow), span("mono dim", run.id), folder, right,
+    ]),
+  ]);
+  node.dataset.status = run.status;
+  if (run.prompt !== null) node.append(el("div", { className: "prompt", textContent: `“${run.prompt}”`, title: run.prompt }));
+  if (run.blocker !== null) node.append(el("div", { className: "blocker", textContent: blockerText(run.blocker) }));
+  if (run.current !== null) {
+    const now = [run.current, run.model ?? run.agent, run.tier].filter((part) => part !== null).join(" · ");
+    node.append(el("div", { className: "now mono dim", textContent: `now: ${now}` }));
+  }
+  return node;
+};
+
+const resultCell = (run) => {
+  if (run.pr?.startsWith("https://")) return el("span", { className: "wide" }, [prLink(run.pr)]);
+  const cell = span("wide", run.status === "completed" ? "" : statusOf(run).label);
+  cell.dataset.tone = statusOf(run).tone;
+  return cell;
+};
+
+const row = (run, now) => {
+  const status = statusOf(run);
+  const glyph = el("span", { textContent: status.glyph, title: status.label });
+  glyph.dataset.tone = status.tone;
+  const name = el("span", { className: "name" }, [openLink(run), " ", span("dim", run.workflow)]);
+  if (run.prompt !== null) name.title = run.prompt;
+  const folder = span("wide", run.folder);
+  folder.title = run.cwd;
+  return el("div", { className: "row item" }, [
+    glyph, name, folder, span("", stepsText(run)), span("wide", duration(run, now)),
+    span("wide", startedText(run)), resultCell(run), el("span", {}, [copyButton(run)]),
+  ]);
+};
+
+const HEAD = ["", "run", "folder", "steps", "took", "started", "result", ""];
+const headRow = () => {
+  const head = el("div", { className: "row head" }, HEAD.map((text, i) => span([0, 1, 3, 7].includes(i) ? "" : "wide", text)));
+  head.setAttribute("aria-hidden", "true");
+  return head;
+};
+
+const renderTabs = (filtered) => {
+  const counts = Object.fromEntries(TABS.map(([key]) => [key, filtered.filter((run) => inTab(run, key)).length]));
+  $("tabs").replaceChildren(...TABS.map(([key, label]) => {
+    const tab = el("button", { type: "button", className: "tab", role: "tab" }, [label, span("n", String(counts[key]))]);
+    tab.setAttribute("aria-selected", String(view.tab === key));
+    tab.addEventListener("click", () => { view.tab = key; render(); });
+    return tab;
+  }));
+};
+
+const emptyState = () => {
+  if (view.runs.length > 0) return el("p", { className: "empty", textContent: "No runs match." });
+  return el("p", { className: "empty" }, ["No runs yet. Start one with ", el("code", { textContent: "yok run task" }), "."]);
+};
+
+const render = () => {
+  if (view.runs === null) return;
+  const now = Date.now();
+  const query = view.query.trim().toLowerCase();
+  const filtered = view.runs.filter((run) => query === "" || matches(run, query));
+  renderTabs(filtered);
+  const shown = filtered.filter((run) => inTab(run, view.tab));
+  // Banners ignore the tab and the search: a run that needs the person never drops out of sight.
+  const banners = view.runs.filter((run) => run.status === "blocked" && run.blocker !== null).map(banner);
+  const active = shown.filter((run) => statusOf(run).section === "active");
+  const recent = shown.filter((run) => statusOf(run).section !== "active");
+  const parts = [
+    ...(active.length === 0 ? [] : [el("div", { className: "label", textContent: "Active" }), ...active.map((run) => card(run, now))]),
+    ...(recent.length === 0 ? [] : [
+      el("div", { className: "label", textContent: "Recent" }),
+      el("div", { className: "rows" }, [headRow(), ...recent.map((run) => row(run, now))]),
+    ]),
+  ];
+  $("list").replaceChildren(...banners, ...(parts.length === 0 ? [emptyState()] : parts));
+};
+
+const show = (body) => {
+  view.runs = body.runs;
+  render();
+};
+
+// The stream's first event carries the whole list, so the page paints from it.
+const load = () => {
+  const source = new EventSource("/stream");
+  source.addEventListener("runs", (event) => {
+    $("conn").hidden = true;
+    show(JSON.parse(event.data));
+  });
+  source.addEventListener("error", () => { $("conn").hidden = false; });
+};
+
+$("search").addEventListener("input", (event) => { view.query = event.target.value; render(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || document.activeElement === $("search")) return;
+  event.preventDefault();
+  $("search").focus();
+});
+setInterval(render, 15000);
+load();
+</script>
+</html>

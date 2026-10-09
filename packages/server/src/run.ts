@@ -105,6 +105,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
 export const runRoutes = (deps: RunDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(StartRunBodySchema), (c) => startRun(c, deps, c.req.valid("json")))
+    .get("/view", (c) => c.json({ view: `${deps.viewerOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");
       if ((await deps.registry.findRun(id)) === undefined) {

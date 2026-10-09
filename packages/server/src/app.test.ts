@@ -661,4 +661,14 @@ describe("run page URL", () => {
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not-found");
   });
+
+  test("SC108: GET /runs/view returns the runs page URL, the viewer origin followed by /", async () => {
+    const deps = {
+      ...(await buildDeps(() => Promise.reject(new Error("no launch")))),
+      viewerOrigin: "http://localhost:4321",
+    };
+    const res = await createApp(deps).request("/runs/view");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ view: "http://localhost:4321/" });
+  });
 });

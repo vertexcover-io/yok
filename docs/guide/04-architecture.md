@@ -66,7 +66,7 @@ The biggest package, and the one you will edit most.
 
 ### `@yok/server`: the one long-lived process
 
-A Hono app on a Unix socket in the yok home. Two routes matter: `GET /health` and `POST /runs`. It also serves the viewer page for each run, streams the run's files to it, stores comments, and types them into the run's tmux session when the agent's input box is free. It is the only process that launches agent sessions. It is started on demand by the CLI and stays up until stopped.
+A Hono app on a Unix socket in the yok home. Two routes matter: `GET /health` and `POST /runs`. It also serves the viewer page for each run, the list of every run at `/` (what `yok view` opens when no run is named), streams the run's files to it, stores comments, and types them into the run's tmux session when the agent's input box is free. It is the only process that launches agent sessions. It is started on demand by the CLI and stays up until stopped. Each run's page has an Artifacts tab and a Workflow tab that lists the run's steps in order with their status, model, files and output.
 
 ### `@yok/cli`: commands for people
 
@@ -134,6 +134,6 @@ The release binary and the dev build never share a home, so they never share a s
 | change how the agent is launched or hooked | `packages/core/src/agents/claude.ts`, `claude-hooks.ts` |
 | change what a hook decides | `packages/core/src/hooks/*.ts` |
 | change what the doctor checks | `packages/core/src/doctor.ts` |
-| change the browser page | `packages/server/src/viewer.ts`, `viewer.html` |
+| change the browser page | `packages/server/src/viewer.ts`, `viewer.html`, `overview.ts`, `runs.html` |
 
 Next: [One task, end to end](05-one-task-end-to-end.md).

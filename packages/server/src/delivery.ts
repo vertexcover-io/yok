@@ -32,6 +32,9 @@ const waiting = (reason: string): DeliveryOutcome => ({ kind: "waiting", reason 
 export const readStateOrNull = (runDir: string): Promise<State | null> =>
   readState(runDir).catch(() => null);
 
+export const isAgentAlive = async (run: WorkflowRun, host: ITerminalHost): Promise<boolean> =>
+  run.terminal !== null && (await host.find(run.terminal).isAlive());
+
 export const deliverComments = async (
   run: WorkflowRun,
   deps: DeliveryDeps,
@@ -45,10 +48,10 @@ export const deliverComments = async (
 
   // A session that is gone does not come back, so this is not retried; the next comment or reply
   // on the run tries again.
-  const pane = run.terminal === null ? null : deps.host.find(run.terminal);
-  if (pane === null || !(await pane.isAlive())) {
+  if (run.terminal === null || !(await isAgentAlive(run, deps.host))) {
     return { kind: "failed", reason: "agent session is not running" };
   }
+  const pane = deps.host.find(run.terminal);
   const state = await readStateOrNull(runDir);
   if (state !== null && findOpenContextRun(state.nodeRuns) !== undefined) {
     return waiting("agent is clearing its context");

@@ -4,15 +4,16 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
-import type { State, WorkflowRun } from "@yok/sdk";
+import type { ITerminalHost, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE } from "./fake-host.ts";
 import {
@@ -789,6 +790,27 @@ describe("anchor script", () => {
   });
 });
 
+describe("shared page script", () => {
+  test("/assets/shared.js serves the pages' status words and duration format as JavaScript, and refuses another site's host", async () => {
+    const { get } = await setup();
+    const res = await get("/assets/shared.js");
+    expect(res.headers.get("content-type")).toContain("text/javascript");
+    const shared = (await import(
+      `data:text/javascript;base64,${btoa(await res.text())}`
+    )) as typeof import("./page-shared.ts");
+    expect([shared.RUN_STATUS_WORDS.blocked, shared.RUN_STATUS_WORDS.gone]).toEqual([
+      "needs you",
+      "agent gone",
+    ]);
+    expect([42_000, 125_000, 3_780_000].map(shared.formatDuration)).toEqual([
+      "42s",
+      "2m 05s",
+      "1h 3m",
+    ]);
+    expect((await get("/assets/shared.js", { host: "evil.example:4000" })).status).toBe(403);
+  });
+});
+
 describe("editorCommand", () => {
   test.each([
     ["zed", 12, ["zed", "/r/a.ts:12"]],
@@ -804,4 +826,315 @@ describe("editorCommand", () => {
       expect(editorCommand({ editor, file: "/r/a.ts", line })).toEqual(command);
     },
   );
+});
+
+const WORKFLOW_YAML = [
+  "name: w",
+  "nodes:",
+  "  - { id: a, type: exec, input: {}, runtime: sh, script: 'true' }",
+  "  - { id: b, type: exec, input: {}, runtime: sh, script: 'true' }",
+  "",
+].join("\n");
+
+const stateJson = (runId: string, cwd: string, status: State["status"]): string =>
+  JSON.stringify({
+    schemaVersion: 1,
+    lastEventSeq: 1,
+    runId,
+    runName: "demo",
+    runDir: join(cwd, ".yok", "demo"),
+    version: "0.0.0",
+    workflow: { name: "w", path: "workflow.yaml" },
+    input: {},
+    scope: null,
+    startedAt: "2026-01-03T00:00:00.000Z",
+    completedAt: null,
+    status,
+    workspace: {
+      type: "mono",
+      path: cwd,
+      repositories: { demo: { path: cwd, git: { branch: "m", baseBranch: "m", startSha: "a" } } },
+    },
+    nodeRuns: {},
+    activeSessions: [],
+    tiers: null,
+  });
+
+const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host) => {
+  return viewerRoutes({
+    registry,
+    log: noopLogger,
+    port: 4000,
+    providerFor: () => claudeOver(host),
+    host,
+    now: () => new Date(),
+    openInEditor: () => ({ ok: true, value: null }),
+  });
+};
+
+type ListedRun = { id: string; folder: string; status: string };
+
+describe("runs list", () => {
+  test("SC105: GET /runs lists every run newest first, each with its own folder, and a run with a folder carries its state's status", async () => {
+    const acme = join(tempDir("list-a"), "acme");
+    const beta = join(tempDir("list-b"), "beta");
+    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    const at = (day: number) => `2026-01-0${day}T00:00:00.000Z`;
+    await registry.addRun({ ...runRecord("r-old", acme, "gone"), createdAt: at(1) });
+    await registry.addRun({ ...runRecord("r-new", beta, null), createdAt: at(3) });
+    await registry.addRun({ ...runRecord("r-mid", acme, "demo"), createdAt: at(2) });
+    put(acme, ".yok/demo/state.json", stateJson("r-mid", acme, "completed"));
+    put(acme, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
+
+    const res = await listRoutes(registry).request("/runs", {
+      headers: { host: "localhost:4000" },
+    });
+    const { runs } = (await res.json()) as { runs: ListedRun[] };
+
+    expect(runs).toMatchObject([
+      { id: "r-new", folder: "beta", status: "starting" },
+      { id: "r-mid", folder: "acme", status: "completed", steps: { total: 2 } },
+      { id: "r-old", folder: "acme", status: "missing" },
+    ]);
+  });
+
+  test("GET /runs keeps a finished run's files and every run's workflow once read, and re-reads a live run's state", async () => {
+    const done = join(tempDir("list-done"), "acme");
+    const live = join(tempDir("list-live"), "beta");
+    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    await registry.addRun({
+      ...runRecord("r-done", done, "demo"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await registry.addRun({
+      ...runRecord("r-live", live, "demo"),
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    for (const [cwd, id, status] of [
+      [done, "r-done", "completed"],
+      [live, "r-live", "running"],
+    ] as const) {
+      put(cwd, ".yok/demo/state.json", stateJson(id, cwd, status));
+      put(cwd, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
+    }
+    const app = listRoutes(registry);
+    const list = async () =>
+      (
+        (await (await app.request("/runs", { headers: { host: "localhost:4000" } })).json()) as {
+          runs: ListedRun[];
+        }
+      ).runs;
+    expect(await list()).toMatchObject([
+      { id: "r-live", status: "gone", steps: { total: 2 } },
+      { id: "r-done", status: "completed", steps: { total: 2 } },
+    ]);
+
+    put(done, ".yok/demo/state.json", stateJson("r-done", done, "running"));
+    put(live, ".yok/demo/state.json", stateJson("r-live", live, "failed"));
+    rmSync(join(live, ".yok/demo/workflow.yaml"));
+
+    expect(await list()).toMatchObject([
+      { id: "r-live", status: "failed", steps: { total: 2 } },
+      { id: "r-done", status: "completed", steps: { total: 2 } },
+    ]);
+  });
+
+  test("SC106: another site's host or origin gets 403 on /, /runs and /stream, and localhost gets the runs page at /", async () => {
+    const app = listRoutes(createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger));
+    const refused = [
+      { host: "evil.example:4000" },
+      { host: "localhost:4000", origin: "http://evil.example" },
+    ].flatMap((headers) =>
+      ["/", "/runs", "/stream"].map(async (path) => (await app.request(path, { headers })).status),
+    );
+    expect(await Promise.all(refused)).toEqual([403, 403, 403, 403, 403, 403]);
+
+    const page = await app.request("/", { headers: { host: "localhost:4000" } });
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(await page.text()).toContain("yok runs");
+  });
+});
+
+const QUESTION_BLOCKER = {
+  reason: "question",
+  node: "planning",
+  since: "2026-01-03T00:05:00.000Z",
+  details: { questions: [{ question: "Which store?", options: ["sqlite", "postgres"] }] },
+};
+
+// Live pane for t-alive, dead pane for every other terminal; records each terminal asked about.
+const twoPaneHost = () => {
+  const asked: string[] = [];
+  const live = fakeHost("", true).host.find("t-alive");
+  const dead = fakeHost("", false).host.find("t-dead");
+  const host: ITerminalHost = {
+    ...fakeHost("").host,
+    find: (name) => {
+      asked.push(name);
+      return name === "t-alive" ? live : dead;
+    },
+  };
+  return { host, asked };
+};
+
+describe("runs list liveness", () => {
+  test("SC115: GET /runs reports a blocked run with a live terminal as blocked with its blocker and a running run with a dead terminal as gone, asking the host about those two terminals only", async () => {
+    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    const runs = [
+      { id: "r-blocked", terminal: "t-alive", status: "blocked", blocker: QUESTION_BLOCKER },
+      { id: "r-gone", terminal: "t-dead", status: "running" },
+      { id: "r-done", terminal: "t-done", status: "completed" },
+    ] as const;
+    for (const [i, run] of runs.entries()) {
+      const cwd = tempDir(`list-${run.id}`);
+      const createdAt = `2026-01-0${3 - i}T00:00:00.000Z`;
+      await registry.addRun({
+        ...runRecord(run.id, cwd, "demo"),
+        terminal: run.terminal,
+        createdAt,
+      });
+      const state = {
+        ...JSON.parse(stateJson(run.id, cwd, run.status)),
+        ...("blocker" in run ? { blocker: run.blocker } : {}),
+      };
+      put(cwd, ".yok/demo/state.json", JSON.stringify(state));
+    }
+    const { host, asked } = twoPaneHost();
+
+    const res = await listRoutes(registry, host).request("/runs", {
+      headers: { host: "localhost:4000" },
+    });
+    const body = (await res.json()) as { runs: ListedRun[] };
+
+    expect(body.runs).toMatchObject([
+      { id: "r-blocked", status: "blocked", blocker: QUESTION_BLOCKER },
+      { id: "r-gone", status: "gone", blocker: null },
+      { id: "r-done", status: "completed" },
+    ]);
+    expect([...asked].sort()).toEqual(["t-alive", "t-dead"]);
+  });
+});
+
+describe("runs list stream", () => {
+  test("SC107: /stream sends the runs at once, with an unnamed run starting, and again once the run is named and has its state", async () => {
+    const cwd = tempDir("list-cwd");
+    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    await registry.addRun({ ...runRecord("r-live", cwd, null), terminal: "s1" });
+    const res = await listRoutes(registry).request("/stream", {
+      headers: { host: "localhost:4000" },
+    });
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const sse = sseReader(res);
+    const statusIs = (status: string) => (e: SseEvent) =>
+      e.event === "runs" && (e.data as { runs: ListedRun[] }).runs[0]?.status === status;
+    try {
+      await sse.waitFor(statusIs("starting"), 500);
+
+      await registry.initRun("r-live", "demo");
+      put(cwd, ".yok/demo/state.json", stateJson("r-live", cwd, "running"));
+      put(cwd, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
+      await sse.waitFor(statusIs("running"));
+    } finally {
+      await sse.close();
+    }
+  }, 10000);
+});
+
+const THREE_STEPS_YAML = [
+  "name: w",
+  "nodes:",
+  "  - { id: design, type: exec, input: {}, runtime: sh, script: 'true' }",
+  "  - { id: build, type: exec, input: {}, runtime: sh, script: 'true', dependsOn: [design] }",
+  "  - { id: ship, type: exec, input: {}, runtime: sh, script: 'true', dependsOn: [build] }",
+  "",
+].join("\n");
+
+const stateWithRuns = (cwd: string, nodeRuns: Record<string, unknown>): string =>
+  JSON.stringify({ ...JSON.parse(stateJson("r-named", cwd, "running")), nodeRuns });
+
+type StepsBody = { steps: { id: string; status: string }[] };
+const stepsOf = (e: SseEvent): StepsBody["steps"] | null =>
+  e.event === "steps" ? (e.data as StepsBody).steps : null;
+
+describe("steps on the run stream", () => {
+  test("SC123: a named run streams its folder's steps, a named run with no workflow.yaml streams none, and an unnamed run streams no steps", async () => {
+    const { get, cwd, runDir } = await setup();
+    put(runDir, "workflow.yaml", THREE_STEPS_YAML);
+    put(runDir, "state.json", stateWithRuns(cwd, { design: nodeRun([]) }));
+
+    const named = sseReader(await get("/runs/r-named/stream"));
+    try {
+      const first = stepsOf(await named.waitFor((e) => stepsOf(e) !== null)) ?? [];
+      expect(first.map((step) => [step.id, step.status])).toEqual([
+        ["design", "completed"],
+        ["build", "pending"],
+        ["ship", "pending"],
+      ]);
+    } finally {
+      await named.close();
+    }
+
+    const bare = sseReader(await get("/runs/r-empty/stream"));
+    try {
+      await bare.waitFor((e) => stepsOf(e)?.length === 0);
+    } finally {
+      await bare.close();
+    }
+
+    const starting = sseReader(await get("/runs/r-starting/stream"));
+    try {
+      await starting.waitFor((e) => e.event === "comments");
+      expect(starting.seen.filter((e) => e.event === "steps")).toEqual([]);
+    } finally {
+      await starting.close();
+    }
+  }, 10000);
+});
+
+describe("steps on the run stream, live", () => {
+  test("SC124: the stream sends the steps at once with design running, and again once state has design completed", async () => {
+    const { get, cwd, runDir } = await setup();
+    put(runDir, "workflow.yaml", THREE_STEPS_YAML);
+    const designIs = (status: string) => (e: SseEvent) => stepsOf(e)?.[0]?.status === status;
+    put(
+      runDir,
+      "state.json",
+      stateWithRuns(cwd, { design: { ...nodeRun([]), status: "running" } }),
+    );
+
+    const sse = sseReader(await get("/runs/r-named/stream"));
+    try {
+      await sse.waitFor(designIs("running"), 1000);
+
+      put(runDir, "state.json", stateWithRuns(cwd, { design: nodeRun([]) }));
+      await sse.waitFor(designIs("completed"));
+    } finally {
+      await sse.close();
+    }
+  }, 10000);
+});
+
+describe("summary on the run stream", () => {
+  test("the run stream sends the run's summary at once, and again when the run blocks with its steps unchanged", async () => {
+    const { get, cwd, runDir } = await setup(EMPTY_BOX, true);
+    put(runDir, "workflow.yaml", THREE_STEPS_YAML);
+    const nodeRuns = { design: { ...nodeRun([]), status: "running" } };
+    put(runDir, "state.json", stateWithRuns(cwd, nodeRuns));
+    const statusIs = (status: string) => (e: SseEvent) =>
+      e.event === "summary" && (e.data as ListedRun).status === status;
+
+    const sse = sseReader(await get("/runs/r-named/stream"));
+    try {
+      await sse.waitFor(statusIs("running"), 1000);
+
+      const blocked = { ...JSON.parse(stateWithRuns(cwd, nodeRuns)), status: "blocked" };
+      put(runDir, "state.json", JSON.stringify({ ...blocked, blocker: QUESTION_BLOCKER }));
+      const summary = await sse.waitFor(statusIs("blocked"));
+      expect(summary.data).toMatchObject({ id: "r-named", blocker: QUESTION_BLOCKER });
+      expect(sse.seen.filter((e) => e.event === "steps")).toHaveLength(1);
+    } finally {
+      await sse.close();
+    }
+  }, 10000);
 });
