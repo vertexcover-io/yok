@@ -3,12 +3,16 @@ import * as z from "zod";
 import { AgentTypeSchema } from "./agent.ts";
 import {
   AbsolutePathSchema,
+  AgentStateSchema,
   ArtifactRefSchema,
+  AskedQuestionSchema,
+  type Blocker,
   ERROR_MESSAGE_LIMIT,
   ErrorSchema,
   type Event,
   EventSchema,
   EventTypeSchema,
+  isRunLive,
   JsonObjectSchema,
   type JsonValue,
   LayoutSchema,
@@ -55,6 +59,8 @@ export const NodeStartedEvent = nodeEvent(
     input: z.json().optional(),
     branch: NonEmptyStringSchema.optional(),
     notify: z.boolean().optional(),
+    stage: SlugSchema.optional(),
+    agentState: AgentStateSchema.optional(),
     ...placement,
   }),
 );
@@ -232,13 +238,6 @@ export const SubscriberCalledEvent = z.object({
   }),
 });
 
-export const AskedQuestionSchema = z.strictObject({
-  question: NonEmptyStringSchema,
-  header: z.string().optional(),
-  options: z.array(z.string()),
-});
-export type AskedQuestion = z.infer<typeof AskedQuestionSchema>;
-
 const questionCall = {
   agent: AgentTypeSchema,
   sessionId: NonEmptyStringSchema,
@@ -387,7 +386,7 @@ const StepReportSchema = z.strictObject({
 export type StepReport = z.infer<typeof StepReportSchema>;
 
 // A call of orchestrate next, exec or done: what it was called with, and the reply it printed, or
-// the error it failed with. Nothing reads these into state.json.
+// the error it failed with. state.json takes nothing from them; exec and done only clear a blocker.
 const callEvent = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O) =>
   z.object({ payload: z.strictObject({ input, output }) });
 const reportOrError = z.union([StepReportSchema, ErrorSchema.extend({ kind: z.literal("error") })]);
@@ -662,6 +661,8 @@ const onStarted: EventHandler = (state, event) => {
     ...(payload.input === undefined ? {} : { input: payload.input }),
     ...(payload.branch === undefined ? {} : { branch: payload.branch }),
     ...(payload.notify === undefined ? {} : { notify: payload.notify }),
+    ...(payload.stage === undefined ? {} : { stage: payload.stage }),
+    ...(payload.agentState === undefined ? {} : { agentState: payload.agentState }),
     ...(payload.nodeType === "loop" ? { iteration: 1 } : {}),
     ...(CONTAINER_TYPES.has(payload.nodeType) ? { nodes: {} } : {}),
   };
@@ -794,11 +795,10 @@ const onWorkflowStarted: EventHandler = (state, event) => {
   };
 };
 
-const onWorkflowEnded = (status: "completed" | "failed", state: State, event: Event): State => ({
-  ...state,
-  status,
-  completedAt: event.ts,
-});
+const onWorkflowEnded = (status: "completed" | "failed", state: State, event: Event): State => {
+  const { blocker: _, ...rest } = state;
+  return { ...rest, status, completedAt: event.ts };
+};
 
 const onStopCalled: EventHandler = (state, event) => {
   const parsed = StopCalledEvent.safeParse(event);
@@ -830,6 +830,89 @@ const onCustomStateUpdated: EventHandler = (state, event) => {
   return { ...state, custom: { ...state.custom, ...parsed.data.payload } };
 };
 
+// The deepest running node: the step the run is on now, under its dotted path such as "qa-loop.qa".
+export const findRunningLeaf = (
+  nodes: Nodes,
+  parents: readonly string[] = [],
+): Readonly<{ path: string; run: NodeRun }> | undefined => {
+  const entry = Object.entries(nodes).find(([, run]) => run.status === "running");
+  if (entry === undefined) return undefined;
+  const [id, run] = entry;
+  return findRunningLeaf(run.nodes ?? {}, [...parents, id]) ?? { path: nodePath(parents, id), run };
+};
+
+const blockerBase = (state: State, event: Event) => {
+  const leaf = findRunningLeaf(state.nodeRuns);
+  return { since: event.ts, ...(leaf === undefined ? {} : { node: leaf.path }) };
+};
+
+// An agent event after the run ended changes nothing; a newer blocker replaces an older one.
+const block = (state: State, blocker: Blocker): State =>
+  isRunLive(state.status) ? { ...state, status: "blocked", blocker } : state;
+
+const unblock = (state: State, reason?: Blocker["reason"]): State => {
+  if (state.blocker === undefined || (reason !== undefined && state.blocker.reason !== reason)) {
+    return state;
+  }
+  const { blocker: _, ...rest } = state;
+  return { ...rest, status: "running" };
+};
+
+const onQuestionAsked: EventHandler = (state, event) => {
+  const parsed = QuestionAskedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { questions } = parsed.data.payload;
+  return block(state, { ...blockerBase(state, event), reason: "question", details: { questions } });
+};
+
+const onLimitWaiting: EventHandler = (state, event) => {
+  const parsed = LimitWaitingEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { resumeAt } = parsed.data.payload;
+  return block(state, {
+    ...blockerBase(state, event),
+    reason: "usage-limit",
+    details: { resumeAt },
+  });
+};
+
+const onAgentStuck: EventHandler = (state, event) => {
+  const parsed = AgentStuckEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const message = parsed.data.payload.message ?? null;
+  return block(state, { ...blockerBase(state, event), reason: "stuck", details: { message } });
+};
+
+const onAgentStopped: EventHandler = (state, event) => {
+  const parsed = AgentStoppedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { error, message } = parsed.data.payload;
+  const details = { error, message: message ?? null };
+  return block(state, { ...blockerBase(state, event), reason: "agent-error", details });
+};
+
+const PROGRESS_EVENTS: ReadonlySet<string> = new Set([
+  "workflow.node.started",
+  "workflow.node.completed",
+  "workflow.node.failed",
+  "workflow.node.skipped",
+  "workflow.node.cancelled",
+  "workflow.node.iterated",
+  "orchestrate.exec",
+  "orchestrate.done",
+]);
+
+// Work moving on clears whatever blocked the run, including a blocker the agent moved past without
+// its closing event. orchestrate.next is not progress: next logs it after every walk, even one that
+// only reports a step still waiting. A tool call is, except AskUserQuestion, which opens a question.
+export const clearBlockerOnProgress = (state: State, event: Event): State => {
+  if (PROGRESS_EVENTS.has(event.type)) return unblock(state);
+  if (event.type !== "hooks.pre-tool-use.called") return state;
+  const toolUse = PreToolUseCalledEvent.safeParse(event);
+  if (!toolUse.success || toolUse.data.payload.tool === "AskUserQuestion") return state;
+  return unblock(state);
+};
+
 export const builtInHandlers: EventHandlers = {
   "workflow.started": onWorkflowStarted,
   "workflow.completed": (state, event) => onWorkflowEnded("completed", state, event),
@@ -841,6 +924,12 @@ export const builtInHandlers: EventHandlers = {
   "workflow.node.cancelled": (state, event) => onEnded("cancelled", state, event),
   "workflow.node.interrupted": (state, event) => onEnded("interrupted", state, event),
   "workflow.node.iterated": onIterated,
+  "agent.question.asked": onQuestionAsked,
+  "agent.question.answered": (state) => unblock(state, "question"),
+  "agent.limit.waiting": onLimitWaiting,
+  "agent.limit.resumed": (state) => unblock(state, "usage-limit"),
+  "agent.stuck": onAgentStuck,
+  "agent.stopped": onAgentStopped,
   "workspace.created": onWorkspaceCreated,
   "workspace.repository.added": onRepositoryAdded,
   "workspace.repository.removed": onRepositoryRemoved,

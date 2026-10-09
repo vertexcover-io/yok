@@ -162,7 +162,9 @@ The server resolves the merged set once at launch and init copies it into state.
 
 An event is one line in `event.jsonl`: `seq`, `ts`, `type`, `source`, `runId`, optional `nodeId`, `nodeRunId`, `stage`, and a `payload`. The types are listed in [events.ts](../../packages/sdk/src/events.ts#L463). Families: `workflow.*` for the engine's decisions, `orchestrate.*` for each command call, `hooks.*` for agent hook calls, `agent.*` for limits, questions, and getting stuck, `artifact.comment.*`, `subscriber.called`, `workspace.*`, `custom.state.updated`.
 
-`state.json` is the fold of every event through [applyEvent](../../packages/sdk/src/state.ts#L33). Its fields: `status`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is rewritten atomically after every event. Nobody edits it.
+`state.json` is the fold of every event through [applyEvent](../../packages/sdk/src/state.ts#L33). Its fields: `status`, `blocker`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is rewritten atomically after every event. Nobody edits it.
+
+A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, got stuck, or stopped on an agent error. `blocker` says which (`question`, `usage-limit`, `stuck`, `agent-error`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, or the error. A question's answer clears a `question` blocker and the limit resuming clears a `usage-limit` one; any step starting or ending, the agent running a step's command (`exec`) or finishing a stage (`done`), or the agent calling any tool other than AskUserQuestion, clears any blocker and puts the run back to `running`. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
 
 ## Subscriber
 

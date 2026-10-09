@@ -14,7 +14,14 @@ import {
   type SubscriberRefs,
 } from "./contracts.ts";
 import { type IEventStore, jsonlEventStore } from "./event-store.ts";
-import { builtInHandlers, type EmitInput, emitEvent, type RunRef, runDirOf } from "./events.ts";
+import {
+  builtInHandlers,
+  clearBlockerOnProgress,
+  type EmitInput,
+  emitEvent,
+  type RunRef,
+  runDirOf,
+} from "./events.ts";
 import { loadFunction, parseYaml, readIfExists, readText, runLockPath, withLock } from "./files.ts";
 import { createGit } from "./git.ts";
 import { triggerSubscribers } from "./subscribers.ts";
@@ -34,7 +41,10 @@ const applyEvent = (state: State, event: Event, projection: Projection): State =
   if (event.seq <= state.lastEventSeq) return state;
   const builtIn = projection.handlers[event.type];
   const chain = [...(builtIn ? [builtIn] : []), ...(projection.extensions?.[event.type] ?? [])];
-  const handled = chain.reduce((current, handler) => handler(current, event), state);
+  const handled = chain.reduce(
+    (current, handler) => handler(current, event),
+    clearBlockerOnProgress(state, event),
+  );
   const parsed = StateSchema.safeParse({ ...handled, lastEventSeq: event.seq });
   if (!parsed.success) {
     throw new Error(`Event ${event.seq} (${event.type}): ${z.prettifyError(parsed.error)}`);

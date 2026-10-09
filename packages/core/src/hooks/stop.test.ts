@@ -96,6 +96,19 @@ describe("decideStop", () => {
     expect(decision).toMatchObject({ reason: "run-finished" });
   });
 
+  test("SC134: a run blocked with design open sends the agent back to finish design, as a running run does", () => {
+    const design = { design: nodeRun("design-1", "running") };
+    const blocker = {
+      reason: "stuck",
+      node: "design",
+      since: "2026-09-26T10:05:00Z",
+      details: { message: null },
+    } as const;
+    const decision = decide({ status: "blocked", blocker, nodeRuns: design });
+    expect(decision).toMatchObject({ reason: "node-not-done", nodeRunId: "design-1" });
+    expect(decision).toEqual(decide({ nodeRuns: design }));
+  });
+
   test("SC2, SC23 — an open leaf inside a loop blocks with that leaf's done command", () => {
     const loop = nodeRun("fix", "running", "loop", { review: nodeRun("fix/1/review", "running") });
     const decision = decide({ nodeRuns: { fix: loop } });

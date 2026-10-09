@@ -170,6 +170,9 @@ A run's current picture, built by folding its events. It is never the history.
 A function that folds one event type into the run's state.
 _Avoid_: Reducer, subscriber
 
+**Blocker**:
+Why a run's status is `blocked`: the agent is waiting on the person for a question, a usage limit, a stuck turn or an agent error. It clears when that cause clears or work moves on.
+
 **Custom state**:
 Values a subscriber or skill keeps in a run's state between calls, under its own key.
 
@@ -245,4 +248,5 @@ _Avoid_: Post-mortem
 - "Hook" meant two things: hooks the agent fires and hooks the run calls on events. Resolved: **Agent hook** and **Subscriber**.
 - "Pipeline" and "workflow" were used for the same thing. Resolved: **Workflow**.
 - The orchestrate help text calls a run's name its "spec name". Resolved: **Run name**.
+- "Blocked" means two things: a stage `next` cannot hand out until its consumed artifacts exist (**Blocked**), and a run whose status is `blocked` because it waits on the person (**Blocker**). Not yet resolved.
 - "Event handler" and "subscriber" both react to events. Resolved: an **Event handler** changes state; a **Subscriber** only reacts.

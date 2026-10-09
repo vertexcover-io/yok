@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+  type Blocker,
   type NodeRun,
   parseJson,
   parseYaml,
@@ -9,12 +10,14 @@ import {
   runDirOf,
   type State,
 } from "@yok/sdk";
+import { isRunLive } from "@yok/sdk/internal";
 import * as z from "zod";
 import { type WorkflowNode, WorkflowSchema } from "./workflow/types.ts";
 
 const BAR_CELLS = 10;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
 
 // Claude sends `used_percentage: null` early in a session, so every field is nullish.
@@ -95,15 +98,26 @@ const elapsed = (startedAt: string, now: number): string => {
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 };
 
+const clockOf = (iso: string): string =>
+  new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
 const FINISHED: Readonly<Record<string, string>> = {
   completed: paint(GREEN, "✓ completed"),
   failed: paint(RED, "✗ failed"),
   cancelled: paint(RED, "✗ cancelled"),
 };
 
+// Phrased around the words the screen checks look for, such as "limit".
+const blockedText = (blocker: Blocker): string => {
+  if (blocker.reason === "question") return "needs your answer";
+  if (blocker.reason === "usage-limit") return `paused until ${clockOf(blocker.details.resumeAt)}`;
+  return blocker.reason === "stuck" ? "stuck" : "agent error";
+};
+
 const runPart = (state: State, running: Running, workflow: Workflow | null): string[] => {
   const finished = FINISHED[state.status];
   if (finished !== undefined) return [`▸ ${finished}`];
+  if (state.blocker !== undefined) return [`▸ ${paint(YELLOW, `⏸ ${blockedText(state.blocker)}`)}`];
   if (running.length === 0) return [];
   return [`▸ ${paint(GREEN, nodeLabel(running, workflow))}`];
 };
@@ -115,7 +129,7 @@ const trailing = (
   now: number,
 ): string[] => {
   const startedAt = running.at(-1)?.[1].startedAt;
-  const showElapsed = state.status === "running" && startedAt;
+  const showElapsed = isRunLive(state.status) && startedAt;
   const percentage = input.context_window?.used_percentage;
   return [
     ...(showElapsed ? [elapsed(showElapsed, now)] : []),

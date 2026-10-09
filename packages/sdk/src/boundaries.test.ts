@@ -27,6 +27,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "AnsweredQuestionSchema",
   "ArtifactRefSchema",
   "AskedQuestionSchema",
+  "BlockerSchema",
   "CheckStatusSchema",
   "ConfigSchema",
   "ContextStartedEvent",
