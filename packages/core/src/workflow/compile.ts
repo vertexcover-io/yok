@@ -51,7 +51,10 @@ const checkIds = (nodes: readonly WorkflowNode[], scope: string): void => {
   }
 };
 
-const sortTopologically = (nodes: readonly WorkflowNode[], scope: string): WorkflowNode[] => {
+export const sortTopologically = (
+  nodes: readonly WorkflowNode[],
+  scope: string,
+): WorkflowNode[] => {
   const placed: WorkflowNode[] = [];
   const remaining = [...nodes];
   while (remaining.length > 0) {

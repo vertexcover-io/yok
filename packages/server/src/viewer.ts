@@ -30,10 +30,23 @@ import MarkdownIt, { type Token } from "markdown-it";
 import * as z from "zod";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import ANCHOR_SOURCE from "./anchor.ts" with { type: "text" };
-import { lastDelivery, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+import { isAgentAlive, lastDelivery, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+import {
+  listRunSummaries,
+  listSteps,
+  type RunFiles,
+  readRunFiles,
+  type Step,
+  summarizeRun,
+} from "./overview.ts";
+// @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
+import SHARED_SOURCE from "./page-shared.ts" with { type: "text" };
+import RUNS_HTML from "./runs.html" with { type: "text" };
 import VIEWER_HTML from "./viewer.html" with { type: "text" };
 
-const ANCHOR_JS = new Bun.Transpiler({ loader: "ts" }).transformSync(ANCHOR_SOURCE as string);
+const transpiler = new Bun.Transpiler({ loader: "ts" });
+const ANCHOR_JS = transpiler.transformSync(ANCHOR_SOURCE as string);
+const SHARED_JS = transpiler.transformSync(SHARED_SOURCE as string);
 
 type EditorTarget = Readonly<{ file: string; line: number | null }>;
 
@@ -521,11 +534,18 @@ type FilesBody = Readonly<{
 }>;
 type CommentsBody = Readonly<{ comments: readonly unknown[]; delivery: unknown }>;
 
-const filesBody = async (page: Exclude<ViewedRun, { kind: "missing" }>): Promise<FilesBody> => {
+const filesBody = async (
+  page: Exclude<ViewedRun, { kind: "missing" }>,
+  state: State | null,
+): Promise<FilesBody> => {
   const run = { id: page.run.id, name: page.run.name };
   if (page.kind === "starting") return { state: "starting", run, files: [] };
-  const files = await listArtifacts(page.runDir, await readStateOrNull(page.runDir));
-  return { state: "ready", run, files };
+  return { state: "ready", run, files: await listArtifacts(page.runDir, state) };
+};
+
+const stepsBody = ({ state, workflow }: RunFiles): Readonly<{ steps: readonly Step[] }> => {
+  if (state === null || workflow === null) return { steps: [] };
+  return { steps: listSteps(workflow.nodes, state.nodeRuns) };
 };
 
 const commentsBody = async (
@@ -542,15 +562,11 @@ export type AgentStatus = Readonly<{
   reason: string | null;
 }>;
 
-const agentStatus = async (
-  page: Exclude<ViewedRun, { kind: "missing" }>,
-  deps: ViewerDeps,
-): Promise<AgentStatus> => {
-  if (page.kind === "starting") return { state: "starting", reason: null };
-  const { terminal, id } = page.run;
-  const pane = terminal === null ? null : deps.host.find(terminal);
-  if (pane === null || !(await pane.isAlive())) return { state: "stopped", reason: null };
-  const last = lastDelivery(id);
+// agentAlive is null for a run that is still starting, whose pane nobody asks about.
+const agentStatus = (runId: string, agentAlive: boolean | null): AgentStatus => {
+  if (agentAlive === null) return { state: "starting", reason: null };
+  if (!agentAlive) return { state: "stopped", reason: null };
+  const last = lastDelivery(runId);
   if (last?.kind === "waiting") return { state: "waiting", reason: last.reason };
   return { state: "running", reason: null };
 };
@@ -576,10 +592,21 @@ const sameStamp = (a: Stamp | undefined, b: Stamp): boolean =>
 const sendEvent = (stream: SSEStreamingApi, event: string, data: unknown) =>
   stream.writeSSE({ event, data: JSON.stringify(data) });
 
+// Sends the event only when its JSON differs from the last one sent under that name.
+const sendChanged = async (
+  stream: SSEStreamingApi,
+  sent: Map<string, string>,
+  event: string,
+  data: unknown,
+): Promise<void> => {
+  const json = JSON.stringify(data);
+  if (sent.get(event) === json) return;
+  sent.set(event, json);
+  await stream.writeSSE({ event, data: json });
+};
+
 const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string): Promise<void> => {
-  let sentFiles = "";
-  let sentComments = "";
-  let sentAgent = "";
+  const sent = new Map<string, string>();
   // null until the first look at the folder: files already there on connect are not "changed".
   let stamps: ReadonlyMap<string, Stamp> | null = null;
   while (!stream.aborted) {
@@ -588,12 +615,10 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
       await stream.sleep(POLL_MS);
       continue;
     }
-    const files = await filesBody(page);
-    const filesJson = JSON.stringify(files);
-    if (filesJson !== sentFiles) {
-      sentFiles = filesJson;
-      await sendEvent(stream, "files", files);
-    }
+    const runFiles = await readRunFiles(page.run);
+    const agentAlive = page.kind === "ready" ? await isAgentAlive(page.run, deps.host) : null;
+    const files = await filesBody(page, runFiles.state);
+    await sendChanged(stream, sent, "files", files);
     if (page.kind === "ready") {
       const now = await fileStamps(page.runDir, files.files);
       for (const [path, stamp] of stamps === null ? [] : now) {
@@ -602,17 +627,23 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
         }
       }
       stamps = now;
+      await sendChanged(stream, sent, "steps", stepsBody(runFiles));
     }
-    const agentJson = JSON.stringify(await agentStatus(page, deps));
-    if (agentJson !== sentAgent) {
-      sentAgent = agentJson;
-      await stream.writeSSE({ event: "agent", data: agentJson });
-    }
+    await sendChanged(stream, sent, "summary", summarizeRun(page.run, runFiles, agentAlive));
+    await sendChanged(stream, sent, "agent", agentStatus(page.run.id, agentAlive));
     const comments = await commentsBody(page);
-    const commentsJson = JSON.stringify(comments);
-    if (comments !== null && commentsJson !== sentComments) {
-      sentComments = commentsJson;
-      await sendEvent(stream, "comments", comments);
+    if (comments !== null) await sendChanged(stream, sent, "comments", comments);
+    await stream.sleep(POLL_MS);
+  }
+};
+
+const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<void> => {
+  let sent = "";
+  while (!stream.aborted) {
+    const json = JSON.stringify({ runs: await listRunSummaries(deps.registry, deps.host) });
+    if (json !== sent) {
+      sent = json;
+      await stream.writeSSE({ event: "runs", data: json });
     }
     await stream.sleep(POLL_MS);
   }
@@ -621,13 +652,20 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
     .use("*", hostGuard(deps.port))
+    .get("/", (c) => c.html(RUNS_HTML as unknown as string))
+    .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.registry, deps.host) }))
+    .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
     .get("/runs/:id", (c) => c.html(VIEWER_HTML as unknown as string))
     .get("/assets/anchor.js", (c) =>
       c.body(ANCHOR_JS, 200, { "content-type": "text/javascript; charset=utf-8" }),
     )
+    .get("/assets/shared.js", (c) =>
+      c.body(SHARED_JS, 200, { "content-type": "text/javascript; charset=utf-8" }),
+    )
     .get("/runs/:id/files", async (c) => {
       const page = await findViewedRun(deps.registry, c.req.param("id"));
-      return page.kind === "missing" ? notFound(c) : c.json(await filesBody(page));
+      if (page.kind === "missing") return notFound(c);
+      return c.json(await filesBody(page, (await readRunFiles(page.run)).state));
     })
     .get("/runs/:id/stream", async (c) => {
       const id = c.req.param("id");

@@ -33,7 +33,9 @@ const setup = async () => {
     createdAt: new Date().toISOString(),
   };
   await createRegistry(registryPath(home)).addRun(record);
-  const env = { ...process.env, YOK_HOME: home };
+  // This pipeline exports YOK_RUN_ID; left in, yok view would open that run instead of the list.
+  const { YOK_RUN_ID: _session, ...parentEnv } = process.env;
+  const env = { ...parentEnv, YOK_HOME: home };
   const view = (...args: string[]) => {
     const result = spawnSync("bun", [CLI, "view", ...args], { cwd, encoding: "utf8", env });
     return { code: result.status ?? 1, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
@@ -60,5 +62,17 @@ describe("yok view", () => {
     const mismatched = view("other-run", "--run-id", record.id, "--print");
     expect(mismatched.code).toBe(1);
     expect(mismatched.stderr).toContain("name different runs");
+  }, 40_000);
+
+  test("SC109: with no name, --run-id or $YOK_RUN_ID, prints the runs page URL, and a named run still prints its own page", async () => {
+    const { view, record } = await setup();
+
+    const list = view("--print");
+    expect(list.code).toBe(0);
+    expect(list.stdout).toMatch(/^http:\/\/localhost:\d+\/$/);
+
+    const named = view("fix-login", "--print");
+    expect(named.code).toBe(0);
+    expect(named.stdout).toMatch(new RegExp(`^http://localhost:\\d+/runs/${record.id}$`));
   }, 40_000);
 });

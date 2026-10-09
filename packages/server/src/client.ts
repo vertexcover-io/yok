@@ -73,6 +73,7 @@ export const createYokClient = ({ home = yokHome(), log = noopLogger }: YokClien
     health: () => unwrap(api.health.$get()),
     run: (body: StartRunRequest) => unwrap(api.runs.$post({ json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
+    viewRuns: () => unwrap(api.runs.view.$get()),
   };
 };
 
