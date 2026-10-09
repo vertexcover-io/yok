@@ -152,7 +152,7 @@ Moving a run's session onto another model between stages, because the next node'
 A run pausing until the agent's usage limit resets, then resuming the session.
 
 **Stuck**:
-An agent the Stop hook sent back too many times in a row, so yok let its turn end.
+An agent the Stop hook sent back too many times in a row, so yok let its turn end. An agent that ends its turn while a background task it started is still running is waiting, not stuck.
 
 ## Events and state
 

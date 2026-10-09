@@ -124,6 +124,7 @@ export const StopReasonSchema = z.enum([
   "next-not-run",
   "context-node",
   "model-switch",
+  "background-task",
 ]);
 export type StopReason = z.infer<typeof StopReasonSchema>;
 

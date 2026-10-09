@@ -282,17 +282,18 @@ Codex does not switch. It runs the whole workflow on its launch model.
 
 Agents drift. They finish a step and forget to report it, or they answer you and wait, or they declare victory early. The Stop hook is what keeps a run moving without a person watching.
 
-Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/hooks/stop.ts#L229) runs. [decideStop](../../packages/core/src/hooks/stop.ts#L137) reads the run's state and answers one question: is the agent allowed to stop?
+Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/hooks/stop.ts#L242) runs. [decideStop](../../packages/core/src/hooks/stop.ts#L147) reads the run's state and answers one question: is the agent allowed to stop?
 
 | State of the run | Decision |
 |---|---|
 | Status is not `running` | Allow. The run is over. |
 | A context or model node is waiting for the turn to end | Allow, and start that switch. |
+| Claude reports a background task (a helper agent, a background shell command) still running | Allow. The agent is waiting on it, and the task's end wakes it. |
 | A stage or exec node is still open | Send the agent back with the exact `done` or `exec` command it owes. |
 | Between nodes, and the agent ran no orchestrate command since your last message | Allow. You were chatting with it. |
 | Between nodes, and it did run orchestrate commands | Send it back: "run `yok orchestrate next --run …`". |
 
-It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
+It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. A turn that ends while a background task runs is never counted toward that limit and never records `agent.stuck`. Claude lists those tasks in the Stop hook's `background_tasks` input; with Codex, or a Claude Code too old to send it, the hook behaves as if none were running. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
 
 A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L61) is a PreToolUse hook that refuses any tool call writing to `state.json`, `event.jsonl`, or `registry.json`. The agent may read them. Only `next`, `exec`, and `done` may write them.
 

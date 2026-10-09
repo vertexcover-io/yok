@@ -2384,6 +2384,37 @@ describe("SC26: orchestrate hook stop", () => {
     ]);
   });
 
+  test("SC141: two stops with plan open while Claude reports a running background subagent both print nothing, and state.json stays running with no blocker and no agent.stuck", async () => {
+    const run = openNodeRun();
+    // The shape a real Claude Code 2.1 Stop hook received with a background task in flight.
+    const waiting = JSON.stringify({
+      session_id: "s1",
+      stop_hook_active: false,
+      background_tasks: [
+        {
+          id: "aaac928835732bb0b",
+          type: "subagent",
+          status: "running",
+          description: "review the plan",
+          agent_type: "general-purpose",
+        },
+      ],
+      session_crons: [],
+    });
+
+    const replies = [stop(run, waiting), stop(run, waiting)];
+
+    expect(replies).toMatchObject([
+      { code: 0, stdout: "" },
+      { code: 0, stdout: "" },
+    ]);
+    const types = (await eventsOf(run.repo)).map((event) => event.type);
+    expect(types).not.toContain("agent.stuck");
+    expect(types.at(-1)).toBe("hooks.stop.called");
+    expect(stateOf(run.repo)).toMatchObject({ status: "running", stopHook: { blockStreak: 0 } });
+    expect(stateOf(run.repo).blocker).toBeUndefined();
+  });
+
   test("SC22 — a session that is not the run's own is never blocked", async () => {
     const run = openNodeRun();
     const before = await eventsOf(run.repo);

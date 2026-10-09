@@ -87,6 +87,7 @@ const decide = (
     touchedRun,
     progressSinceCheck,
     maxBlocks: 1,
+    waitingOnBackground: false,
     pendingSwitch,
   });
 
@@ -226,10 +227,12 @@ const setUp = async (nodeRuns: State["nodeRuns"], agent: "claude" | "codex" = "c
 const input = (
   entries: readonly TranscriptEntry[] | undefined,
   agent: "claude" | "codex" = "claude",
+  backgroundTasks: StopInput["backgroundTasks"] = [],
 ): StopInput => ({
   agent,
   sessionId: "s1",
   contextSteps: agent === "claude",
+  backgroundTasks,
   readTranscript: async () => entries,
 });
 
@@ -361,6 +364,63 @@ describe("runStopHook", () => {
       ["hooks", { agent: "claude", sessionId: "s1" }],
     ]);
   });
+
+  test.each([
+    ["SC137", "subagent"],
+    ["SC138", "shell"],
+  ])(
+    "%s: two stops with plan open while a %s runs in the background both let the turn end as background-task, at streak 0, with no agent.stuck",
+    async (_id, type) => {
+      const { deps, runDir } = await setUp(planOpen);
+      const waiting = input(undefined, "claude", [{ type, status: "running" }]);
+
+      const kinds = [
+        (await runStopHook(waiting, deps)).kind,
+        (await runStopHook(waiting, deps)).kind,
+      ];
+
+      expect(kinds).toEqual(["allow", "allow"]);
+      const events = await jsonlEventStore(runDir).read();
+      expect(events.map((event) => [event.type, event.payload])).toEqual([
+        [
+          "hooks.stop.called",
+          expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
+        ],
+        [
+          "hooks.stop.called",
+          expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
+        ],
+      ]);
+      expect((await readState(runDir))?.status).toBe("running");
+    },
+  );
+
+  test.each([
+    ["SC139", "no background tasks", []],
+    [
+      "SC140",
+      "only a completed shell and a failed subagent",
+      [
+        { type: "shell", status: "completed" },
+        { type: "subagent", status: "failed" },
+      ],
+    ],
+  ])(
+    "%s: with plan open and %s, the first stop sends the agent back and the second records agent.stuck",
+    async (_id, _label, backgroundTasks) => {
+      const { deps, runDir } = await setUp(planOpen);
+      const stopping = input(undefined, "claude", backgroundTasks);
+
+      const kinds = [
+        (await runStopHook(stopping, deps)).kind,
+        (await runStopHook(stopping, deps)).kind,
+      ];
+
+      expect(kinds).toEqual(["continue", "allow"]);
+      const types = (await jsonlEventStore(runDir).read()).map((event) => event.type);
+      expect(types).toEqual(["hooks.stop.called", "hooks.stop.called", "agent.stuck"]);
+    },
+  );
 
   test("a tool call between two stops is not progress, and any other event is", async () => {
     const { deps, runDir } = await setUp(planOpen);
