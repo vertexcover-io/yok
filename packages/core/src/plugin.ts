@@ -106,6 +106,38 @@ const addAndInstall = (agent: WorkflowAgent, tag: string): readonly (readonly st
         ["plugin", "add", "yok", "--marketplace", "yok"],
       ];
 
+// owner/repo, a GitHub HTTPS or SSH URL, with an optional .git and #ref. Anything else, such as a
+// fork or another host, is not this repo.
+const GITHUB_SOURCE =
+  /^(?:https:\/\/github\.com\/|git@github\.com:)?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?(?:#.*)?$/;
+
+const isYokRepo = (source: string): boolean =>
+  GITHUB_SOURCE.exec(source)?.[1]?.toLowerCase() === YOK_REPO;
+
+type Run = (args: readonly string[]) => Promise<Result<string, string>>;
+
+const runner =
+  (binary: string, exec: Exec, cwd: string): Run =>
+  async (args) => {
+    const result = await exec(binary, args, cwd);
+    return result.code === 0
+      ? { ok: true, value: result.stdout }
+      : { ok: false, error: `${binary} ${args.join(" ")} failed: ${firstLine(result.stderr)}` };
+  };
+
+// Returns whether this repo's marketplace is present. A source that cannot be identified may be
+// another team's marketplace, so it is an error and never removed.
+const ownMarketplace = async (agent: WorkflowAgent, run: Run): Promise<Result<boolean, string>> => {
+  const markets = await run(["plugin", "marketplace", "list", "--json"]);
+  if (!markets.ok) return markets;
+  const source = marketplaceSource(agent, markets.value);
+  if (source === undefined) return { ok: true, value: false };
+  if (source === null || !isYokRepo(source)) {
+    return { ok: false, error: `a marketplace named yok points at ${source}; remove it first` };
+  }
+  return { ok: true, value: true };
+};
+
 // An added marketplace's source cannot change and the plugin version comes from the tag it was
 // added at, so moving to another version removes this repo's marketplace and adds it again.
 export const installPlugin = async (
@@ -115,26 +147,16 @@ export const installPlugin = async (
   exec: Exec,
   cwd: string,
 ): Promise<Result<string, string>> => {
-  const run = async (args: readonly string[]): Promise<Result<string, string>> => {
-    const result = await exec(binary, args, cwd);
-    return result.code === 0
-      ? { ok: true, value: result.stdout }
-      : { ok: false, error: `${binary} ${args.join(" ")} failed: ${firstLine(result.stderr)}` };
-  };
+  const run = runner(binary, exec, cwd);
   const listed = await run(["plugin", "list", "--json"]);
   if (!listed.ok) return listed;
   const versions = enabledVersions(agent, listed.value, cwd);
   if (versions.length > 0 && versions.every((v) => v === version)) {
     return { ok: true, value: `yok ${version} is already installed for ${agent}` };
   }
-  const markets = await run(["plugin", "marketplace", "list", "--json"]);
-  if (!markets.ok) return markets;
-  const source = marketplaceSource(agent, markets.value);
-  // A source that cannot be identified may be another team's marketplace, so it is never removed.
-  if (source !== undefined && !(source ?? "").includes(YOK_REPO)) {
-    return { ok: false, error: `a marketplace named yok points at ${source}; remove it first` };
-  }
-  if (source !== undefined) {
+  const own = await ownMarketplace(agent, run);
+  if (!own.ok) return own;
+  if (own.value) {
     const removed = await run(["plugin", "marketplace", "remove", "yok"]);
     if (!removed.ok) return removed;
   }
@@ -146,4 +168,42 @@ export const installPlugin = async (
     ok: true,
     value: `installed yok ${version} for ${agent}; running sessions keep the old skills until /reload-plugins or a restart`,
   };
+};
+
+const isInstalled = (agent: WorkflowAgent, listJson: string): boolean => {
+  const json: unknown = JSON.parse(listJson);
+  if (agent === "codex") {
+    return CodexPluginsSchema.parse(json).installed.some(
+      (p) => p.name === "yok" && p.marketplaceName === "yok",
+    );
+  }
+  return ClaudePluginsSchema.parse(json).some((p) => p.id === "yok@yok" && p.scope === "user");
+};
+
+const removeCommand = (agent: WorkflowAgent): readonly string[] =>
+  agent === "claude" ? ["plugin", "uninstall", "yok@yok"] : ["plugin", "remove", "yok@yok"];
+
+// The marketplace is checked first, so a yok plugin from someone else's marketplace stays.
+export const uninstallPlugin = async (
+  agent: WorkflowAgent,
+  binary: string,
+  exec: Exec,
+  cwd: string,
+): Promise<Result<string, string>> => {
+  const run = runner(binary, exec, cwd);
+  const own = await ownMarketplace(agent, run);
+  if (!own.ok) return own;
+  const listed = await run(["plugin", "list", "--json"]);
+  if (!listed.ok) return listed;
+  const installed = isInstalled(agent, listed.value);
+  if (!installed && !own.value) return { ok: true, value: `${agent} has no yok plugin` };
+  if (installed) {
+    const removed = await run(removeCommand(agent));
+    if (!removed.ok) return removed;
+  }
+  if (own.value) {
+    const removed = await run(["plugin", "marketplace", "remove", "yok"]);
+    if (!removed.ok) return removed;
+  }
+  return { ok: true, value: `removed the yok plugin from ${agent}` };
 };

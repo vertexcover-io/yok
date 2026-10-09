@@ -1,15 +1,7 @@
-import { existsSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
 import { Command } from "@commander-js/extra-typings";
 import { yokHome } from "@yok/sdk";
-import { socketPath, startServer } from "@yok/server";
-import { commandLog, fail, yokClient } from "./client.ts";
-
-const STOP_TIMEOUT_MS = 5_000;
-const POLL_INTERVAL_MS = 100;
-
-// Bun.file().exists() reports false for a socket file, so this uses existsSync.
-const socketGone = (path: string): boolean => !existsSync(path);
+import { startServer } from "@yok/server";
+import { commandLog, fail, stopServer, yokClient } from "./client.ts";
 
 export const serverCommand = () => {
   const server = new Command("server").description("Manage the yok server process");
@@ -34,24 +26,11 @@ export const serverCommand = () => {
     .description("Stop the running yok server")
     .action(async () => {
       const home = yokHome();
-      // Signal the pid the live server reports, never a pid file a crash may have left behind.
       const running = await yokClient(home).health();
       if (!running.ok) {
         return fail("not running");
       }
-      const log = commandLog("server stop");
-      const { pid } = running.value;
-      const startedAt = Date.now();
-      process.kill(pid, "SIGTERM");
-      while (!socketGone(socketPath(home)) && Date.now() < startedAt + STOP_TIMEOUT_MS) {
-        await sleep(POLL_INTERVAL_MS);
-      }
-      if (socketGone(socketPath(home))) {
-        log.info({ pid, durationMs: Date.now() - startedAt }, "server stopped");
-        return;
-      }
-      log.warn({ pid }, "server still running 5s after SIGTERM");
-      fail(`server (pid ${pid}) is still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
+      await stopServer(home, running.value.pid).catch(fail);
     });
 
   server

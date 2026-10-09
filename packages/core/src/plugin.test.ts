@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Exec, ExecResult } from "@yok/sdk";
-import { installPlugin, pluginCheck } from "./plugin.ts";
+import { installPlugin, pluginCheck, uninstallPlugin } from "./plugin.ts";
 import type { WorkflowAgent } from "./workflow/types.ts";
 
 type Replies = Readonly<Record<string, Partial<ExecResult>>>;
@@ -207,5 +207,98 @@ describe("installPlugin", () => {
     expect(!result.ok && result.error).toContain("plugin marketplace add");
     expect(!result.ok && result.error).toContain("network down");
     expect(calls).not.toContain("plugin install yok@yok");
+  });
+});
+
+describe("uninstallPlugin", () => {
+  test("Claude: removes yok@yok, then this repo's yok marketplace", async () => {
+    const { exec, calls } = recordingExec({
+      [LIST]: { stdout: listOf("claude", ["0.0.1"]) },
+      [MARKETS]: { stdout: claudeMarket("vertexcover-io/yok") },
+    });
+
+    const result = await uninstallPlugin("claude", "claude", exec, "/p");
+
+    expect(calls).toEqual([
+      MARKETS,
+      LIST,
+      "plugin uninstall yok@yok",
+      "plugin marketplace remove yok",
+    ]);
+    expect(result).toEqual({ ok: true, value: "removed the yok plugin from claude" });
+  });
+
+  test("Codex: removes yok@yok, then this repo's yok marketplace", async () => {
+    const { exec, calls } = recordingExec({
+      [LIST]: { stdout: listOf("codex", ["0.0.1"]) },
+      [MARKETS]: { stdout: codexMarket({ sourceType: "git", source: REPO_URL }) },
+    });
+
+    const result = await uninstallPlugin("codex", "codex", exec, "/p");
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      MARKETS,
+      LIST,
+      "plugin remove yok@yok",
+      "plugin marketplace remove yok",
+    ]);
+  });
+
+  test("with no plugin and no marketplace, changes nothing and says so", async () => {
+    const { exec, calls } = recordingExec({
+      [LIST]: { stdout: listOf("claude", []) },
+      [MARKETS]: { stdout: "[]" },
+    });
+
+    const result = await uninstallPlugin("claude", "claude", exec, "/p");
+
+    expect(calls).toEqual([MARKETS, LIST]);
+    expect(result).toEqual({ ok: true, value: "claude has no yok plugin" });
+  });
+
+  test("refuses a yok marketplace pointing at someone/else and changes nothing", async () => {
+    const { exec, calls } = recordingExec({
+      [LIST]: { stdout: listOf("claude", ["0.0.1"]) },
+      [MARKETS]: { stdout: claudeMarket("someone/else") },
+    });
+
+    const result = await uninstallPlugin("claude", "claude", exec, "/p");
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain("someone/else");
+    expect(calls).toEqual([MARKETS]);
+  });
+
+  test("removes only a marketplace whose source is exactly vertexcover-io/yok", async () => {
+    const ours = [
+      "vertexcover-io/yok",
+      "vertexcover-io/yok#v0.0.2",
+      "Vertexcover-IO/yok",
+      REPO_URL,
+      "https://github.com/vertexcover-io/yok",
+      "git@github.com:vertexcover-io/yok.git",
+    ];
+    const others = [
+      "vertexcover-io/yok-fork",
+      "someone/vertexcover-io/yok",
+      "https://github.com/vertexcover-io/yok-fork.git",
+      "https://evil.example/vertexcover-io/yok.git",
+    ];
+    for (const [repo, removed] of [
+      ...ours.map((r) => [r, true] as const),
+      ...others.map((r) => [r, false] as const),
+    ]) {
+      const { exec, calls } = recordingExec({
+        [LIST]: { stdout: listOf("claude", ["0.0.1"]) },
+        [MARKETS]: { stdout: claudeMarket(repo) },
+      });
+      const result = await uninstallPlugin("claude", "claude", exec, "/p");
+      expect([repo, result.ok, calls.includes("plugin marketplace remove yok")]).toEqual([
+        repo,
+        removed,
+        removed,
+      ]);
+    }
   });
 });

@@ -43,7 +43,7 @@ yok-dev --version
 yok-dev doctor
 ```
 
-`yok-dev` runs the TypeScript in this checkout directly, so an edit shows on the next run with no build. It sits beside the release `yok` and never replaces it. The agent sessions it starts call `yok-dev` back whenever a skill says `yok`, and Claude loads this checkout as its plugin.
+`yok-dev` runs the TypeScript in this checkout directly, so an edit shows on the next run with no build. Every `yok-dev run` or `yok-dev view` restarts a server that started before it, so the server runs your latest code too. It sits beside the release `yok` and never replaces it. The agent sessions it starts call `yok-dev` back whenever a skill says `yok`, and Claude loads this checkout as its plugin.
 
 `yok-dev` keeps its runs, server and logs in `~/.yok-dev`, apart from the release's `~/.yok`. A run started by one does not show in the other. [Setup and first run](./docs/guide/07-setup-and-first-run.md) walks through the setup, the first demo runs, and what to do when something breaks.
 
