@@ -79,6 +79,7 @@ const codexStop = async (stdin: string, deps: HookDeps, handler: StopHandler): P
       agent: "codex",
       sessionId,
       contextSteps: codexAdapter.contextSteps,
+      backgroundTasks: [],
       readTranscript: () => readCodexTranscript(transcriptPath ?? undefined),
     },
     handler,

@@ -23,4 +23,4 @@ Chosen: `status: "blocked"` plus `blocker`, because the run's own status then sa
 
 ## Consequences
 
-Every check of "is the run still going?" must accept `blocked` as well as `running` (`next`, the Stop hook, the status line). A new reason needs its own opening event and a `details` shape in `BlockerSchema`.
+Every check of "is the run still going?" must accept `blocked` as well as `running` (`next`, the Stop hook, the status line). A new reason needs its own opening event and a `details` shape in `BlockerSchema`. Since a `stuck` blocker tells the person to step in, the Stop hook never records `agent.stuck` for a turn that ends while Claude reports a background task running.

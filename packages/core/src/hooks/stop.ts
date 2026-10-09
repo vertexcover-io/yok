@@ -41,6 +41,7 @@ export type StopCheck = Readonly<{
   // whether anything but a hook's own log happened since the last Stop check
   progressSinceCheck: boolean;
   maxBlocks: number;
+  waitingOnBackground: boolean;
   // the model switch next asked for that no helper has answered yet
   pendingSwitch: ModelSwitch["pending"];
 }>;
@@ -49,7 +50,10 @@ export type StopCheck = Readonly<{
 // with a message sends the agent back to work; one without lets the turn end.
 export type StopDecision =
   | Readonly<{
-      reason: Extract<StopReason, "run-finished" | "user-chat" | "max-blocks-reached">;
+      reason: Extract<
+        StopReason,
+        "run-finished" | "user-chat" | "max-blocks-reached" | "background-task"
+      >;
       blockStreak: number;
     }>
   | Readonly<{ reason: "context-node"; blockStreak: number; nodeRunId: string }>
@@ -89,6 +93,10 @@ const touchedRunSinceLastPrompt = (
     .slice(last + 1)
     .some((entry) => entry.kind === "command" && ORCHESTRATE.test(entry.command));
 };
+
+// Claude lists only tasks in flight (seen as "running") and documents no status values, so any
+// status but a plainly finished one counts as still running.
+const FINISHED_TASK: ReadonlySet<string> = new Set(["completed", "failed", "killed"]);
 
 const maxBlocksOf = (env: HookDeps["env"]): number => {
   const maxBlocks = Number(env.YOK_STOP_MAX_BLOCKS);
@@ -141,6 +149,7 @@ export const decideStop = ({
   touchedRun,
   progressSinceCheck,
   maxBlocks,
+  waitingOnBackground,
   pendingSwitch,
 }: StopCheck): StopDecision => {
   const prior = priorBlocks(state, progressSinceCheck);
@@ -154,6 +163,8 @@ export const decideStop = ({
   if (position.kind === "between-nodes" && pendingSwitch !== null) {
     return { reason: "model-switch", blockStreak: prior, seq: pendingSwitch.seq };
   }
+  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck.
+  if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   if (prior >= maxBlocks) return { reason: "max-blocks-reached", blockStreak: prior };
@@ -247,6 +258,7 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       touchedRun,
       progressSinceCheck: progressSince(events, state.stopHook?.seq),
       maxBlocks: maxBlocksOf(deps.env),
+      waitingOnBackground: input.backgroundTasks.some((task) => !FINISHED_TASK.has(task.status)),
       pendingSwitch: foldModelSwitch(events, state.tiers).pending,
     };
     const decision = await decideForAgent(input, check);
