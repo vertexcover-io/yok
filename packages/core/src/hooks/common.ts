@@ -8,9 +8,10 @@ import {
   type Result,
   type RunRef,
   type SessionRef,
+  type State,
   type ToolVerdict,
 } from "@yok/sdk";
-import { appendRunEvent } from "@yok/sdk/internal";
+import { appendRunEventIf } from "@yok/sdk/internal";
 import * as z from "zod";
 
 // The initialized run that YOK_RUN_ID names, whichever session is asking. A session that
@@ -39,16 +40,19 @@ export const findSessionRun = async (
 
 type HookEvent = Readonly<{ type: string; payload: JsonValue }>;
 
-// Stores an event from the agent's hooks. Never throws: a hook only observes, so a failed record
-// is logged and returns undefined rather than breaking the agent's session.
+// Stores an event from the agent's hooks, if `allowed` passes on the state under the run's lock.
+// Never throws: a hook only observes, so a failed record is logged and returns undefined rather
+// than breaking the agent's session.
 export const recordRunEvent = async (
   run: RunRef,
   event: HookEvent,
   deps: HookDeps,
+  allowed: (state: State | null) => boolean = () => true,
 ): Promise<Event | undefined> => {
   try {
-    const stored = await appendRunEvent(run, { ...event, source: "hooks" });
+    const stored = await appendRunEventIf(run, { ...event, source: "hooks" }, allowed);
     if (stored.ok) return stored.value.event;
+    if (stored.error === "condition-failed") return undefined;
     deps.log.warn({ error: stored.error }, `${event.type} not recorded`);
   } catch (error) {
     deps.log.warn({ err: error }, `${event.type} not recorded`);
