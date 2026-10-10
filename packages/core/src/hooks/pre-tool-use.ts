@@ -1,7 +1,6 @@
 /// <reference path="./vendor-sh.d.ts" />
 import { homedir } from "node:os";
 import {
-  type EmitInput,
   type HookDeps,
   type PreToolUseHandler,
   readState,
@@ -13,9 +12,8 @@ import {
   type ToolVerdict,
   yokHome,
 } from "@yok/sdk";
-import { appendRunEvent } from "@yok/sdk/internal";
 import BASH_ANTIPATTERNS from "../../vendor/bash-antipatterns.sh" with { type: "text" };
-import { findSessionRun, recordSessionEvent } from "./common.ts";
+import { findSessionRun, recordRunEvent, recordSessionEvent } from "./common.ts";
 import { expandPath, type PathBase, shellWriteTargets } from "./write-targets.ts";
 
 export type ProtectedRecord =
@@ -73,8 +71,7 @@ const recordResumed = async (use: ToolUse, deps: HookDeps): Promise<void> => {
       reason: state.blocker.reason,
       tool: use.toolName,
     };
-    const stored = await appendRunEvent(run, { type: "agent.resumed", source: "hooks", payload });
-    if (!stored.ok) deps.log.warn({ error: stored.error }, "agent.resumed not recorded");
+    await recordRunEvent(run, { type: "agent.resumed", payload }, deps);
   } catch (error) {
     deps.log.warn({ err: error }, "agent.resumed not recorded");
   }
@@ -146,9 +143,8 @@ export const preToolUseHandlers: Readonly<Record<string, PreToolUseHandler>> = O
   [recordGuard, bashAntipatterns, questionNotice].map((handler) => [handler.name, handler]),
 );
 
-const calledEvent = (use: ToolUse, handler: string, verdict: ToolVerdict): EmitInput => ({
+const calledEvent = (use: ToolUse, handler: string, verdict: ToolVerdict) => ({
   type: "hooks.pre-tool-use.called",
-  source: "hooks",
   payload: {
     agent: use.agent,
     sessionId: use.sessionId,
@@ -166,14 +162,11 @@ const logCall = async (
   verdict: ToolVerdict,
   deps: HookDeps,
 ): Promise<void> => {
-  try {
-    const run = await findSessionRun(use, deps);
-    if (run === undefined) return;
-    const stored = await appendRunEvent(run, calledEvent(use, handler, verdict));
-    if (!stored.ok) deps.log.warn({ error: stored.error }, "pre-tool-use call not recorded");
-  } catch (error) {
+  const run = await findSessionRun(use, deps).catch((error: unknown) => {
     deps.log.warn({ err: error }, "pre-tool-use call not recorded");
-  }
+    return undefined;
+  });
+  if (run !== undefined) await recordRunEvent(run, calledEvent(use, handler, verdict), deps);
 };
 
 // A handler that fails lets the call through, or it could trap the session.

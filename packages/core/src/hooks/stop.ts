@@ -22,7 +22,7 @@ import {
 } from "@yok/sdk/internal";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, orchestrateLine } from "../runs.ts";
-import { findSessionRun } from "./common.ts";
+import { findSessionRun, recordRunEvent } from "./common.ts";
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
 // `yok orchestrate next` or `bun …/index.ts orchestrate done`, but not a path like orchestrate/SKILL.md
@@ -227,15 +227,6 @@ const decideForAgent = async (input: StopInput, check: StopCheck): Promise<StopD
   };
 };
 
-const recordStuck = async (run: RunRef, input: StopInput, deps: HookDeps): Promise<void> => {
-  const stored = await appendRunEvent(run, {
-    type: "agent.stuck",
-    source: "hooks",
-    payload: { agent: input.agent, sessionId: input.sessionId },
-  });
-  if (!stored.ok) deps.log.warn({ error: stored.error }, "agent.stuck not recorded");
-};
-
 // Decides whether the agent may end its turn and logs the call as hooks.stop.called. It never
 // throws: a hook that fails must let the turn end, or it could trap the session.
 export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
@@ -274,7 +265,10 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     if (decision.reason === "model-switch") {
       await startModelStep(run, input.sessionId, decision.seq);
     }
-    if (decision.reason === "max-blocks-reached") await recordStuck(run, input, deps);
+    if (decision.reason === "max-blocks-reached") {
+      const payload = { agent: input.agent, sessionId: input.sessionId };
+      await recordRunEvent(run, { type: "agent.stuck", payload }, deps);
+    }
     return replyOf(decision);
   } catch (error) {
     deps.log.error({ err: error }, "stop allowed: the stop hook failed");

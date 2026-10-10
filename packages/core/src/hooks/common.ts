@@ -37,19 +37,36 @@ export const findSessionRun = async (
   return linked ? run?.ref : undefined;
 };
 
+type HookEvent = Readonly<{ type: string; payload: JsonValue }>;
+
+// Stores an event from the agent's hooks. Never throws: a hook only observes, so a failed record
+// is logged and returns undefined rather than breaking the agent's session.
+export const recordRunEvent = async (
+  run: RunRef,
+  event: HookEvent,
+  deps: HookDeps,
+): Promise<Event | undefined> => {
+  try {
+    const stored = await appendRunEvent(run, { ...event, source: "hooks" });
+    if (stored.ok) return stored.value.event;
+    deps.log.warn({ error: stored.error }, `${event.type} not recorded`);
+  } catch (error) {
+    deps.log.warn({ err: error }, `${event.type} not recorded`);
+  }
+  return undefined;
+};
+
 // Stores an event from the agent's hooks in the run the session belongs to. Undefined when the
 // session is no run's, or when the event could not be stored, which is logged.
 export const recordSessionEvent = async (
   session: Readonly<{ agent: AgentType; sessionId: string }>,
-  event: Readonly<{ type: string; payload: JsonValue }>,
+  event: HookEvent,
   deps: HookDeps,
 ): Promise<Readonly<{ run: RunRef; event: Event }> | undefined> => {
   const run = await findSessionRun(session, deps);
   if (run === undefined) return undefined;
-  const stored = await appendRunEvent(run, { ...event, source: "hooks" });
-  if (stored.ok) return { run, event: stored.value.event };
-  deps.log.warn({ error: stored.error }, `${event.type} not recorded`);
-  return undefined;
+  const stored = await recordRunEvent(run, event, deps);
+  return stored === undefined ? undefined : { run, event: stored };
 };
 
 export const parseStdin = <T>(stdin: string, schema: z.ZodType<T>): Result<T> => {
