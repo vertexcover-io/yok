@@ -11,6 +11,8 @@ import {
   registryPath,
   runDirOf,
   type StopFailureInput,
+  type StopHandler,
+  type StopInput,
   type ToolCall,
   type ToolUse,
 } from "@yok/sdk";
@@ -94,6 +96,39 @@ describe("claudeAdapter.stop", () => {
     expect(await claudeStop?.("not json", deps, continueWorkflow)).toBe("");
     expect(await claudeStop?.("{}", deps, continueWorkflow)).toBe("");
     expect(lookups).toBe(0);
+  });
+});
+
+describe("claudeAdapter.stop background_tasks", () => {
+  const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
+  const waitingOnBackground = async (backgroundTasks: unknown): Promise<boolean | undefined> => {
+    const seen: StopInput[] = [];
+    const spy: StopHandler = {
+      name: "spy",
+      run: async (input) => {
+        seen.push(input);
+        return { kind: "allow" };
+      },
+    };
+    await claudeStop?.(line({ session_id: "s1", background_tasks: backgroundTasks }), deps, spy);
+    return seen[0]?.waitingOnBackground;
+  };
+
+  test.each([
+    ["SC137", "a running subagent", true, [{ type: "subagent", status: "running" }]],
+    ["SC138", "a running shell", true, [{ type: "shell", status: "running" }]],
+    ["SC139", "an empty list", false, []],
+    [
+      "SC140",
+      "only a completed shell and a failed subagent",
+      false,
+      [
+        { type: "shell", status: "completed" },
+        { type: "subagent", status: "failed" },
+      ],
+    ],
+  ])("%s: %s reads as waiting on background %p", async (_id, _label, waiting, tasks) => {
+    expect(await waitingOnBackground(tasks)).toBe(waiting);
   });
 });
 

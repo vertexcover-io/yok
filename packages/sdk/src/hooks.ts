@@ -35,8 +35,8 @@ export type StopInput = Readonly<{
   sessionId: string;
   // whether the agent can start a new session or compact in its pane for a context node
   contextSteps: boolean;
-  // the agent's background tasks (helpers, shell commands) it reports, empty when it reports none
-  backgroundTasks: readonly Readonly<{ type: string; status: string }>[];
+  // whether the agent reports a background task (a helper, a shell command) still in flight
+  waitingOnBackground: boolean;
   // undefined when the transcript is missing or cannot be read
   readTranscript: () => Promise<readonly TranscriptEntry[] | undefined>;
 }>;
