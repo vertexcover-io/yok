@@ -94,10 +94,6 @@ const touchedRunSinceLastPrompt = (
     .some((entry) => entry.kind === "command" && ORCHESTRATE.test(entry.command));
 };
 
-// Claude lists only tasks in flight (seen as "running") and documents no status values, so any
-// status but a plainly finished one counts as still running.
-const FINISHED_TASK: ReadonlySet<string> = new Set(["completed", "failed", "killed"]);
-
 const maxBlocksOf = (env: HookDeps["env"]): number => {
   const maxBlocks = Number(env.YOK_STOP_MAX_BLOCKS);
   return Number.isInteger(maxBlocks) && maxBlocks > 0 ? maxBlocks : DEFAULT_STOP_MAX_BLOCKS;
@@ -249,7 +245,7 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       touchedRun,
       progressSinceCheck: progressSince(events, state.stopHook?.seq),
       maxBlocks: maxBlocksOf(deps.env),
-      waitingOnBackground: input.backgroundTasks.some((task) => !FINISHED_TASK.has(task.status)),
+      waitingOnBackground: input.waitingOnBackground,
       pendingSwitch: foldModelSwitch(events, state.tiers).pending,
     };
     const decision = await decideForAgent(input, check);

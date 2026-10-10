@@ -41,21 +41,22 @@ const PATH_FIELDS: ReadonlyMap<string, string> = new Map([
 // Claude Code saves a Stop hook's block reason back into the transcript as a user line.
 const HOOK_FEEDBACK = "Stop hook feedback:";
 
-const BackgroundTaskSchema = z.looseObject({ type: z.string(), status: z.string() });
+// Claude lists only tasks in flight (seen as "running") and documents no status values, so any
+// status but a plainly finished one counts as in flight.
+const FINISHED_TASK: ReadonlySet<string> = new Set(["completed", "failed", "killed"]);
 
-// background_tasks is absent from older Claude Code and when its task registry is unreachable.
+// An entry of a shape we do not know is skipped rather than failing the whole stop input.
+const BackgroundTaskSchema = z.looseObject({ status: z.string() }).nullable().catch(null);
+
 const ClaudeStopInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   transcript_path: z.string().optional(),
-  background_tasks: z.array(z.unknown()).catch([]),
+  // absent from older Claude Code and when its task registry is unreachable
+  background_tasks: z
+    .array(BackgroundTaskSchema)
+    .catch([])
+    .transform((tasks) => tasks.some((task) => task !== null && !FINISHED_TASK.has(task.status))),
 });
-
-// An entry of a shape we do not know is skipped rather than failing the whole stop input.
-const backgroundTasksOf = (entries: readonly unknown[]) =>
-  entries.flatMap((entry) => {
-    const task = BackgroundTaskSchema.safeParse(entry);
-    return task.success ? [task.data] : [];
-  });
 
 const ClaudeSessionStartInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
@@ -145,14 +146,14 @@ const claudeStop = async (stdin: string, deps: HookDeps, handler: StopHandler): 
   const {
     session_id: sessionId,
     transcript_path: transcriptPath,
-    background_tasks: backgroundTasks,
+    background_tasks: waitingOnBackground,
   } = parsed.value;
   const reply = await runStop(
     {
       agent: "claude",
       sessionId,
       contextSteps: claudeAdapter.contextSteps,
-      backgroundTasks: backgroundTasksOf(backgroundTasks),
+      waitingOnBackground,
       readTranscript: () => readClaudeTranscript(transcriptPath),
     },
     handler,
