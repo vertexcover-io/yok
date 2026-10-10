@@ -126,6 +126,16 @@ describe("claudeAdapter.stop background_tasks", () => {
         { type: "subagent", status: "failed" },
       ],
     ],
+    ["a killed shell", false, [{ type: "shell", status: "killed" }]],
+    ["a subagent in an unknown status, pending", true, [{ type: "subagent", status: "pending" }]],
+    [
+      "a completed shell beside a running subagent",
+      true,
+      [
+        { type: "shell", status: "completed" },
+        { type: "subagent", status: "running" },
+      ],
+    ],
     ["a missing field", false, undefined],
     ["a field that is not a list", false, { type: "shell", status: "running" }],
     [
