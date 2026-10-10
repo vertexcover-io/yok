@@ -289,6 +289,19 @@ describe("on a blocked run", () => {
     },
   );
 
+  test("two Bash calls at once on a question-blocked run append one agent.resumed between them", async () => {
+    const { cwd, runDir, deps } = await runBlockedBy("agent.question.asked", question);
+    const bash = use(cwd, shell("bun test"), { toolName: "Bash" });
+
+    const verdicts = await Promise.all([
+      runPreToolUse(bash, recordResumed, deps),
+      runPreToolUse(bash, recordResumed, deps),
+    ]);
+
+    expect(verdicts).toEqual([{ kind: "allow" }, { kind: "allow" }]);
+    expect(await resumedEvents(runDir)).toHaveLength(1);
+  });
+
   test("SC143: recordResumed allows a Write on a running run and appends nothing", async () => {
     const { cwd, runDir, deps } = await runBlockedBy();
 

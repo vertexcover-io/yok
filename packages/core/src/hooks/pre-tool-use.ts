@@ -80,13 +80,15 @@ export const recordResumed: PreToolUseHandler = {
       if (run === undefined) return ALLOW;
       const state = await readState(runDirOf(run.cwd, run.name));
       if (state?.status !== "blocked" || state.blocker === undefined) return ALLOW;
-      const payload = {
-        agent: use.agent,
-        sessionId: use.sessionId,
-        reason: state.blocker.reason,
-        tool: use.toolName,
-      };
-      await recordRunEvent(run, { type: "agent.resumed", payload }, deps);
+      const { reason } = state.blocker;
+      const payload = { agent: use.agent, sessionId: use.sessionId, reason, tool: use.toolName };
+      // Another call may have closed the blocker since the read above.
+      await recordRunEvent(
+        run,
+        { type: "agent.resumed", payload },
+        deps,
+        (latest) => latest?.status === "blocked" && latest.blocker?.reason === reason,
+      );
     } catch (error) {
       deps.log.warn({ err: error }, "agent.resumed not recorded");
     }
