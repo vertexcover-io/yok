@@ -152,6 +152,24 @@ describe("claudeAdapter.preToolUse", () => {
     expect(await claudePreToolUse?.(missingTool, deps, recordGuard)).toBe("");
   });
 
+  test.each([
+    ["with agent_id", true, { agent_id: "a1", agent_type: "Explore" }],
+    ["without agent_id", false, {}],
+  ] as const)("a Bash call %s parses as subagent %p", async (_label, subagent, extra) => {
+    const seen: ToolUse[] = [];
+    const spy: PreToolUseHandler = {
+      name: "spy",
+      run: async (use) => {
+        seen.push(use);
+        return { kind: "allow" };
+      },
+    };
+    const input = JSON.stringify({ ...JSON.parse(stdin("Bash", { command: "ls" })), ...extra });
+
+    expect(await claudePreToolUse?.(input, deps, spy)).toBe("");
+    expect(seen).toEqual([expect.objectContaining({ toolName: "Bash", subagent })]);
+  });
+
   test.each<[string, Record<string, unknown>, ToolCall]>([
     [
       "two questions with a header and options",

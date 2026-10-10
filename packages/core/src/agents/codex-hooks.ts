@@ -114,6 +114,7 @@ const parsePreToolUseInput = (stdin: string): Result<readonly ToolUse[]> => {
     agent: "codex" as const,
     sessionId,
     toolName,
+    subagent: false,
     cwd: cwd ?? process.cwd(),
     call,
   }));

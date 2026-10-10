@@ -84,6 +84,7 @@ const use = (cwd: string, call: ToolCall, overrides: Partial<ToolUse> = {}): Too
   agent: "claude",
   sessionId: "s1",
   toolName: "Write",
+  subagent: false,
   cwd,
   call,
   ...overrides,
@@ -288,6 +289,20 @@ describe("on a blocked run", () => {
       expect(state).not.toHaveProperty("blocker");
     },
   );
+
+  test("a sub-agent's Bash call on a question-blocked run is allowed but appends nothing, and the run stays blocked", async () => {
+    const { cwd, runDir, deps } = await runBlockedBy("agent.question.asked", question);
+
+    const verdict = await runPreToolUse(
+      use(cwd, shell("bun test"), { toolName: "Bash", subagent: true }),
+      recordResumed,
+      deps,
+    );
+
+    expect(verdict).toEqual({ kind: "allow" });
+    expect(await resumedEvents(runDir)).toEqual([]);
+    expect((await readState(runDir))?.blocker?.reason).toBe("question");
+  });
 
   test("two Bash calls at once on a question-blocked run append one agent.resumed between them", async () => {
     const { cwd, runDir, deps } = await runBlockedBy("agent.question.asked", question);

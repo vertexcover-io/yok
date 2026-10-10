@@ -425,7 +425,13 @@ describe("runStopHook", () => {
   test("a tool call between two stops is not progress, and any other event is", async () => {
     const { deps, runDir } = await setUp(planOpen);
     const cwd = join(runDir, "..", "..");
-    const ls = { agent: "claude" as const, sessionId: "s1", toolName: "Bash", cwd };
+    const ls = {
+      agent: "claude" as const,
+      sessionId: "s1",
+      toolName: "Bash",
+      subagent: false,
+      cwd,
+    };
 
     expect(await runStopHook(input(undefined), deps)).toMatchObject({ kind: "continue" });
     await runPreToolUse({ ...ls, call: { kind: "shell", command: "ls" } }, recordGuard, deps);
