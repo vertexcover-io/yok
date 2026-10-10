@@ -115,19 +115,25 @@ describe("claudeAdapter.stop background_tasks", () => {
   };
 
   test.each([
-    ["SC137", "a running subagent", true, [{ type: "subagent", status: "running" }]],
-    ["SC138", "a running shell", true, [{ type: "shell", status: "running" }]],
-    ["SC139", "an empty list", false, []],
+    ["SC137: a running subagent", true, [{ type: "subagent", status: "running" }]],
+    ["SC138: a running shell", true, [{ type: "shell", status: "running" }]],
+    ["SC139: an empty list", false, []],
     [
-      "SC140",
-      "only a completed shell and a failed subagent",
+      "SC140: only a completed shell and a failed subagent",
       false,
       [
         { type: "shell", status: "completed" },
         { type: "subagent", status: "failed" },
       ],
     ],
-  ])("%s: %s reads as waiting on background %p", async (_id, _label, waiting, tasks) => {
+    ["a missing field", false, undefined],
+    ["a field that is not a list", false, { type: "shell", status: "running" }],
+    [
+      "a malformed entry beside a running shell",
+      true,
+      [{ type: "shell" }, { type: "shell", status: "running" }],
+    ],
+  ])("%s reads as waiting on background %p", async (_label, waiting, tasks) => {
     expect(await waitingOnBackground(tasks)).toBe(waiting);
   });
 });
