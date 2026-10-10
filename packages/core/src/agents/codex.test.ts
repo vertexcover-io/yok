@@ -27,6 +27,7 @@ describe("codexArgs", () => {
     );
     expect(overrides[2]).toContain(`matcher = "Bash|shell|exec_command|local_shell|apply_patch"`);
     expect(overrides[2]).toContain("'record-guard'");
+    expect(overrides[2]).toContain("'record-resumed'");
     expect(overrides[2]).not.toContain("bash-antipatterns");
   });
 

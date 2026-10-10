@@ -57,28 +57,7 @@ const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   return call.kind === "shell" ? shellWriteTargets(call.command, base) : [];
 };
 
-// A call that gets through on a blocked run shows its agent working again, so it closes the
-// blocker. Never throws: the call is already allowed, and a failed record must not refuse it.
-const recordResumed = async (use: ToolUse, deps: HookDeps): Promise<void> => {
-  try {
-    const run = await findSessionRun(use, deps);
-    if (run === undefined) return;
-    const state = await readState(runDirOf(run.cwd, run.name));
-    if (state?.status !== "blocked" || state.blocker === undefined) return;
-    const payload = {
-      agent: use.agent,
-      sessionId: use.sessionId,
-      reason: state.blocker.reason,
-      tool: use.toolName,
-    };
-    await recordRunEvent(run, { type: "agent.resumed", payload }, deps);
-  } catch (error) {
-    deps.log.warn({ err: error }, "agent.resumed not recorded");
-  }
-};
-
 // Refuses a call that writes, moves or deletes a run's state.json or event.jsonl, or the registry.
-// Both agents register it for Bash and every file write, so it alone records agent.resumed.
 export const recordGuard: PreToolUseHandler = {
   name: "record-guard",
   run: async (use, deps) => {
@@ -86,10 +65,31 @@ export const recordGuard: PreToolUseHandler = {
     const record = callTargets(use.call, base)
       .map((target) => protectedRecordOf(target, base))
       .find((found) => found !== undefined);
-    if (record !== undefined) {
-      return { kind: "deny", message: recordMessage(record), path: record.path };
+    if (record === undefined) return ALLOW;
+    return { kind: "deny", message: recordMessage(record), path: record.path };
+  },
+};
+
+// The agent's Bash call or file edit on a blocked run shows it working again, so it closes the
+// blocker. Always allows: a failed record must not refuse the call.
+export const recordResumed: PreToolUseHandler = {
+  name: "record-resumed",
+  run: async (use, deps) => {
+    try {
+      const run = await findSessionRun(use, deps);
+      if (run === undefined) return ALLOW;
+      const state = await readState(runDirOf(run.cwd, run.name));
+      if (state?.status !== "blocked" || state.blocker === undefined) return ALLOW;
+      const payload = {
+        agent: use.agent,
+        sessionId: use.sessionId,
+        reason: state.blocker.reason,
+        tool: use.toolName,
+      };
+      await recordRunEvent(run, { type: "agent.resumed", payload }, deps);
+    } catch (error) {
+      deps.log.warn({ err: error }, "agent.resumed not recorded");
     }
-    await recordResumed(use, deps);
     return ALLOW;
   },
 };
@@ -140,7 +140,10 @@ export const questionNotice: PreToolUseHandler = {
 
 // The handlers an agent can register, by the name `orchestrate hook pre-tool-use --handler` takes.
 export const preToolUseHandlers: Readonly<Record<string, PreToolUseHandler>> = Object.fromEntries(
-  [recordGuard, bashAntipatterns, questionNotice].map((handler) => [handler.name, handler]),
+  [recordGuard, recordResumed, bashAntipatterns, questionNotice].map((handler) => [
+    handler.name,
+    handler,
+  ]),
 );
 
 const calledEvent = (use: ToolUse, handler: string, verdict: ToolVerdict) => ({

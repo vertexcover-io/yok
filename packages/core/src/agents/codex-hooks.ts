@@ -15,7 +15,7 @@ import {
 } from "@yok/sdk";
 import * as z from "zod";
 import { parseStdin, preToolUseReply, runNoReplyHook, stopReply } from "../hooks/common.ts";
-import { recordGuard, runPreToolUse } from "../hooks/pre-tool-use.ts";
+import { recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
 import { continueWorkflow, runStop } from "../hooks/stop.ts";
 import { shellQuote } from "./common.ts";
@@ -242,7 +242,9 @@ const codexHooks = () =>
   ({
     SessionStart: [{ handlers: Object.values(sessionStartHandlers) }],
     Stop: [{ handlers: [continueWorkflow] }],
-    PreToolUse: [{ matcher: [...SHELL_TOOLS, PATCH_TOOL].join("|"), handlers: [recordGuard] }],
+    PreToolUse: [
+      { matcher: [...SHELL_TOOLS, PATCH_TOOL].join("|"), handlers: [recordGuard, recordResumed] },
+    ],
   }) as const;
 
 // A JSON string is a valid TOML basic string.
