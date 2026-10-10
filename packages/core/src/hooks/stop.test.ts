@@ -75,20 +75,16 @@ const nodeRun = (
 
 const planOpen = { plan: nodeRun("plan", "running") };
 
-const decide = (
-  overrides: Partial<State>,
-  touchedRun: boolean | undefined = true,
-  progressSinceCheck = false,
-  pendingSwitch: StopCheck["pendingSwitch"] = null,
-) =>
+const decide = (overrides: Partial<State>, check: Partial<Omit<StopCheck, "run" | "state">> = {}) =>
   decideStop({
     run: RUN,
     state: { ...seed, ...overrides },
-    touchedRun,
-    progressSinceCheck,
+    touchedRun: true,
+    progressSinceCheck: false,
     maxBlocks: 1,
     waitingOnBackground: false,
-    pendingSwitch,
+    pendingSwitch: null,
+    ...check,
   });
 
 describe("decideStop", () => {
@@ -145,15 +141,15 @@ describe("decideStop", () => {
   });
 
   test("SC4 — a chat turn between nodes lets the turn end", () => {
-    expect(decide({}, false)).toMatchObject({ reason: "user-chat" });
+    expect(decide({}, { touchedRun: false })).toMatchObject({ reason: "user-chat" });
   });
 
   test("SC5 — an unknown turn between nodes still blocks", () => {
-    expect(decide({}, undefined)).toMatchObject({ reason: "next-not-run" });
+    expect(decide({}, { touchedRun: undefined })).toMatchObject({ reason: "next-not-run" });
   });
 
   test("SC6 — a chat turn with a node open still blocks", () => {
-    const decision = decide({ nodeRuns: planOpen }, false);
+    const decision = decide({ nodeRuns: planOpen }, { touchedRun: false });
     expect(decision).toMatchObject({
       message: expect.stringContaining("orchestrate done plan"),
       reason: "node-not-done",
@@ -172,24 +168,42 @@ describe("decideStop", () => {
   test("SC8 — progress since the last stop check restarts the count", () => {
     const decision = decide(
       { nodeRuns: planOpen, stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 14 },
-      true,
-      true,
+      { progressSinceCheck: true },
     );
     expect(decision).toMatchObject({ reason: "node-not-done", blockStreak: 1 });
   });
 
   test("SC9 — an allowed call keeps the streak it found", () => {
-    const decision = decide({ stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 12 }, false);
+    const decision = decide(
+      { stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 12 },
+      { touchedRun: false },
+    );
     expect(decision).toMatchObject({ reason: "user-chat", blockStreak: 1 });
   });
 
   test("SC9: a stop between nodes with switch seq 42 pending lets the turn end as model-switch, even on a chat turn", () => {
     const pending = { seq: 42, node: "think", model: "opus-x" };
-    expect(decide({}, false, false, pending)).toEqual({
+    expect(decide({}, { touchedRun: false, pendingSwitch: pending })).toEqual({
       reason: "model-switch",
       blockStreak: 0,
       seq: 42,
     });
+  });
+
+  test("a stop with a context node open while a background task runs still lets the turn end as context-node", () => {
+    const decision = decide(
+      { nodeRuns: { compact: nodeRun("compact", "running", "context") } },
+      { waitingOnBackground: true },
+    );
+    expect(decision).toEqual({ reason: "context-node", blockStreak: 0, nodeRunId: "compact" });
+  });
+
+  test("a stop at streak 1 with no progress while a background task runs ends as background-task and keeps streak 1", () => {
+    const decision = decide(
+      { nodeRuns: planOpen, stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 12 },
+      { waitingOnBackground: true },
+    );
+    expect(decision).toEqual({ reason: "background-task", blockStreak: 1 });
   });
 
   test("SC10: a stop between nodes with no switch pending, as after a failed one, sends the agent to next", () => {
