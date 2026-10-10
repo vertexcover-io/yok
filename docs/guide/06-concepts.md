@@ -188,7 +188,7 @@ A point in the agent's own session where it calls out and waits for an answer. Y
 | SessionStart | `link-session` | records the session id on the run |
 | Stop | `continue-workflow` | sends the agent back when it ends a turn with work owed |
 | StopFailure | `resume-after-limit`, `record-agent-error` | on an API error that is a usage limit, pauses and resumes the run; otherwise records the error |
-| PreToolUse | `record-guard`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records (and records `agent.resumed` when it allows a call on a blocked run), flags risky shell, records a question being asked |
+| PreToolUse | `record-guard`, `record-resumed`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records, records `agent.resumed` for the agent's Bash call or file edit on a blocked run, flags risky shell, records a question being asked |
 | PostToolUse | `answer-notice` | records the person's answers to questions |
 
 Agent hooks are about the session. Subscribers are about the run. They are different things with the same English word. The handlers live in [packages/core/src/hooks](../../packages/core/src/hooks).

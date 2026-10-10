@@ -22,6 +22,7 @@ import {
   bashAntipatterns,
   questionNotice,
   recordGuard,
+  recordResumed,
   runPreToolUse,
 } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
@@ -374,7 +375,10 @@ const claudeHooks = () =>
       { matcher: "*", handlers: [recordAgentError] },
     ],
     PreToolUse: [
-      { matcher: [...PATH_FIELDS.keys(), "Bash"].join("|"), handlers: [recordGuard] },
+      {
+        matcher: [...PATH_FIELDS.keys(), "Bash"].join("|"),
+        handlers: [recordGuard, recordResumed],
+      },
       { matcher: "Bash", handlers: [bashAntipatterns] },
       { matcher: "AskUserQuestion", handlers: [questionNotice] },
     ],

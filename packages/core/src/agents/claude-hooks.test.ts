@@ -403,11 +403,11 @@ describe("claudeSettings question and stop handlers", () => {
     ]);
   });
 
-  test("SC303 (regression): PreToolUse keeps record-guard and bash-antipatterns and adds question-notice on AskUserQuestion", () => {
+  test("SC303 (regression): PreToolUse runs record-guard and record-resumed on Bash and file writes, bash-antipatterns on Bash and question-notice on AskUserQuestion", () => {
     expect(settings.hooks.PreToolUse).toEqual([
       {
         matcher: "Write|Edit|MultiEdit|NotebookEdit|Bash",
-        hooks: [entry("pre-tool-use", "record-guard")],
+        hooks: [entry("pre-tool-use", "record-guard"), entry("pre-tool-use", "record-resumed")],
       },
       { matcher: "Bash", hooks: [entry("pre-tool-use", "bash-antipatterns")] },
       { matcher: "AskUserQuestion", hooks: [entry("pre-tool-use", "question-notice")] },
@@ -437,7 +437,12 @@ describe("claudeSettings handlers", () => {
     for (const name of stop) expect(Object.keys(stopHandlers)).toContain(name);
     for (const name of preToolUse) expect(Object.keys(preToolUseHandlers)).toContain(name);
     expect([...stop, ...preToolUse]).toEqual(
-      expect.arrayContaining(["continue-workflow", "record-guard", "bash-antipatterns"]),
+      expect.arrayContaining([
+        "continue-workflow",
+        "record-guard",
+        "record-resumed",
+        "bash-antipatterns",
+      ]),
     );
   });
 });

@@ -14,7 +14,13 @@ import {
   type ToolUse,
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
-import { bashAntipatterns, protectedRecordOf, recordGuard, runPreToolUse } from "./pre-tool-use.ts";
+import {
+  bashAntipatterns,
+  protectedRecordOf,
+  recordGuard,
+  recordResumed,
+  runPreToolUse,
+} from "./pre-tool-use.ts";
 
 describe("protectedRecordOf", () => {
   const where = { cwd: "/repo", home: "/home/u", yokHome: "/home/u/.yok" };
@@ -208,7 +214,7 @@ describe("recordGuard through runPreToolUse", () => {
   });
 });
 
-describe("recordGuard on a blocked run", () => {
+describe("on a blocked run", () => {
   const running = (runDir: string, cwd: string): State => ({
     schemaVersion: 1,
     lastEventSeq: 0,
@@ -262,14 +268,14 @@ describe("recordGuard on a blocked run", () => {
     ["usage-limit", "agent.limit.waiting", limitWaiting],
     ["question", "agent.question.asked", question],
   ] as const)(
-    "SC143: an allowed Bash call on a run blocked by %s appends one agent.resumed with that reason, and the run reads running",
+    "SC143: recordResumed allows a Bash call on a run blocked by %s and appends one agent.resumed with that reason, and the run reads running",
     async (reason, type, payload) => {
       const { cwd, runDir, deps } = await runBlockedBy(type, payload);
       expect((await readState(runDir))?.status).toBe("blocked");
 
       const verdict = await runPreToolUse(
         use(cwd, shell("bun test"), { toolName: "Bash" }),
-        recordGuard,
+        recordResumed,
         deps,
       );
 
@@ -283,25 +289,31 @@ describe("recordGuard on a blocked run", () => {
     },
   );
 
-  test("SC143: an allowed Write on a running run appends nothing", async () => {
+  test("SC143: recordResumed allows a Write on a running run and appends nothing", async () => {
     const { cwd, runDir, deps } = await runBlockedBy();
 
-    const verdict = await runPreToolUse(use(cwd, write("notes.md")), recordGuard, deps);
+    const verdict = await runPreToolUse(use(cwd, write("notes.md")), recordResumed, deps);
 
     expect(verdict).toEqual({ kind: "allow" });
     expect(await jsonlEventStore(runDir).read()).toEqual([]);
   });
 
-  test("SC143: a denied call on a blocked run appends only its deny log, and the run stays blocked", async () => {
+  test("recordGuard only guards: on a blocked run it appends nothing for a call it allows and only its deny log for one it refuses, and the run stays blocked", async () => {
     const { cwd, runDir, deps } = await runBlockedBy("agent.limit.waiting", limitWaiting);
 
-    const verdict = await runPreToolUse(
+    const allowed = await runPreToolUse(
+      use(cwd, shell("bun test"), { toolName: "Bash" }),
+      recordGuard,
+      deps,
+    );
+    const denied = await runPreToolUse(
       use(cwd, write(".yok/feat-x/state.json")),
       recordGuard,
       deps,
     );
 
-    expect(verdict.kind).toBe("deny");
+    expect(allowed).toEqual({ kind: "allow" });
+    expect(denied.kind).toBe("deny");
     expect((await jsonlEventStore(runDir).read()).map((event) => event.type)).toEqual([
       "agent.limit.waiting",
       "hooks.pre-tool-use.called",

@@ -2535,7 +2535,7 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
     expect(await eventsOf(run.repo)).toHaveLength(before);
   });
 
-  test("SC144: after the real stop-failure hook blocks the run on an agent error, an allowed Bash call through the real record-guard hook puts state.json back to running with no blocker", async () => {
+  test("SC144: after the real stop-failure hook blocks the run on an agent error, a Bash call through the real record-resumed hook puts state.json back to running with no blocker", async () => {
     const run = openNodeRun();
     const failed = orchestrate(
       run.repo,
@@ -2550,7 +2550,7 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
       blocker: { reason: "agent-error", node: "plan" },
     });
 
-    const result = preToolUse(run, "Bash", { command: "bun test" });
+    const result = preToolUse(run, "Bash", { command: "bun test" }, "record-resumed");
 
     expect(result).toMatchObject({ code: 0, stdout: "" });
     expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
