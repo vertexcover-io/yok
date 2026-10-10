@@ -62,6 +62,8 @@ export type ToolUse = Readonly<{
   toolName: string;
   // the agent's id for this call, when it gives one
   toolUseId?: string;
+  // whether one of the session's sub-agents made the call, not the main agent
+  subagent: boolean;
   cwd: string;
   call: ToolCall;
 }>;

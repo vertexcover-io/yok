@@ -70,11 +70,13 @@ export const recordGuard: PreToolUseHandler = {
   },
 };
 
-// The agent's Bash call or file edit on a blocked run shows it working again, so it closes the
-// blocker. Always allows: a failed record must not refuse the call.
+// The main agent's Bash call or file edit on a blocked run shows it working again, so it closes
+// the blocker. A sub-agent shares the session id but may run while the main agent waits on the
+// person. Always allows: a failed record must not refuse the call.
 export const recordResumed: PreToolUseHandler = {
   name: "record-resumed",
   run: async (use, deps) => {
+    if (use.subagent) return ALLOW;
     try {
       const run = await findSessionRun(use, deps);
       if (run === undefined) return ALLOW;

@@ -213,6 +213,8 @@ const ClaudePreToolUseInputSchema = z.looseObject({
   tool_input: z.looseObject({}).default({}),
   tool_use_id: NonEmptyStringSchema.optional(),
   cwd: z.string().optional(),
+  // set only when a sub-agent makes the call
+  agent_id: z.string().optional(),
 });
 
 const OTHER_TOOL: ToolCall = { kind: "other" };
@@ -259,6 +261,7 @@ const parsePreToolUseInput = (stdin: string): Result<ToolUse> => {
     tool_input: toolInput,
     tool_use_id: toolUseId,
     cwd,
+    agent_id: agentId,
   } = parsed.value;
   const call = toToolCall(toolName, toolInput);
   return {
@@ -268,6 +271,7 @@ const parsePreToolUseInput = (stdin: string): Result<ToolUse> => {
       sessionId,
       toolName,
       ...(toolUseId === undefined ? {} : { toolUseId }),
+      subagent: agentId !== undefined,
       cwd: cwd ?? process.cwd(),
       call,
     },
