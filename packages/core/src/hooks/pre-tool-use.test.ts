@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -303,6 +303,25 @@ describe("on a blocked run", () => {
     expect(await resumedEvents(runDir)).toEqual([]);
     expect((await readState(runDir))?.blocker?.reason).toBe("question");
   });
+
+  test.each([
+    ["state.json is not JSON", (runDir: string) => writeFile(join(runDir, "state.json"), "{")],
+    ["event.jsonl is read-only", (runDir: string) => chmod(join(runDir, "event.jsonl"), 0o444)],
+  ])(
+    "recordResumed still allows a Bash call on a blocked run when %s, so a failed record never refuses a call",
+    async (_label, breakRecord) => {
+      const { cwd, runDir, deps } = await runBlockedBy("agent.question.asked", question);
+      await breakRecord(runDir);
+
+      const verdict = await recordResumed.run(
+        use(cwd, shell("bun test"), { toolName: "Bash" }),
+        deps,
+      );
+
+      expect(verdict).toEqual({ kind: "allow" });
+      expect(await readFile(join(runDir, "event.jsonl"), "utf8")).not.toContain("agent.resumed");
+    },
+  );
 
   test("two Bash calls at once on a question-blocked run append one agent.resumed between them", async () => {
     const { cwd, runDir, deps } = await runBlockedBy("agent.question.asked", question);
