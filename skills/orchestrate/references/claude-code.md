@@ -2,7 +2,9 @@
 
 Read this when you are Claude Code. It names the tools that SKILL.md describes by what they do.
 
-- **Asking the user:** use `AskUserQuestion`. Never end your turn with a question in plain text.
+- **Asking the user:** use `AskUserQuestion`. Never end your turn with a question in plain text,
+  except for a stage's approval after `yok orchestrate await-approval`: then end the turn with
+  one line saying how to approve, so the viewer's comments can reach you.
 - **Long commands:** an inline `exec` runs through the Bash tool with `timeout: 600000`. A
   `mode: background` command, or an inline one that timed out, runs with Bash's
   `run_in_background: true`. Claude Code sends a task-finished notice when it ends; wait for it.

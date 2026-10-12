@@ -187,8 +187,16 @@ minus the mermaid block (it does not render in a terminal) and minus `## Open qu
 every `inferred` decision with *(inferred — confirm)*. Below it, the path to `design.md` as a
 `file://` link, saying the diagram renders in a markdown preview (VS Code, GitHub).
 
-Then `AskUserQuestion`: header `Approve?`, options `Approve the design (Recommended)` and
-`Revise`. A revision is not an approval: apply it to `design.md`, re-run step 5's count and
+Then ask for approval without a menu: a menu blocks the viewer's comments from reaching you. In
+a yok run, run `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/design.md`,
+where NODE_RUN_ID is the id in the stage's `done` command, and end the turn with one line: approve
+with the Approve button in the viewer, or type approve here. While you wait, comments arrive as
+`[review]` messages: reply to each, apply what they change, and end the turn again. An `approve`
+entry in a `[review]` message, or the user typing approve, is the approval; reply to that
+comment as `answered`. Outside a run, ask with `AskUserQuestion`: header `Approve?`, options
+`Approve the design (Recommended)` and `Revise`.
+
+A revision is not an approval: apply it to `design.md`, re-run step 5's count and
 step 6's self-review, show what changed and ask again. When the same decision is revised twice,
 stop and ask about that decision directly; it is unresolved, not badly worded.
 

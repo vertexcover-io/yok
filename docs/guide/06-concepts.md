@@ -186,7 +186,7 @@ A point in the agent's own session where it calls out and waits for an answer. Y
 | Hook | Handler | What it does |
 |---|---|---|
 | SessionStart | `link-session` | records the session id on the run |
-| Stop | `continue-workflow` | sends the agent back when it ends a turn with work owed |
+| Stop | `continue-workflow` | sends the agent back when it ends a turn with work owed, unless the open node waits for approval |
 | StopFailure | `resume-after-limit`, `record-agent-error` | on an API error that is a usage limit, pauses and resumes the run; otherwise records the error |
 | PreToolUse | `record-guard`, `record-resumed`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records, records `agent.resumed` for the main agent's Bash call or file edit on a blocked run, flags risky shell, records a question being asked |
 | PostToolUse | `answer-notice` | records the person's answers to questions |
@@ -203,7 +203,7 @@ When Claude reports a usage limit, the StopFailure hook reads the reset time fro
 
 ## Comment
 
-A note you leave on an artifact in the viewer at `http://127.0.0.1:PORT/runs/RUN_ID`. The server stores it in `comments.json`, then types it into the run's tmux session the next time Claude's input box is empty. The agent answers with `yok orchestrate comments reply`. Nothing in a skill watches for comments. [ADR 0004](../adr/0004-harness-server-types-review-comments-into-the-run-tmux-session.md).
+A note you leave on an artifact in the viewer at `http://127.0.0.1:PORT/runs/RUN_ID`. The server stores it in `comments.json`, then types it into the run's tmux session the next time Claude's input box is empty. The agent answers with `yok orchestrate comments reply`. Nothing in a skill watches for comments. [ADR 0004](../adr/0004-harness-server-types-review-comments-into-the-run-tmux-session.md). A design or plan page that waits for approval leaves the input box empty, so comments reach the agent while it waits.
 
 ## Workspace
 

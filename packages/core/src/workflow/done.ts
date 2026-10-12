@@ -96,11 +96,13 @@ export const isInsideDir = (parent: string, child: string): boolean => {
   return !(isAbsolute(fromParent) || fromParent === ".." || fromParent.startsWith("../"));
 };
 
+type ArtifactFileIssue = Extract<CompletionIssue, { kind: "artifact-file" }>;
+
 const fileIssue = async (
   runDir: string,
   artifactsDir: string,
-  artifact: FileArtifact,
-): Promise<readonly CompletionIssue[]> => {
+  artifact: Pick<FileArtifact, "name" | "path">,
+): Promise<readonly ArtifactFileIssue[]> => {
   const path = join(runDir, artifact.path);
   const { name } = artifact;
   try {
@@ -116,6 +118,24 @@ const fileIssue = async (
   }
 };
 
+const invalidArtifactsDirIssue = (runDir: string): ArtifactFileIssue => ({
+  kind: "artifact-file",
+  name: "artifacts",
+  path: join(runDir, "artifacts"),
+  reason: "invalid-artifacts-dir",
+  message: `run artifacts/ must be a real directory inside ${runDir}`,
+});
+
+// What done would refuse about one artifact file, or undefined when done would take it.
+export const findArtifactFileIssue = async (
+  runDir: string,
+  artifact: Pick<FileArtifact, "name" | "path">,
+): Promise<ArtifactFileIssue | undefined> => {
+  const artifactsDir = await findArtifactsDir(runDir);
+  if (artifactsDir === undefined) return invalidArtifactsDirIssue(runDir);
+  return (await fileIssue(runDir, artifactsDir, artifact))[0];
+};
+
 const verifyArtifacts = async (
   runDir: string,
   stage: PlanStage | undefined,
@@ -123,14 +143,7 @@ const verifyArtifacts = async (
 ): Promise<readonly CompletionIssue[]> => {
   const named = [...duplicateIssues(artifacts), ...requiredIssues(stage, artifacts)];
   const artifactsDir = await findArtifactsDir(runDir);
-  if (artifactsDir === undefined) {
-    const path = join(runDir, "artifacts");
-    const message = `run artifacts/ must be a real directory inside ${runDir}`;
-    return [
-      ...named,
-      { kind: "artifact-file", name: "artifacts", path, reason: "invalid-artifacts-dir", message },
-    ];
-  }
+  if (artifactsDir === undefined) return [...named, invalidArtifactsDirIssue(runDir)];
   const files = await Promise.all(
     artifacts.flatMap((artifact) =>
       "path" in artifact ? [fileIssue(runDir, artifactsDir, artifact)] : [],

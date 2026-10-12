@@ -2473,6 +2473,98 @@ describe("SC26: orchestrate hook stop", () => {
 
     expect(stop(run)).toMatchObject({ code: 0, stdout: "" });
   });
+
+  describe("orchestrate await-approval", () => {
+    const awaitingRun = () => {
+      const run = openNodeRun();
+      mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts"), { recursive: true });
+      writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "design.md"), "# Design\n");
+      const nodeRunId: string = stateOf(run.repo).nodeRuns.plan.nodeRunId;
+      return { ...run, nodeRunId };
+    };
+    const awaitApproval = (
+      run: Readonly<{ repo: string; home: string }>,
+      nodeRunId: string,
+      file: string,
+    ) =>
+      orchestrate(run.repo, run.home, [
+        "await-approval",
+        nodeRunId,
+        "--run",
+        "feat-x",
+        "--file",
+        file,
+      ]);
+    const approvalRequests = async (repo: string) =>
+      (await eventsOf(repo)).filter((event) => event.type === "artifact.approval.requested");
+
+    test("SC5: await-approval on the open agent node records the request, and the next stop is let through as awaiting-approval", async () => {
+      const run = awaitingRun();
+
+      const reply = awaitApproval(run, run.nodeRunId, "artifacts/design.md");
+
+      expect(reply.code).toBe(0);
+      expect(JSON.parse(reply.stdout)).toEqual({
+        nodeRunId: run.nodeRunId,
+        path: "artifacts/design.md",
+      });
+      expect(await approvalRequests(run.repo)).toEqual([
+        expect.objectContaining({
+          nodeId: "plan",
+          nodeRunId: run.nodeRunId,
+          payload: { path: "artifacts/design.md" },
+        }),
+      ]);
+      expect(stop(run)).toMatchObject({ code: 0, stdout: "" });
+      expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+        type: "hooks.stop.called",
+        payload: { decision: "allow", reason: "awaiting-approval", nodeRunId: run.nodeRunId },
+      });
+    });
+
+    test("SC5: after an approve comment on the waiting file, a stop with the node still open is sent back as node-not-done", async () => {
+      const run = awaitingRun();
+      expect(awaitApproval(run, run.nodeRunId, "artifacts/design.md").code).toBe(0);
+      const approve = { id: "c-1", file: "artifacts/design.md", kind: "approve", text: "ok" };
+      const emit = orchestrate(run.repo, run.home, [
+        "emit",
+        "artifact.comment.added",
+        "--run",
+        "feat-x",
+        "--source",
+        "viewer",
+        "--payload",
+        JSON.stringify({ comments: [approve] }),
+      ]);
+      expect(emit.code).toBe(0);
+
+      expect(JSON.parse(stop(run).stdout).reason).toContain("yok orchestrate done");
+      expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+        type: "hooks.stop.called",
+        payload: { decision: "continue", reason: "node-not-done", nodeRunId: run.nodeRunId },
+      });
+    });
+
+    test("SC6: await-approval refuses an unknown node run, a missing file, a file outside artifacts/ and a directory under it, writing no request", async () => {
+      const run = awaitingRun();
+      writeFileSync(join(runDirOf(run.repo, "feat-x"), "notes.md"), "notes\n");
+      mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "drafts"));
+
+      const replies = [
+        awaitApproval(run, "nr-unknown", "artifacts/design.md"),
+        awaitApproval(run, run.nodeRunId, "artifacts/missing.md"),
+        awaitApproval(run, run.nodeRunId, "notes.md"),
+        awaitApproval(run, run.nodeRunId, "artifacts/drafts"),
+      ];
+
+      expect(replies.map((reply) => reply.code)).toEqual([1, 1, 1, 1]);
+      expect(replies[0]?.stderr).toContain("nr-unknown");
+      expect(replies[1]?.stderr).toContain("artifacts/missing.md");
+      expect(replies[2]?.stderr).toContain("notes.md");
+      expect(replies[3]?.stderr).toContain("artifacts/drafts");
+      expect(await approvalRequests(run.repo)).toEqual([]);
+    });
+  });
 });
 
 describe("SC26: orchestrate hook pre-tool-use", () => {

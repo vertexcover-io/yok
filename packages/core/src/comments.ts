@@ -193,6 +193,8 @@ const blockOf = (c: Comment): string => {
 const firstBlock = (c: Comment): string => {
   const quote = cut(c.anchor?.quote ?? "");
   const words = `\n  ${c.text}`;
+  if (c.kind === "approve")
+    return `${c.id} · ${c.file} · approved: finish the stage that waits on it`;
   if (c.kind === "global") return `${c.id} · ${c.file} · whole file${words}`;
   if (c.kind === "delete") {
     return `${placeOf(c)} · delete "${quote}"${c.text.trim() === "" ? "" : words}`;
@@ -202,10 +204,17 @@ const firstBlock = (c: Comment): string => {
   return `${placeOf(c)}${heading} on "${quote}"${words}`;
 };
 
+// The approval goes last, so the agent reads the other comments before it.
+const byPlace = (a: Comment, b: Comment): number => {
+  if ((a.kind === "approve") !== (b.kind === "approve")) return a.kind === "approve" ? 1 : -1;
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  return (a.anchor?.lines?.[0] ?? 0) - (b.anchor?.lines?.[0] ?? 0);
+};
+
 export const deliveryMessage = (comments: readonly Comment[], runName: string): string =>
   [
     `[review] ${comments.length} new comment${comments.length === 1 ? "" : "s"} from the viewer:`,
-    ...comments.map(blockOf),
+    ...[...comments].sort(byPlace).map(blockOf),
     `Reply to each: yok orchestrate comments reply --run ${runName} --id ID --status answered|changed|declined --text -`,
   ].join("\n");
 

@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
 import { startViewer, type Viewer } from "./viewer.ts";
 
 const ORCHESTRATE = [
@@ -20,6 +20,8 @@ const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "yok-viewe
 
 const DESIGN = [
   "# Design",
+  "",
+  "Start small and grow.",
   "",
   "## Approach",
   "",
@@ -103,6 +105,8 @@ const STEPS = [
   "",
 ].join("\n");
 
+const LIST = ["# List", "", "- First item", "- Second item", "- Third item", ""].join("\n");
+
 const MOCKUP = `<!doctype html><html><body>
 <div class="mk-card"><h2 class="mk-title">Sign in</h2><button id="go">Loading</button></div>
 <script>document.getElementById("go").textContent = "Continue";</script>
@@ -169,6 +173,15 @@ const belowHead = (heading: string): string => `(() => {
 })()`;
 
 const barShown = "!document.querySelector('#selbar').hidden";
+const commenting = "document.querySelector('#docPane').classList.contains('commenting')";
+
+const ensureCommentMode = async (): Promise<void> => {
+  if ((await evaluate(commenting)) !== true) await browser("click", "#modeBtn");
+  await until(commenting);
+};
+
+const cardWith = (text: string): string =>
+  `[...document.querySelectorAll('#threads .card')].find((c) => c.textContent.includes(${JSON.stringify(text)}))`;
 
 describe("viewer in a browser", () => {
   let home: string;
@@ -177,6 +190,7 @@ describe("viewer in a browser", () => {
   let viewer: Viewer;
   let url: string;
   const opened: { file: string; line: number | null }[] = [];
+  let typed: readonly string[] = [];
 
   beforeAll(async () => {
     home = tempDir();
@@ -189,6 +203,7 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "artifacts", "code.md"), CODE);
     writeFileSync(join(runDir, "artifacts", "outline.md"), OUTLINE);
     writeFileSync(join(runDir, "artifacts", "steps.md"), STEPS);
+    writeFileSync(join(runDir, "artifacts", "list.md"), LIST);
     mkdirSync(join(cwd, "src"));
     writeFileSync(join(cwd, "src", "sample.ts"), `${SAMPLE.join("\n")}\n`);
     const registry = createRegistry(join(home, "registry.json"), noopLogger);
@@ -206,7 +221,8 @@ describe("viewer in a browser", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     };
     await registry.addRun(run);
-    const { host } = fakeHost(EMPTY_BOX);
+    const { host, calls } = fakeHost(EMPTY_BOX);
+    typed = calls;
     viewer = await startViewer({
       home,
       registry,
@@ -229,7 +245,7 @@ describe("viewer in a browser", () => {
     await viewer.stop();
   });
 
-  test("SC33: Comment mode gates the selection bar, and a sent comment reaches the agent's status", async () => {
+  test("SC33, SC14: Comment mode gates the selection bar, Add to batch holds comments listed by place until Send 2, and both reach the agent's status", async () => {
     await browser("open", `${url}#artifacts/design.md`);
     await until("!!document.querySelector('#docRoot')");
     await evaluate("localStorage.setItem('yok-viewer:comment-mode','off')");
@@ -246,7 +262,7 @@ describe("viewer in a browser", () => {
 
     await browser("click", "#selbar button[data-kind=comment]");
     await browser("fill", "#composerText", "Why only one file?");
-    await browser("press", "Control+Enter");
+    await browser("click", "#batchBtn");
     await until("document.querySelector('.batch') !== null");
     expect(await evaluate("document.querySelector('#docRoot mark.hl.is-draft') !== null")).toBe(
       true,
@@ -255,10 +271,27 @@ describe("viewer in a browser", () => {
       "Not sent yet",
     );
 
+    await selectText(false, "Start small");
+    await until(barShown);
+    await browser("click", "#selbar button[data-kind=comment]");
+    await browser("fill", "#composerText", "How small?");
+    await browser("click", "#batchBtn");
+    await until("document.querySelectorAll('.batch .card').length === 2");
+    expect(
+      await evaluate(
+        "[...document.querySelectorAll('.batch .card')].map((c) => c.textContent.includes('How small?'))",
+      ),
+    ).toEqual([true, false]);
+    const before = await (await fetch(`${viewer.origin}/runs/r1/comments`)).json();
+    expect(before.comments).toEqual([]);
+
+    expect(await evaluate("document.querySelector('#sendBtn').textContent")).toBe(
+      "Send 2 to the agent",
+    );
     await browser("click", "#sendBtn");
     await until("document.querySelector('.batch') === null");
     await until(
-      "[...document.querySelectorAll('#threads .card .status')].some((s) => s.textContent === 'With the agent')",
+      "[...document.querySelectorAll('#threads .card .status')].filter((s) => s.textContent === 'With the agent').length === 2",
       5000,
     );
   }, 60000);
@@ -287,7 +320,7 @@ describe("viewer in a browser", () => {
     );
     expect(reply.status).toBe(0);
     await until(
-      "document.querySelector('#threads .card').textContent.includes('Simpler to review.') && document.querySelector('#threads .card .status').textContent === 'Answered'",
+      "document.querySelector('#threads .card[data-cid=c1]').textContent.includes('Simpler to review.') && document.querySelector('#threads .card[data-cid=c1] .status').textContent === 'Answered'",
       3500,
     );
 
@@ -315,7 +348,7 @@ describe("viewer in a browser", () => {
     await until(barShown);
     await browser("click", "#selbar button[data-kind=comment]");
     await browser("fill", "#composerText", "Make the title bolder");
-    await browser("press", "Control+Enter");
+    await browser("click", "#batchBtn");
     await until("document.querySelector('.batch') !== null");
     await browser("click", "#sendBtn");
     await until("document.querySelector('.batch') === null");
@@ -462,5 +495,177 @@ describe("viewer in a browser", () => {
       { file: sample, line: 19 },
       { file: join(runDir, "artifacts", "steps.md"), line: null },
     ]);
+  }, 30000);
+
+  test("SC11: Approve shows only on the waiting design.md, and a click sends one approve comment and hides it", async () => {
+    const state = seedState(runDir, {
+      design: {
+        nodeRunId: "n1",
+        nodeType: "agent",
+        status: "running",
+        startedAt: null,
+        completedAt: null,
+        artifacts: [],
+        awaitingApproval: "artifacts/design.md",
+      },
+    });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    try {
+      const approveHidden = "document.querySelector('#approveBtn').hidden";
+      await browser("open", `${url}#artifacts/code.md`);
+      await until("document.querySelector('#docPath').textContent === 'artifacts/code.md'");
+      expect(await evaluate(approveHidden)).toBe(true);
+
+      await browser("open", `${url}#artifacts/design.md`);
+      await until(
+        `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
+      );
+      expect(await evaluate("document.querySelector('#docBadge').textContent")).toBe(
+        "Waiting for your approval",
+      );
+      await browser("click", "#approveBtn");
+      expect(await evaluate(approveHidden)).toBe(true);
+      await until(
+        "[...document.querySelectorAll('#threads .card .chip')].some((c) => c.textContent === 'Approved')",
+      );
+      expect(await evaluate(approveHidden)).toBe(true);
+      const after = JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
+      expect(after.nodeRuns.design).not.toHaveProperty("awaitingApproval");
+      for (let i = 0; i < 50 && !typed.some((t) => t.includes("approved:")); i++)
+        await Bun.sleep(100);
+      expect(typed.filter((t) => t.includes("approved: finish the stage"))).toHaveLength(1);
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+    }
+  }, 30000);
+
+  test("SC13: Send posts one comment at once, Control+Enter does the same, no batch appears, and stored anchors keep their lines", async () => {
+    await browser("set", "viewport", "1280", "800");
+    await browser("open", `${url}#artifacts/design.md`);
+    await until("document.querySelector('#docPath').textContent === 'artifacts/design.md'");
+    await ensureCommentMode();
+    await evaluate(`(() => {
+      window.sawBatch = false;
+      new MutationObserver(() => { if (document.querySelector('.batch')) window.sawBatch = true; })
+        .observe(document.body, { childList: true, subtree: true });
+      return true;
+    })()`);
+
+    await selectText(false, "Start small");
+    await until(barShown);
+    await browser("click", "#selbar button[data-kind=comment]");
+    await browser("fill", "#composerText", "Say how small.");
+    await browser("click", "#sendNowBtn");
+
+    await selectText(false, "second sentence");
+    await until(barShown);
+    await browser("click", "#selbar button[data-kind=comment]");
+    await browser("fill", "#composerText", "Cut the second sentence.");
+    await browser("press", "Control+Enter");
+
+    for (const text of ["Say how small.", "Cut the second sentence."])
+      await until(`${cardWith(text)}?.querySelector('.status')?.textContent === 'With the agent'`);
+    expect(await evaluate("window.sawBatch")).toBe(false);
+    const stored: { text: string; anchor?: { lines?: unknown } }[] = JSON.parse(
+      readFileSync(join(runDir, "comments.json"), "utf8"),
+    ).comments;
+    expect(
+      stored
+        .filter((c) => ["Say how small.", "Cut the second sentence."].includes(c.text))
+        .map((c) => Array.isArray(c.anchor?.lines)),
+    ).toEqual([true, true]);
+  }, 30000);
+
+  test("SC15: at desktop width no block shows an L-number label and a card's location reads design.md · Approach with no line", async () => {
+    const anchor = {
+      quote: "A second sentence",
+      before: "the page stays simple. ",
+      after: " follows here.",
+      lines: [7, 7],
+      heading: "Approach",
+    };
+    const comment = { file: "artifacts/design.md", kind: "comment", text: "Trim it.", anchor };
+    const posted = await fetch(`${url}/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ comments: [comment] }),
+    });
+    expect(posted.status).toBe(201);
+    await browser("set", "viewport", "1280", "800");
+    await browser("open", `${url}#artifacts/design.md`);
+    await until(`${cardWith("Trim it.")} !== undefined`);
+    expect(
+      await evaluate(
+        "[...document.querySelectorAll('#docRoot [data-lines]')].map((b) => getComputedStyle(b, '::before').content).filter((c) => /L/.test(c))",
+      ),
+    ).toEqual([]);
+    expect(await evaluate(`${cardWith("Trim it.")}.querySelector('.loc').textContent`)).toBe(
+      "design.md · Approach",
+    );
+  }, 30000);
+
+  test("a failed Send leaves the comment under Not sent yet with the send error, and a failed Approve shows the button again", async () => {
+    const state = seedState(runDir, {
+      design: {
+        nodeRunId: "n1",
+        nodeType: "agent",
+        status: "running",
+        startedAt: null,
+        completedAt: null,
+        artifacts: [],
+        awaitingApproval: "artifacts/design.md",
+      },
+    });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    const approveHidden = "document.querySelector('#approveBtn').hidden";
+    try {
+      await browser("set", "viewport", "1280", "800");
+      await browser("open", `${url}#artifacts/design.md`);
+      await until(
+        `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
+      );
+      await evaluate(`(() => {
+        const real = window.fetch;
+        window.fetch = (input, init) =>
+          init?.method === 'POST' && String(input).endsWith('/comments')
+            ? Promise.resolve(new Response('disk full', { status: 500 }))
+            : real(input, init);
+        return true;
+      })()`);
+      await ensureCommentMode();
+      await selectText(false, "Start small");
+      await until(barShown);
+      await browser("click", "#selbar button[data-kind=comment]");
+      await browser("fill", "#composerText", "Never sent.");
+      await browser("click", "#sendNowBtn");
+
+      await until(`!!${cardWith("Never sent.")}?.closest('.batch')`);
+      expect(await evaluate("document.querySelector('.batch .group-label').textContent")).toBe(
+        "Not sent yet · 1",
+      );
+      expect(await evaluate("document.querySelector('.batch .send-error').textContent")).toContain(
+        "disk full",
+      );
+
+      await browser("click", "#approveBtn");
+      await until("!document.querySelector('#toast').hidden");
+      expect(await evaluate("document.querySelector('#toast').textContent")).toContain("disk full");
+      await until(`!${approveHidden}`);
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+      await browser("reload");
+    }
+  }, 30000);
+
+  test("SC16: hovering the second bullet in comment mode marks that bullet, while the list and the other bullets stay transparent", async () => {
+    await browser("open", `${url}#artifacts/list.md`);
+    await until("document.querySelectorAll('#docRoot li').length === 3");
+    await ensureCommentMode();
+    await browser("hover", "#docRoot li:nth-child(2)");
+    expect(
+      await evaluate(
+        "['ul', 'li:nth-child(1)', 'li:nth-child(2)', 'li:nth-child(3)'].map((s) => getComputedStyle(document.querySelector('#docRoot ' + s)).backgroundColor !== 'rgba(0, 0, 0, 0)')",
+      ),
+    ).toEqual([false, false, true, false]);
   }, 30000);
 });

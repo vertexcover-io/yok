@@ -60,7 +60,12 @@ export type ViewerDeps = Readonly<{
   now: () => Date;
 }>;
 export type FileType = "md" | "html" | "image" | "text" | "binary";
-export type ArtifactEntry = Readonly<{ path: string; type: FileType; draft: boolean }>;
+export type ArtifactEntry = Readonly<{
+  path: string;
+  type: FileType;
+  draft: boolean;
+  awaitingApproval: boolean;
+}>;
 export type ViewedRun =
   | Readonly<{ kind: "missing" }>
   | Readonly<{ kind: "starting"; run: WorkflowRun }>
@@ -412,11 +417,13 @@ export const openInEditor = ({
   return { ok: true, value: null };
 };
 
-const handedOver = (nodeRuns: Readonly<Record<string, NodeRun>>): readonly string[] =>
-  Object.values(nodeRuns).flatMap((run) => [
-    ...run.artifacts.flatMap((artifact) => ("path" in artifact ? [artifact.path] : [])),
-    ...handedOver(run.nodes ?? {}),
-  ]);
+const flattenNodeRuns = (nodeRuns: Readonly<Record<string, NodeRun>>): readonly NodeRun[] =>
+  Object.values(nodeRuns).flatMap((run) => [run, ...flattenNodeRuns(run.nodes ?? {})]);
+
+const findAwaitedFiles = (state: State | null): readonly string[] =>
+  flattenNodeRuns(state?.nodeRuns ?? {}).flatMap((run) =>
+    run.status === "running" && run.awaitingApproval !== undefined ? [run.awaitingApproval] : [],
+  );
 
 const walk = async (dir: string): Promise<readonly string[]> => {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -443,7 +450,12 @@ export const listArtifacts = async (
   state: State | null,
 ): Promise<readonly ArtifactEntry[]> => {
   const artifactsDir = join(runDir, "artifacts");
-  const delivered = new Set(state === null ? [] : handedOver(state.nodeRuns));
+  const delivered = new Set(
+    flattenNodeRuns(state?.nodeRuns ?? {}).flatMap((run) =>
+      run.artifacts.flatMap((a) => ("path" in a ? [a.path] : [])),
+    ),
+  );
+  const awaited = new Set(findAwaitedFiles(state));
   const inside = (await walk(artifactsDir)).filter(
     (file) => resolveArtifactPath(runDir, relative(runDir, file).split(sep).join("/")) !== null,
   );
@@ -453,7 +465,12 @@ export const listArtifacts = async (
     .sort(byListOrder)
     .map((rel) => {
       const path = `artifacts/${rel}`;
-      return { path, type: fileType(path), draft: !delivered.has(path) };
+      return {
+        path,
+        type: fileType(path),
+        draft: !delivered.has(path),
+        awaitingApproval: awaited.has(path),
+      };
     });
 };
 
@@ -523,6 +540,20 @@ const logEvent = async (deps: ViewerDeps, page: ReadyRun, event: EmitInput): Pro
   const { id, cwd } = page.run;
   const logged = await emitRunEvent({ id, cwd, name: basename(page.runDir) }, event);
   if (!logged.ok) deps.log.error({ runId: id, error: logged.error }, "comment event not logged");
+};
+
+const runQueues = new Map<string, Promise<unknown>>();
+
+// The approve check reads state.json and the logged event clears the wait; two batches for one
+// run running between those steps would both pass, so a run's batches go one at a time.
+const inRunQueue = <T>(runId: string, work: () => Promise<T>): Promise<T> => {
+  const next = (runQueues.get(runId) ?? Promise.resolve()).then(work);
+  const settled = next.catch(() => undefined);
+  runQueues.set(runId, settled);
+  void settled.then(() => {
+    if (runQueues.get(runId) === settled) runQueues.delete(runId);
+  });
+  return next;
 };
 
 const POLL_MS = 1000;
@@ -719,11 +750,22 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       ) {
         return c.text("invalid comments", 400);
       }
-      const added = await addComments(page.runDir, drafts, deps.now());
-      if (!added.ok) return c.text(added.error, 500);
-      await logEvent(deps, page, commentsAddedEvent(added.value));
-      void scheduleDelivery(id, deps);
-      return c.json({ comments: added.value }, 201);
+      const approved = drafts.filter((d) => d.kind === "approve").map((d) => d.file);
+      if (new Set(approved).size < approved.length) {
+        return c.text("a batch can approve each file only once", 409);
+      }
+      return inRunQueue(id, async () => {
+        const awaited = new Set(findAwaitedFiles(await readStateOrNull(page.runDir)));
+        const unawaited = approved.find((file) => !awaited.has(file));
+        if (unawaited !== undefined) {
+          return c.text(`nothing waits for approval on ${unawaited}`, 409);
+        }
+        const added = await addComments(page.runDir, drafts, deps.now());
+        if (!added.ok) return c.text(added.error, 500);
+        await logEvent(deps, page, commentsAddedEvent(added.value));
+        void scheduleDelivery(id, deps);
+        return c.json({ comments: added.value }, 201);
+      });
     })
     .post("/runs/:id/open", async (c) => {
       const page = await requireReadyRun(c, deps);

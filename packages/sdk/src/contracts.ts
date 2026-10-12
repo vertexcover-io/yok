@@ -168,6 +168,7 @@ const NodeRunFieldsSchema = z.strictObject({
   iteration: z.int().positive().optional(),
   stage: SlugSchema.optional(),
   agentState: AgentStateSchema.optional(),
+  awaitingApproval: ArtifactPathSchema.optional(),
 });
 
 // `nodes` is spelled out because the type contains itself. zod's getter pattern infers it under

@@ -61,6 +61,7 @@ import {
   interruptOpenSteps,
   linkRunSession,
   nextStep,
+  requestApproval,
 } from "./runs.ts";
 import {
   findReference,
@@ -254,6 +255,22 @@ const execCommand = () =>
         const report = await execStep(run.value, nodeRunId);
         printResult(report);
         if (report.ok && report.value.status !== "completed") process.exitCode = 1;
+      }),
+    );
+
+const awaitApprovalCommand = () =>
+  new Command("await-approval")
+    .description("Mark an agent node as waiting for the user to approve an artifact")
+    .argument("<nodeRunId>", "node run id from next")
+    .requiredOption("--file <path>", "the artifact to approve, such as artifacts/design.md")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (nodeRunId, opts) =>
+      runWorkflowCommand(async () => {
+        if (nodeRunId === "") return fail(EMPTY_NODE_RUN_ID);
+        const run = await requireRun(runInputFromFlags(opts));
+        if (!run.ok) return fail(run.error);
+        printResult(await requestApproval(run.value, nodeRunId, opts.file));
       }),
     );
 
@@ -837,6 +854,7 @@ export const orchestrateCommand = () =>
     .addCommand(resumeCommand())
     .addCommand(execCommand())
     .addCommand(doneCommand())
+    .addCommand(awaitApprovalCommand())
     .addCommand(nodeCommand())
     .addCommand(skillCommand())
     .addCommand(scriptCommand())

@@ -26,13 +26,19 @@ import { findSessionRun, recordRunEvent } from "./common.ts";
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
 // `yok orchestrate next` or `bun …/index.ts orchestrate done`, but not a path like orchestrate/SKILL.md
-const ORCHESTRATE = /\borchestrate(?:\.ts)?\s+(?:init|link-session|emit|next|resume|exec|done)\b/;
+const ORCHESTRATE =
+  /\borchestrate(?:\.ts)?\s+(?:init|link-session|emit|next|resume|exec|done|await-approval)\b/;
 const ASK_RULE =
   "If you need the user's input, ask the way the orchestrate skill's reference for your agent says.";
 
 const ALLOW: HookReply = { kind: "allow" };
 
-type ActiveLeaf = Readonly<{ nodeId: string; nodeRunId: string; nodeType: NodeRun["nodeType"] }>;
+type ActiveLeaf = Readonly<{
+  nodeId: string;
+  nodeRunId: string;
+  nodeType: NodeRun["nodeType"];
+  awaitingApproval: string | undefined;
+}>;
 
 export type StopCheck = Readonly<{
   run: RunRef;
@@ -58,6 +64,7 @@ export type StopDecision =
     }>
   | Readonly<{ reason: "context-node"; blockStreak: number; nodeRunId: string }>
   | Readonly<{ reason: "model-switch"; blockStreak: number; seq: number }>
+  | Readonly<{ reason: "awaiting-approval"; blockStreak: number; nodeRunId: string }>
   | Readonly<{ reason: "next-not-run"; blockStreak: number; message: string }>
   | Readonly<{ reason: "node-not-done"; blockStreak: number; message: string; nodeRunId: string }>;
 
@@ -74,7 +81,12 @@ const findActiveLeaf = (nodeRuns: Readonly<Record<string, NodeRun>>): ActiveLeaf
   for (const [nodeId, run] of Object.entries(nodeRuns)) {
     if (run.status !== "running") continue;
     if (!CONTAINERS.has(run.nodeType)) {
-      return { nodeId, nodeRunId: run.nodeRunId, nodeType: run.nodeType };
+      return {
+        nodeId,
+        nodeRunId: run.nodeRunId,
+        nodeType: run.nodeType,
+        awaitingApproval: run.awaitingApproval,
+      };
     }
     if (run.nodes === undefined) continue;
     const child = findActiveLeaf(run.nodes);
@@ -154,6 +166,10 @@ export const decideStop = ({
   // A context node's work starts once the turn is over, so the stop is the cue, not a lapse.
   if (position.kind === "open-node" && position.leaf.nodeType === "context") {
     return { reason: "context-node", blockStreak: prior, nodeRunId: position.leaf.nodeRunId };
+  }
+  // The user reviews now; an empty input box is what lets their viewer comments in.
+  if (position.kind === "open-node" && position.leaf.awaitingApproval !== undefined) {
+    return { reason: "awaiting-approval", blockStreak: prior, nodeRunId: position.leaf.nodeRunId };
   }
   // A model step's switch also starts once the turn is over.
   if (position.kind === "between-nodes" && pendingSwitch !== null) {

@@ -1,5 +1,5 @@
 import { claudeProvider } from "@yok/core";
-import type { IAgentProvider, ITerminal, ITerminalHost } from "@yok/sdk";
+import type { IAgentProvider, ITerminal, ITerminalHost, NodeRun, State } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 
 export const RULE = "─".repeat(40);
@@ -35,3 +35,29 @@ export const fakeHost = (screen: string | (() => string), alive = true) => {
 // The real Claude provider over a fake pane, so delivery runs the same screen checks as in a run.
 export const claudeOver = (host: ITerminalHost): IAgentProvider =>
   claudeProvider({ host, binary: "claude", log: noopLogger });
+
+// A minimal state that parses, holding the given node runs.
+export const seedState = (runDir: string, nodeRuns: Readonly<Record<string, NodeRun>>): State => ({
+  schemaVersion: 1,
+  lastEventSeq: 0,
+  runId: "r-1",
+  runName: "demo",
+  runDir,
+  version: "1",
+  workflow: { name: "w", path: "artifacts/w.yaml" },
+  input: {},
+  scope: null,
+  startedAt: "2026-01-01T00:00:00.000Z",
+  completedAt: null,
+  status: "running",
+  workspace: {
+    type: "mono",
+    path: runDir,
+    repositories: { r: { path: runDir, git: { branch: "b", baseBranch: "main", startSha: "s" } } },
+  },
+  nodeRuns: { ...nodeRuns },
+  activeSessions: [],
+  tiers: null,
+  eventHandlers: {},
+  subscribers: {},
+});
