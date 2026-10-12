@@ -2,8 +2,8 @@
 name: implement
 description: >
   Build a requested change, an approved plan, one of its phases, or review feedback test-first,
-  with independent phases in parallel, and commit each phase. Runs as the pipeline's implement
-  stage after planning; also use it directly to build any change.
+  with independent phases in parallel, commit each phase and push the branch. Runs as the
+  pipeline's implement stage after planning; also use it directly to build any change.
 summary: Say which phases were built and whether their tests pass.
 mode: inline
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Skill]
@@ -111,8 +111,7 @@ For each phase:
   invented tests.
 - When building a screen, open the frame the step names first.
 - Outside a wave of two or more, commit the phase with its `## Commit` message. Stage only this
-  phase's changes and leave unrelated edits alone. In a run this commit needs no question;
-  standalone, ask before committing unless the user already allowed it. Never push.
+  phase's changes and leave unrelated edits alone. Commit without asking.
 
 ### The E2E leg
 
@@ -142,17 +141,22 @@ needs a decision, missing access or a change of scope:
 
 ## 5. Report and finish
 
+Push each repo's branch. The stage is done only when every repo has no dirty tracked file and
+`HEAD` equals `origin/BRANCH`. Never force-push; when the remote holds commits this checkout
+lacks, finish the stage with `--error -` naming them.
+
 Load `writing-style`, then write `.yok/RUN/artifacts/implementation.md`:
 
 - one row per phase: `COMPLETED` or `BLOCKED`, its commit SHA, the files changed
+- per repo, the branch and the pushed head
 - each scenario id and the test that proves it
 - each check run, with pass and fail counts, and every justified skip
 - the E2E report or skip note per phase
 - for feedback, what was done about each item
 
 Finish the stage with `--artifact '{"type":"implementation","name":"implementation","path":"artifacts/implementation.md"}'` and one line as
-the output: how many phases were built and the last commit. `COMPLETED` means the assignment met
-its checks; it is not a verdict that the work can ship.
+the output: how many phases were built and the pushed head. `COMPLETED` means the assignment
+met its checks; it is not a verdict that the work can ship.
 
 Standalone, review the finished work with the `code-review` skill, then give the same report in
 the reply.

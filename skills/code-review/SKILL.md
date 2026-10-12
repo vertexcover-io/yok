@@ -232,6 +232,10 @@ when a blocking finding is one you left.
 
 ## Finish
 
+In a run, push each repo's branch. The stage is done only when every repo has no dirty tracked
+file and `HEAD` equals `origin/BRANCH`. Never force-push; when the remote holds commits this
+checkout lacks, finish the stage with `--error -` naming them.
+
 In a run, finish the stage with `--artifact '{"type":"review","name":"review","path":"artifacts/review.md"}'`. The output is the final
 verdict on its first line, then one line per finding left unfixed.
 
