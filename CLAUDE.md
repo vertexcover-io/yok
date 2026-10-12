@@ -1,6 +1,5 @@
 # Preferences
 - If the project is using TDD always prefer TDD Approach
-- Ask before committing to git
 - Prefer editing existing files over creating new ones. 
 - Try keeping flat folder structure and lesser no of files
 - Keep code simple — no over-engineering
@@ -31,6 +30,3 @@
 ## Communication
 Ask clarifying questions before architectural changes
 Explain reasoning for non-obvious decisions
-
-## Pipeline exemption
-- The `ask before committing to git` rule does not apply to the `git-commit` and `visual-pr` stages of a `yok run` workflow. They commit, push, and open the PR without pausing. The rule still governs all other, manual git changes.
