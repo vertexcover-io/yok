@@ -53,23 +53,41 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
       workspace: "{{ nodes.create-workspace.output }}"
 
+  - id: compact-after-planning
+    type: context
+    action: compact
+    prompt: "Keep the approved plan, the workspace path, and the run name."
+    dependsOn: [planning]
+
   - id: implement
     type: agent
     stage: implement
-    dependsOn: [planning]
+    dependsOn: [compact-after-planning]
     input:
       workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: compact-after-implement
+    type: context
+    action: compact
+    prompt: "Keep what was implemented, the files touched, and the workspace path."
+    dependsOn: [implement]
 
   - id: code-review
     type: agent
     stage: code-review
-    dependsOn: [implement]
+    dependsOn: [compact-after-implement]
     input:
       workspace: "{{ nodes.create-workspace.output }}"
 
+  - id: compact-after-review
+    type: context
+    action: compact
+    prompt: "Keep the review findings and the workspace path."
+    dependsOn: [code-review]
+
   - id: qa-loop
     type: loop
-    dependsOn: [code-review]
+    dependsOn: [compact-after-review]
     until: "{{ iteration.nodes.qa.output.status != 'FAIL' }}"
     maxIterations: 4
     input:
