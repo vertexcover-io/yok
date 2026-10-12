@@ -18,8 +18,8 @@ request says a sync from A to B fails, pick both A and B.
 - **No repo clearly matches:** pick all of them, and say so.
 
 Pass the picked names to the `workspace` script's `create` as `--repos NAME1,NAME2`, so the
-script runs with `create SPEC_NAME --run SPEC_NAME --repos NAME1,NAME2`. In the summary, say why
-each repo was picked.
+script runs with `create SPEC_NAME --run SPEC_NAME --repos NAME1,NAME2`. Before running it, tell
+the user which repos you picked and why; the final reply stays the output JSON alone.
 
 A later stage that finds it needs another repo adds it to the existing workspace by running the
 `workspace` script with `add SPEC_NAME --repos NAME --run SPEC_NAME`.

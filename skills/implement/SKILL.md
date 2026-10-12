@@ -26,7 +26,7 @@ RUN below is the run's name. The input may hold:
 
 | Field | Meaning |
 |---|---|
-| `workspace` | the create-workspace stage's output. Work in each repo's `worktreeDir`; without it, work in the current checkout. When a phase changes a repo the workspace lacks, add it first with `yok orchestrate skill run create-workspace.workspace add RUN --repos NAME --run RUN`, and name the added repo in the report. |
+| `workspace` | the create-workspace stage's output. Work in each repo's `worktreeDir`; without it, work in the current checkout. When a phase changes a repo the workspace lacks, add it first with `yok orchestrate skill run create-workspace.workspace add RUN --repos NAME --run RUN`, then do all reads, edits, checks and commits for that repo in the `worktreeDir` the command's JSON report prints, never in the main checkout, and name the added repo in the report. |
 | `phases` | the phase numbers to build. Without it, every phase in the plan. |
 | `feedback` | review items to fix. With it, the assignment is those items; the plan supplies context only. Each item is a defect to reproduce; its `fix` is a suggestion, never a reason to change files outside the assignment. An item with `needsDecision: true` is a product question: ask the user what to do before changing code, and record the answer in `implementation.md`, where qa reads it. |
 
