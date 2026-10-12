@@ -216,7 +216,8 @@ const toStep = (
   agent: run?.agentState?.agent ?? null,
   tier: run?.agentState?.tier ?? null,
   model: run?.agentState?.model ?? null,
-  artifacts: run?.artifacts.map((artifact) => artifact.path) ?? [],
+  artifacts:
+    run?.artifacts.flatMap((artifact) => ("path" in artifact ? [artifact.path] : [])) ?? [],
   reason: reasonOf(run),
   output: outputOf(run),
   children,

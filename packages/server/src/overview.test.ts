@@ -398,7 +398,7 @@ describe("listSteps details", () => {
       given: "completed with a 5000-character output and a design file",
       run: nodeRun("completed", {
         output: long,
-        artifacts: [{ name: "design", path: "artifacts/design.md" }],
+        artifacts: [{ type: "design", name: "design", path: "artifacts/design.md" }],
       }),
       expected: {
         reason: null,
