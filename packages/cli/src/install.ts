@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
@@ -10,7 +11,7 @@ import {
   WorkflowAgentSchema,
   YOK_REPO,
 } from "@yok/core";
-import { execWithTimeout, spawnInteractive, yokHome } from "@yok/sdk";
+import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
 import { fail, restartServer, stopServer, yokClient } from "./client.ts";
@@ -56,6 +57,50 @@ export const checksumFor = (checksums: string, asset: string): string | null =>
     .find(([, name]) => name === asset)?.[0] ?? null;
 
 const DEV_UPDATE = "yok-dev is this checkout: run git pull";
+
+type PackageManager = "homebrew" | "npm";
+
+// A binary Homebrew or npm put in place is theirs to replace and remove.
+export const installedBy = (execPath: string): PackageManager | null => {
+  if (execPath.includes("/Cellar/yok/")) return "homebrew";
+  if (execPath.includes("/node_modules/@vertexcover-io/yok-")) return "npm";
+  return null;
+};
+
+export type ManagedUpdate = Readonly<{ upgrade: readonly [string, ...string[]]; binary: string }>;
+
+// binary is the path that holds the upgraded yok. Homebrew removes the old version's Cellar
+// folder, so its opt link is the path that follows the upgrade; npm replaces the file in place.
+export const managedUpdate = (
+  manager: PackageManager,
+  execPath: string,
+  preRelease: boolean,
+): Result<ManagedUpdate> => {
+  if (manager === "npm") {
+    const tag = preRelease ? "next" : "latest";
+    const upgrade = ["npm", "install", "-g", `@vertexcover-io/yok@${tag}`] as const;
+    return { ok: true, value: { upgrade, binary: execPath } };
+  }
+  if (preRelease) {
+    return {
+      ok: false,
+      error: "Homebrew ships stable releases only: drop --pre-release, or install yok with npm",
+    };
+  }
+  const prefix = execPath.slice(0, execPath.indexOf("/Cellar/yok/"));
+  return {
+    ok: true,
+    value: { upgrade: ["brew", "upgrade", "yok"], binary: `${prefix}/opt/yok/bin/yok` },
+  };
+};
+
+const MANAGED_UNINSTALL: Readonly<Record<PackageManager, string>> = {
+  homebrew: "brew uninstall yok",
+  npm: "npm rm -g @vertexcover-io/yok",
+};
+
+// Homebrew links bin/yok to its Cellar, so the real path is the one that names the manager.
+const realExecPath = (): string => realpathSync(process.execPath);
 const DEV_UNINSTALL = "yok-dev is this checkout: there is nothing to uninstall";
 
 const ghAuthToken = (): string | null => {
@@ -139,6 +184,13 @@ const failed = (message: string): UpdateOutcome => {
   return { code: 1, binaryReady: false };
 };
 
+const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Promise<number> =>
+  spawnInteractive(
+    binary,
+    ["plugin", "install", ...agents.flatMap((agent) => ["--agent", agent])],
+    { cwd: process.cwd() },
+  );
+
 // Returns the exit code. The plugin install runs in target.execPath after the swap: the new binary
 // knows its own version, which this process does not.
 export const runUpdate = async (
@@ -165,25 +217,59 @@ export const runUpdate = async (
     if (problem !== null) return failed(problem);
     console.log(`yok ${target.version} replaced by ${tag}`);
   }
-  const args = ["plugin", "install", ...agents.flatMap((agent) => ["--agent", agent])];
-  const code = await spawnInteractive(target.execPath, args, { cwd: process.cwd() });
+  const code = await installPluginWith(target.execPath, agents);
   return { code, binaryReady: true };
+};
+
+// Runs Homebrew or npm, then the plugin install in the upgraded binary. YOK_SELF moves to that
+// binary, so the server restart that follows starts it rather than this process's old one.
+const runManagedUpdate = async (
+  update: ManagedUpdate,
+  agents: readonly WorkflowAgent[],
+): Promise<UpdateOutcome> => {
+  const [command, ...args] = update.upgrade;
+  const upgraded = await spawnInteractive(command, args, { cwd: process.cwd() });
+  if (upgraded !== 0) return failed(`${update.upgrade.join(" ")} exited with ${upgraded}`);
+  process.env.YOK_SELF = JSON.stringify([update.binary]);
+  return { code: await installPluginWith(update.binary, agents), binaryReady: true };
+};
+
+const updateFromRelease = (
+  agents: readonly WorkflowAgent[],
+  preRelease: boolean,
+): Promise<UpdateOutcome> =>
+  runUpdate(
+    {
+      releasesUrl: RELEASES_URL,
+      token: githubToken(process.env),
+      execPath: process.execPath,
+      version: VERSION,
+    },
+    agents,
+    preRelease,
+  );
+
+const update = async (
+  agents: readonly WorkflowAgent[],
+  preRelease: boolean,
+): Promise<UpdateOutcome> => {
+  const execPath = realExecPath();
+  const manager = installedBy(execPath);
+  if (manager === null) return updateFromRelease(agents, preRelease);
+  const managed = managedUpdate(manager, execPath, preRelease);
+  return managed.ok ? runManagedUpdate(managed.value, agents) : failed(managed.error);
 };
 
 export const updateCommand = () =>
   new Command("update")
-    .description("Install the newest yok release, move the plugin to it, and restart the server")
+    .description(
+      "Install the newest yok release (through Homebrew or npm if they installed it), move the plugin to it, and restart the server",
+    )
     .option("--pre-release", "take the newest release of any kind, not only stable")
     .addOption(agentOption())
     .action(async ({ agent, preRelease }) => {
       if (!isCompiled) return fail(DEV_UPDATE);
-      const target = {
-        releasesUrl: RELEASES_URL,
-        token: githubToken(process.env),
-        execPath: process.execPath,
-        version: VERSION,
-      };
-      const { code, binaryReady } = await runUpdate(target, agent, preRelease === true);
+      const { code, binaryReady } = await update(agent, preRelease === true);
       process.exitCode = code;
       if (!binaryReady) return;
       // The server keeps running the binary it started from until it is restarted. A failed
@@ -202,7 +288,7 @@ const PATH_LINE =
 const RC_FILES = [".zshrc", ".bashrc", ".profile"] as const;
 
 export type InstallPaths = Readonly<{
-  execPath: string;
+  execPath: string | null;
   installDir: string;
   rcFiles: readonly string[];
 }>;
@@ -224,13 +310,13 @@ const removePathLine = async (rc: string): Promise<boolean> => {
   return true;
 };
 
-// Returns what it removed, one line each.
+// Returns what it removed, one line each. A null execPath keeps the binary.
 export const removeInstall = async ({
   execPath,
   installDir,
   rcFiles,
 }: InstallPaths): Promise<readonly string[]> => {
-  const binary = isInside(execPath, installDir) ? [] : [execPath];
+  const binary = execPath === null || isInside(execPath, installDir) ? [] : [execPath];
   for (const path of [...binary, installDir]) await rm(path, { recursive: true, force: true });
   const cleaned: string[] = [];
   for (const rc of rcFiles) if (await removePathLine(rc)) cleaned.push(rc);
@@ -279,10 +365,11 @@ const uninstall = async (plugin: boolean | undefined): Promise<void> => {
   const rcFiles = RC_FILES.map((name) => join(homedir(), name));
   // Always install.sh's folder, never YOK_HOME: that can point anywhere, even at $HOME.
   const installDir = join(homedir(), ".yok");
-  for (const line of await removeInstall({ execPath: process.execPath, installDir, rcFiles })) {
-    console.log(line);
-  }
+  const manager = installedBy(realExecPath());
+  const execPath = manager === null ? process.execPath : null;
+  for (const line of await removeInstall({ execPath, installDir, rcFiles })) console.log(line);
   if (!withPlugin) console.log("kept the yok plugin");
+  if (manager !== null) console.log(`yok came from ${manager}: run ${MANAGED_UNINSTALL[manager]}`);
 };
 
 export const uninstallCommand = () =>

@@ -69,6 +69,15 @@ Options, set as environment variables before the command:
 - `YOK_VERSION=v0.0.2-rc.1` installs one exact release instead of the newest.
 - `YOK_AGENTS=claude` limits the plugin install to one agent.
 
+#### Or with Homebrew or npm
+
+Both install only the binary. The plugin install still clones `vertexcover-io/yok`, so the `gh auth` steps above still apply.
+
+```bash
+brew install vertexcover-io/tap/yok      # or: npm i -g @vertexcover-io/yok
+yok plugin install --agent claude
+```
+
 ### 2. Check it
 
 Open a new shell, then:
@@ -99,6 +108,8 @@ Run the install command again, or:
 yok update --agent claude                 # newest stable release; the plugin moves with it
 yok update --agent claude --pre-release   # release candidates too
 ```
+
+On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover-io/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install --agent claude` yourself; the next `yok` command that needs the server replaces the one still running the old version.
 
 `yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
 
@@ -308,7 +319,7 @@ yok uninstall --plugin      # remove the plugin without asking
 yok uninstall --no-plugin   # keep the plugin without asking
 ```
 
-This stops the yok server, deletes `~/.yok` (the binary, the run registry and the server log), and removes the `PATH` line the installer added to `~/.zshrc`, `~/.bashrc` or `~/.profile`. Run folders inside your projects stay, and so do running tmux sessions. Without a terminal to answer the question, the plugin stays.
+This stops the yok server, deletes `~/.yok` (the binary, the run registry and the server log), and removes the `PATH` line the installer added to `~/.zshrc`, `~/.bashrc` or `~/.profile`. Run folders inside your projects stay, and so do running tmux sessions. Without a terminal to answer the question, the plugin stays. A Homebrew or npm install keeps its binary; finish with `brew uninstall yok` or `npm rm -g @vertexcover-io/yok`.
 
 ## Extending yok
 
