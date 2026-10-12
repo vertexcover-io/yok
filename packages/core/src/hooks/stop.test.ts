@@ -181,6 +181,25 @@ describe("decideStop", () => {
     expect(decision).toMatchObject({ reason: "user-chat", blockStreak: 1 });
   });
 
+  test("SC3: a stop while the open agent node waits for approval of artifacts/design.md lets the turn end as awaiting-approval, even at block streak 1", () => {
+    const design = { ...nodeRun("design", "running"), awaitingApproval: "artifacts/design.md" };
+    const decision = decide({
+      nodeRuns: { design },
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
+    expect(decision).toEqual({ reason: "awaiting-approval", blockStreak: 1, nodeRunId: "design" });
+  });
+
+  test("SC4: a stop with an open agent node that does not wait for approval is still sent back with its done command", () => {
+    const decision = decide({ nodeRuns: planOpen });
+    expect(decision).toMatchObject({
+      reason: "node-not-done",
+      nodeRunId: "plan",
+      message: expect.stringContaining("yok orchestrate done plan --run feat-x"),
+    });
+  });
+
   test("SC9: a stop between nodes with switch seq 42 pending lets the turn end as model-switch, even on a chat turn", () => {
     const pending = { seq: 42, node: "think", model: "opus-x" };
     expect(decide({}, { touchedRun: false, pendingSwitch: pending })).toEqual({

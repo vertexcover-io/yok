@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addComments, readComments } from "@yok/core";
-import type { WorkflowRun } from "@yok/sdk";
+import type { NodeRun, WorkflowRun } from "@yok/sdk";
 import { noopLogger, runDirOf } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { deliverComments, lastDelivery, scheduleDelivery, stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
 
 const MENU = `${EMPTY_BOX}\nEnter to select · ↑/↓ to navigate · Esc to cancel`;
 const NOW = new Date("2026-01-01T00:00:00.000Z");
@@ -77,41 +77,16 @@ describe("deliverComments", () => {
   test("SC24: delivery waits with its own reason and changes nothing when typing is unsafe", async () => {
     const contextRunning = async () => {
       const made = await setup();
-      writeFileSync(
-        join(made.runDir, "state.json"),
-        JSON.stringify({
-          schemaVersion: 1,
-          lastEventSeq: 0,
-          runId: "r-1",
-          runName: "demo",
-          runDir: made.runDir,
-          version: "1",
-          workflow: { name: "w", path: "artifacts/w.yaml" },
-          input: {},
-          scope: null,
-          startedAt: NOW.toISOString(),
-          completedAt: null,
-          status: "running",
-          workspace: {
-            type: "mono",
-            path: made.run.cwd,
-            repositories: {
-              r: { path: made.run.cwd, git: { branch: "b", baseBranch: "main", startSha: "s" } },
-            },
-          },
-          tiers: null,
-          nodeRuns: {
-            c: {
-              nodeRunId: "n1",
-              nodeType: "context",
-              status: "running",
-              startedAt: null,
-              completedAt: null,
-              artifacts: [],
-            },
-          },
-        }),
-      );
+      const context: NodeRun = {
+        nodeRunId: "n1",
+        nodeType: "context",
+        status: "running",
+        startedAt: null,
+        completedAt: null,
+        artifacts: [],
+      };
+      const state = seedState(made.runDir, { c: context });
+      writeFileSync(join(made.runDir, "state.json"), JSON.stringify(state));
       return made;
     };
     const cases = [

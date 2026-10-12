@@ -140,4 +140,5 @@ the command to use instead. Reading them is fine.
 
 When you need the user's input, ask the way the reference says. A Stop hook checks the run when
 your turn ends, and a turn that ends with a node still open, or before `next`, is sent back to
-you with the command you still owe.
+you with the command you still owe. A node marked with `yok orchestrate await-approval` is the
+exception: the turn ends, and the user's approval or comments start the next one.

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,11 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
-import type { ITerminalHost, State, WorkflowRun } from "@yok/sdk";
+import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, RULE } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import {
   editorCommand,
   listArtifacts,
@@ -367,6 +368,39 @@ describe("viewer routes", () => {
     expect(body.files.map((f) => f.draft)).toEqual([true]);
   });
 
+  test("SC10: the file list flags design.md while its running node waits on it, and stops once the node completes", async () => {
+    const { get, runDir } = await setup();
+    put(runDir, "artifacts/design.md", "# d");
+    put(runDir, "artifacts/notes.md", "# n");
+    const design = (status: NodeRun["status"]): NodeRun => ({
+      nodeRunId: "n1",
+      nodeType: "agent",
+      status,
+      startedAt: null,
+      completedAt: null,
+      artifacts: [],
+      awaitingApproval: "artifacts/design.md",
+    });
+    const flags = async () => {
+      const body = (await (await get("/runs/r-named/files")).json()) as {
+        files: { path: string; awaitingApproval: boolean }[];
+      };
+      return body.files.map((f) => [f.path, f.awaitingApproval]);
+    };
+
+    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design: design("running") })));
+    expect(await flags()).toEqual([
+      ["artifacts/design.md", true],
+      ["artifacts/notes.md", false],
+    ]);
+
+    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design: design("completed") })));
+    expect(await flags()).toEqual([
+      ["artifacts/design.md", false],
+      ["artifacts/notes.md", false],
+    ]);
+  });
+
   test("SC7: an unnamed run is starting, a named one without artifacts is empty, an unknown one is 404", async () => {
     const { get } = await setup();
     expect(((await (await get("/runs/r-starting/files")).json()) as { state: string }).state).toBe(
@@ -562,6 +596,73 @@ describe("comment routes", () => {
       await post("/runs/r-named/comments", { comments: [{ ...draft, file: "../state.json" }] }),
     ];
     expect(bad.map((r) => r.status)).toEqual([400, 404, 409, 400]);
+  });
+
+  test("an approve on a file no running node waits on is refused with 409 and nothing is stored, and one on the waiting design.md is accepted", async () => {
+    const { post, runDir } = await setup();
+    put(runDir, "artifacts/design.md", "# d");
+    put(runDir, "artifacts/notes.md", "# n");
+    const design: NodeRun = {
+      nodeRunId: "n1",
+      nodeType: "agent",
+      status: "running",
+      startedAt: null,
+      completedAt: null,
+      artifacts: [],
+      awaitingApproval: "artifacts/design.md",
+    };
+    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design })));
+    const approve = (file: string) =>
+      post("/runs/r-named/comments", { comments: [{ file, kind: "approve", text: "Approved" }] });
+
+    const refused = await approve("artifacts/notes.md");
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("artifacts/notes.md");
+    expect(await statusesOf(runDir)).toEqual([]);
+
+    expect((await approve("artifacts/design.md")).status).toBe(201);
+  });
+
+  const seedWaitingDesign = async () => {
+    const ctx = await setup();
+    put(ctx.runDir, "artifacts/design.md", "# d");
+    const design: NodeRun = {
+      nodeRunId: "n1",
+      nodeType: "agent",
+      status: "running",
+      startedAt: null,
+      completedAt: null,
+      artifacts: [],
+      awaitingApproval: "artifacts/design.md",
+    };
+    put(ctx.runDir, "state.json", JSON.stringify(seedState(ctx.runDir, { design })));
+    return ctx;
+  };
+  const approveDraft = { file: "artifacts/design.md", kind: "approve", text: "Approved" };
+
+  test("SC10: two approvals of the waiting design.md posted at once - one is accepted with 201, the other refused with 409, and only one approval is stored and logged", async () => {
+    const { post, runDir } = await seedWaitingDesign();
+
+    const replies = await Promise.all([
+      post("/runs/r-named/comments", { comments: [approveDraft] }),
+      post("/runs/r-named/comments", { comments: [approveDraft] }),
+    ]);
+
+    expect(replies.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(await statusesOf(runDir)).toHaveLength(1);
+    const added = eventsOf(runDir, "artifact.comment.added");
+    expect(added).toHaveLength(1);
+    expect(added[0]?.payload).toMatchObject({ comments: [{ kind: "approve" }] });
+  });
+
+  test("SC10: one batch holding two approvals of the same design.md is refused with 409 and nothing is stored", async () => {
+    const { post, runDir } = await seedWaitingDesign();
+
+    const res = await post("/runs/r-named/comments", { comments: [approveDraft, approveDraft] });
+
+    expect(res.status).toBe(409);
+    expect(await statusesOf(runDir)).toEqual([]);
+    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
   });
 
   test("SC31: a user follow-up sends the thread again and is logged", async () => {

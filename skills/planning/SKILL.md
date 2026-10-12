@@ -170,8 +170,16 @@ In the reply:
 3. Every design correction, ADR written and deferred item, one line each.
 4. The paths to `plan.md` and each phase file as `file://` links.
 
-Then `AskUserQuestion`: header `Approve?`, options `Approve the plan (Recommended)` and
-`Revise`. A revision is not an approval: apply it to the files, re-run step 4's self-review, say
+Then ask for approval without a menu: a menu blocks the viewer's comments from reaching you. In
+a yok run, run `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.md`,
+where NODE_RUN_ID is the id in the stage's `done` command, and end the turn with one line: approve
+with the Approve button in the viewer, or type approve here. While you wait, comments arrive as
+`[review]` messages: reply to each, apply what they change, and end the turn again. An `approve`
+entry in a `[review]` message, or the user typing approve, is the approval; reply to that
+comment as `answered`. Outside a run, ask with `AskUserQuestion`: header `Approve?`, options
+`Approve the plan (Recommended)` and `Revise`.
+
+A revision is not an approval: apply it to the files, re-run step 4's self-review, say
 what changed and ask again. When a revision changes a decision an ADR from this run records,
 delete that ADR and its INDEX.md line, and record the new decision.
 

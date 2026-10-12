@@ -61,6 +61,7 @@ import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflo
 import {
   type CompletionIssue,
   CompletionIssueSchema,
+  findArtifactFileIssue,
   findConsumedArtifacts,
   findDefaultIssues,
   readOutput,
@@ -681,6 +682,26 @@ const runExecStep = async (run: RunRef, nodeRunId: string): Promise<Result<StepR
 
 export const execStep = (run: RunRef, nodeRunId: string): Promise<Result<StepReport>> =>
   logCall(run, { command: "exec", input: { nodeRunId } }, runExecStep(run, nodeRunId));
+
+export const requestApproval = async (
+  run: RunRef,
+  nodeRunId: string,
+  path: string,
+): Promise<Result<Readonly<{ nodeRunId: string; path: string }>>> => {
+  const step = await loadRunningLeaf(run, nodeRunId);
+  if (!step.ok) return step;
+  const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
+  if (issue !== undefined) return { ok: false, error: issue.message };
+  const stored = await appendRunEvent(run, {
+    type: "artifact.approval.requested",
+    source: "orchestrate",
+    nodeId: step.value.node.id,
+    nodeRunId,
+    payload: { path, ...buildParentsField(step.value.node.parents) },
+  });
+  return stored.ok ? { ok: true, value: { nodeRunId, path } } : stored;
+};
+
 type ContextLeaf = RunningLeaf & Readonly<{ node: PlanContextNode }>;
 
 const loadContextLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<ContextLeaf>> => {

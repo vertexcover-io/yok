@@ -656,6 +656,111 @@ describe("builtInHandlers", () => {
   });
 });
 
+const approvalRequested = (
+  seq: number,
+  ids: { nodeId: string; nodeRunId: string },
+  payload: JsonValue,
+): Event => ({
+  ...nodeEvent(seq, "started", ids, payload),
+  type: "artifact.approval.requested",
+  source: "orchestrate",
+});
+
+describe("artifact.approval.requested", () => {
+  const design = { nodeId: "design", nodeRunId: "nr-1" };
+  const plan = { nodeId: "planning", nodeRunId: "nr-2" };
+
+  test("SC1: an approval request marks the running node with the file it waits on, at the top level and inside a loop", () => {
+    const state = project([
+      nodeEvent(1, "started", design, { nodeType: "agent" }),
+      approvalRequested(2, design, { path: "artifacts/design.md" }),
+      nodeEvent(3, "started", { nodeId: "fix", nodeRunId: "nr-3" }, { nodeType: "loop" }),
+      nodeEvent(4, "started", plan, { nodeType: "agent", parents: ["fix"] }),
+      approvalRequested(5, plan, { path: "artifacts/design.md", parents: ["fix"] }),
+    ]);
+    expect(state.nodeRuns.design).toMatchObject({
+      nodeRunId: "nr-1",
+      awaitingApproval: "artifacts/design.md",
+    });
+    expect(state.nodeRuns.fix?.nodes?.planning).toMatchObject({
+      nodeRunId: "nr-2",
+      awaitingApproval: "artifacts/design.md",
+    });
+    expect(StateSchema.safeParse(state).success).toBe(true);
+  });
+
+  test("SC1: an approval request naming a node run that is not the node's current run is refused", () => {
+    expect(() =>
+      project([
+        nodeEvent(1, "started", design, { nodeType: "agent" }),
+        approvalRequested(
+          2,
+          { nodeId: "design", nodeRunId: "nr-old" },
+          { path: "artifacts/design.md" },
+        ),
+      ]),
+    ).toThrow(/nr-old/);
+  });
+
+  test("SC2: a node started again after an approval request no longer waits for approval", () => {
+    const state = project([
+      nodeEvent(1, "started", design, { nodeType: "agent" }),
+      approvalRequested(2, design, { path: "artifacts/design.md" }),
+      nodeEvent(3, "started", { nodeId: "design", nodeRunId: "nr-9" }, { nodeType: "agent" }),
+    ]);
+    expect(state.nodeRuns.design?.nodeRunId).toBe("nr-9");
+    expect(state.nodeRuns.design).not.toHaveProperty("awaitingApproval");
+  });
+
+  test("a node that ends while waiting for approval no longer carries the wait", () => {
+    const error = { kind: "exhausted", message: "done was rejected 3 times" };
+    const ends = [
+      nodeEvent(3, "completed", design, { nodeType: "agent", attempts: 1 }),
+      nodeEvent(3, "failed", design, { nodeType: "agent", attempts: 3, error }),
+    ];
+    const ended = ends.map((end) =>
+      project([
+        nodeEvent(1, "started", design, { nodeType: "agent" }),
+        approvalRequested(2, design, { path: "artifacts/design.md" }),
+        end,
+      ]),
+    );
+    for (const state of ended) {
+      expect(state.nodeRuns.design).not.toHaveProperty("awaitingApproval");
+    }
+  });
+
+  const commentAdded = (seq: number, kind: string, file: string): Event => ({
+    schemaVersion: 1,
+    seq,
+    id: `evt-${seq}`,
+    ts: `2026-09-26T10:00:0${seq}Z`,
+    type: "artifact.comment.added",
+    source: "viewer",
+    runId: "r-1",
+    payload: { comments: [{ id: `c-${seq}`, file, kind, text: "ok" }] },
+  });
+
+  const waitingOnTwoFiles = [
+    nodeEvent(1, "started", design, { nodeType: "agent" }),
+    approvalRequested(2, design, { path: "artifacts/design.md" }),
+    nodeEvent(3, "started", { nodeId: "fix", nodeRunId: "nr-3" }, { nodeType: "loop" }),
+    nodeEvent(4, "started", plan, { nodeType: "agent", parents: ["fix"] }),
+    approvalRequested(5, plan, { path: "artifacts/plan.md", parents: ["fix"] }),
+  ];
+
+  test("an approve comment on artifacts/plan.md clears the wait on the nested node waiting on it, and leaves design waiting", () => {
+    const state = project([...waitingOnTwoFiles, commentAdded(6, "approve", "artifacts/plan.md")]);
+    expect(state.nodeRuns.fix?.nodes?.planning).not.toHaveProperty("awaitingApproval");
+    expect(state.nodeRuns.design?.awaitingApproval).toBe("artifacts/design.md");
+  });
+
+  test("a plain comment on the waiting file leaves the node waiting", () => {
+    const state = project([...waitingOnTwoFiles, commentAdded(6, "comment", "artifacts/plan.md")]);
+    expect(state.nodeRuns.fix?.nodes?.planning?.awaitingApproval).toBe("artifacts/plan.md");
+  });
+});
+
 const SHA = "3f2c9ab41d0e8c7b6a5f4e3d2c1b0a9f8e7d6c5b";
 
 const repository = (worktreeDir: string, overrides: Record<string, string> = {}) => ({

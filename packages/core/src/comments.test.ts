@@ -32,11 +32,19 @@ const global = (text: string): CommentDraft => ({
 });
 
 describe("deliveryMessage", () => {
-  test("SC16, SC23: each comment is one block in batch order, long quotes are cut, and the reply command closes it", () => {
+  test("SC12, SC16, SC23: each comment is one block, ordered by file then first line with the approval last, long quotes are cut, and the reply command closes it", () => {
     const long = "x".repeat(100);
     const base = { status: "sent", createdAt: NOW.toISOString() } as const;
     const user = (text: string) => ({ by: "user" as const, text, at: NOW.toISOString() });
     const comments: readonly Comment[] = [
+      {
+        ...base,
+        id: "c2",
+        file: "artifacts/design.md",
+        kind: "approve",
+        text: "Approved",
+        thread: [user("Approved")],
+      },
       { ...base, ...comment("Why one file per run?"), id: "c4", thread: [user("Why?")] },
       {
         ...base,
@@ -70,16 +78,33 @@ describe("deliveryMessage", () => {
     ];
 
     expect(deliveryMessage(comments, "feat-x").split("\n")).toEqual([
-      "[review] 5 new comments from the viewer:",
+      "[review] 6 new comments from the viewer:",
+      `c7 · artifacts/design.md · replace "${"x".repeat(80)}…" with "twice"`,
       'c4 · artifacts/design.md:14-16 (Approach) on "After saving a batch"',
       "  Why one file per run?",
+      "c3 · reply on its thread: Can we bundle it later?",
       'c5 · artifacts/design.md:30 · delete "retry 3 times"',
-      `c7 · artifacts/design.md · replace "${"x".repeat(80)}…" with "twice"`,
       "c6 · artifacts/review.md · whole file",
       "  Ship it after finding 2.",
-      "c3 · reply on its thread: Can we bundle it later?",
+      "c2 · artifacts/design.md · approved: finish the stage that waits on it",
       "Reply to each: yok orchestrate comments reply --run feat-x --id ID --status answered|changed|declined --text -",
     ]);
+  });
+
+  test("SC8: an approve comment on design.md tells the agent the page is approved and to finish its stage", () => {
+    const at = NOW.toISOString();
+    const approve: Comment = {
+      id: "c1",
+      file: "artifacts/design.md",
+      kind: "approve",
+      text: "Approved",
+      status: "sent",
+      createdAt: at,
+      thread: [{ by: "user", text: "Approved", at }],
+    };
+    expect(deliveryMessage([approve], "feat-x").split("\n")[1]).toBe(
+      "c1 · artifacts/design.md · approved: finish the stage that waits on it",
+    );
   });
 });
 
@@ -216,6 +241,13 @@ describe("CommentDraftSchema", () => {
       true,
     ]);
     expect(globalWithAnchor.data?.anchor).toEqual(anchor);
+  });
+
+  test("SC9: an approve draft with no anchor is accepted, a plain comment with no anchor is still refused", () => {
+    const file = "artifacts/design.md";
+    const approve = CommentDraftSchema.safeParse({ kind: "approve", text: "Approved", file });
+    const plain = CommentDraftSchema.safeParse({ kind: "comment", text: "x", file });
+    expect([approve.success, plain.success]).toEqual([true, false]);
   });
 });
 

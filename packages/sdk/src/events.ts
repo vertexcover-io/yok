@@ -5,6 +5,7 @@ import {
   AbsolutePathSchema,
   AgentStateSchema,
   ArtifactRefSchema,
+  FileArtifactSchema,
   AskedQuestionSchema,
   type Blocker,
   BlockerSchema,
@@ -125,6 +126,7 @@ export const StopReasonSchema = z.enum([
   "next-not-run",
   "context-node",
   "model-switch",
+  "awaiting-approval",
   "background-task",
 ]);
 export type StopReason = z.infer<typeof StopReasonSchema>;
@@ -450,13 +452,13 @@ export const AgentStatusSchema = CommentStatusSchema.extract(["answered", "chang
 export const CommentFieldsSchema = z.strictObject({
   // relative to the run folder (.yok/NAME), always under artifacts/: "artifacts/design.md"
   file: NonEmptyStringSchema,
-  kind: z.enum(["comment", "delete", "replace", "global"]),
+  kind: z.enum(["comment", "delete", "replace", "global", "approve"]),
   text: z.string(),
   anchor: AnchorSchema.optional(),
 });
 
 export const CommentDraftSchema = CommentFieldsSchema.refine(
-  (c) => c.kind === "global" || c.anchor !== undefined,
+  (c) => c.kind === "global" || c.kind === "approve" || c.anchor !== undefined,
   "a comment on part of a file needs an anchor",
 ).refine((c) => c.kind === "delete" || c.text.trim() !== "", "the comment has no text");
 export type CommentDraft = z.infer<typeof CommentDraftSchema>;
@@ -477,6 +479,10 @@ const CommentRepliedEvent = z.object({
     text: NonEmptyStringSchema,
   }),
 });
+
+const ApprovalRequestedEvent = nodeEvent(
+  z.strictObject({ path: FileArtifactSchema.shape.path, ...placement }),
+);
 
 const catalog: Readonly<Record<string, z.ZodType>> = {
   "workflow.started": WorkflowStartedEvent,
@@ -524,6 +530,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "artifact.comment.added": CommentAddedEvent,
   "artifact.comment.delivered": CommentDeliveredEvent,
   "artifact.comment.replied": CommentRepliedEvent,
+  "artifact.approval.requested": ApprovalRequestedEvent,
 };
 
 // An event before the emitter fills runId, ts and (when not given) id. Built from the shape,
@@ -727,8 +734,10 @@ const onEnded = (status: EndStatus, state: State, event: Event): State => {
             completedAt: null,
             artifacts: [],
           };
+    // An ended node waits on nobody.
+    const { awaitingApproval: _, ...kept } = status === "completed" ? run : withoutOutput(run);
     return {
-      ...(status === "completed" ? run : withoutOutput(run)),
+      ...kept,
       ...(output === undefined ? {} : { output }),
       ...(summary === undefined ? {} : { summary }),
       artifacts: artifacts ?? run.artifacts,
@@ -843,6 +852,46 @@ const onCustomStateUpdated: EventHandler = (state, event) => {
   return { ...state, custom: { ...state.custom, ...parsed.data.payload } };
 };
 
+const onApprovalRequested: EventHandler = (state, event) => {
+  const parsed = ApprovalRequestedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { nodeId, nodeRunId, payload } = parsed.data;
+  const wait = (current: NodeRun | undefined): NodeRun => {
+    if (current?.nodeRunId !== nodeRunId) {
+      throw new Error(`${nodeId}: ${nodeRunId} is not its current run`);
+    }
+    return { ...current, awaitingApproval: payload.path };
+  };
+  return { ...state, nodeRuns: updateNode(state.nodeRuns, payload.parents ?? [], nodeId, wait) };
+};
+
+const withoutWaitOn = (nodes: Nodes, approved: ReadonlySet<string>): Nodes =>
+  Object.fromEntries(
+    Object.entries(nodes).map(([id, run]) => {
+      const { awaitingApproval, ...rest } = run;
+      const cleared =
+        run.status === "running" && awaitingApproval !== undefined && approved.has(awaitingApproval)
+          ? rest
+          : run;
+      return [
+        id,
+        run.nodes === undefined
+          ? cleared
+          : { ...cleared, nodes: withoutWaitOn(run.nodes, approved) },
+      ];
+    }),
+  );
+
+const onCommentAdded: EventHandler = (state, event) => {
+  const parsed = CommentAddedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const approved = new Set(
+    parsed.data.payload.comments.filter((c) => c.kind === "approve").map((c) => c.file),
+  );
+  if (approved.size === 0) return state;
+  return { ...state, nodeRuns: withoutWaitOn(state.nodeRuns, approved) };
+};
+
 // The deepest running node: the step the run is on now, under its dotted path such as "qa-loop.qa".
 export const findRunningLeaf = (
   nodes: Nodes,
@@ -932,4 +981,6 @@ export const builtInHandlers: EventHandlers = {
   "workflow.session.replaced": onSessionReplaced,
   "notification.thread.started": onThreadStarted,
   "custom.state.updated": onCustomStateUpdated,
+  "artifact.comment.added": onCommentAdded,
+  "artifact.approval.requested": onApprovalRequested,
 };

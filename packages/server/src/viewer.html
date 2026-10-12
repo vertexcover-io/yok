@@ -149,7 +149,7 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
 .btn.ghost:hover { color: var(--fg); background: var(--panel-2); }
 .hint { font-size: 12.5px; color: var(--muted); }
 
-.doc { max-width: 920px; margin: 0 auto; padding: 28px 24px 80px 72px; font-family: var(--ui); font-size: 15px; line-height: 1.6; }
+.doc { max-width: 920px; margin: 0 auto; padding: 28px 24px 80px; font-family: var(--ui); font-size: 15px; line-height: 1.6; }
 .doc h1, .doc h2, .doc h3, .doc h4, .doc h5, .doc h6 { font-family: var(--ui); font-weight: 600; line-height: 1.25; text-wrap: balance; margin: 28px 0 12px; }
 .doc > :first-child { margin-top: 0; }
 .doc h1 { font-size: 1.85em; padding-bottom: .3em; border-bottom: 1px solid var(--line); }
@@ -217,9 +217,6 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
 .table-wrap { overflow: visible; }
 .table-wrap > table { display: block; overflow-x: auto; }
 .doc, .doc > * { overflow-wrap: anywhere; }
-.doc > [data-lines] { position: relative; }
-.doc > [data-lines]::before { content: "L" attr(data-lines); position: absolute; left: -64px; top: .35em; width: 52px; text-align: right; font-family: var(--mono); font-size: 10.5px; line-height: 1.4; color: var(--muted); opacity: .55; }
-.doc > h1[data-lines]::before, .doc > h2[data-lines]::before { top: .5em; }
 .doc.flash > [data-lines].changed { animation: changed 2.2s ease-out; }
 @keyframes changed { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
 
@@ -275,8 +272,7 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
 .live.off .dot { background: var(--muted); }
 .send-error { margin: 0; font-size: 12.5px; color: var(--del); }
 .doc-pane.commenting #docRoot { cursor: text; }
-.doc-pane.commenting .doc > [data-lines]:hover { background: color-mix(in srgb, var(--mark) 22%, transparent); border-radius: 3px; }
-.doc-pane.commenting .doc > [data-lines]::before { opacity: 1; color: var(--accent); }
+.doc-pane.commenting .doc [data-lines]:hover:not(:has([data-lines]:hover)) { background: color-mix(in srgb, var(--mark) 22%, transparent); border-radius: 3px; }
 mark.hl { color: inherit; background: var(--mark); border-bottom: 2px solid var(--mark-line); border-radius: 2px; cursor: pointer; padding: 0 1px; }
 mark.hl.k-delete { background: var(--del-soft); border-bottom-color: var(--del); text-decoration: line-through; text-decoration-color: var(--del); }
 mark.hl.k-replace { background: var(--rep-soft); border-bottom-color: var(--rep); }
@@ -331,8 +327,6 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
 
 @media (max-width: 1100px) {
   .app { grid-template-columns: 190px minmax(0, 1fr) 320px; }
-  .doc { padding-left: 24px; }
-  .doc > [data-lines]::before { display: none; }
 }
 @media (max-width: 860px) {
   .app { display: flex; flex-direction: column; height: auto; }
@@ -387,6 +381,7 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
       <button class="btn mode-btn" type="button" id="modeBtn" aria-pressed="false"><span class="knob" aria-hidden="true"></span>Comment mode <kbd>C</kbd></button>
       <button class="btn" type="button" id="globalBtn" hidden>Comment on whole file</button>
       <button class="btn" type="button" id="editBtn" title="Open this file in your editor">Open in editor</button>
+      <button class="btn primary" type="button" id="approveBtn" title="Tell the agent this page is approved" hidden>Approve</button>
     </div>
     <div id="docHost"></div>
   </main>
@@ -414,9 +409,10 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
   <label class="hint" for="composerText" id="composerLabel">Your comment</label>
   <textarea id="composerText"></textarea>
   <div class="row">
-    <span class="hint">⌘↵ to add</span>
+    <span class="hint">⌘↵ to send</span>
     <button class="btn ghost" type="button" id="composerCancel">Cancel</button>
-    <button class="btn primary" type="submit">Add to batch</button>
+    <button class="btn" type="submit" id="batchBtn">Add to batch</button>
+    <button class="btn primary" type="submit" id="sendNowBtn">Send</button>
   </div>
 </form>
 
@@ -514,6 +510,9 @@ function renderHead() {
   if (!canComment(file.type)) {
     badge.className = "badge readonly";
     badge.textContent = "View only";
+  } else if (file.awaitingApproval) {
+    badge.className = "badge final";
+    badge.textContent = "Waiting for your approval";
   } else if (file.draft) {
     badge.className = "badge draft";
     badge.textContent = "Draft · the agent is writing it";
@@ -528,6 +527,7 @@ function renderHead() {
   modeBtn.setAttribute("aria-pressed", String(commentMode && ok));
   $("#globalBtn").hidden = !(commentMode && ok);
   $("#docPane").classList.toggle("commenting", commentMode && ok);
+  $("#approveBtn").hidden = !file.awaitingApproval;
 }
 
 function emptyState(starting) {
@@ -1006,9 +1006,7 @@ function locationText(c) {
   const name = base(c.file);
   if (!c.anchor) return `${name} · whole file`;
   if (c.anchor.selector) return `${name} · ${c.anchor.selector}`;
-  const [start, end] = c.anchor.lines ?? [];
-  const where = start === undefined ? name : `${name}:${start === end ? start : `${start}-${end}`}`;
-  return c.anchor.heading ? `${where} · ${c.anchor.heading}` : where;
+  return c.anchor.heading ? `${name} · ${c.anchor.heading}` : name;
 }
 
 function draftThread(c) {
@@ -1037,7 +1035,7 @@ function card(c) {
   if (focusId === c.id) node.classList.add("focus");
   const top = el("div", "card-top");
   top.append(el("span", "cid", c.draft ? "draft" : c.id));
-  if (c.kind !== "comment") top.append(el("span", `chip k-${c.kind}`, { delete: "Delete", replace: "Replace", global: "Whole file" }[c.kind]));
+  if (c.kind !== "comment") top.append(el("span", `chip k-${c.kind}`, { delete: "Delete", replace: "Replace", global: "Whole file", approve: "Approved" }[c.kind]));
   const [cls, label] = statusLabel(c);
   top.append(el("span", `status ${cls}`, label));
   if (c.draft) {
@@ -1090,6 +1088,11 @@ function threadsEmptyText(file) {
   return "No comments on this file yet. Select text in the page to add one, or comment on the whole file.";
 }
 
+function byPlace(a, b) {
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  return (a.anchor?.lines?.[0] ?? 0) - (b.anchor?.lines?.[0] ?? 0);
+}
+
 function renderThreads() {
   const body = $("#threads");
   const typed = [...body.querySelectorAll("input")].map((i) => [i.id, i.value]);
@@ -1098,7 +1101,7 @@ function renderThreads() {
   if (drafts.length) {
     const batch = el("div", "batch");
     batch.append(el("div", "group-label", `Not sent yet · ${drafts.length}`));
-    for (const d of drafts) batch.append(card(d));
+    for (const d of [...drafts].sort(byPlace)) batch.append(card(d));
     const foot = el("div", "batch-foot");
     foot.append(el("span", "hint", "Sent together as one message"));
     const send = el("button", "btn primary", `Send ${drafts.length} to the agent`);
@@ -1133,9 +1136,8 @@ function refresh() {
   renderThreads();
 }
 
-async function sendDrafts() {
-  sendError = "";
-  const batch = drafts.map((d) => ({
+async function postComments(list) {
+  const batch = list.map((d) => ({
     file: d.file,
     kind: d.kind,
     text: d.text,
@@ -1146,13 +1148,20 @@ async function sendDrafts() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ comments: batch }),
   }).catch(() => null);
-  if (res?.status === 201) {
-    drafts = [];
-    await refreshComments();
-    return;
-  }
-  sendError = res ? `Could not send: ${(await res.text()) || res.status}` : "Could not send: the server is not reachable.";
-  renderThreads();
+  if (res?.status === 201) return "";
+  return res ? `Could not send: ${(await res.text()) || res.status}` : "Could not send: the server is not reachable.";
+}
+
+async function sendDrafts() {
+  sendError = await postComments(drafts);
+  if (sendError) return renderThreads();
+  drafts = [];
+  await refreshComments();
+}
+
+async function refreshFiles() {
+  const res = await fetch(`/runs/${runId}/files`).catch(() => null);
+  if (res?.ok) await applyFiles(await res.json());
 }
 
 async function refreshComments() {
@@ -1165,6 +1174,7 @@ function applyComments(body) {
   comments = body.comments;
   delivery = body.delivery;
   refresh();
+  renderHead();
 }
 
 /* ---------- selection and composer ---------- */
@@ -1332,19 +1342,33 @@ document.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() === "c" && !e.metaKey && !e.ctrlKey && !e.altKey && !inTextField()) toggleMode();
 });
 
-$("#composer").addEventListener("submit", (e) => {
+$("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!composing) return;
   const text = $("#composerText").value.trim();
   const { kind, anchor } = composing;
   if (kind !== "delete" && !text) return;
-  drafts.push({ id: `d${nextDraft++}`, draft: true, file: current, kind, text, anchor: anchor ?? null, thread: [] });
+  const draft = { id: `d${nextDraft++}`, draft: true, file: current, kind, text, anchor: anchor ?? null, thread: [] };
   closeComposer();
+  const batching = e.submitter?.id === "batchBtn";
+  if (!batching) {
+    sendError = await postComments([draft]);
+    if (!sendError) return refreshComments();
+  }
+  drafts.push(draft);
   refresh();
 });
 
 $("#globalBtn").addEventListener("click", (e) => openComposer("global", null, e.currentTarget.getBoundingClientRect()));
 $("#editBtn").addEventListener("click", () => current && openInEditor(current, null));
+$("#approveBtn").addEventListener("click", async () => {
+  $("#approveBtn").hidden = true;
+  const error = await postComments([{ file: current, kind: "approve", text: "Approved" }]);
+  // Files first: the approval clears the file's wait, and the comments render reads it.
+  if (!error) return refreshFiles().then(refreshComments);
+  toast(error);
+  renderHead();
+});
 
 function toggleMode() {
   const file = currentFile();
