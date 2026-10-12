@@ -245,6 +245,56 @@ jobs:
             *) test "$pre" = false && test "$(gh release view --json tagName --jq .tagName)" = "$TAG" ;;
           esac
 
+  # Trusted publishing (id-token) means no NPM_TOKEN secret. Each package's trusted publisher on
+  # npmjs.com must name this repo and release.yml. Platform packages go first, so the launcher
+  # never lands with a dependency npm cannot find.
+  npm:
+    needs: [cut, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.cut.outputs.tag || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+
+      - run: node scripts/npm-packages.ts dist "${TAG#v}" npm
+
+      # A pre-release goes to the "next" dist-tag, so it never becomes what `npm i -g` installs.
+      # npm refuses a version it already has, so a rerun skips what an earlier attempt published.
+      - name: Publish to npm
+        run: |
+          version="${TAG#v}"
+          flags="--access public"
+          case "$TAG" in *-*) flags="$flags --tag next" ;; esac
+          for name in yok-darwin-arm64 yok-darwin-x64 yok-linux-x64 yok-linux-arm64 yok; do
+            # Some npm versions exit 0 with no output for a missing version, so the output decides.
+            if [ -n "$(npm view "@vertexcover-io/$name@$version" version 2>/dev/null)" ]; then
+              echo "@vertexcover-io/$name@$version is already on npm, skipping"
+              continue
+            fi
+            npm publish "./npm/$name" $flags
+          done
+
   install-smoke:
     needs: [cut, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}

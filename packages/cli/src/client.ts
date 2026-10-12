@@ -10,7 +10,7 @@ import {
   type WorkflowPlan,
 } from "@yok/core";
 import { type ILogger, spawnDetached, withLock, yokHome } from "@yok/sdk";
-import { isCompiled, selfArgv } from "@yok/sdk/internal";
+import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
 import { type ApiError, logPath, socketPath } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
@@ -117,7 +117,7 @@ export const stopServer = async (home: string, pid: number): Promise<void> => {
   throw new Error(`server (pid ${pid}) is still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
 };
 
-type Running = Readonly<{ pid: number; startedAt: number }>;
+type Running = Readonly<{ pid: number; version: string; startedAt: number }>;
 
 const runningServer = async (client: YokClient): Promise<Running | null> => {
   const health = await client.health();
@@ -128,6 +128,14 @@ const runningServer = async (client: YokClient): Promise<Running | null> => {
 // than this command keeps two commands started together from stopping each other's server.
 const defaultReplaceBefore = (): number => (isCompiled ? 0 : performance.timeOrigin);
 
+// A server of another version is replaced too: Homebrew and npm swap the binary without
+// restarting the server.
+export const isCurrentServer = (
+  server: Running | null,
+  replaceBefore: number,
+  version: string,
+): boolean => server !== null && server.startedAt >= replaceBefore && server.version === version;
+
 // The lock stops two CLIs from starting two servers. A crashed server can leave a stale socket
 // file, so it is removed first. A server started before replaceBefore (epoch ms) is replaced.
 export const ensureServer = async (
@@ -136,7 +144,7 @@ export const ensureServer = async (
 ): Promise<void> => {
   const client = yokClient(home);
   const isFresh = (server: Running | null): boolean =>
-    server !== null && server.startedAt >= replaceBefore;
+    isCurrentServer(server, replaceBefore, VERSION);
   // Checked again inside the lock: another command may have started the server meanwhile.
   if (isFresh(await runningServer(client))) return;
   await withLock(join(home, ".start.lock"), async () => {
