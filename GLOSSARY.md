@@ -93,8 +93,9 @@ _Avoid_: Output file, deliverable
 **Produces / consumes**:
 The artifacts a stage writes and the artifacts it needs before it can start.
 
-**Blocked**:
-A run whose next stage cannot start because an artifact it consumes does not exist yet.
+**Missing artifacts**:
+A stage that `next` cannot hand out because an artifact it consumes does not exist yet. The code still names this `workflow.blocked` and `next`'s reply `kind: "blocked"`; it is not the run status **Blocked**.
+_Avoid_: Blocked (for this)
 
 **Verifier**:
 A check a stage declares that must pass before the stage's node can finish.
@@ -170,6 +171,9 @@ A run's current picture, built by folding its events. It is never the history.
 A function that folds one event type into the run's state.
 _Avoid_: Reducer, subscriber
 
+**Blocked**:
+A run's status while it waits on the person; its **Blocker** says why. A blocked run is still live: `next` and the Stop hook treat it like a running one.
+
 **Blocker**:
 Why a run's status is `blocked`: the agent is waiting on the person for a question, a usage limit, a stuck turn or an agent error. It clears when that cause clears (the answer, the limit resuming), when the main agent makes its next Bash call or file edit (`agent.resumed`), or when the workflow ends.
 
@@ -238,7 +242,7 @@ _Avoid_: Post-mortem
 
 - A **Workflow** has many **Nodes**; a **Run** executes one **Workflow** and holds one **Node run** per node it reaches.
 - A **Stage node** runs exactly one **Stage**; a **Stage** is a **Skill** with a stage contract.
-- A **Stage** **produces** and **consumes** **Artifacts**; a missing consumed **Artifact** makes the run **Blocked**.
+- A **Stage** **produces** and **consumes** **Artifacts**; a missing consumed **Artifact** is a case of **Missing artifacts**: `next` cannot hand out that stage yet.
 - A **Verifier** can **Reject** a **Done**; each rejection carries **Findings**.
 - A **Run** stores every change as an **Event**; **Event handlers** fold events into **State**; **Subscribers** react to events after they are stored.
 - **Agent hooks** belong to the **Agent's** session, not to the run's events.
@@ -248,5 +252,5 @@ _Avoid_: Post-mortem
 - "Hook" meant two things: hooks the agent fires and hooks the run calls on events. Resolved: **Agent hook** and **Subscriber**.
 - "Pipeline" and "workflow" were used for the same thing. Resolved: **Workflow**.
 - The orchestrate help text calls a run's name its "spec name". Resolved: **Run name**.
-- "Blocked" means two things: a stage `next` cannot hand out until its consumed artifacts exist (**Blocked**), and a run whose status is `blocked` because it waits on the person (**Blocker**). Not yet resolved.
+- "Blocked" meant two things: a stage `next` cannot hand out until its consumed artifacts exist, and a run whose status is `blocked` because it waits on the person. Resolved: **Missing artifacts** for the first (the code's `workflow.blocked` and `kind: "blocked"` keep their names for now), **Blocked** and **Blocker** for the second.
 - "Event handler" and "subscriber" both react to events. Resolved: an **Event handler** changes state; a **Subscriber** only reacts.
