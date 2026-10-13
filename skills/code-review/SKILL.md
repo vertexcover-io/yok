@@ -1,11 +1,12 @@
 ---
 name: code-review
 description: >
-  Deep code review that hunts for subtle bugs and for code that works but should have been
-  written differently. Runs eight reviewer personas in parallel, aggregates their findings
-  into a report, then applies the fixes and records them in it. Runs as the pipeline's
-  code-review stage, after implement; also use it when the user says "/code-review", "review my
-  code", "review this change", or "review this against the plan".
+  Deep code review that hunts for the sequence of events under which a change goes wrong, and
+  for code that works but should have been written differently. Runs eight reviewer personas
+  in parallel, rates each finding by how likely it is to fire, aggregates them into a report,
+  then applies the fixes and records them in it. Runs as the pipeline's
+  code-review stage, after implement; also use it when the user says "/code-review", "review
+  my code", "review this change", or "review this against the plan".
 summary: Say the verdict, how many findings were fixed, and what was left unfixed.
 mode: inline
 allowed-tools: [Agent, Bash, Read, Write, Edit, Grep, Glob, Skill]
@@ -22,13 +23,13 @@ scopes: []
 references:
   defects:
     path: references/persona-defects.md
-    description: Finds bugs such as wrong logic, unhandled cases and broken error paths.
+    description: Finds the sequence of events under which the change does the wrong thing.
   spec:
     path: references/persona-spec.md
-    description: Checks the change does what the plan and design asked.
+    description: Checks the change does what the plan asked, and that the author's claims hold.
   security:
     path: references/persona-security.md
-    description: Finds inputs, endpoints and trust decisions an attacker can abuse.
+    description: Finds who can reach what they shouldn't, and the check that is missing.
   testing:
     path: references/persona-testing.md
     description: Checks the tests prove the behavior, at the right level.
@@ -49,8 +50,7 @@ references:
 # Code Review
 
 Load the `writing-style` skill before you write the report. Run its ship-check before you hand
-the report back. Each reviewer persona gets the same instruction in its
-dispatch prompt.
+the report back. Each reviewer persona gets the same instruction in its dispatch prompt.
 
 You are the **dispatcher**, not a reviewer. Between dispatch and aggregation you run no tools:
 the personas' reports are your entire input, and a finding you produce yourself has no axis to
@@ -80,9 +80,27 @@ absence is a gap, filled by the next source down.
 4. The `references/persona-*.md` file each agent is given, and the `code-quality` and `tdd`
    skills those files name. Universal defaults, applied when nothing above speaks
 
-**This ladder sets severity.** A breach of rungs 1–3 is a **hard violation** — the repo wrote
-the rule down. A rung-4 finding is a **judgement call**: it may be right, but it can never
-block on its own.
+**This ladder sets the kind of finding.** A breach of rungs 1–3 is a **hard violation** — the
+repo wrote the rule down. A rung-4 finding is a **judgement call**: it may be right, but it can
+never block on its own.
+
+## Severity
+
+Severity is impact **times likelihood**. Every finding states its **trigger** — who has to do
+what for it to fire — and that sets the level:
+
+| Severity | Trigger |
+|---|---|
+| **Critical** | Normal use, by any user. Data loss, outage, or a leaked secret. |
+| **High** | A realistic user or operator action. |
+| **Medium** | An unusual but plausible sequence: two tabs, a retry, a mid-run Ctrl-C, a hand edit the docs invite. |
+| **Low** | A trusted person acting in bad faith; a value only our own code can produce (**latent**); a coincidence; a risk the repo accepted in writing; a bug the change inherits and does not worsen (**pre-existing**). |
+
+Every finding also states its **fix size**: `small` means one place, nothing changes for normal
+users, no new abstraction, and the persona names what it must not break. A rare-but-real Low
+with a small fix is rated **Medium** so it gets closed; a pre-existing, latent or cosmetic Low
+stays Low. Never more than one step up; a fix that grows in Step 4 drops back to Low. A Low
+never moves the verdict.
 
 ## Input
 
@@ -121,7 +139,7 @@ Every failure below stops here, not inside the sub-agent fan-out.
 Then gather the **map**, not the territory: the diff command, the commit list
 (`git log <base>..HEAD --oneline`), the changed-file list with change volume, the languages
 present, and the paths of the governance sources you found on rungs 1–3. Skip generated files
-(lock files, build output) entirely
+(lock files, build output) entirely.
 
 ## Step 2 — Dispatch in parallel
 
@@ -152,25 +170,31 @@ anything else. Give each agent its own file and no other, so the only axis it ca
 is its own. Tell the Defects, Reuse, Simplification, Efficiency and Altitude agents to also
 invoke the `code-quality` skill: it is the standard those five check against.
 
-Then paste in, as text: the map from Step 1, the governance sources you found on rungs 1–3, and
-the brief below. A sub-agent shares none of your context, so a summary of a governance source
-leaves that standard out of the review.
+Then paste in, as text: the map from Step 1, the governance sources you found on rungs 1–3, the
+Severity section above, and the brief below. A sub-agent shares none of your context, so a
+summary of a governance source leaves that standard out of the review.
 
 **One diff, one review, eight agents.** A change spanning several packages or several repos is
 still one change. Give every agent the whole diff and treat the working set as a single tree.
 
-> *"You own exactly one review axis — the persona file named for you — and report only under it;
-> a real problem outside it belongs to another agent, even when you see it. Review the change,
-> not the codebase: a problem that predates this diff is not this review's business unless the
-> change makes it materially riskier. Every finding names the thing, quotes the hunk, gives a
-> `file:line`, says what it costs, and names the fix. Verify it against the actual code first,
-> and drop anything you can't stand behind — three real findings beat twenty maybes. You are not
-> a linter: no style or formatting findings, no naming findings beyond a name that misleads
-> about what the code does, and nothing that amounts to 'run the tests' — the author knows. A
-> finding is a judgement call unless the repo wrote the rule down, which makes it a hard
-> violation — cite the source file and rule when it did. The tree was committed before you were
-> dispatched, so edit freely to test a hypothesis and `git checkout --` when you're done. Return
-> your report as your final message — write no files. Under 400 words."*
+> *"You own exactly one review axis — the persona file named for you — and report only under it.
+> A real problem outside it goes under a `Handoff` heading at the end, one line each, so the
+> dispatcher can file it. Review the system as it is after the change: follow every changed line
+> to its callers and to every other place that decides the same fact; code the change now relies
+> on is in scope even when the diff did not touch it. A problem that predates the change and the
+> change does not worsen is still a finding — mark it pre-existing. Every finding names the
+> thing, gives a `file:line`, says what it costs, states the trigger — who has to do what for it
+> to fire — and the fix size with what the fix must not break. Show the path: the line where
+> the bad value starts, the line where the damage lands, and the steps between; if you cannot
+> follow it in the code, write "unverified" instead of stating the damage as fact. A claim in a
+> comment or commit ("safe to re-run", "fails open") is a hypothesis: test it. Before you
+> return, reopen every file:line you cite and check the quoted text is there. Report everything
+> you can prove, worst first; drop only what you cannot stand behind. A finding changes what
+> the code does or what it costs; style, formatting, a name that does not mislead, and "run the
+> tests" are not findings. A finding is a judgement call unless the repo wrote the rule down, which makes it a hard violation — cite
+> the source file and rule when it did. The tree was committed before you were dispatched, so
+> edit freely to test a hypothesis and `git checkout --` when you're done. Return your report as
+> your final message — write no files."*
 
 **The tool result is the report.** Nothing lands on disk until you write it — wait for all
 eight results and go straight to Step 3 with them.
@@ -183,6 +207,11 @@ Present each persona's report under a heading named for its axis — `### Defect
 masking is what the separation exists to prevent. Drop only exact duplicates (same
 `file:line`, same finding); when two axes disagree, keep both — the disagreement is signal.
 
+Move each `Handoff` line under the axis it names, marked `(handoff from AXIS)`. A handoff is
+unverified and never sets the verdict; it is there for Step 4 to look at. Then apply the
+Severity adjustments (Low + small fix → Medium; pre-existing → Low) and note each one next to
+its finding.
+
 Reuse, Simplification, Efficiency and Altitude are the exception, because they overlap by
 design — a duplicated block is a Reuse finding and a Simplification finding both. Across those
 four only, keep one copy per mechanism under the axis that names the fix best.
@@ -190,14 +219,14 @@ four only, keep one copy per mechanism under the axis that names the fix best.
 Open the file with a header: date, scope, and the plan path or "intent inferred". Then
 a 2-3 sentence summary of what the change does, and the verdict:
 
-- **`REQUEST CHANGES`** — a Critical defect, an uncontested hard violation, or a missing item
+- **`REQUEST CHANGES`** — a Critical finding, an uncontested hard violation, or a missing item
   that breaks a core acceptance criterion.
-- **`APPROVE WITH SUGGESTIONS`** — Important defects worth discussing, but nothing that would
-  cause a production incident.
-- **`APPROVE`** — no defects, or only judgement calls.
+- **`APPROVE WITH SUGGESTIONS`** — High or Medium findings worth discussing, but nothing that
+  would cause a production incident.
+- **`APPROVE`** — nothing above Low, or only judgement calls.
 
-Those four axes must not turn an `APPROVE` into `REQUEST CHANGES` between them — volume on
-rung 4 is still rung 4.
+Those four cleanup axes must not turn an `APPROVE` into `REQUEST CHANGES` between them — volume
+on rung 4 is still rung 4.
 
 Close with one line per axis: total findings, and the worst issue *within that axis*. Don't
 pick a single winner across axes.

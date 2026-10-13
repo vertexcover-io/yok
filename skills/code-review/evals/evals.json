@@ -101,6 +101,7 @@
         "Cleanup findings appear under their own per-angle '###' headings (Reuse, Simplification, Efficiency, Altitude)",
         "Cleanup findings are recorded as non-blocking judgement calls and do not by themselves drive the verdict",
         "review.md is written before the scratch copy is edited",
+        "Every finding carries a trigger (who has to do what for it to fire) and a fix size",
         "The fix pass edits the scratch copy for every finding, including ones that change behaviour",
         "Each repair is recorded in review.md under a 'Fixes applied' heading with file:line and what changed",
         "Closes by accounting for every finding and restating the verdict"
