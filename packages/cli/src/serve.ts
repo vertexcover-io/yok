@@ -1,4 +1,4 @@
-import { notifierHooks } from "@yok/core";
+import { notifierHooks, samskaraHooks } from "@yok/core";
 import * as sdk from "@yok/sdk";
 import { plugin } from "bun";
 import * as zod from "zod";
@@ -9,6 +9,7 @@ export const SERVED_MODULES: Readonly<Record<string, Record<string, unknown>>> =
   "@yok/sdk": sdk,
   zod,
   "yok:notifier": notifierHooks,
+  "yok:samskara": samskaraHooks,
 };
 
 export const serveModules = (): void => {

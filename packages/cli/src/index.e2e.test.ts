@@ -98,9 +98,11 @@ import { z } from "zod";
 export const probe = async () => {
   const name = ["yok", "notifier"].join(":");
   const { slack } = await import(name);
+  const { upload } = await import(["yok", "samskara"].join(":"));
   return {
     parsed: NonEmptyStringSchema.parse("hi"),
     slack: typeof slack,
+    upload: typeof upload,
     sameZod: NonEmptyStringSchema instanceof z.ZodType && z.string() instanceof NonEmptyStringSchema.constructor,
   };
 };
@@ -182,7 +184,7 @@ describe("yok as one program", () => {
     expect(version.stdout.trim()).toBe(VERSION);
   }, 30_000);
 
-  test("SC89: from source, a subscriber outside the repo gets the CLI's @yok/sdk, zod and yok:notifier", async () => {
+  test("SC89: from source, a subscriber outside the repo gets the CLI's @yok/sdk, zod, yok:notifier and yok:samskara", async () => {
     const outside = await realpath(await mkdtemp(join(tmpdir(), "yok-served-")));
     const file = join(outside, "served.ts");
     await writeFile(file, SERVED_SUBSCRIBER);
@@ -198,6 +200,7 @@ describe("yok as one program", () => {
     expect(JSON.parse(result.stdout)).toEqual({
       parsed: "hi",
       slack: "function",
+      upload: "function",
       sameZod: true,
     });
   }, 20_000);

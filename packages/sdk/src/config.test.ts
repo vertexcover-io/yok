@@ -11,6 +11,7 @@ import {
   loadConfigAt,
   type Notifier,
   resolveTiers,
+  type Samskara,
 } from "./config.ts";
 
 const exampleYaml = `version: 2
@@ -386,7 +387,6 @@ describe("ConfigSchema", () => {
       { notifier: { enabled: true, provider: "slack" } },
       "notifier",
     ],
-    ["the samskara field", { samskara: { enabled: true } }, "samskara"],
     ["the v1 environments shape", { environments: { default: "local", local: {} } }, "local"],
   ])("SC12 — v1 %s are rejected", (_label, fields, key) => {
     expect(errorOf({ version: 2, ...fields })).toContain(key);
@@ -504,6 +504,31 @@ describe("notifier", () => {
     ["the v1 provider key", { provider: "slack" }, "notifier"],
   ])("SC201: %s is refused, naming the bad key", (_label, notifier, key) => {
     expect(errorOf({ version: 2, notifier })).toContain(key);
+  });
+});
+
+describe("samskara", () => {
+  test.each<[string, object | undefined, Samskara | undefined]>([
+    ["an empty block", {}, { enabled: true }],
+    ["enabled: false", { enabled: false }, { enabled: false }],
+    ["no block", undefined, undefined],
+  ])("SC401: %s loads as the samskara upload it turns on or off", (_label, samskara, expected) => {
+    expect(ConfigSchema.parse({ version: 2, samskara }).samskara).toEqual(expected);
+  });
+
+  test.each([
+    ["a non-boolean enabled", { enabled: "yes" }],
+    ["an unknown key", { enabled: true, url: "x" }],
+  ])("SC401: %s is refused, naming samskara", (_label, samskara) => {
+    expect(errorOf({ version: 2, samskara })).toContain("samskara");
+  });
+
+  test("SC402: a project subscriber named samskara is refused as the built-in upload's name", () => {
+    const subscribers = { "workflow.node.completed": [{ name: "samskara", command: "true" }] };
+
+    expect(errorOf({ version: 2, subscribers })).toContain(
+      '"samskara" is the built-in samskara upload\'s name',
+    );
   });
 });
 

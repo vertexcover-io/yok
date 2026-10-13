@@ -56,6 +56,7 @@ import {
 } from "@yok/sdk/internal";
 import * as z from "zod";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
+import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { extensionPath } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
 import {
@@ -152,14 +153,18 @@ const resolveSubscribers = (subscribers: Subscribers, base: string): SubscriberR
   );
 
 // A subscriber named twice for one event would run once: its call id would already exist.
+const concatSubscribers = (first: SubscriberRefs, second: SubscriberRefs): SubscriberRefs => {
+  const types = [...new Set([...Object.keys(first), ...Object.keys(second)])];
+  return Object.fromEntries(
+    types.map((type) => [type, [...(first[type] ?? []), ...(second[type] ?? [])]]),
+  );
+};
+
 const mergeSubscribers = (
   first: SubscriberRefs,
   second: SubscriberRefs,
 ): Result<SubscriberRefs> => {
-  const types = [...new Set([...Object.keys(first), ...Object.keys(second)])];
-  const merged = Object.fromEntries(
-    types.map((type) => [type, [...(first[type] ?? []), ...(second[type] ?? [])]]),
-  );
+  const merged = concatSubscribers(first, second);
   const clash = Object.entries(merged).find(([, list]) => !uniqueNames(list));
   if (clash === undefined) return { ok: true, value: merged };
   return {
@@ -168,8 +173,8 @@ const mergeSubscribers = (
   };
 };
 
-// The workflow's notifier block replaces the config's whole. Relative paths resolve against the
-// file that declares them.
+// The workflow's notifier and samskara blocks replace the config's whole. Relative paths resolve
+// against the file that declares them.
 export const freezeSubscribers = async (
   run: WorkflowRun,
   config: Config,
@@ -181,10 +186,12 @@ export const freezeSubscribers = async (
     resolveSubscribers(workflow.subscribers, dirname(run.workflowPath)),
   );
   if (!project.ok) return project;
-  return mergeSubscribers(
-    project.value,
+  // Built-in names are reserved from project subscribers, so these never clash.
+  const builtIns = concatSubscribers(
     buildNotifierSubscribers(pickNotifier(workflow.notifier, config.notifier)),
+    buildSamskaraSubscribers(pickSamskara(workflow.samskara, config.samskara)),
   );
+  return { ok: true, value: concatSubscribers(project.value, builtIns) };
 };
 
 const frozenHandlers = (config: Config, root: string): EventHandlerRefs =>

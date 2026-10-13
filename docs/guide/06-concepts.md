@@ -22,7 +22,7 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 ```
 
-Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
+Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
 
 `yok verify workflows/task.yaml` compiles a workflow and prints the first error, so you can check a change without starting a run.
 
@@ -149,6 +149,7 @@ extensions:
 | `eventHandlers` | project functions that fold an event into `state.custom` |
 | `env`, `envFile` | variables every session starts with |
 | `notifier` | `{ enabled, type: slack }` |
+| `samskara` | `{ enabled }`: upload each completed node's artifact files, or the subfolder of `artifacts/` they sit in, to the run's Claude session in samskara |
 
 Init freezes which config file a run uses into `state.json`, so a run keeps its settings even if you edit the file mid-run.
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, type Notifier, runDirOf } from "@yok/sdk";
+import { ConfigSchema, type Notifier, runDirOf, type Samskara } from "@yok/sdk";
 import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
@@ -488,6 +488,32 @@ describe("workflow doctor declarations", () => {
 
       expect(plan.notifier).toEqual(expected);
       expect(plan.doctor).toEqual([]);
+    },
+  );
+
+  test.each<[string, Samskara | undefined]>([
+    ["samskara: {}", { enabled: true }],
+    ["samskara: { enabled: false }", { enabled: false }],
+    ["", undefined],
+  ])(
+    "SC208, SC401, SC416: a workflow with %p carries its samskara block on the plan",
+    async (block, expected) => {
+      const plan = await compile(`name: test\n${block}\nnodes:${script("a")}\n`);
+
+      expect(plan.samskara).toEqual(expected);
+    },
+  );
+
+  test.each([
+    ["a non-boolean enabled", 'samskara: { enabled: "yes" }'],
+    ["an unknown key", "samskara: { enabled: true, url: x }"],
+  ])(
+    "SC401: a workflow's samskara block with %s is a schema error naming samskara",
+    async (_label, block) => {
+      const error = await rejection(`name: test\n${block}\nnodes:${script("a")}\n`);
+
+      expect(error.code).toBe("schema");
+      expect(error.message).toContain("samskara");
     },
   );
 
