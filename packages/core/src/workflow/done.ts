@@ -96,6 +96,23 @@ export const isInsideDir = (parent: string, child: string): boolean => {
   return !(isAbsolute(fromParent) || fromParent === ".." || fromParent.startsWith("../"));
 };
 
+// The real paths of `paths`, relative to the run folder, that sit inside the run's real artifacts/
+// now, not when done accepted them, so one swapped for a symlink to .env, say, never leaves the
+// machine. A path that is gone, or artifacts/ itself, is dropped.
+export const realPathsInArtifacts = async (
+  runDir: string,
+  paths: readonly string[],
+): Promise<readonly string[]> => {
+  const root = await findArtifactsDir(runDir);
+  if (root === undefined || paths.length === 0) return [];
+  const real = await Promise.all(
+    paths.map((path) => realpath(join(runDir, path)).catch(() => null)),
+  );
+  return real.filter(
+    (path): path is string => path !== null && path !== root && isInsideDir(root, path),
+  );
+};
+
 type ArtifactFileIssue = Extract<CompletionIssue, { kind: "artifact-file" }>;
 
 const fileIssue = async (
