@@ -90,7 +90,7 @@ const searchableText = (record) => {
   const text = content
     .flatMap((block) => {
       if (block.type === "text") return [block.text];
-      if (block.type !== "tool_use" || String(block.input?.command).includes("log-event.mjs"))
+      if (block.type !== "tool_use" || String(block.input?.command).includes("log-event"))
         return [];
       return stringsIn(block.input);
     })
@@ -211,11 +211,18 @@ export const logEvent = (raw, sessionIdArg, { env = process.env, cwd = process.c
   return file;
 };
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// `yok orchestrate skill run` imports this file and calls main. Run directly, it calls main itself;
+// Node before 24.2 has no import.meta.main, so the file's own path decides there.
+export const main = (argv) => {
   try {
-    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), process.argv[2])}`);
+    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), argv[0])}`);
+    return 0;
   } catch (error) {
     console.error(`log-event: ${error.message}`);
-    process.exit(1);
+    return 1;
   }
+};
+
+if (import.meta.main ?? import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  process.exitCode = main(process.argv.slice(2));
 }

@@ -1,31 +1,59 @@
 ---
 name: learn
-description: "Turns a correction the user made in this session into a short learning in docs/learnings/, after the user agrees how it should read, and records every proposal. Use as soon as the corrected work is finished, before the reply ends, when the correction applies beyond this task: a convention, where code goes, a tool or library to use or avoid, how errors or data are handled, or the same thing corrected twice. Also when the user says \"add a learning\" or \"remember that…\", or runs /yok:learn with or without the rule. Not for one-off steering about this task, PR review comments, or architecture decisions (that is adr)."
-argument-hint: "[optional: what to remember]"
-allowed-tools: Bash, Read, Edit, Write, Grep, Glob, AskUserQuestion
+description: "Turns corrections the user made into short learnings in docs/learnings/, after the user agrees how each should read, and records every proposal. Runs as the pipeline's learn stage right after planning, and whenever the user runs /yok:learn (with or without the rule) or says \"add a learning\" or \"remember that…\". Reads what the user said since the last learn pass. Not for one-off steering about one task, PR review comments, or architecture decisions (that is adr)."
+mode: inline
+allowed-tools: [Bash, Read, Edit, Write, Grep, Glob, AskUserQuestion]
+tier: standard
+protocols: []
+scopes: []
+references:
+  learning-format:
+    path: references/learning-format.md
+    description: The learning file and index line format.
+  candidates:
+    path: scripts/candidates.ts
+    description: Prints what the user said since the last learn pass, with the agent's reply before each message.
+  log-event:
+    path: scripts/log-event.mjs
+    description: Validates one learning event and appends it to .yok/learning-events/.
 ---
 
 # Learn
 
 Turn what the user had to correct into a learning short enough to be read every time it matters.
-Most sessions produce none. A wrong learning is worse than a missing one, because the agent will
+Most passes produce none. A wrong learning is worse than a missing one, because the agent will
 follow it in every later session.
 
-<context_hint> $ARGUMENTS </context_hint>
+Trigger is `auto` when this runs as the pipeline's learn stage, and `manual` when the user invoked
+it (`/yok:learn`, or they asked for a learning). Text the user gave with `/yok:learn` is the rule
+they want; with none, look at everything since the last pass.
 
-Trigger is `manual` when the user invoked this (`/yok:learn`, or they asked for a learning);
-`auto` when you invoked it yourself, including after the learn hook's nudge. When auto, finish the
-task the user corrected first: ask about a learning only once that work is done.
+**Running the scripts.** In a yok run (`$YOK_RUN_ID` is set), run a script with
+`yok orchestrate skill run learn.NAME ARGS` and read a reference with
+`yok orchestrate skill ref learn.NAME`. Outside a run, run `bun "${CLAUDE_SKILL_DIR}/scripts/candidates.ts"`
+and `node "${CLAUDE_SKILL_DIR}/scripts/log-event.mjs"`, and read `references/` in that folder
+(if `${CLAUDE_SKILL_DIR}` wasn't filled in, it is the folder this file is in). Always run them
+from the project's folder, never `cd` into the skill's: the event goes in the repo you run from.
 
 ## 1. Find candidates
 
-Look at this session for corrections from the user that would also apply beyond this task, and for
-things that took several attempts. A correction is any way the user told you the approach was wrong
-for this repo, whatever the wording: "use X, not Y", "that goes in …", "why did you …", "I told
-you …", "that's not how we …". Not candidates: a one-off preference about this task only ("rename
-it to fetchUsers"), a PR review comment the user relays (that belongs to the PR), and an
-architecture decision (that is the adr skill). For a manual trigger, the candidate is what the user
-pointed at.
+When the user gave the rule, skip the script: that rule is the only candidate.
+
+Otherwise run `candidates` with no arguments in a run, or with `--session ${CLAUDE_SESSION_ID}`
+outside one. It reads Claude Code transcripts only: in Codex, or when it prints no Claude session,
+work from this conversation, and ask the user what they corrected if it isn't clear.
+It prints, per session, each message the user typed (`TYPED`, or `QUEUED` when typed while you
+worked) and each answer to a question (`ANSWER`, such as a plan `Revise` with notes) since the last
+learn pass, under the end of the agent's reply before it. Plan comments from the viewer arrive as
+`[review]` messages. Long text is cut; open the transcript only if an exchange is unclear. Note each
+message's session id: step 7 logs against it.
+
+From that list, pick corrections that would also apply beyond this task, and things that took
+several attempts. A correction is any way the user told the agent the approach was wrong for this
+repo, whatever the wording: "use X, not Y", "that goes in …", "why did you …", "I told you …",
+"that's not how we …". Not candidates: a one-off preference about this task only ("rename it to
+fetchUsers"), a PR review comment the user relays (that belongs to the PR), an answer to your own
+clarifying question, and an architecture decision (that is the adr skill).
 
 Keep a candidate only if all three hold:
 - **It would recur.** Another session in this repo would plausibly make the same mistake.
@@ -33,7 +61,7 @@ Keep a candidate only if all three hold:
   Flaky infrastructure, typos and one-off environment problems fail this.
 - **It is concrete.** It states what to do. "Be careful with X" is not a learning.
 
-Zero candidates is a normal result. Say so in one line and stop. Log nothing.
+Zero candidates is a normal result. Say so in one line, log nothing, and go to step 9.
 
 ## 2. Already known?
 
@@ -42,8 +70,9 @@ that could be about the same thing, by meaning, not by shared words. Open those 
 No index yet means no learnings yet; go to step 3.
 
 - **This skill already logged it earlier in this session** (a learning, a check, or the user's
-  rejection): say so in one line, log nothing, and move to the next candidate. It is the same
-  incident, and the user already answered. A learning written some other way, say the user asked
+  rejection; read `.yok/learning-events/<session id>.jsonl` at the top of the repo when you can't
+  tell from the conversation, such as after a compact): say so in one line, log nothing, and move
+  to the next candidate. It is the same incident, and the user already answered. A learning written some other way, say the user asked
   you to edit `docs/learnings/` directly, still needs its event: log it now as `new` with status
   `accepted` (and `replaces` if it superseded an old one), without asking again.
 - **An existing learning says the same thing:** add one line under its `**Occurrences:**`
@@ -97,6 +126,13 @@ correctly in a different one.
 One `AskUserQuestion` per candidate: the fix options, plus `Reject` (the tool adds "Other" itself).
 Where `AskUserQuestion` isn't available, ask in plain text with the same choices.
 
+The question may come a while after the correction, so open it with one line of context: where it
+happened and a few of the user's own words, then the question. Nothing longer.
+
+```
+During planning you said "retries go in the job runner". Which should the rule be?
+```
+
 Write and log only after the user answers this question. If they put it off ("not now", "finish the
 fix first") or moved on without answering, nothing is approved: ask again when they come back to it.
 
@@ -119,7 +155,7 @@ user's current changes, so it gets reviewed in their PR; don't commit it separat
 Log one event for each candidate that reached step 2, apart from the ones step 2 says to skip:
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/log-event.mjs" "${CLAUDE_SESSION_ID}" <<'EOF'
+yok orchestrate skill run learn.log-event SESSION_ID <<'EOF'
 {"trigger": "auto", "why_triggered": "…", "evidence_from": "…", "evidence_to": "…",
  "options_shown": ["…"], "proposed_learning": "…", "option_user_picked": "2", "outcome": "new",
  "status": "edited", "final_learning": "…", "rejection_reason": "",
@@ -127,7 +163,8 @@ node "${CLAUDE_SKILL_DIR}/scripts/log-event.mjs" "${CLAUDE_SESSION_ID}" <<'EOF'
 EOF
 ```
 
-`${CLAUDE_SKILL_DIR}` is this skill's folder; if it wasn't filled in, use the folder this file is in.
+SESSION_ID is the session the `candidates` list showed the correction under; outside a run,
+`${CLAUDE_SESSION_ID}`, with the `node` command from Running the scripts.
 
 Every event has `trigger` (`manual`/`auto`), `why_triggered` (one sentence: what in the session
 made this a candidate), and the two ends of the exchange it came from, each a few words copied
@@ -167,3 +204,16 @@ blocks the learning itself.
 ## 8. Report
 
 One line per candidate: what happened, and the file written or updated.
+
+## 9. Mark the pass
+
+In a run, record that everything said so far was looked at, so the next pass starts after it. Do
+this even when there were no candidates:
+
+```bash
+yok orchestrate emit learning.reviewed --source learn --payload '{}'
+```
+
+As the pipeline's learn stage, finish with the reply's `done` command and the step 8 lines as the
+output. Outside a run there is no mark; step 2's check of this session's log keeps it from asking
+twice.

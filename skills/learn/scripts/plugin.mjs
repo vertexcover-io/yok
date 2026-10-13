@@ -1,5 +1,4 @@
-// The plugin this skill ships in, read from its manifest. Its name is where events go (`.<name>/`)
-// and what the hooks' environment switches are called (`<NAME>_LEARN_CHECK`, …).
+// The plugin this skill ships in, read from its manifest. Its name is where events go (`.<name>/`).
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +22,3 @@ export const readPlugin = (manifestPath = MANIFEST) => {
 };
 
 export const PLUGIN = readPlugin();
-// HARNESS_LEARN_CHECK, YOK_LEARN_CHECK, …
-export const envName = (suffix) =>
-  `${PLUGIN.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;

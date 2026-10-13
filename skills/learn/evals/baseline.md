@@ -1,11 +1,12 @@
 # learn: baseline
 
 Measured with the simulated sessions in `sim/` (Claude Code 2.1.x; agent and simulated user on
-Sonnet; correction check on Haiku), on harness and yok, October 2026.
+Sonnet; correction check on Haiku), on yok and the plugin it grew out of, October 2026.
 
 ## Auto trigger
 
-The hook in `hooks/hooks.json` exists because the skill's description alone rarely gets it run.
+These numbers led to a hook that nudged the agent after a correction. The hook is gone: learn now
+runs as a stage after planning and by hand with `/yok:learn`, so nothing has to trigger it.
 
 | Setup | Corrections that triggered learn | One-offs that wrongly triggered it |
 |---|---|---|
@@ -33,7 +34,7 @@ read all of them right, in 4 to 8 seconds, in the background.
 ## Agent model
 
 Three scenarios (several-real-fixes, manual-with-text, auto-shared-list) with only the agent's model
-changed (`SIM_AGENT_MODEL`); the simulated user and grader stayed on Sonnet. Harness, one run each.
+changed (`SIM_AGENT_MODEL`); the simulated user and grader stayed on Sonnet. The earlier plugin, one run each.
 
 | Agent | Result |
 |---|---|
@@ -44,7 +45,43 @@ changed (`SIM_AGENT_MODEL`); the simulated user and grader stayed on Sonnet. Har
 The skill needs Sonnet or Opus as the agent. On Haiku the learning files and the events are not
 reliable enough to keep.
 
+## Learn stage, no hooks: yok only, October 2026
+
+After the hook was replaced by the `learn` stage after planning. The auto scenarios end with a
+pipeline turn that starts the stage; `run-two-passes` and `viewer-comment` run inside a fake yok
+run (a registry entry, the run's folder and event log, `$YOK_RUN_ID`, and this checkout's `yok`).
+
+19 sessions: every scenario once, auto-shared-list and auto-one-off 3 times each, plus
+run-two-passes and viewer-comment.
+
+- 16 passed. Every event landed in the repo the agent worked in, with evidence ids that point at
+  the real messages.
+- 2 failed on grading, not on the skill. compact-mid-session found and logged a second real
+  correction ("Don't touch node_modules") the scenario did not expect, and the grader read that
+  learning instead of the expected one. One auto-shared-list run wrote the right rule framed as
+  "check shared-config before hard-coding", and the grader wanted "put shared lists in
+  shared-config".
+- 1 not exercised: contradiction-replaces, where the agent used pnpm on its own.
+- run-two-passes: the stage found the run from `$YOK_RUN_ID`, logged the shared-config learning
+  and left its mark; the later `/learn` read only what came after the mark, said nothing new was
+  corrected, and left a second mark. The agent used pnpm on its own, so a second pass that finds
+  a new correction is not exercised yet.
+- viewer-comment: the correction arrived as the viewer's `[review]` message on the plan, and the
+  stage logged it with that message as the evidence.
+- Samskara (`samskara-check.mjs`) on viewer-comment, run-two-passes (logged through
+  `yok orchestrate skill run`) and shared-list-edited (logged with `node`, outside a run): 3 of 3
+  stored, fields matching the JSONL, linked to the session's project, and the evidence messages
+  covering the exchange.
+
+The first round of this run exposed two defects, both fixed before the numbers above: SKILL.md
+told the agent to run the scripts from the skill's folder, so events went to the plugin's repo; and
+the sim's mistake detector missed writes made from inside `apps/`.
+
 ## Not measured yet
 
 - Real sessions. These are scripted users in one dummy repo; the Learn events page in Samskara
   shows the real accept and reject rates once people use it.
+- A real `yok run`: the stage starting after the plan is approved, a comment sent from the viewer
+  through the server, and the run moving on to implement after the stage's `done`.
+- A second pass that finds a new correction, and Codex sessions, whose transcripts the candidates
+  script does not read.

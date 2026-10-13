@@ -3,20 +3,24 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  answers,
+  type Call,
   type Event,
-  EventSchema,
+  findTranscript,
+  humanMessages,
+  loadRecords,
+  type Message,
+  parseTime,
+  type Rec,
   type Result,
+  readEvents,
+  readRunSessions,
   runDirOf,
   type SessionRef,
-  SessionRefSchema,
-  WorkflowStartedEvent,
 } from "@yok/sdk";
-import * as z from "zod";
 import {
   type Agent,
-  answers,
   blocksOf,
-  type Call,
   census,
   commandOf,
   contentOf,
@@ -26,17 +30,11 @@ import {
   familyOf,
   formatTime,
   gaps,
-  humanMessages,
   humanSpan,
   incidents,
   isRecord,
-  loadRecords,
-  type Message,
   maskSecrets,
-  parseTime,
-  type Rec,
   readAgent,
-  readJsonLines,
   readsLikeError,
   span,
   stringOf,
@@ -51,24 +49,6 @@ export type StageRow = Readonly<{
   start: string | undefined;
   end: string | undefined;
 }>;
-
-// Hook, agent and session-replaced events all carry the session they came from in their payload.
-const SessionPayloadSchema = z.object({ payload: z.object(SessionRefSchema.shape) });
-
-const sessionsOf = (event: Event): readonly SessionRef[] => {
-  if (event.type === "workflow.started") {
-    return WorkflowStartedEvent.safeParse(event).data?.payload.activeSessions ?? [];
-  }
-  const carried = SessionPayloadSchema.safeParse(event);
-  return carried.success ? [carried.data.payload] : [];
-};
-
-// Every session the run used, in order of first appearance: a `context` node that replaces the
-// session adds a new id, so a run can have several.
-export const readRunSessions = (events: readonly Event[]): readonly SessionRef[] =>
-  events
-    .flatMap(sessionsOf)
-    .filter((s, i, all) => all.findIndex((o) => o.sessionId === s.sessionId) === i);
 
 const NODE_END = /^workflow\.node\.(completed|failed|skipped|cancelled)$/;
 
@@ -380,15 +360,6 @@ const openSession = (
   gate,
 });
 
-// The slug depends on the folder the session started in, so every project folder is searched.
-const findTranscript = (projectsDir: string, sessionId: string): string | undefined => {
-  if (!existsSync(projectsDir)) return undefined;
-  return readdirSync(projectsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(projectsDir, entry.name, `${sessionId}.jsonl`))
-    .find((path) => existsSync(path));
-};
-
 type Located = Readonly<{ label: string; session: SessionRef }> &
   (Readonly<{ main: string }> | Readonly<{ skipped: string }>);
 
@@ -429,13 +400,6 @@ const stagesText = (rows: readonly StageRow[], zone: string | undefined): string
     ...lines,
   ].join("\n");
 };
-
-// An event this yok version does not know is left out; the retro reads only the ones it needs.
-const readEvents = (path: string): readonly Event[] =>
-  readJsonLines(path).flatMap(({ value }) => {
-    const parsed = EventSchema.safeParse(value);
-    return parsed.success ? [parsed.data] : [];
-  });
 
 const writeOut = (dir: string, name: string, text: string): void =>
   writeFileSync(join(dir, name), maskSecrets(text));

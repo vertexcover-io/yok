@@ -9,9 +9,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRepo } from "./fixture.mjs";
-import { SCENARIOS } from "./scenarios.mjs";
+import { APP_FILE, SCENARIOS } from "./scenarios.mjs";
 
-// skills/learn/evals/sim/ → the plugin's root, whose manifest names it (harness, yok, …).
+// skills/learn/evals/sim/ → the plugin's root, whose manifest names it.
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const pluginName = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), "utf8")).name;
 const plugin = { dir: PLUGIN_ROOT, events: join(`.${pluginName}`, "learning-events") };
@@ -51,7 +51,74 @@ const repo = previous?.repo ?? realpathSync(mkdtempSync(join(tmpdir(), "learn-si
 const simCwd = realpathSync(mkdtempSync(join(tmpdir(), "learn-sim-user-")));
 if (!previous) createRepo(repo, scenario.files);
 
+// A yokRun scenario runs inside a fake yok run: a private yok home whose registry names the run, the
+// run's folder with its workflow and event log, and a `yok` on PATH that runs this checkout's CLI.
+// The event log gets workflow.started, naming the session, once the first turn gives its id.
+const RUN = { id: "learn-sim-run", name: "sim" };
+const runDir = join(repo, ".yok", RUN.name);
+const yokHome = join(simCwd, "yok-home");
+const yokBin = join(simCwd, "bin");
+const writeRegistry = (sessions) =>
+  writeFileSync(
+    join(yokHome, "registry.json"),
+    JSON.stringify({
+      version: 1,
+      runs: {
+        [RUN.id]: {
+          id: RUN.id, workflow: "task", workflowPath: join(PLUGIN_ROOT, "workflows", "task.yaml"), inputs: {},
+          cwd: repo, sessions, name: RUN.name, terminal: null, config: null, tiers: null, createdAt: new Date().toISOString(),
+        },
+      },
+    }),
+  );
+const startRun = (id) => {
+  writeRegistry([{ agent: "claude", sessionId: id }]);
+  const started = {
+    schemaVersion: 1, seq: 1, id: "sim-started", ts: new Date().toISOString(), type: "workflow.started", source: "sim", runId: RUN.id,
+    payload: { workflow: "task", inputs: {}, activeSessions: [{ agent: "claude", sessionId: id }] },
+  };
+  writeFileSync(join(runDir, "event.jsonl"), `${JSON.stringify(started)}\n`);
+};
+if (scenario.yokRun && !previous) {
+  mkdirSync(runDir, { recursive: true });
+  mkdirSync(yokHome, { recursive: true });
+  mkdirSync(yokBin, { recursive: true });
+  writeFileSync(join(runDir, "workflow.yaml"), readFileSync(join(PLUGIN_ROOT, "workflows", "task.yaml")));
+  writeFileSync(join(yokBin, "yok"), `#!/bin/sh\nexec bun ${join(PLUGIN_ROOT, "packages", "cli", "src", "index.ts")} "$@"\n`, { mode: 0o755 });
+  writeRegistry([]);
+}
+// What the viewer does with a comment: store it in the run's comments.json and type the same
+// [review] message the server delivers (deliveryMessage in packages/core/src/comments.ts).
+const COMMENT = /^COMMENT:\s*"([^"]+)"\s*=>\s*([\s\S]+)$/;
+const deliverComment = (said) => {
+  const [, quote, text] = said.match(COMMENT) ?? [];
+  if (!quote) return said;
+  const file = "artifacts/plan.md";
+  const commentsPath = join(runDir, "comments.json");
+  const stored = existsSync(commentsPath) ? JSON.parse(readFileSync(commentsPath, "utf8")) : { version: 1, comments: [] };
+  const id = `c${stored.comments.length + 1}`;
+  const planPath = join(runDir, file);
+  const line = existsSync(planPath) ? readFileSync(planPath, "utf8").split("\n").findIndex((l) => l.includes(quote)) + 1 : 0;
+  const at = new Date().toISOString();
+  stored.comments.push({
+    id, file, kind: "comment", text: text.trim(), status: "delivered", createdAt: at, deliveredAt: at,
+    anchor: { quote, before: "", after: "", ...(line > 0 ? { lines: [line, line] } : {}) },
+    thread: [{ by: "user", text: text.trim(), at }],
+  });
+  writeFileSync(commentsPath, JSON.stringify(stored, null, 2));
+  return [
+    "[review] 1 new comment from the viewer:",
+    `${id} · ${file}${line > 0 ? `:${line}` : ""} on "${quote}"\n  ${text.trim()}`,
+    `Reply to each: yok orchestrate comments reply --run ${RUN.name} --id ID --status answered|changed|declined --text -`,
+  ].join("\n");
+};
+
+const agentEnv = scenario.yokRun
+  ? { ...process.env, PATH: `${yokBin}:${process.env.PATH}`, YOK_HOME: yokHome, YOK_RUN_ID: RUN.id }
+  : process.env;
+
 // --- the simulated user ------------------------------------------------------------------------
+const SPEAKER = { user: "YOU", agent: "AGENT", stage: "PIPELINE (starts the learn stage, not you)" };
 const clip = (text, max = 6000) => (text.length > max ? `…${text.slice(-max)}` : text);
 
 const simulatedUserPrompt = (conversation) => `You are playing the user in a conversation with an AI coding agent working in your repo. Stay in character as a busy, friendly developer. Write only the next message you would type: no quotes, no labels, no narration.
@@ -66,7 +133,7 @@ ${scenario.behaviour.map((line, index) => `${index + 1}. ${line}`).join("\n")}
 React to what the agent actually said. If it asks you something, answer it from what you know above. Never invent facts: no paths, repo names, URLs, versions or access details you were not given. If the agent needs something you don't know (another repo, credentials, a release), say you'll handle that part yourself and ask it to finish the rest. Keep messages short, like a real person typing. If nothing is left to do per the steps above, reply exactly DONE.
 
 Conversation so far:
-${conversation.length === 0 ? "(nothing yet; write your first message)" : conversation.map((turn) => `${turn.role === "user" ? "YOU" : "AGENT"}: ${clip(turn.text)}`).join("\n\n")}
+${conversation.length === 0 ? "(nothing yet; write your first message)" : conversation.map((turn) => `${SPEAKER[turn.role]}: ${clip(turn.text)}`).join("\n\n")}
 
 Your next message:`;
 
@@ -87,18 +154,28 @@ const agentTurn = (message, sessionId) =>
     message,
     repo,
     20 * 60_000,
-    // The hooks' own guard switches the nudge off, for scenarios that must reach /learn by hand.
-    scenario.noNudge ? { ...process.env, [`${pluginName.toUpperCase()}_LEARN_CHECK`]: "1" } : process.env,
+    agentEnv,
   );
+
+// An auto scenario stands for a run: once the user is done, the pipeline starts the learn stage in
+// the same session, and the user answers its questions.
+const STAGE_PROMPT = scenario.yokRun
+  ? `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). This session is inside the yok run $YOK_RUN_ID; there is no done command to call.`
+  : `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). There is no yok run in this session, so list candidates with --session.`;
 
 const conversation = previous?.conversation ?? [];
 let sessionId = previous?.sessionId ?? null;
+let stageStarted = false;
 for (let turn = 0; !previous && turn < MAX_TURNS; turn += 1) {
   const said = nextUserMessage(conversation);
-  if (!said || said === "DONE" || said.endsWith("\nDONE")) break;
-  const sent = said.replace(/^\/learn\b/, `/${pluginName}:learn`);
-  conversation.push({ role: "user", text: sent });
+  const done = !said || said === "DONE" || said.endsWith("\nDONE");
+  const startStage = done && (scenario.auto || scenario.yokRun) && !stageStarted;
+  if (done && !startStage) break;
+  stageStarted ||= startStage;
+  const sent = done ? STAGE_PROMPT : deliverComment(said.replace(/^\/learn\b/, `/${pluginName}:learn`));
+  conversation.push({ role: done ? "stage" : "user", text: sent });
   const reply = agentTurn(sent, sessionId);
+  if (scenario.yokRun && !sessionId && reply.session_id) startRun(reply.session_id);
   sessionId = reply.session_id ?? sessionId;
   conversation.push({ role: "agent", text: reply.result ?? "(no reply)", error: reply.is_error === true });
   if (reply.is_error && !reply.session_id) break;
@@ -162,7 +239,7 @@ const commands = transcript.flatMap((record) =>
     .filter((block) => block.type === "tool_use" && typeof block.input?.command === "string")
     .map((block) => block.input.command),
 );
-const mistakeFiles = scenario.mistake(writes, commands);
+const mistakeFiles = scenario.mistake(writes, commands, conversation);
 const expected = scenario.expect(mistakeFiles.length > 0);
 const userMessages = conversation.filter((turn) => turn.role === "user").map((turn) => turn.text.trim());
 const addedLearningFiles = () => changedFiles.filter((line) => line.startsWith("??") && /docs\/learnings\/(?!index\.md)/.test(line));
@@ -181,9 +258,8 @@ const skillStart = transcript.findIndex((record) =>
 const typedLearn = userMessages.some((text) => text.startsWith(`/${pluginName}:learn`));
 if (scenario.auto) {
   check("user never typed /learn", !typedLearn);
-  if (!expected.none) check("learn started on its own", skillStart !== -1);
+  if (!expected.none) check("the learn stage ran", skillStart !== -1);
 } else if (!expected.none) {
-  // The nudge hook may start it before the user gets to type /learn; either way it ran.
   check("learn ran", typedLearn || skillStart !== -1);
 }
 
@@ -196,9 +272,9 @@ const eventChecks = (event, label) => {
     // The proposal must wait for the corrected work: no app edits between logging the learning and
     // the user's next message (work the user asks for afterwards is fine).
     const isAppWrite = (record) =>
-      (Array.isArray(record.message?.content) ? record.message.content : []).flatMap(writeOf).some((write) => /(^|\/)apps\//.test(write.file));
+      (Array.isArray(record.message?.content) ? record.message.content : []).flatMap(writeOf).some((write) => APP_FILE.test(write.file));
     const logged = transcript.findIndex((record) =>
-      (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && /log-event\.mjs/.test(block.input?.command ?? "")),
+      (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && /log-event/.test(block.input?.command ?? "")),
     );
     const nextUser = transcript.findIndex((record, index) => index > logged && record.type === "user" && typeof record.message?.content === "string");
     const lateWrite = transcript.slice(logged + 1, nextUser === -1 ? undefined : nextUser).findIndex(isAppWrite);
@@ -226,6 +302,9 @@ const eventChecks = (event, label) => {
   const fromIndex = transcript.indexOf(fromRecord);
   const toIndex = transcript.indexOf(toRecord);
   check(`${label}evidence_from comes before evidence_to`, fromOptional || (fromIndex !== -1 && toIndex !== -1 && fromIndex <= toIndex));
+  if (expected.fromViewer) {
+    check(`${label}evidence_to is the viewer's [review] message`, toText.startsWith("[review]"), toText.slice(0, 120));
+  }
   if (expected.options) {
     const count = event.options_shown?.length ?? 0;
     check(`${label}offered ${expected.options.label}`, expected.options.test(count), `${count} option(s): ${JSON.stringify(event.options_shown)}`);
@@ -261,6 +340,21 @@ const eventChecks = (event, label) => {
     check(`${label}old learning's index line removed`, !(learnings["index.md"] ?? "").includes(`(${old})`));
   }
 };
+
+// Inside a run, every learn pass must find the run itself and leave its mark, so a later /learn
+// starts after it instead of reading the whole session again.
+if (scenario.yokRun) {
+  const passes = scenario.passes ?? 1;
+  const listCalls = commands.filter((command) => /learn\.candidates|scripts\/candidates\.ts/.test(command));
+  check("candidates listed through the run, never by --session", listCalls.length >= passes && listCalls.every((command) => !command.includes("--session")), listCalls.join(" | ").slice(0, 300));
+  const runEvents = existsSync(join(runDir, "event.jsonl"))
+    ? readFileSync(join(runDir, "event.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    : [];
+  const marks = runEvents.filter((event) => event.type === "learning.reviewed").length;
+  check(`each pass left a learning.reviewed mark (${passes})`, marks === passes, `${marks} mark(s)`);
+  const triggers = [...new Set(events.map((event) => event.trigger))];
+  if (passes > 1 && events.length > 1) check("the stage logged auto and /learn logged manual", triggers.includes("auto") && triggers.includes("manual"), triggers.join(", "));
+}
 
 // A proposal the user rejected, where none was expected, is a false positive the skill recorded,
 // not a broken pipeline; it is reported apart from passes and failures.
@@ -329,7 +423,7 @@ const result = {
 writeFileSync(join(outDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
 writeFileSync(
   join(outDir, "conversation.md"),
-  conversation.map((turn) => `### ${turn.role === "user" ? "User (simulated)" : "Agent"}${turn.error ? " (error)" : ""}\n\n${turn.text}\n`).join("\n"),
+  conversation.map((turn) => `### ${{ user: "User (simulated)", agent: "Agent", stage: "Pipeline" }[turn.role]}${turn.error ? " (error)" : ""}\n\n${turn.text}\n`).join("\n"),
 );
 const verdict = expected.notExercised ? "NOT EXERCISED" : result.passed ? (falsePositive ? "FALSE POSITIVE" : "PASS") : "FAIL";
 console.log(`${pluginName} ${scenarioName}: ${verdict} (mistake made: ${result.mistakeMade})`);

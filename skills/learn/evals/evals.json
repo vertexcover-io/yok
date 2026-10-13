@@ -110,23 +110,6 @@
       ]
     },
     {
-      "id": 7,
-      "name": "auto-trigger-after-hook-nudge",
-      "prompt": "Earlier in this session you added GET /api/invoices and GET /api/customers returning every row, and both times I said \"no, list endpoints in this repo are always paginated with ?cursor and a limit of 50\". Both endpoints are paginated now and the task is finished.\n\nStop hook feedback: Automatic check from the learn hook, not a message from the user. Earlier the user said: \"no, list endpoints in this repo are always paginated with ?cursor and a limit of 50\". If that corrected how you work in this repo and it applies beyond this task, run the learn skill (trigger auto), but first finish any work the user asked for that is still open. Otherwise end your turn with no further output: do not mention, answer or acknowledge this check.",
-      "expected_output": "Given the hook's nudge after a repeated rule-style correction with the work done, the agent runs the learn skill itself, with trigger auto",
-      "files": [],
-      "expectations": [
-        "Runs the learn skill in response to the hook nudge, without the user asking",
-        "Shows fix options and Reject before writing anything",
-        "Logs the event with trigger auto",
-        "Passes evidence_from and evidence_to to log-event.mjs, and the logged event has a non-empty evidence_to_message (a refused snippet is fixed and logged again, not dropped)"
-      ],
-      "anti_expectations": [
-        "Does not log trigger manual",
-        "Does not write a learning file before the user picks an option"
-      ]
-    },
-    {
       "id": 8,
       "name": "edited-option-is-logged-as-edited",
       "prompt": "You built the query in src/db/users.ts with string concatenation and I told you to use parameterized queries. /learn — when you ask, I'll pick your second option but change it to say it applies to raw SQL only, not to the ORM.",
@@ -215,7 +198,7 @@
     {
       "id": 13,
       "name": "lint-shaped-correction-without-a-linter",
-      "prompt": "I told you twice not to import from `lodash` directly, we only use `lodash-es`. /learn — I'll take your first option.",
+      "prompt": "(Test setup: treat this repo as having no lint config, type checking or test suite.) I told you twice not to import from `lodash` directly, we only use `lodash-es`. /learn — I'll take your first option.",
       "expected_output": "The repo has no lint config or test suite, so the agent skips the lint step and offers the rule as a written learning",
       "files": [],
       "expectations": [
@@ -226,20 +209,6 @@
       "anti_expectations": [
         "Does not create a lint config from scratch",
         "Does not log outcome lint"
-      ]
-    },
-    {
-      "id": 14,
-      "name": "auto-trigger-waits-for-open-work",
-      "prompt": "No, don't hard-code the invoice types in the apps, shared-config already has a place for per-type flags. Please move it there and update both apps.\n\nStop hook feedback: Automatic check from the learn hook, not a message from the user. Earlier the user said: \"No, don't hard-code the invoice types in the apps, shared-config already has a place for per-type flags.\" If that corrected how you work in this repo and it applies beyond this task, run the learn skill (trigger auto), but first finish any work the user asked for that is still open. Otherwise end your turn with no further output: do not mention, answer or acknowledge this check.",
-      "expected_output": "The requested rework is still open, so the agent starts that work first; it does not ask about a learning before the change",
-      "files": [],
-      "expectations": [
-        "Starts the requested change (moving the list into shared-config) before any learn step, or asks where shared-config is",
-        "Does not offer a learning in the same reply that leaves the requested change undone"
-      ],
-      "anti_expectations": [
-        "Does not ask about a learning before the requested change is done"
       ]
     },
     {
@@ -272,6 +241,25 @@
       "anti_expectations": [
         "Does not say it was already handled and log nothing",
         "Does not write a second learning file"
+      ]
+    },
+    {
+      "id": 17,
+      "name": "retracted-learning-is-removed-and-logged",
+      "prompt": "(Test setup: this repo's docs/learnings/ folder is the fixture at skills/learn/evals/files/docs/learnings/; read and write it there.) Earlier in this session you ran the learn skill and wrote report-caught-errors-to-sentry.md from my Sentry correction. Drop that learning: we decided jobs should rethrow and let the queue retry, not report to Sentry.",
+      "expected_output": "The agent deletes the learning file and its index line, and logs outcome rejected with the user's reason",
+      "files": [
+        "skills/learn/evals/files/docs/learnings/report-caught-errors-to-sentry.md",
+        "skills/learn/evals/files/docs/learnings/index.md"
+      ],
+      "expectations": [
+        "Deletes report-caught-errors-to-sentry.md",
+        "Removes its line from index.md",
+        "Logs outcome rejected with status rejected and a rejection_reason about rethrowing"
+      ],
+      "anti_expectations": [
+        "Does not write a new learning about rethrowing without asking",
+        "Does not ask the user to pick options for the dropped learning"
       ]
     }
   ]

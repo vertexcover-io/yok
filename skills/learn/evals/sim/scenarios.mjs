@@ -14,8 +14,26 @@ const HARDCODED_LIST =
 // The reviewed-session mistake this repo is built around: at any point in the session, the agent wrote the list of activation
 // types that need an invoice into an app file instead of using a shared-config flag. Read from the
 // agent's Edit/Write calls, because a correction later removes it from the final code.
+// A path written from inside apps/ (cd apps && …) starts at the app's folder, so both forms count.
+export const APP_FILE = /(^|\/)(apps\/)?(admin-api|admin-panel)\//;
 const listInApps = (writes) =>
-  [...new Set(writes.filter((write) => /(^|\/)apps\//.test(write.file) && HARDCODED_LIST.test(write.text)).map((write) => write.file.replace(/^.*?apps\//, "apps/")))];
+  [...new Set(writes.filter((write) => APP_FILE.test(write.file) && HARDCODED_LIST.test(write.text)).map((write) => write.file.replace(/^.*?(?:apps\/)?(admin-api|admin-panel)\//, "apps/$1/")))];
+
+const ranNpm = (commands) => commands.some((command) => /(^|[;&|\s])npm\s+(i|install|add|ci)\b/.test(command));
+
+// One label per kind of mistake made: the shared-config list, and npm.
+const listOrNpm = (writes, commands) => [
+  ...(listInApps(writes).length > 0 ? ["list in apps"] : []),
+  ...(ranNpm(commands) ? ["npm install"] : []),
+];
+
+const PNPM_KNOWLEDGE =
+  " Separately: the repo moved from npm to pnpm last week (pnpm-lock.yaml is in the root); the README still says npm and is out of date. Installing with npm breaks CI.";
+
+const PNPM_FILES = {
+  "README.md": "# shop\n\nAdmin tools for business subscriptions.\n\n## Setup\n\nInstall dependencies with `npm install`.\n",
+  "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+};
 
 const SHARED_CONFIG_KNOWLEDGE =
   "In this repo, anything both apps need to agree on lives in @shop/shared-config (installed in node_modules; its source repo is shared-config). Activation types already have " +
@@ -48,7 +66,7 @@ const NEVER_LEARN = "Never type /learn or ask the agent to save a learning yours
 
 export const SCENARIOS = {
   "auto-shared-list": {
-    source: "cross-app list written into each app, auto trigger",
+    source: "cross-app list written into each app, learn stage at the end",
     auto: true,
     task: INVOICE_TASK,
     knowledge: SHARED_CONFIG_KNOWLEDGE,
@@ -68,7 +86,7 @@ export const SCENARIOS = {
   },
 
   "auto-one-off": {
-    source: "one-off steering, auto trigger",
+    source: "one-off steering, learn stage at the end",
     auto: true,
     task: INVOICE_TASK,
     knowledge:
@@ -204,7 +222,7 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
       "When it asks how the learning should read, pick the option about always using pnpm, and agree that the old npm learning should be removed.",
       "After it reports what it wrote, reply DONE.",
     ],
-    mistake: (writes, commands) => (commands.some((command) => /(^|[;&|\s])npm\s+(i|install|add|ci)\b/.test(command)) ? ["npm install"] : []),
+    mistake: (writes, commands) => (ranNpm(commands) ? ["npm install"] : []),
     // Without the npm mistake there is no contradiction to test; whatever else the user corrected
     // is out of this scenario's scope, so the run is reported as not exercised.
     expect: (mistakeMade) =>
@@ -238,12 +256,8 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
     source: "two different corrections in one session",
     task: INVOICE_TASK + " Also store activatedAt as a UTC ISO string using the dayjs library (install it).",
     knowledge:
-      SHARED_CONFIG_KNOWLEDGE +
-      " Separately: the repo moved from npm to pnpm last week (pnpm-lock.yaml is in the root); the README still says npm and is out of date. Installing with npm breaks CI.",
-    files: {
-      "README.md": "# shop\n\nAdmin tools for business subscriptions.\n\n## Setup\n\nInstall dependencies with `npm install`.\n",
-      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
-    },
+      SHARED_CONFIG_KNOWLEDGE + PNPM_KNOWLEDGE,
+    files: PNPM_FILES,
     behaviour: [
       "Your first message asks the agent to do the task, in your own words.",
       "If the agent writes the list of activation types that need an invoice inside an app, correct that once: shared-config already has a place for this.",
@@ -253,20 +267,69 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
       "For each learning it asks about, pick the first option.",
       "After it reports what it wrote, reply DONE.",
     ],
-    // One label per kind of mistake made: the shared-config list, and npm.
-    mistake: (writes, commands) => [
-      ...(listInApps(writes).length > 0 ? ["list in apps"] : []),
-      ...(commands.some((command) => /(^|[;&|\s])npm\s+(i|install|add|ci)\b/.test(command)) ? ["npm install"] : []),
-    ],
+    mistake: listOrNpm,
     expect: (anyMade) =>
       anyMade
         ? { outcome: "new", status: ["accepted", "edited"], count: (mistakes) => mistakes.length }
         : { none: true, why: "the agent made neither mistake" },
   },
 
+  "run-two-passes": {
+    source: "inside a yok run: the learn stage, then /learn after a follow-up (the after-PR pass)",
+    yokRun: true,
+    passes: 2,
+    task:
+      INVOICE_TASK +
+      " Once that is done and the learn stage has run, you also want activatedAt stored as a UTC ISO string using the dayjs library (install it).",
+    knowledge:
+      SHARED_CONFIG_KNOWLEDGE + PNPM_KNOWLEDGE,
+    files: PNPM_FILES,
+    behaviour: [
+      "Your first message asks the agent to do the invoice task only, in your own words. Don't mention dayjs yet.",
+      "If the agent writes the list of activation types that need an invoice inside an app, correct it once: shared-config already has a place for this.",
+      "Answer any question the agent asks, briefly and in character.",
+      "When the invoice task is done, say thanks in one short line. After that, if the agent has nothing more to ask you, reply DONE. Never type /learn before step 7.",
+      "When the learn stage (started by PIPELINE) asks how a learning should read, pick the option closest to keeping cross-app lists in shared-config. After it reports, ask for the dayjs change in your own words.",
+      "If the agent runs npm (npm install, npm i, npm add), correct that once: we moved to pnpm, never npm; undo the npm changes and use pnpm.",
+      "When the dayjs change is done, type exactly: /learn",
+      "For each learning it asks about, pick the first option. If it asks about shared-config again, say that one was already handled.",
+      "After it reports what it wrote, reply DONE.",
+    ],
+    // The stage's pass may catch the shared-config list; the /learn pass, npm.
+    mistake: listOrNpm,
+    expect: (anyMade) =>
+      anyMade
+        ? { outcome: "new", status: ["accepted", "edited"], count: (mistakes) => mistakes.length }
+        : { none: true, why: "the agent made neither mistake" },
+  },
+
+  "viewer-comment": {
+    source: "inside a yok run: the correction is a plan-viewer comment, then the learn stage",
+    yokRun: true,
+    task:
+      INVOICE_TASK +
+      " First write a short implementation plan to .yok/sim/artifacts/plan.md and wait for the user's review before writing any code.",
+    knowledge: SHARED_CONFIG_KNOWLEDGE,
+    behaviour: [
+      "Your first message asks the agent for the task, in your own words, and asks it to write the plan to .yok/sim/artifacts/plan.md first and wait for your review before coding.",
+      'You review the plan in a viewer, not in chat. If the plan writes the list of activation types that need an invoice inside the apps, leave one review comment on it. Write it exactly as: COMMENT: "<a short phrase copied exactly from the plan, under 60 characters>" => <your comment>. In the comment, say shared-config already has a place for this.',
+      "Once the plan reads the types from shared-config (or never listed them in the apps), reply: approved, go ahead and implement.",
+      "Answer any question the agent asks, briefly and in character.",
+      "When the code is done, say thanks in one short line. After that, if the agent has nothing more to ask you, reply DONE.",
+      NEVER_LEARN,
+      "When the learn stage (started by PIPELINE) asks how a learning should read, pick the option closest to keeping cross-app lists in shared-config. After it reports, reply DONE.",
+    ],
+    // The mistake is in the plan, so it is whatever the user had to comment on in the viewer.
+    mistake: (writes, commands, conversation) =>
+      conversation.some((turn) => turn.role === "user" && turn.text.startsWith("[review]")) ? ["plan comment"] : [],
+    expect: (mistakeMade) =>
+      mistakeMade
+        ? { outcome: "new", status: ["accepted", "edited"], lesson: SHARED_CONFIG_LESSON, fromViewer: true }
+        : { none: true, why: "the plan used shared-config on its own, so there was nothing to comment on" },
+  },
+
   "compact-mid-session": {
     source: "/compact between the correction and /learn",
-    noNudge: true,
     task: INVOICE_TASK,
     knowledge: SHARED_CONFIG_KNOWLEDGE,
     behaviour: [
