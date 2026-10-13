@@ -41,7 +41,10 @@ phases, each change as a diff, and the tests that prove each phase.
 
 The input holds `task`, the same text the design stage had, and may hold `workspace`, the
 create-workspace stage's output. Read code in each repo's `worktreeDir` when it is there, and in
-the current checkout otherwise. RUN below is the run's spec name. The stage reads
+the current checkout otherwise. When the plan changes a repo the `workspace` lacks, add it before
+writing the plan: `yok orchestrate skill run create-workspace.workspace add RUN --repos NAME
+--run RUN`, then use the `worktreeDir` it prints and say in the summary which repo was added and
+why. RUN below is the run's spec name. The stage reads
 `.yok/RUN/artifacts/design.md` and writes:
 
 | File | Read by |
