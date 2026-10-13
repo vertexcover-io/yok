@@ -1,0 +1,16 @@
+{
+  "repo": "acme/widgets",
+  "number": 9,
+  "sha": "sha9",
+  "results": [
+    {
+      "id": "acme/widgets#9:901",
+      "persona": "defects",
+      "result": "miss",
+      "evidence": "defects read move.ts and called the copy safe",
+      "cause": "agent-miss",
+      "citation": "persona-defects.md: a caught error ... follow each through the next step",
+      "proposal": "none; the prompt had it"
+    }
+  ]
+}
