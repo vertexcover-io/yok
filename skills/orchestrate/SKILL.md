@@ -58,11 +58,11 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      - `mode: background`: the step is long, so run it as a background task to get past
        the timeout. Nothing else runs meanwhile: wait for the task to finish, log
        `✓` or `✗` the same way, then go back to 1.
-   - `stage`: tell the user `▶ NODE_ID (stage STAGE)`. Read the file at `skill`, then the file
-     at `extension` when it is not null; where the extension conflicts with the skill, the
-     extension wins. Follow the skill with the reply's `input` as its input, `variables` as the
-     values of the variables the skill names, and `prompt` as extra instructions when present.
-     When the skill needs one of its references, run
+   - `stage` with `mode: inline`: tell the user `▶ NODE_ID (stage STAGE)`. Read the file at `skill`,
+     then the file at `extension` when it is not null; where the extension conflicts with the skill,
+     the extension wins. Follow the skill with the reply's `input` as its input, `variables` as the
+     values of the variables the skill names, and `prompt` as extra instructions when present. When
+     the skill needs one of its references, run
      `yok orchestrate skill ref STAGE.REF`. It needs no `--run`: it finds the run through
      `YOK_RUN_ID` and reads the config that run started with. Never open a reference file by
      its path, since that skips the project's changes to it. When the skill says to run one of
@@ -104,8 +104,34 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      runs after it). On any other error whose `retryable` is `false`, stop and report the error. Do not call `next` until `done` reports
      completed, reports `verify-exhausted`, or you report an unrecoverable stage error with
      `done --error`. Log `✓` or `✗` from the printed JSON, then go back to 1.
-   - `agent`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with `input` as its data,
-     then finish it with the reply's `done` command the same way as a stage.
+   - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
+     `input` as its data, then finish it with the reply's `done` command the same way as a stage.
+   - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. When the
+     stage's SKILL.md has a `## Subagent mode` heading (check with
+     `grep -q '^## Subagent mode' SKILL`), run the stage yourself as a `mode: inline` stage and
+     follow that section; it starts its own subagents. Otherwise start a subagent in the
+     background (the reference names the tool), on the reply's `model` and `effort` when
+     present, with this brief:
+     - For a stage: "Run the yok stage STAGE. Follow the file at SKILL, and the file at
+       EXTENSION when given, which wins where they differ. Use this input: INPUT, these
+       variables: VARIABLES, and these extra instructions: PROMPT. Read a reference with
+       `yok orchestrate skill ref STAGE.REF` and run a script with
+       `yok orchestrate skill run STAGE.REF ARGS`."
+     - For an agent node: "Do this: PROMPT, with this input: INPUT."
+     - Always: "Send any question for the user to me and wait for my answer. Where the skill
+       says to ask for approval of a file, or to run `await-approval`, send me its path instead
+       and wait: I pass on each review comment and the approval. Where the skill says to run
+       `done`, end instead with a line `YOK-RESULT` and one JSON object with `output`, `summary`
+       and `artifacts`; if you cannot finish, a line `YOK-ERROR` and the reason. Run no
+       `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`."
+
+     When it sends a question, ask the user the way the reference says and send back the
+     answer. When it asks for approval of a file, run
+     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE` and end the turn with
+     one line: approve with the Approve button in the viewer, or type approve here. Send it each
+     `[review]` message and the user's approval as they arrive. When it ends, run the reply's
+     `done` with its output, summary and artifacts, or with `--error -` and its reason. When
+     `done` asks for a fix, send the issues to the same subagent and wait for it to end again.
    - `context`: tell the user `↻ NODE_ID: ACTION` (the reply's `nodeId` and `action`, e.g.
      `↻ fresh: new`), then end the turn at once, without running any other command. The work
      starts once the turn is over: for `new` the yok replaces this session with a fresh one,
