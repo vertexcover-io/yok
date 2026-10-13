@@ -8,12 +8,13 @@ import {
   execWithTimeout,
   SAMSKARA_SUBSCRIBER,
   type Samskara,
+  type SessionRef,
+  SessionRefSchema,
   type State,
   type Subscriber,
   type SubscriberInput,
   type SubscriberRefs,
 } from "@yok/sdk";
-import { findNodeRuns } from "@yok/sdk/internal";
 import * as z from "zod";
 import { realPathsInArtifacts } from "./workflow/done.ts";
 
@@ -45,7 +46,7 @@ export const buildSamskaraSubscribers = (samskara: Samskara | undefined): Subscr
 
 const NodeArtifactsSchema = z.looseObject({
   artifacts: z.array(ArtifactRefSchema).default([]),
-  parents: z.array(z.string()).default([]),
+  session: SessionRefSchema.optional(),
 });
 
 // artifacts/design.md stays itself; artifacts/verification/report.html sends its whole folder.
@@ -53,7 +54,7 @@ const topEntry = (path: string): string => path.split("/").slice(0, 2).join("/")
 
 // Each target sent once: the CLI uploads nothing when two paths name the same file, yet still
 // exits 0.
-const uploadTargets = async (
+const findUploadTargets = async (
   runDir: string,
   artifacts: readonly ArtifactRef[],
 ): Promise<readonly string[]> => {
@@ -63,18 +64,12 @@ const uploadTargets = async (
   return [...new Set(await realPathsInArtifacts(runDir, [...new Set(entries)]))];
 };
 
-// The session the node ran in, not the run's current one: a context step may have replaced it by
-// the time a queued upload runs.
-const claudeSession = (
-  event: SubscriberInput["event"],
-  state: State,
-  parents: readonly string[],
-): string | undefined => {
-  const nodeRun =
-    event.nodeId === undefined ? undefined : findNodeRuns(state.nodeRuns, parents)[event.nodeId];
-  const recorded = nodeRun?.nodeRunId === event.nodeRunId ? nodeRun?.agentState : undefined;
-  if (recorded?.agent === "claude" && recorded.sessionId !== null) return recorded.sessionId;
-  return state.activeSessions.find((session) => session.agent === "claude")?.sessionId;
+// The session the completion event names, which is the one the node ran in. The run's current
+// session is only a fallback for a node that ran in none, such as a script: by the time a queued
+// upload runs, a context step may have replaced it.
+const claudeSession = (session: SessionRef | undefined, state: State): string | undefined => {
+  if (session !== undefined) return session.agent === "claude" ? session.sessionId : undefined;
+  return state.activeSessions.find((active) => active.agent === "claude")?.sessionId;
 };
 
 // samskara prints a line per file, its refusals and count on stdout, and its warnings on stderr. A
@@ -89,13 +84,12 @@ export const uploadArtifacts = async (
   { event, state }: Pick<SubscriberInput, "event" | "state">,
   exec: Exec,
 ): Promise<Readonly<{ uploaded: number; session: string }> | Readonly<{ skipped: string }>> => {
-  const { artifacts, parents } = NodeArtifactsSchema.safeParse(event.payload).data ?? {
+  const { artifacts, session: ranIn } = NodeArtifactsSchema.safeParse(event.payload).data ?? {
     artifacts: [],
-    parents: [],
   };
-  const targets = await uploadTargets(state.runDir, artifacts);
+  const targets = await findUploadTargets(state.runDir, artifacts);
   if (targets.length === 0) return { skipped: "no artifact files" };
-  const session = claudeSession(event, state, parents);
+  const session = claudeSession(ranIn, state);
   if (session === undefined) return { skipped: "no claude session" };
   const runDir = await realpath(state.runDir);
   const args = ["artifacts", "upload", session, ...targets, UPLOAD_FLAG, runDir];

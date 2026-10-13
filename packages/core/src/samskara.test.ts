@@ -9,6 +9,7 @@ import {
   type Exec,
   type ExecResult,
   type NodeRun,
+  type SessionRef,
   type State,
 } from "@yok/sdk";
 import { uploadArtifacts } from "./samskara.ts";
@@ -29,7 +30,7 @@ const recordingExec = (
 
 const file = (path: string): ArtifactRef => ({ type: "file", name: path, path });
 
-const completed = (artifacts: readonly ArtifactRef[]): Event => ({
+const completed = (artifacts: readonly ArtifactRef[], session?: SessionRef): Event => ({
   schemaVersion: 1,
   seq: 1,
   id: "evt-1",
@@ -39,7 +40,11 @@ const completed = (artifacts: readonly ArtifactRef[]): Event => ({
   runId: "r-demo",
   nodeId: "design",
   nodeRunId: "design-1",
-  payload: { status: "completed", artifacts: [...artifacts] },
+  payload: {
+    status: "completed",
+    artifacts: [...artifacts],
+    ...(session === undefined ? {} : { session }),
+  },
 });
 
 const stateOf = (runDir: string, activeSessions: State["activeSessions"]): State => ({
@@ -194,25 +199,36 @@ describe("uploadArtifacts", () => {
     expect(calls.map((call) => call.args[2])).toEqual(["s-2"]);
   });
 
-  test("SC407: design-1 started on s-old; after the run's session is replaced by s-new, its upload still goes to s-old", async () => {
+  test("SC407: design-1 ran on s-old; when its upload runs after design-2 replaced it on s-new, the upload still goes to s-old", async () => {
     const { exec, calls } = recordingExec();
-    const nodeRun: NodeRun = {
-      nodeRunId: "design-1",
+    const nextPass: NodeRun = {
+      nodeRunId: "design-2",
       nodeType: "agent",
-      status: "completed",
-      startedAt: "2026-10-02T10:00:00Z",
-      completedAt: "2026-10-02T10:05:00Z",
+      status: "running",
+      startedAt: "2026-10-02T10:06:00Z",
+      completedAt: null,
       artifacts: [],
-      agentState: { agent: "claude", tier: null, model: null, sessionId: "s-old", tokens: null },
+      agentState: { agent: "claude", tier: null, model: null, sessionId: "s-new", tokens: null },
     };
     const state = {
       ...stateOf(runDir, [{ agent: "claude", sessionId: "s-new" }]),
-      nodeRuns: { design: nodeRun },
+      nodeRuns: { design: nextPass },
     };
+    const event = completed([file("artifacts/design.md")], { agent: "claude", sessionId: "s-old" });
 
-    await uploadArtifacts({ event: completed([file("artifacts/design.md")]), state }, exec);
+    await uploadArtifacts({ event, state }, exec);
 
     expect(calls.map((call) => call.args[2])).toEqual(["s-old"]);
+  });
+
+  test("SC406: a node that ran on codex skips the upload, even when the run also has a claude session", async () => {
+    const { exec, calls } = recordingExec();
+    const event = completed([file("artifacts/design.md")], { agent: "codex", sessionId: "c-1" });
+
+    const result = await uploadArtifacts({ event, state: stateOf(runDir, [...CLAUDE]) }, exec);
+
+    expect(calls).toEqual([]);
+    expect(result).toEqual({ skipped: "no claude session" });
   });
 
   test("SC408: samskara exiting 1 rejects with the exit code and samskara's own message", async () => {
