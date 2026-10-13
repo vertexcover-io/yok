@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { type JsonValue, runDirOf, type WorkflowRun } from "@yok/sdk";
+import { ERROR_MESSAGE_LIMIT, type JsonValue, runDirOf, type WorkflowRun } from "@yok/sdk";
 import { appendRunEvent, jsonlEventStore, RegistryFileSchema } from "@yok/sdk/internal";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./workflow/test-stages.ts";
@@ -2196,7 +2196,7 @@ describe("SC26: orchestrate call log", () => {
       call(
         "done",
         { nodeRunId: stage.nodeRunId, output: '{"ok":true}', summary: "Did the work.", artifacts },
-        { kind: "error", message: refused.stderr.trim() },
+        { kind: "error", message: refused.stderr.trim().slice(0, ERROR_MESSAGE_LIMIT) },
         "rejected",
       ),
       call(
