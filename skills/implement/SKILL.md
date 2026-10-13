@@ -66,18 +66,20 @@ feature:
 
 ## 3. Build the phases in waves
 
-A plan with one phase is built here, inline. With more, build in waves from the `## Phases`
-digraph: a wave is every phase whose dependencies are all committed. Dispatch one sub-agent per
-phase in the wave, all in one message, in the same worktree. Give each: the paths to its phase
-file and `plan.md`, the worktree, the commands, and these parts of this skill: section 2, "For
-each phase", "The E2E leg" and section 4, plus the sub-agent rules below when the wave has two
-or more phases. The rest of this section is the stage's own work.
+In subagent mode, "Subagent mode" below changes how the waves are cut. Otherwise, a plan with
+one phase is built here, inline. With more, build in waves from the `## Phases` digraph: a wave
+is every phase whose dependencies are all committed. Dispatch one sub-agent per phase in the
+wave, all in one message, in the same worktree. Give each: the paths to its phase file and
+`plan.md`, the worktree, the commands, and these parts of this skill: section 2, "For each
+phase", "The E2E leg" and section 4, plus the sub-agent rules below when the wave has two or
+more phases or the stage runs in subagent mode. The rest of this section is the stage's own
+work.
 
 Phases in one wave share the worktree, so they must not touch the same file. Planning orders any
 two phases that do; still, before dispatching, collect the files each phase's diffs name. When
 two phases in a wave share a file, the plan is wrong: build those two one after the other.
 
-A sub-agent in a wave of two or more works around the others:
+The sub-agent rules:
 
 - It edits only its own phase's files and runs only its own test files, in place of `tdd`'s
   full-suite and full-lint steps. A full test run, typecheck or lint would fail on the other
@@ -96,7 +98,8 @@ When the wave's sub-agents have all returned:
 3. Commit each `COMPLETED` phase in phase order, staging only the files its sub-agent returned.
 4. When any phase is `BLOCKED`, stop after these commits. Otherwise start the next wave.
 
-A wave of one phase builds that phase whole, checks, E2E and commit included, as below.
+Outside subagent mode, a wave of one phase builds that phase whole, checks, E2E and commit
+included, as below.
 
 For each phase:
 
@@ -106,11 +109,11 @@ For each phase:
   unit test" does not satisfy an integration or E2E scenario; moving one to a cheaper level is
   `BLOCKED`, not a pass.
 - Run affected tests and typecheck while iterating. Once the phase is built, run the full
-  tests, typecheck and lint. In a wave of two or more, run only the affected tests; the stage
+  tests, typecheck and lint. Under the sub-agent rules, run only the affected tests; the stage
   runs the rest after the wave. Documentation-only changes need the artifact checked, not
   invented tests.
 - When building a screen, open the frame the step names first.
-- Outside a wave of two or more, commit the phase with its `## Commit` message. Stage only this
+- Outside the sub-agent rules, commit the phase with its `## Commit` message. Stage only this
   phase's changes and leave unrelated edits alone. Commit without asking.
 
 ### The E2E leg
@@ -128,6 +131,13 @@ For each phase:
 - **Skipping.** Only when the phase changes no behavior seen from outside: an internal
   refactor, docs, config with no runtime effect. Write
   `.yok/RUN/artifacts/phase-N-e2e-skipped.md` naming the reason.
+
+## Subagent mode
+
+When the orchestrate skill runs this stage with `mode: subagent`, every wave in section 3 is one
+phase, even for a one-phase plan: build the phases one after another, in an order the
+`## Phases` digraph allows. Start each sub-agent on the reply's `model` and `effort` when
+present, and give it the sub-agent rules.
 
 ## 4. When blocked
 

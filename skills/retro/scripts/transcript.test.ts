@@ -63,6 +63,14 @@ describe("humanMessages", () => {
     ]);
     expect(rows.map((m) => m.line)).toEqual([2, 3, 6]);
   });
+
+  test("QA 12: a message a subagent sends to the session is not a human message", () => {
+    const teammate =
+      'Another Claude session sent a message:\n<teammate-message teammate_id="ask">\nWhich fruit?\n</teammate-message>';
+    const rows = humanMessages(recs([user(at(1), "fix the header"), user(at(2), teammate)]));
+
+    expect(rows.map((m) => m.text)).toEqual(["fix the header"]);
+  });
 });
 
 const bashCall = (ts: string, id: string, command: string) => ({
