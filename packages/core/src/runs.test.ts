@@ -26,6 +26,7 @@ import {
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
 import corePackage from "../package.json";
+import { agentAdapters } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
 import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
@@ -776,7 +777,7 @@ describe("nextStep with stage tiers", () => {
   test("SC16: next on a Claude run before a fast stage replies with a model step for the built-in fast model, and logs it as orchestrate.next", async () => {
     const { ref, cwd } = await stagedRun(stageNode("make", "quick"));
 
-    const reply = await nextStep(ref, SWITCHING);
+    const reply = await nextStep(ref, agentAdapters);
 
     const step = { kind: "model", nodeId: "make", model: "claude-sonnet-5-5" } as const;
     expect(reply).toEqual({ ok: true, value: step });
@@ -794,7 +795,7 @@ describe("nextStep with stage tiers", () => {
       header: "agent: codex\n",
     });
 
-    const reply = await nextStep(ref, SWITCHING);
+    const reply = await nextStep(ref, agentAdapters);
 
     expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "make" } });
   });
@@ -802,7 +803,7 @@ describe("nextStep with stage tiers", () => {
   test("a Claude run launched on its default deep tier hands out its first deep stage with no model step", async () => {
     const { ref } = await stagedRun(stageNode("think", "thinker"));
 
-    const reply = await nextStep(ref, SWITCHING);
+    const reply = await nextStep(ref, agentAdapters);
 
     expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "think" } });
   });
@@ -810,7 +811,7 @@ describe("nextStep with stage tiers", () => {
   test("a Claude run registered with no tiers hands out its fast stage with no model step", async () => {
     const { ref } = await stagedRun(stageNode("make", "quick"), { tiers: null });
 
-    const reply = await nextStep(ref, SWITCHING);
+    const reply = await nextStep(ref, agentAdapters);
 
     expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "make" } });
   });
@@ -822,7 +823,7 @@ describe("nextStep with stage tiers", () => {
     };
     const { ref } = await stagedRun(stageNode("make", "quick"), { tiers });
 
-    const first = await nextStep(ref, SWITCHING);
+    const first = await nextStep(ref, agentAdapters);
     expect(first).toEqual({
       ok: true,
       value: { kind: "model", nodeId: "make", model: "sonnet-y" },
@@ -836,9 +837,38 @@ describe("nextStep with stage tiers", () => {
     });
     expect(applied.ok).toBe(true);
 
-    expect(await nextStep(ref, SWITCHING)).toMatchObject({
+    expect(await nextStep(ref, agentAdapters)).toMatchObject({
       ok: true,
       value: { kind: "stage", nodeId: "make" },
     });
+  });
+  test("SC7: next on a Claude run replies to a fast subagent stage with its model and no model step", async () => {
+    const { ref } = await stagedRun(
+      "  - { id: make, type: agent, stage: stages/quick, input: {}, mode: subagent }\n",
+    );
+
+    const reply = await nextStep(ref, agentAdapters);
+
+    if (!reply.ok) throw new Error(reply.error);
+    expect(reply.value).toMatchObject({
+      kind: "stage",
+      nodeId: "make",
+      mode: "subagent",
+      model: "claude-sonnet-5-5",
+    });
+    expect(reply.value).not.toHaveProperty("effort");
+  });
+
+  test("SC8: next on a Codex run replies to a subagent stage with mode: inline", async () => {
+    const { ref } = await stagedRun(
+      "  - { id: make, type: agent, stage: stages/quick, input: {}, mode: subagent }\n",
+      { header: "agent: codex\n" },
+    );
+
+    const reply = await nextStep(ref, agentAdapters);
+
+    if (!reply.ok) throw new Error(reply.error);
+    expect(reply.value).toMatchObject({ kind: "stage", nodeId: "make", mode: "inline" });
+    expect(reply.value).not.toHaveProperty("model");
   });
 });

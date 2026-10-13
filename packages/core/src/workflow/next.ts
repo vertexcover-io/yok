@@ -13,7 +13,7 @@ import {
 } from "@yok/sdk";
 import { findNodeRuns, isRunLive, type ModelSwitch, nodePath } from "@yok/sdk/internal";
 import { z } from "zod";
-import { own } from "../stage.ts";
+import { type AgentMode, own } from "../stage.ts";
 import { findConsumedArtifacts } from "./done.ts";
 import {
   evaluateBoolean,
@@ -41,6 +41,10 @@ import {
 
 export type Leaf = PlanExecNode | PlanWaitNode | PlanAgentNode | PlanContextNode;
 
+// How the session runs an agent node, and the tier model a subagent it starts runs on: null when
+// inline or the run has no tiers.
+export type RunsOn = Readonly<{ mode: AgentMode; model: TierModel | null }>;
+
 // What `next` replies. The events it recorded on the way are already saved.
 export type Decision =
   | Readonly<{
@@ -49,6 +53,8 @@ export type Decision =
       nodeRunId: string;
       input: JsonValue;
       variables: Readonly<Record<string, string>>;
+      // how an agent node runs; null for every other leaf
+      runsOn: RunsOn | null;
     }>
   | (Readonly<{ kind: "model"; nodeId: string }> & TierModel)
   | Readonly<{ kind: "waiting"; nodeRunId: string }>
@@ -66,15 +72,18 @@ type Walked = Readonly<{ state: State; step: Step }>;
 const CONTINUE: Step = { kind: "continue" };
 
 // The run's tiers and where its model switches stand. tiers is null when the run's agent cannot
-// switch models, so every node runs on the model it has.
+// switch models, so every node runs on the model it has. subagents is false when the run's agent
+// cannot start subagents, so every node runs inline.
 export type ModelInputs = Readonly<{
   tiers: ResolvedTiers | null;
   switching: ModelSwitch;
+  subagents: boolean;
 }>;
 
 const NO_MODELS: ModelInputs = {
   tiers: null,
   switching: { current: null, pending: null, failed: null },
+  subagents: false,
 };
 
 // Where the walk is: the inputs its expressions read and, inside a loop, the current pass.
@@ -354,10 +363,27 @@ export const pickNodeTier = (
   return { tier: runDefault, setBy: "the run's default" };
 };
 
+// The node's own mode, else its stage's, else inline; an agent that cannot start subagents runs
+// every node inline.
+const pickNodeMode = (node: PlanAgentNode, subagents: boolean): AgentMode => {
+  const mode = node.mode ?? node.stage?.mode ?? "inline";
+  return subagents ? mode : "inline";
+};
+
+const pickRunsOn = (node: PlanAgentNode, walk: Walk, target: TierModel | undefined): RunsOn => {
+  const mode = pickNodeMode(node, walk.subagents);
+  return { mode, model: mode === "subagent" ? (target ?? null) : null };
+};
+
 // Who runs an agent step and on what. A run that cannot switch models runs every step on its
-// launch model, the default tier's; by the time a switching run starts a step, findModelSwitch
-// has put its session on the step's tier.
-const pickAgentFields = (node: PlanAgentNode, walk: Walk, state: State) => {
+// launch model, the default tier's; by the time a switching run starts a step, executeLeaf
+// has put its session on the step's tier. A subagent step runs on its subagentModel.
+const pickAgentFields = (
+  node: PlanAgentNode,
+  walk: Walk,
+  state: State,
+  subagentModel: TierModel | null,
+) => {
   const sessionId = state.activeSessions.find((s) => s.agent === walk.agent)?.sessionId ?? null;
   const stage = node.stage === undefined ? {} : { stage: node.stage.name };
   if (walk.tiers === null) {
@@ -368,22 +394,20 @@ const pickAgentFields = (node: PlanAgentNode, walk: Walk, state: State) => {
     return { ...stage, agentState: { agent: walk.agent, tier, model, sessionId, tokens: null } };
   }
   const { tier } = pickNodeTier(node, walk.tiers.default);
-  const model = walk.switching.current?.model ?? null;
+  const model = subagentModel?.model ?? walk.switching.current?.model ?? null;
   return { ...stage, agentState: { agent: walk.agent, tier, model, sessionId, tokens: null } };
 };
 
-// The model an agent node's tier asks for when the session is on another one; undefined when the
-// node can start on the model it has, or a failure when the run has no such tier.
-const findModelSwitch = (node: Leaf, walk: Walk): TierModel | NodeFailure | undefined => {
+// The model an agent node's tier names; undefined when the run never switches models, or a
+// failure when the run has no such tier.
+const findTierModel = (node: Leaf, walk: Walk): TierModel | NodeFailure | undefined => {
   if (walk.tiers === null || node.type !== "agent") return undefined;
   const { tier } = pickNodeTier(node, walk.tiers.default);
   const target = own(walk.tiers.models, tier);
-  if (target === undefined) {
-    const names = Object.keys(walk.tiers.models).join(", ");
-    const message = `${node.id}: tier "${tier}" is not one of the run's tiers: ${names}`;
-    return new NodeFailure("validation", message);
-  }
-  return isSameModel(target, walk.switching.current) ? undefined : target;
+  if (target !== undefined) return target;
+  const names = Object.keys(walk.tiers.models).join(", ");
+  const message = `${node.id}: tier "${tier}" is not one of the run's tiers: ${names}`;
+  return new NodeFailure("validation", message);
 };
 
 const requestModel = async (
@@ -441,15 +465,25 @@ const executeLeaf = async (
       return { state: recorded, step: { kind: "blocked", ...blocked } };
     }
   }
-  const target = findModelSwitch(node, walk);
+  const target = findTierModel(node, walk);
   if (target instanceof NodeFailure) return recordSkipOrFail(node, target, walk, state);
-  if (target !== undefined) return requestModel(node, target, walk, state);
+  const runsOn = node.type === "agent" ? pickRunsOn(node, walk, target) : null;
+  // a subagent runs on its tier's model, so the session stays on the one it has, unless the stage
+  // runs in the session and starts its own subagents
+  const ownSubagents = node.type === "agent" && node.stage?.ownSubagents === true;
+  const inSession = runsOn?.mode !== "subagent" || ownSubagents;
+  if (inSession && target !== undefined && !isSameModel(target, walk.switching.current)) {
+    return requestModel(node, target, walk, state);
+  }
   const { input, variables } = start;
-  const agentFields = node.type === "agent" ? pickAgentFields(node, walk, state) : {};
+  const subagentModel = runsOn?.mode === "subagent" ? runsOn.model : null;
+  const agentFields =
+    node.type === "agent" ? pickAgentFields(node, walk, state, subagentModel) : {};
   const notify = postsToThread(node);
   const started = await recordStart(node, { input, notify, ...agentFields }, walk, state);
   const { nodeRunId } = started.nodeRun;
-  return { state: started.state, step: { kind: "leaf", node, nodeRunId, input, variables } };
+  const step = { kind: "leaf", node, nodeRunId, input, variables, runsOn } as const;
+  return { state: started.state, step };
 };
 
 // A switch: starts on the case whose value matches (or its default), walks that case's nodes,

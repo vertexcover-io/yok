@@ -655,3 +655,19 @@ describe("the real qa skill", () => {
     expect(result.value.frontmatter.variables.environment?.default).toBe("default");
   });
 });
+
+describe("the real retro skill", () => {
+  test("SC12: a retro node with no mode of its own runs in a subagent", async () => {
+    const wfDir = await mkdtemp(join(tmpdir(), "retro-wf-"));
+    const path = join(wfDir, "wf.yaml");
+    await writeFile(
+      path,
+      "name: t\nnodes:\n  - id: retro\n    type: agent\n    stage: retro\n    input: {}\n",
+    );
+    const plan = await compileWorkflow(path, { cwd: wfDir });
+    const [retro] = plan.nodes;
+    if (retro?.type !== "agent") throw new Error("retro is not an agent node");
+    expect(retro.mode).toBeUndefined();
+    expect(retro.stage?.mode).toBe("subagent");
+  });
+});

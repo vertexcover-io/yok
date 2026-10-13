@@ -250,7 +250,7 @@ yok run ./my-flow.yaml --prompt "…"
 
 Every node has an `id`, an `input`, and optionally `dependsOn`, `when` (an expression that skips the node when false), `allowFailure` and `always`. The node types:
 
-- `agent`: the agent runs a `stage` (a shipped or project skill) or a free `prompt`. `tier` picks the model.
+- `agent`: the agent runs a `stage` (a shipped or project skill) or a free `prompt`. `tier` picks the model. `mode: subagent` hands it to a subagent on that model, so its work stays out of the session's context.
 - `exec`: runs a `script` with `runtime: sh` or `bun`, or calls `functionName` from a TypeScript `module`. `mode: background` lets it run alongside later nodes.
 - `loop`: repeats its `nodes` `until` an expression is true, at most `maxIterations` times.
 - `switch`: evaluates an `expression` and runs the `nodes` of the matching case, else `default`.

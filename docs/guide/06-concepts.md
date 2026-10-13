@@ -32,7 +32,7 @@ One step in the graph. Seven types. The schemas are in [workflow/types.ts](../..
 
 | Type | What it does | Its own fields |
 |---|---|---|
-| `agent` | the agent does it: a `stage`, or a plain `prompt` | `stage`, `prompt`, `variables`, `output`, `tier` |
+| `agent` | the agent does it: a `stage`, or a plain `prompt` | `stage`, `prompt`, `variables`, `output`, `tier`; `mode: inline\|subagent` |
 | `exec` | runs a script or a function, no agent | `runtime: sh\|bun` + `script`, or `module` + `functionName`; `mode: inline\|background`; `output` |
 | `wait` | pauses the run | `durationMs` |
 | `context` | gives the agent a fresh context | `action: new\|compact`, `prompt` for compact |
@@ -93,7 +93,7 @@ variables:
 - `verifiers` run inside `done`. Each is a function (`module` + `functionName`) or a script (`runtime` + `script`) and must return `{ pass, findings }`.
 - `variables` are named values the workflow's node can set, handed to the skill with the card.
 - `tier` names the model class the stage wants.
-- `mode`, `scopes`, and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
+- `mode` is the default for a node that sets none: `subagent` hands the stage to a subagent on its tier's model. A stage whose SKILL.md has a `## Subagent mode` section, such as implement, runs in the session in that mode, on its tier's model, and starts its own subagents. `scopes` and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
 
 ## Artifact
 
@@ -226,7 +226,7 @@ These show up in schemas or in conversation but have no behaviour behind them to
 | Thing | Where you see it | What it will mean |
 |---|---|---|
 | parallel nodes | two nodes with no `dependsOn` between them | they still run one at a time; `next` replies `waiting` while any step is open |
-| `mode: subagent` | a stage's frontmatter | the stage would run in a sub-agent so another could run beside it; a detached mode as a separate headless session is also planned |
+| detached stages | conversation | a stage running as its own headless session |
 | `scopes` | a stage's frontmatter | a named level of rigour for a run, such as experiment or enterprise, that stages would read to decide how much to do |
 | `protocols` | a stage's frontmatter | shared rules, such as a writing style, loaded into a stage without the skill naming them |
 | `pi`, `opencode` | the agent type enum | more agents; only Claude and Codex have providers |
