@@ -96,9 +96,10 @@ export const isInsideDir = (parent: string, child: string): boolean => {
   return !(isAbsolute(fromParent) || fromParent === ".." || fromParent.startsWith("../"));
 };
 
-// The real paths of `paths`, relative to the run folder, that sit inside the run's real artifacts/
-// now, not when done accepted them, so one swapped for a symlink to .env, say, never leaves the
-// machine. A path that is gone, or artifacts/ itself, is dropped.
+// Decides which files are safe to send off this machine. It checks where each file really is at the
+// moment of sending, and keeps only files inside this run's artifacts/ folder. A file that was
+// deleted, or replaced by a shortcut pointing elsewhere (say, to the .env secrets file), is left out.
+// So is the artifacts/ folder itself, which would send everything.
 export const realPathsInArtifacts = async (
   runDir: string,
   paths: readonly string[],
