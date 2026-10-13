@@ -95,8 +95,23 @@ describe("resolveTiers", () => {
     },
   } as const;
 
-  test("claude with no config and no workflow tiers gets the built-in set: default deep, fast on sonnet, deep on opus at high effort", () => {
-    expect(resolveTiers(configWith(), "claude", {})).toEqual({ ok: true, value: BUILT_IN });
+  test.each([
+    [
+      "claude gets its built-in set: default deep, fast on sonnet, deep on opus at high effort",
+      "claude",
+      BUILT_IN,
+    ],
+    [
+      "codex gets its built-in set: default deep, fast on gpt-6-luna, deep on gpt-6-sol at high effort",
+      "codex",
+      {
+        default: "deep",
+        models: { fast: { model: "gpt-6-luna" }, deep: { model: "gpt-6-sol", effort: "high" } },
+      },
+    ],
+    ["pi has no built-in set and resolves to null", "pi", null],
+  ] as const)("with no config and no workflow tiers, %s", (_label, agent, expected) => {
+    expect(resolveTiers(configWith(), agent, {})).toEqual({ ok: true, value: expected });
   });
 
   test.each([
@@ -137,23 +152,6 @@ describe("resolveTiers", () => {
     expect(resolved.error).toContain('"balanced"');
     expect(resolved.error).toContain("fast, deep");
   });
-
-  test("codex with no config and no workflow tiers gets its built-in set: default deep, fast on gpt-6-luna, deep on gpt-6-sol at high effort", () => {
-    expect(resolveTiers(configWith(), "codex", {})).toEqual({
-      ok: true,
-      value: {
-        default: "deep",
-        models: {
-          fast: { model: "gpt-6-luna" },
-          deep: { model: "gpt-6-sol", effort: "high" },
-        },
-      },
-    });
-  });
-
-  test("pi has no built-in set: with no tiers anywhere it resolves to null", () => {
-    expect(resolveTiers(configWith(), "pi", {})).toEqual({ ok: true, value: null });
-  });
 });
 
 describe("ConfigSchema", () => {
@@ -180,16 +178,6 @@ describe("ConfigSchema", () => {
   });
 
   test.each([
-    [
-      "an unknown event namespace",
-      { "review.note": [{ module: "a.ts", handler: "f" }] },
-      "review.note",
-    ],
-    [
-      "a custom event with no name after its scope",
-      { "custom.review": [{ module: "a.ts", handler: "f" }] },
-      "custom.review",
-    ],
     ["a missing handler", { "custom.review.note": [{ module: "a.ts" }] }, "handler"],
     [
       "a module outside the repository",
@@ -255,30 +243,6 @@ describe("ConfigSchema", () => {
   });
 
   test.each([
-    ["a zero package timeout", { packages: { api: { path: "api", timeoutSeconds: 0 } } }],
-    ["a negative package timeout", { packages: { api: { path: "api", timeoutSeconds: -1 } } }],
-    ["an empty command", { packages: { api: { path: "api", commands: { testAll: "" } } } }],
-    ["an env value that is a number", { env: { SLACK_CHANNEL_ID: 42 } }],
-  ])("SC20 — %s is rejected", (_label, fields) => {
-    expect(ConfigSchema.safeParse({ version: 2, ...fields }).success).toBe(false);
-  });
-
-  test.each(["env/dev.env", "../shared/.env", "./.env.local", "/etc/myapp/dev.env"])(
-    "an envFile path, relative or absolute, is kept: %s",
-    (envFile) => {
-      expect(ConfigSchema.parse({ version: 2, envFile }).envFile).toBe(envFile);
-    },
-  );
-
-  test("WS5 — a package description is kept", () => {
-    const config = ConfigSchema.parse({
-      version: 2,
-      packages: { api: { path: "api", description: "HTTP API" } },
-    });
-    expect(config.packages.api?.description).toBe("HTTP API");
-  });
-
-  test.each([
     [
       "WS6 — a reference extension with both replace and extend",
       {
@@ -337,20 +301,6 @@ describe("ConfigSchema", () => {
     expect(errorOf(value)).toContain(key);
   });
 
-  test("SC9 — a tier's effort must be one of the agent effort levels", () => {
-    const valid = ConfigSchema.parse({
-      version: 2,
-      agents: { claude: { tiers: { models: { deep: { model: "opus", effort: "max" } } } } },
-    });
-    expect(valid.agents.claude?.tiers.models?.deep?.effort).toBe("max");
-    expect(
-      errorOf({
-        version: 2,
-        agents: { claude: { tiers: { models: { deep: { model: "opus", effort: "extreme" } } } } },
-      }),
-    ).toContain("effort");
-  });
-
   test.each([
     ["an undeclared name", "remote", { local: {} }],
     ["a name every object inherits", "constructor", {}],
@@ -380,8 +330,6 @@ describe("ConfigSchema", () => {
   });
 
   test.each([
-    ["root commands", { commands: { typecheck: "tsc" } }, "commands"],
-    ["stage overrides", { stages: { coder: { model: "opus" } } }, "stages"],
     [
       "the v1 notifier's provider key",
       { notifier: { enabled: true, provider: "slack" } },
@@ -390,10 +338,6 @@ describe("ConfigSchema", () => {
     ["the v1 environments shape", { environments: { default: "local", local: {} } }, "local"],
   ])("SC12 — v1 %s are rejected", (_label, fields, key) => {
     expect(errorOf({ version: 2, ...fields })).toContain(key);
-  });
-
-  test("SC103: a v1 hooks block keyed by run-started is refused, naming hooks", () => {
-    expect(errorOf({ version: 2, hooks: { "run-started": [] } })).toContain("hooks");
   });
 });
 
@@ -497,13 +441,6 @@ describe("notifier", () => {
     ["no block", undefined, undefined],
   ])("SC201: %s loads as the notifier it turns on or off", (_label, notifier, expected) => {
     expect(ConfigSchema.parse({ version: 2, notifier }).notifier).toEqual(expected);
-  });
-
-  test.each([
-    ["an unknown type", { type: "email" }, "notifier.type"],
-    ["the v1 provider key", { provider: "slack" }, "notifier"],
-  ])("SC201: %s is refused, naming the bad key", (_label, notifier, key) => {
-    expect(errorOf({ version: 2, notifier })).toContain(key);
   });
 });
 

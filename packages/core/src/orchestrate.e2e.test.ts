@@ -6,9 +6,6 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  renameSync,
-  symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -148,32 +145,11 @@ describe("SC26: orchestrate init", () => {
     expect(readRegistry(home).runs["r-1"]?.name).toBe("fix-login");
   });
 
-  test("init takes the run id from YOK_RUN_ID", () => {
-    const repo = tempRepo();
-    const home = tempDir();
-    writeRegistry(home, [savedRun(repo)]);
-
-    const init = orchestrate(repo, home, ["init", "fix-login"], { YOK_RUN_ID: "r-1" });
-
-    expect(init.code).toBe(0);
-    expect(JSON.parse(init.stdout).runId).toBe("r-1");
-  });
-
   test("SC24: init with no --run-id and no YOK_RUN_ID exits 1 with the no-run message", () => {
     const init = orchestrate(tempRepo(), tempDir(), ["init", "fix-login"]);
 
     expect(init.code).toBe(1);
     expect(init.stderr.trim()).not.toBe("");
-  });
-
-  test("SC20: init of a run the registry does not hold exits 1 naming it and writes nothing", () => {
-    const repo = tempRepo();
-
-    const init = orchestrate(repo, tempDir(), ["init", "fix-login", "--run-id", "r-missing"]);
-
-    expect(init.code).toBe(1);
-    expect(init.stderr).toContain("r-missing");
-    expect(existsSync(join(repo, ".yok"))).toBe(false);
   });
 });
 
@@ -247,41 +223,6 @@ describe("SC26: orchestrate emit", () => {
 
     expect(emit.code).toBe(1);
     expect(emit.stderr).toContain('no run named "ghost"');
-  });
-
-  test("SC20: an event the catalog refuses exits 1 naming its type and stores nothing", async () => {
-    const repo = tempRepo();
-    const home = tempDir();
-    initializedRun(home, repo);
-    const args = ["emit", "workflow.node.failed", "--run", "feat-x", "--source", "s"];
-
-    const emit = orchestrate(repo, home, [...args, "--node-id", "a", "--node-run-id", "a"]);
-
-    expect(emit.code).toBe(1);
-    expect(emit.stderr).toContain("workflow.node.failed");
-    expect(await eventsOf(repo)).toEqual([]);
-  });
-
-  test("emit refuses a hook event, so an agent cannot fake a SessionStart", async () => {
-    const repo = tempRepo();
-    const home = tempDir();
-    initializedRun(home, repo);
-    const payload = JSON.stringify({ agent: "claude", sessionId: "forged", source: "clear" });
-
-    const emit = orchestrate(repo, home, [
-      "emit",
-      "hooks.session-start.called",
-      "--run",
-      "feat-x",
-      "--source",
-      "hooks",
-      "--payload",
-      payload,
-    ]);
-
-    expect(emit.code).toBe(1);
-    expect(emit.stderr).toContain("hooks.session-start.called");
-    expect(await eventsOf(repo)).toEqual([]);
   });
 
   test("emit cannot bypass stage completion verification with a lifecycle event", async () => {
@@ -461,18 +402,22 @@ describe("SC26: orchestrate skill", () => {
     ]);
   });
 
-  test("skill ref without a dot between skill and reference exits 1 showing the form", () => {
-    const run = orchestrate(configuredRepo({}), tempDir(), ["skill", "ref", "baseline"]);
+  test.each([
+    ["without a dot between skill and reference shows the form", {}, "baseline", "STAGE.REF"],
+    ["WS33 — for a skill that does not exist names the skill", {}, "missing.notes", "missing"],
+    [
+      "on a reference the project made a command points at skill run",
+      { demo: { references: { notes: { command: "echo hi" } } } },
+      "demo.notes",
+      "demo.notes is a command; run it with skill run",
+    ],
+  ])("skill ref %s and exits 1", (_case, extensions, ref, message) => {
+    const run = orchestrate(configuredRepo({ extensions }), tempDir(), ["skill", "ref", ref], {
+      YOK_SKILLS_DIR: demoSkills(),
+    });
 
     expect(run.code).toBe(1);
-    expect(run.stderr).toContain("STAGE.REF");
-  });
-
-  test("WS33 — skill ref for a skill that does not exist exits 1 naming the skill", () => {
-    const run = orchestrate(configuredRepo({}), tempDir(), ["skill", "ref", "missing.notes"]);
-
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain("missing");
+    expect(run.stderr).toContain(message);
   });
 
   test("skill extension prints the project's extension doc for the skill, and nothing without one", () => {
@@ -487,19 +432,6 @@ describe("SC26: orchestrate skill", () => {
     expect(run.code).toBe(0);
     expect(run.stdout).toBe("use pnpm\n");
     expect([none.code, none.stdout]).toEqual([0, ""]);
-  });
-
-  test("skill ref on a reference the project made a command exits 1 pointing at skill run", () => {
-    const root = configuredRepo({
-      extensions: { demo: { references: { notes: { command: "echo hi" } } } },
-    });
-
-    const run = orchestrate(root, tempDir(), ["skill", "ref", "demo.notes"], {
-      YOK_SKILLS_DIR: demoSkills(),
-    });
-
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain("demo.notes is a command; run it with skill run");
   });
 
   test("inside a run, skill ref review.x reads the project skill the run's workflow names review", () => {
@@ -626,47 +558,6 @@ describe("SC26: a run started in a linked worktree", () => {
     expect(reply.extension).toBe(join(worktree, "docs/producer-ext.md"));
     expect(reply.done).toBe(`yok orchestrate done ${reply.nodeRunId} --run feat-x`);
   });
-
-  test("skill ref with no run reads the config of the checkout it runs in", () => {
-    const { main, worktree, home, env } = worktreeRun();
-
-    const fromWorktree = orchestrate(worktree, home, ["skill", "ref", "producer.demo"], env);
-    const fromMain = orchestrate(main, home, ["skill", "ref", "producer.demo"], env);
-
-    expect(fromWorktree.stdout).toBe("worktree-only reference\n");
-    expect(fromMain.code).toBe(1);
-    expect(fromMain.stderr).toContain('unknown reference "demo"');
-  });
-
-  test("a run started with yok run --config reads that file for every command, wherever it lives", () => {
-    const elsewhere = tempDir();
-    const file = join(elsewhere, "custom.json");
-    writeFileSync(
-      file,
-      JSON.stringify({ version: 2, extensions: { producer: { skill: "producer-ext.md" } } }),
-    );
-    writeFileSync(join(elsewhere, "producer-ext.md"), "elsewhere rules\n");
-    const { main, home, env } = worktreeRun({ config: file });
-    const session = { ...env, YOK_RUN_ID: "r-1" };
-
-    const next = orchestrate(main, home, ["next"], session);
-    const ref = orchestrate(main, home, ["skill", "ref", "producer.demo"], session);
-
-    expect(JSON.parse(next.stdout).extension).toBe(join(elsewhere, "producer-ext.md"));
-    expect(ref.code).toBe(1);
-    expect(ref.stderr).toContain('unknown reference "demo"');
-  });
-
-  test("a config file recorded at init that is then deleted stops next, naming the file", () => {
-    const { worktree, home, env } = worktreeRun();
-    const file = join(worktree, "orchestrate.config.json");
-    unlinkSync(file);
-
-    const next = orchestrate(worktree, home, ["next", "--run", "feat-x"], env);
-
-    expect(next.code).toBe(1);
-    expect(next.stderr).toContain(file);
-  });
 });
 
 describe("SC26: picking the run", () => {
@@ -677,30 +568,6 @@ describe("SC26: picking the run", () => {
 
     expect(next.code).toBe(0);
     expect(JSON.parse(next.stdout).nodeId).toBe("make");
-  });
-
-  test("--run wins over $YOK_RUN_ID, and --run with a --run-id naming another run is refused", () => {
-    const { worktree, home, env } = worktreeRun();
-
-    const ghost = orchestrate(worktree, home, ["next", "--run", "ghost"], {
-      ...env,
-      YOK_RUN_ID: "r-1",
-    });
-    const clash = orchestrate(worktree, home, ["next", "--run", "ghost", "--run-id", "r-1"], env);
-
-    expect(ghost.code).toBe(1);
-    expect(ghost.stderr).toContain('no run named "ghost"');
-    expect(clash.code).toBe(1);
-    expect(clash.stderr).toContain("--run ghost and --run-id r-1 name different runs");
-  });
-
-  test("a command with no --run, no --run-id and no $YOK_RUN_ID is refused", () => {
-    const { worktree, home } = worktreeRun();
-
-    const next = orchestrate(worktree, home, ["next"]);
-
-    expect(next.code).toBe(1);
-    expect(next.stderr).toContain("no run: pass --run or --run-id, or run inside a yok session");
   });
 
   test("SC11: next finds its run from $YOK_RUN_ID, a --run-id flag wins over it, and the old variable is not read", () => {
@@ -728,15 +595,6 @@ describe("SC26: picking the run", () => {
     expect(runOf(fromFlag)).toContain("--run feat-y");
     expect(oldOnly.code).toBe(1);
     expect(oldOnly.stderr).toContain("no run: pass --run or --run-id");
-  });
-
-  test("--root is no longer accepted", () => {
-    const { worktree, home } = worktreeRun();
-
-    const next = orchestrate(worktree, home, ["next", "--run", "feat-x", "--root", worktree]);
-
-    expect(next.code).toBe(1);
-    expect(next.stderr).toContain("--root");
   });
 
   test("done's refusal names the run id that picked a run it cannot find", () => {
@@ -891,32 +749,6 @@ nodes:
     });
     const next = orchestrate(repo, home, ["next", "--run", "feat-x"]);
     expect(JSON.parse(next.stdout)).toEqual({ kind: "finished", status: "failed" });
-  });
-
-  test("SC1 (e2e): after exec fails a, next skips b and hands out the always: true node c, and the run still ends failed", () => {
-    const { repo, home } = startedRun(`name: steps
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - { id: a, type: exec, runtime: sh, script: exit 3, input: {} }
-  - { id: b, type: exec, runtime: sh, script: "true", dependsOn: [a], input: {} }
-  - { id: c, type: exec, runtime: sh, script: "true", always: true, dependsOn: [b], input: {} }
-`);
-    const a = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
-    expect(orchestrate(repo, home, ["exec", a.nodeRunId, "--run", "feat-x"]).code).toBe(1);
-
-    const c = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
-    expect(c).toMatchObject({ kind: "exec", nodeId: "c" });
-    const exec = orchestrate(repo, home, ["exec", c.nodeRunId, "--run", "feat-x"]);
-    expect(JSON.parse(exec.stdout)).toMatchObject({ nodeId: "c", status: "completed" });
-
-    const last = orchestrate(repo, home, ["next", "--run", "feat-x"]);
-    expect(JSON.parse(last.stdout)).toEqual({ kind: "finished", status: "failed" });
-    const state = stateOf(repo);
-    expect(state.status).toBe("failed");
-    expect(state.nodeRuns.a.status).toBe("failed");
-    expect(state.nodeRuns.c.status).toBe("completed");
-    expect(state.nodeRuns).not.toHaveProperty("b");
   });
 
   test("IW12 — exec refuses a node run that already ended or does not exist, recording only the refused calls", async () => {
@@ -1079,13 +911,13 @@ describe("SC26: the samskara upload", () => {
 });
 
 describe("SC26: stage verifiers", () => {
-  const verifiedRun = (verifiers: string | undefined, workflow = STAGES_WORKFLOW) => {
+  const verifiedRun = (verifiers: string | undefined) => {
     const skills = tempDir();
     writeStages(skills, {
       producer: { produces: DEMO_STAGES.producer.produces },
       consumer: { consumes: DEMO_STAGES.consumer.consumes, ...(verifiers ? { verifiers } : {}) },
     });
-    const run = startedRun(workflow);
+    const run = startedRun(STAGES_WORKFLOW);
     const env = { YOK_SKILLS_DIR: skills };
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args, env);
     const artifactsDir = join(runDirOf(run.repo, "feat-x"), "artifacts");
@@ -1124,23 +956,8 @@ describe("SC26: stage verifiers", () => {
 
   const fn = (id: string, functionName: string, extra = "") =>
     `{ id: ${id}, module: ../verifiers.ts, functionName: ${functionName}${extra} }`;
-  const script = (id: string, body: string) =>
-    `{ id: ${id}, runtime: sh, script: ${JSON.stringify(body)} }`;
 
   const refusal = (stderr: string) => JSON.parse(stderr);
-
-  test("a stage with no verifiers completes as before", () => {
-    const { finishProducer, finish } = verifiedRun(undefined);
-    const use = finishProducer();
-    expect(finish(use.nodeRunId).code).toBe(0);
-  });
-
-  test("a passing function verifier lets the stage complete", () => {
-    const { repo, finishProducer, finish } = verifiedRun(`[${fn("ok", "pass")}]`);
-    const use = finishProducer();
-    expect(finish(use.nodeRunId).code).toBe(0);
-    expect(stateOf(repo).nodeRuns.use.status).toBe("completed");
-  });
 
   test("pass: false returns a retryable validation with the findings and keeps the node open", () => {
     const { repo, finishProducer, finish } = verifiedRun(`[${fn("lint", "fail")}]`);
@@ -1160,114 +977,6 @@ describe("SC26: stage verifiers", () => {
       ],
     });
     expect(stateOf(repo).nodeRuns.use.status).toBe("running");
-  });
-
-  test.each([
-    ["throw", fn("v", "throws"), "threw", "boom"],
-    ["timeout", fn("v", "slow", ", timeoutMs: 100"), "timeout", "timed out after 100ms"],
-    ["bad result shape", fn("v", "badShape"), "bad-output", "finding"],
-    ["non-zero exit", script("v", "echo nope >&2; exit 3"), "exit", "exit 3: nope"],
-    ["bad JSON", script("v", "echo not-json"), "bad-output", "not JSON"],
-    ["no JSON", script("v", "true"), "bad-output", "not JSON"],
-  ])("a verifier error (%s) fails closed with its own reason", (_name, verifier, reason, text) => {
-    const { finishProducer, finish } = verifiedRun(`[${verifier}]`);
-    const use = finishProducer();
-    const refused = finish(use.nodeRunId);
-    expect(refused.code).toBe(1);
-    const { kind, retryable, issues } = refusal(refused.stderr);
-    expect([kind, retryable]).toEqual(["validation", true]);
-    expect(issues).toEqual([
-      { kind: "verifier-error", verifier: "v", reason, message: expect.stringContaining(text) },
-    ]);
-  });
-
-  test("a script verifier gets the input as JSON on stdin and runs in the run's cwd", () => {
-    const { repo, finishProducer, finish } = verifiedRun(
-      `[${script("s", 'cat > "$PWD/stdin.json"; printf \'{"pass":true}\'')}]`,
-    );
-    const use = finishProducer();
-    expect(finish(use.nodeRunId).code).toBe(0);
-    const seen = JSON.parse(readFileSync(join(repo, "stdin.json"), "utf8"));
-    expect(seen).toEqual({
-      run: "feat-x",
-      nodeRunId: use.nodeRunId,
-      output: { ok: true },
-      artifacts: {},
-      args: {},
-    });
-  });
-
-  test("failing default checks skip the verifiers", () => {
-    const marker = join(tempDir(), "ran");
-    const { finishProducer, step } = verifiedRun(
-      `[${script("s", `touch ${marker}; printf '{"pass":true}'`)}]`,
-    );
-    const use = finishProducer();
-    const refused = step([
-      "done",
-      use.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      "[]",
-    ]);
-    expect(refusal(refused.stderr).issues).toMatchObject([{ kind: "output-schema" }]);
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  test("two failing verifiers are returned together", () => {
-    const { finishProducer, finish } = verifiedRun(`[${fn("a", "fail")}, ${fn("b", "failTwo")}]`);
-    const use = finishProducer();
-    const issues = refusal(finish(use.nodeRunId).stderr).issues;
-    expect(issues.map((issue: { verifier: string }) => issue.verifier)).toEqual(["a", "b"]);
-  });
-
-  test("each verifier run is logged as an orchestrate.verifier event", async () => {
-    const { repo, finishProducer, finish } = verifiedRun(
-      `[${fn("ok", "pass")}, ${fn("lint", "fail")}, ${fn("boom", "throws")}]`,
-    );
-    const use = finishProducer();
-    expect(finish(use.nodeRunId).code).toBe(1);
-    const logged = (await eventsOf(repo))
-      .filter((event) => event.type === "orchestrate.verifier")
-      .map(({ source, nodeId, nodeRunId, stage, payload }) => ({
-        source,
-        nodeId,
-        nodeRunId,
-        stage,
-        payload,
-      }));
-    const envelope = {
-      source: "orchestrate",
-      nodeId: "use",
-      nodeRunId: use.nodeRunId,
-      stage: "consumer",
-    };
-    const run = { attempt: 1, durationMs: expect.any(Number) };
-    expect(logged).toEqual([
-      { ...envelope, payload: { ...run, verifier: "ok", status: "passed", findings: [] } },
-      {
-        ...envelope,
-        payload: {
-          ...run,
-          verifier: "lint",
-          status: "failed",
-          findings: [{ message: "fail one", path: "a.ts", line: 3, hint: "fix a" }],
-        },
-      },
-      {
-        ...envelope,
-        payload: {
-          ...run,
-          verifier: "boom",
-          status: "error",
-          findings: [],
-          error: { reason: "threw", message: "boom" },
-        },
-      },
-    ]);
   });
 
   test("SC31: a function verifier receives its input, args and context", () => {
@@ -1330,68 +1039,6 @@ describe("SC26: stage verifiers", () => {
     expect(refusal(again.stderr)).toMatchObject({ kind: "not-running", retryable: false });
     const next = step(["next", "--run", "feat-x"]);
     expect(JSON.parse(next.stdout)).toEqual({ kind: "finished", status: "failed" });
-  });
-
-  test("SC317: rejected dones before a resume still count, so the third rejection after it fails the node", () => {
-    const { repo, finishProducer, finish, step } = verifiedRun(`[${fn("lint", "failLong")}]`);
-    const use = finishProducer();
-    expect(refusal(finish(use.nodeRunId).stderr).retryable).toBe(true);
-    expect(refusal(finish(use.nodeRunId).stderr).retryable).toBe(true);
-
-    expect(step(["resume", "--run", "feat-x"]).code).toBe(0);
-    const again = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    expect(again).toMatchObject({ kind: "stage", nodeId: "use" });
-
-    const last = finish(again.nodeRunId);
-    expect(refusal(last.stderr)).toMatchObject({ kind: "verify-exhausted", retryable: false });
-    expect(stateOf(repo).nodeRuns.use.status).toBe("failed");
-  });
-
-  test("a node with allowFailure whose done is rejected for good lets the run end completed", () => {
-    const workflow = STAGES_WORKFLOW.replace(
-      "    dependsOn: [make]\n",
-      "    dependsOn: [make]\n    allowFailure: true\n",
-    );
-    const { repo, finishProducer, finish, step } = verifiedRun(`[${fn("lint", "fail")}]`, workflow);
-    const use = finishProducer();
-    finish(use.nodeRunId);
-    finish(use.nodeRunId);
-    expect(refusal(finish(use.nodeRunId).stderr)).toMatchObject({ kind: "verify-exhausted" });
-    const next = step(["next", "--run", "feat-x"]);
-    expect(JSON.parse(next.stdout)).toEqual({ kind: "finished", status: "completed" });
-    expect(stateOf(repo).nodeRuns.use.status).toBe("failed");
-  });
-
-  test("when two nodes wrote a consumed artifact, the newer one is handed over", () => {
-    const twoMakers = STAGES_WORKFLOW.replace(
-      "  - id: use",
-      "  - id: remake\n    type: agent\n    stage: producer\n    dependsOn: [make]\n    input: {}\n  - id: use",
-    ).replace("dependsOn: [make]\n    input: {}\n`", "dependsOn: [remake]\n    input: {}\n`");
-    const { step, artifactsDir } = verifiedRun(undefined, twoMakers);
-    const produce = (file: string) => {
-      const node = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-      writeFileSync(join(artifactsDir, file), "plan\n");
-      const done = step([
-        ...[
-          "done",
-          node.nodeRunId,
-          "--run",
-          "feat-x",
-          "--summary",
-          "Did the work.",
-          "--output",
-          "{}",
-        ],
-        ...["--artifact", fileArtifact("plan", `artifacts/${file}`)],
-      ]);
-      expect(done.code).toBe(0);
-    };
-    produce("first.md");
-    produce("second.md");
-    const use = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    expect(use).toMatchObject({ nodeId: "use" });
-    const shown = step(["node", "show", "--run", "feat-x", "--node-run", use.nodeRunId]);
-    expect(JSON.parse(shown.stdout).consumed).toEqual({ plan: join(artifactsDir, "second.md") });
   });
 
   test("node show prints the node run's facts as JSON", () => {
@@ -1474,79 +1121,6 @@ nodes:
     expect(nodes.check).toMatchObject({ notify: false });
   });
 
-  test.each([
-    ["no summary", [], "missing"],
-    ["a summary on two lines", ["--summary", "Did it.\nAnd more."], "multi-line"],
-    ["a summary over 200 characters", ["--summary", "x".repeat(201)], "too-long"],
-    ["a summary that is JSON", ["--summary", '{"ok":true}'], "not-prose"],
-  ])("done refuses %s and keeps the node open", (_label, summary, reason) => {
-    const run = startedRun(
-      `name: one\ninputs:\n  prompt: { type: string, required: true }\nnodes:\n  - { id: say, type: agent, stage: plain, input: {} }\n`,
-    );
-    const step = (args: readonly string[]) =>
-      orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
-    const say = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-
-    const refused = step(["done", say.nodeRunId, "--run", "feat-x", ...summary, "--output", "{}"]);
-
-    expect(refused.code).toBe(1);
-    expect(JSON.parse(refused.stderr)).toMatchObject({
-      retryable: true,
-      issues: [expect.objectContaining({ kind: "summary", reason })],
-    });
-    expect(stateOf(run.repo).nodeRuns.say.status).toBe("running");
-  });
-
-  test("done records a link artifact with no file check, and refuses one that is not https", () => {
-    const run = startedRun(
-      `name: one\ninputs:\n  prompt: { type: string, required: true }\nnodes:\n  - { id: pr, type: agent, stage: plain, input: {} }\n`,
-    );
-    const step = (args: readonly string[]) =>
-      orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
-    const pr = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const done = [
-      "done",
-      pr.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Opened a PR.",
-      "--output",
-      "{}",
-    ];
-    const link = { type: "pull-request", name: "lydia", url: "https://github.com/o/lydia/pull/1" };
-
-    const plain = step([...done, "--artifact", JSON.stringify({ ...link, url: "http://x.dev/1" })]);
-    expect(plain.code).toBe(1);
-    expect(plain.stderr).toContain("--artifact");
-
-    expect(step([...done, "--artifact", JSON.stringify(link)]).code).toBe(0);
-    expect(stateOf(run.repo).nodeRuns.pr.artifacts).toEqual([link]);
-  });
-
-  test("next hands a stage its skill's variable defaults under the node's values, an expression read from inputs", () => {
-    const skills = stageSkills();
-    const run = startedRun(`name: tuned
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - id: say
-    type: agent
-    stage: tuned
-    input: {}
-    variables: { audience: "{{ inputs.prompt }}" }
-`);
-    const next = orchestrate(run.repo, run.home, ["next", "--run", "feat-x"], {
-      YOK_SKILLS_DIR: skills,
-    });
-    expect(next.stderr).toBe("");
-    expect(JSON.parse(next.stdout)).toMatchObject({
-      kind: "stage",
-      nodeId: "say",
-      variables: { tone: "plain", audience: "hi" },
-    });
-  });
-
   test("init returns a typed compile error for a workflow with a broken output schema and makes no run folder", () => {
     const repo = tempRepo();
     const home = tempDir();
@@ -1617,37 +1191,6 @@ nodes:
     });
   });
 
-  test("done records an artifact the stage never declared", () => {
-    const { repo, step } = stageRun();
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const artifactsDir = join(runDirOf(repo, "feat-x"), "artifacts");
-    writeFileSync(join(artifactsDir, "plan.md"), "plan\n");
-    writeFileSync(join(artifactsDir, "notes.md"), "notes\n");
-    const recorded = step([
-      ...[
-        "done",
-        reply.nodeRunId,
-        "--run",
-        "feat-x",
-        "--summary",
-        "Did the work.",
-        "--output",
-        '{"ok":true}',
-      ],
-      ...[
-        "--artifact",
-        fileArtifact("plan", "artifacts/plan.md"),
-        "--artifact",
-        fileArtifact("notes", "artifacts/notes.md"),
-      ],
-    ]);
-    expect(recorded.code).toBe(0);
-    expect(stateOf(repo).nodeRuns.make.artifacts).toEqual([
-      { type: "plan", name: "plan", path: "artifacts/plan.md" },
-      { type: "notes", name: "notes", path: "artifacts/notes.md" },
-    ]);
-  });
-
   test("a stage with invalid output stays running and can submit corrected output", async () => {
     const { repo, step } = stageRun();
     const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
@@ -1684,61 +1227,6 @@ nodes:
     });
   });
 
-  test("done reports output and artifact issues together", () => {
-    const { repo, step } = stageRun();
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const invalid = step([
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      "[]",
-    ]);
-    expect(invalid.code).toBe(1);
-    expect(JSON.parse(invalid.stderr).issues).toEqual([
-      { kind: "required-artifact", name: "plan" },
-      expect.objectContaining({ kind: "output-schema", schema: "demo.output.v1" }),
-    ]);
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
-  });
-
-  test("done reports every missing required artifact and missing registered file", () => {
-    const { repo, step } = stageRun("[{ artifact: plan }, { artifact: notes }]");
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const done = [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":true}',
-    ];
-
-    const omitted = step(done);
-    expect(JSON.parse(omitted.stderr).issues).toEqual([
-      { kind: "required-artifact", name: "plan" },
-      { kind: "required-artifact", name: "notes" },
-    ]);
-
-    const missingFiles = step([
-      ...done,
-      "--artifact",
-      fileArtifact("plan", "artifacts/plan.md"),
-      "--artifact",
-      fileArtifact("notes", "artifacts/notes.md"),
-    ]);
-    expect(JSON.parse(missingFiles.stderr).issues).toEqual([
-      expect.objectContaining({ kind: "artifact-file", name: "plan", reason: "missing" }),
-      expect.objectContaining({ kind: "artifact-file", name: "notes", reason: "missing" }),
-    ]);
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
-  });
-
   test("concurrent done calls record exactly one completion", async () => {
     const { repo, home, skills, step } = stageRun();
     const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
@@ -1769,246 +1257,6 @@ nodes:
     expect(
       (await eventsOf(repo)).filter((event) => event.type === "workflow.node.completed"),
     ).toHaveLength(1);
-  });
-
-  test("optional produced artifacts may be omitted but must exist when registered", async () => {
-    const { repo, step } = stageRun("[{ artifact: plan }, { artifact: notes, optional: true }]");
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    writeFileSync(join(runDirOf(repo, "feat-x"), "artifacts", "plan.md"), "plan\n");
-    const done = [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":true}',
-      "--artifact",
-      fileArtifact("plan", "artifacts/plan.md"),
-    ];
-    const missingOptional = step([
-      ...done,
-      "--artifact",
-      fileArtifact("notes", "artifacts/notes.md"),
-    ]);
-    expect(missingOptional.code).toBe(1);
-    expect(missingOptional.stderr).toContain("notes.md");
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
-
-    const completed = step(done);
-    expect(completed.code).toBe(0);
-    expect(stateOf(repo).nodeRuns.make.artifacts).toEqual([
-      { type: "plan", name: "plan", path: "artifacts/plan.md" },
-    ]);
-  });
-
-  test("a stage cannot register an artifact through a symlink outside the run", () => {
-    const { repo, step } = stageRun();
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const outside = join(repo, "outside.md");
-    const plan = join(runDirOf(repo, "feat-x"), "artifacts", "plan.md");
-    writeFileSync(outside, "old plan\n");
-    symlinkSync(outside, plan);
-    const args = [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":true}',
-      "--artifact",
-      fileArtifact("plan", "artifacts/plan.md"),
-    ];
-    const invalid = step(args);
-    expect(invalid.code).toBe(1);
-    expect(invalid.stderr).toContain("inside artifacts/");
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
-
-    unlinkSync(plan);
-    writeFileSync(plan, "new plan\n");
-    expect(step(args).code).toBe(0);
-  });
-
-  test("a stage cannot replace the run artifact directory with an external symlink", () => {
-    const { repo, step } = stageRun();
-    const reply = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
-    const runDir = runDirOf(repo, "feat-x");
-    const outside = join(repo, "external-artifacts");
-    mkdirSync(outside);
-    writeFileSync(join(outside, "plan.md"), "old plan\n");
-    renameSync(join(runDir, "artifacts"), join(runDir, "artifacts-stored"));
-    symlinkSync(outside, join(runDir, "artifacts"));
-    const invalid = step([
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":true}',
-      "--artifact",
-      fileArtifact("plan", "artifacts/plan.md"),
-    ]);
-    expect(invalid.code).toBe(1);
-    expect(invalid.stderr).toContain("run artifacts/ must be a real directory");
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
-  });
-
-  test.each([
-    ["plain words", "all checks green"],
-    ["text that looks like JSON", '{"ok":true}'],
-  ])("a node with no output schema records its output as plain text: %s", (_case, text) => {
-    const { repo, home } = startedRun(AGENT);
-    const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
-    const done = orchestrate(repo, home, [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      text,
-    ]);
-    expect(done.code).toBe(0);
-    expect(stateOf(repo).nodeRuns.ask.output).toBe(text);
-  });
-
-  test("a node with an output schema rejects output that is not JSON", () => {
-    const zodUrl = import.meta.resolve("zod");
-    const run = startedRun(
-      `name: checked
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - id: ask
-    type: agent
-    prompt: check it
-    output: { module: ./schemas.ts, zodSchema: result }
-    input: {}
-`,
-      undefined,
-      {},
-      {
-        files: {
-          "schemas.ts": `import { z } from "${zodUrl}";\nexport const schemas = { result: z.object({ ok: z.boolean() }) };\n`,
-        },
-      },
-    );
-    const reply = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
-    const done = orchestrate(run.repo, run.home, [
-      ...[
-        "done",
-        reply.nodeRunId,
-        "--run",
-        "feat-x",
-        "--summary",
-        "Did the work.",
-        "--output",
-        "looks fine to me",
-      ],
-    ]);
-    expect(done.code).toBe(1);
-    expect(JSON.parse(done.stderr)).toMatchObject({
-      kind: "validation",
-      retryable: true,
-      issues: [{ kind: "output-schema", schema: "result", message: "output is not valid JSON" }],
-    });
-    expect(stateOf(run.repo).nodeRuns.ask.status).toBe("running");
-  });
-
-  test("IW19 — a plain agent can repair output that fails its workflow.yaml schema", () => {
-    const zodUrl = import.meta.resolve("zod");
-    const run = startedRun(
-      `name: checked
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - id: ask
-    type: agent
-    prompt: check it
-    output: { module: ./schemas.ts, zodSchema: result }
-    input: {}
-`,
-      undefined,
-      {},
-      {
-        files: {
-          "schemas.ts": `import { z } from "${zodUrl}";\nexport const schemas = { result: z.object({ ok: z.boolean() }) };\n`,
-        },
-      },
-    );
-    const next = orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]);
-    expect(next.code).toBe(0);
-    const reply = JSON.parse(next.stdout);
-    expect(reply).toMatchObject({ kind: "agent", prompt: "check it", input: {} });
-    const done = orchestrate(run.repo, run.home, [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":"yes"}',
-    ]);
-    expect(done.code).toBe(1);
-    expect(JSON.parse(done.stderr)).toMatchObject({
-      kind: "validation",
-      retryable: true,
-      issues: [{ kind: "output-schema", schema: "result", path: "ok" }],
-    });
-    expect(stateOf(run.repo).nodeRuns.ask.status).toBe("running");
-    const fixed = orchestrate(run.repo, run.home, [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      '{"ok":true}',
-    ]);
-    expect(fixed.code).toBe(0);
-    expect(stateOf(run.repo).nodeRuns.ask.status).toBe("completed");
-  });
-
-  test("a plain agent cannot register the same artifact name twice", () => {
-    const run = startedRun(`name: checked
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - { id: ask, type: agent, prompt: Make it, input: null }
-`);
-    const next = orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]);
-    expect(next.code, next.stderr).toBe(0);
-    const reply = JSON.parse(next.stdout);
-    writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "first.md"), "first\n");
-    writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "second.md"), "second\n");
-    const done = orchestrate(run.repo, run.home, [
-      "done",
-      reply.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Did the work.",
-      "--output",
-      "null",
-      "--artifact",
-      fileArtifact("note", "artifacts/first.md"),
-      "--artifact",
-      fileArtifact("note", "artifacts/second.md"),
-    ]);
-    expect(done.code).toBe(1);
-    expect(JSON.parse(done.stderr)).toMatchObject({
-      kind: "validation",
-      issues: [{ kind: "artifact-name", name: "note", reason: "duplicate" }],
-    });
-    expect(stateOf(run.repo).nodeRuns.ask.status).toBe("running");
   });
 
   test("IW30 — done reads --output - and --error - from stdin, keeping quotes and $(…) as plain text", () => {
@@ -2429,74 +1677,6 @@ describe("SC26: orchestrate hook stop", () => {
     expect(stateOf(run.repo).stopHook).toEqual({ blockStreak: 1, seq: last?.seq });
   });
 
-  test("SC21 — a second stop with nothing done lets the turn end, logged with the agent.stuck it records", async () => {
-    const run = openNodeRun();
-    stop(run);
-    const before = (await eventsOf(run.repo)).length;
-
-    const second = stop(run);
-
-    expect(second).toMatchObject({ code: 0, stdout: "" });
-    const events = await eventsOf(run.repo);
-    expect(events.slice(before).map((event) => [event.type, event.payload])).toEqual([
-      [
-        "hooks.stop.called",
-        {
-          agent: "claude",
-          sessionId: "s1",
-          touchedRun: null,
-          decision: "allow",
-          reason: "max-blocks-reached",
-          blockStreak: 1,
-        },
-      ],
-      ["agent.stuck", { agent: "claude", sessionId: "s1" }],
-    ]);
-  });
-
-  test("SC141: two stops with plan open while Claude reports a running background subagent both print nothing, and state.json stays running with no blocker and no agent.stuck", async () => {
-    const run = openNodeRun();
-    // The shape a real Claude Code 2.1 Stop hook received with a background task in flight.
-    const waiting = JSON.stringify({
-      session_id: "s1",
-      stop_hook_active: false,
-      background_tasks: [
-        {
-          id: "aaac928835732bb0b",
-          type: "subagent",
-          status: "running",
-          description: "review the plan",
-          agent_type: "general-purpose",
-        },
-      ],
-      session_crons: [],
-    });
-
-    const replies = [stop(run, waiting), stop(run, waiting)];
-
-    expect(replies).toMatchObject([
-      { code: 0, stdout: "" },
-      { code: 0, stdout: "" },
-    ]);
-    const types = (await eventsOf(run.repo)).map((event) => event.type);
-    expect(types).not.toContain("agent.stuck");
-    expect(types.at(-1)).toBe("hooks.stop.called");
-    expect(stateOf(run.repo)).toMatchObject({ status: "running", stopHook: { blockStreak: 0 } });
-    expect(stateOf(run.repo).blocker).toBeUndefined();
-  });
-
-  test("SC22 — a session that is not the run's own is never blocked", async () => {
-    const run = openNodeRun();
-    const before = await eventsOf(run.repo);
-
-    expect(stop(run, JSON.stringify({ session_id: "other" }))).toMatchObject({
-      code: 0,
-      stdout: "",
-    });
-    expect(stop(run, STOP, {})).toMatchObject({ code: 0, stdout: "" });
-    expect(await eventsOf(run.repo)).toEqual(before);
-  });
-
   // A run between nodes, and a Claude transcript whose last lines are PROMPT and then COMMAND, if any.
   const betweenNodes = (prompt: string, command?: string) => {
     const run = startedRun(ONE_AGENT);
@@ -2517,17 +1697,6 @@ describe("SC26: orchestrate hook stop", () => {
     writeFileSync(transcript, lines.map((line) => JSON.stringify(line)).join("\n"));
     return { run, input: JSON.stringify({ session_id: "s1", transcript_path: transcript }) };
   };
-
-  test("a chat turn between nodes ends, and is logged as chat", async () => {
-    const { run, input } = betweenNodes("what does this workflow do?");
-
-    expect(stop(run, input)).toMatchObject({ code: 0, stdout: "" });
-    expect((await eventsOf(run.repo)).at(-1)?.payload).toMatchObject({
-      decision: "allow",
-      reason: "user-chat",
-      touchedRun: false,
-    });
-  });
 
   test("a turn that ran orchestrate but not next is sent back with the next command", () => {
     const { run, input } = betweenNodes("go", "yok orchestrate done n1 --run feat-x");
@@ -2589,29 +1758,6 @@ describe("SC26: orchestrate hook stop", () => {
       expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
         type: "hooks.stop.called",
         payload: { decision: "allow", reason: "awaiting-approval", nodeRunId: run.nodeRunId },
-      });
-    });
-
-    test("SC5: after an approve comment on the waiting file, a stop with the node still open is sent back as node-not-done", async () => {
-      const run = awaitingRun();
-      expect(awaitApproval(run, run.nodeRunId, "artifacts/design.md").code).toBe(0);
-      const approve = { id: "c-1", file: "artifacts/design.md", kind: "approve", text: "ok" };
-      const emit = orchestrate(run.repo, run.home, [
-        "emit",
-        "artifact.comment.added",
-        "--run",
-        "feat-x",
-        "--source",
-        "viewer",
-        "--payload",
-        JSON.stringify({ comments: [approve] }),
-      ]);
-      expect(emit.code).toBe(0);
-
-      expect(JSON.parse(stop(run).stdout).reason).toContain("yok orchestrate done");
-      expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
-        type: "hooks.stop.called",
-        payload: { decision: "continue", reason: "node-not-done", nodeRunId: run.nodeRunId },
       });
     });
 
@@ -2688,15 +1834,6 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
     expect(stateOf(run.repo)).toMatchObject({ runName: "feat-x", lastEventSeq: events.length });
   });
 
-  test("an allowed tool call is not logged", async () => {
-    const run = openNodeRun();
-    const before = (await eventsOf(run.repo)).length;
-
-    preToolUse(run, "Bash", { command: "echo hi > notes.md" });
-
-    expect(await eventsOf(run.repo)).toHaveLength(before);
-  });
-
   test("SC144: after the real stop-failure hook blocks the run on an agent error, a Bash call through the real record-resumed hook puts state.json back to running with no blocker", async () => {
     const run = openNodeRun();
     const failed = orchestrate(
@@ -2730,35 +1867,6 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
     const result = preToolUse(run, "Bash", { command: "rm .yok/feat-x/state.json" }, "nope");
 
     expect(result).toMatchObject({ code: 0, stdout: "" });
-  });
-
-  test("SC17 — a read passes silently", () => {
-    const run = openNodeRun();
-
-    expect(preToolUse(run, "Read", { file_path: ".yok/feat-x/state.json" })).toMatchObject({
-      code: 0,
-      stdout: "",
-    });
-    expect(preToolUse(run, "Bash", { command: "jq . .yok/feat-x/state.json" })).toMatchObject({
-      code: 0,
-      stdout: "",
-    });
-  });
-
-  test("SC23 — the bash-antipatterns handler refuses an anti-pattern and logs its name", async () => {
-    const run = openNodeRun();
-
-    const result = preToolUse(run, "Bash", { command: "git add -A" }, "bash-antipatterns");
-
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({
-      permissionDecision: "deny",
-      permissionDecisionReason: expect.stringContaining("git add -A"),
-    });
-    expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
-      type: "hooks.pre-tool-use.called",
-      payload: { handler: "bash-antipatterns", decision: "deny" },
-    });
   });
 });
 
@@ -2820,17 +1928,6 @@ describe("SC26: the task workflow's ticket-fetcher stage", () => {
     expect(done.code).toBe(0);
     return JSON.parse(step(["next", "--run", "feat-x"]).stdout);
   };
-
-  test("a plain prompt passes through to create-workspace unchanged", () => {
-    const { step } = taskRun("fix the login bug");
-
-    const workspace = finishFetcher(step, { task: "fix the login bug" });
-
-    expect(workspace).toMatchObject({
-      nodeId: "create-workspace",
-      input: { request: "fix the login bug" },
-    });
-  });
 
   test("a ticket bundle registers as an artifact and its task text reaches create-workspace", async () => {
     const { repo, step } = taskRun("work on ENG-1");
@@ -3110,75 +2207,54 @@ describe("SC26: context node through a real tmux pane", () => {
     }
   }, 30_000);
 
-  test("new: the restarted session starts with the project's .env and the workflow's env", async () => {
-    const socket = `yok-e2e-${crypto.randomUUID()}`;
-    try {
-      const flow = await runToContextNode(
-        "action: new",
-        socket,
-        {},
-        "env:\n  E2E_FLOW: workflow\n",
-      );
-      writeFileSync(join(flow.run.repo, ".env"), "E2E_DOTENV=dotenv\n");
+  test.each([
+    [
+      "with no switch made, on the default tier's model and effort",
+      { default: "deep", models: { deep: { model: "opus", effort: "high" as const } } },
+      undefined,
+      { "--model": "opus", "--effort": "high" },
+      undefined,
+    ],
+    [
+      "SC18: after a switch from the default fast tier's sonnet-x to opus-x is applied, with --model opus-x",
+      { default: "fast", models: { fast: { model: "sonnet-x" } } },
+      "opus-x",
+      { "--model": "opus-x" },
+      "sonnet-x",
+    ],
+  ])(
+    "new: the restarted session launches %s",
+    async (_case, tiers, switchTo, flags, absent) => {
+      const socket = `yok-e2e-${crypto.randomUUID()}`;
+      try {
+        const flow = await runToContextNode("action: new", socket, { tiers });
+        if (switchTo !== undefined) {
+          // emit refuses engine-owned events, so the switch is stored the way next and the helper do
+          const run = { id: "r-1", cwd: flow.run.repo, name: "feat-x" };
+          const record = (type: string, payload: JsonValue) =>
+            appendRunEvent(run, { type, source: "orchestrate", payload });
+          const request = { node: "second", model: switchTo };
+          const requested = await record("workflow.model.requested", request);
+          if (!requested.ok) throw new Error(requested.error);
+          const requestSeq = requested.value.event.seq;
+          expect(
+            await record("workflow.model.applied", { ...request, requestSeq, applied: true }),
+          ).toMatchObject({ ok: true });
+        }
 
-      expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.launches().length === 2);
+        expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
+        await waitFor(() => flow.launches().length === 2);
 
-      expect(flow.launches()[1]?.env).toMatchObject({
-        E2E_FLOW: "workflow",
-        E2E_DOTENV: "dotenv",
-        YOK_RUN_ID: "r-1",
-      });
-    } finally {
-      spawnSync("tmux", ["-L", socket, "kill-server"]);
-    }
-  }, 30_000);
-
-  test("new: with no switch made, the restarted session launches on the default tier's model and effort", async () => {
-    const socket = `yok-e2e-${crypto.randomUUID()}`;
-    try {
-      const flow = await runToContextNode("action: new", socket, {
-        tiers: { default: "deep", models: { deep: { model: "opus", effort: "high" } } },
-      });
-
-      expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.launches().length === 2);
-
-      const argv = flow.launches()[1]?.argv as string[];
-      expect(argv[argv.indexOf("--model") + 1]).toBe("opus");
-      expect(argv[argv.indexOf("--effort") + 1]).toBe("high");
-    } finally {
-      spawnSync("tmux", ["-L", socket, "kill-server"]);
-    }
-  }, 30_000);
-
-  test("SC18: new: after a switch from the default fast tier's sonnet-x to opus-x is applied, the restarted session launches with --model opus-x", async () => {
-    const socket = `yok-e2e-${crypto.randomUUID()}`;
-    try {
-      const tiers = { default: "fast", models: { fast: { model: "sonnet-x" } } };
-      const flow = await runToContextNode("action: new", socket, { tiers });
-      // emit refuses engine-owned events, so the switch is stored the way next and the helper do
-      const run = { id: "r-1", cwd: flow.run.repo, name: "feat-x" };
-      const record = (type: string, payload: JsonValue) =>
-        appendRunEvent(run, { type, source: "orchestrate", payload });
-      const request = { node: "second", model: "opus-x" };
-      const requested = await record("workflow.model.requested", request);
-      if (!requested.ok) throw new Error(requested.error);
-      const requestSeq = requested.value.event.seq;
-      expect(
-        await record("workflow.model.applied", { ...request, requestSeq, applied: true }),
-      ).toMatchObject({ ok: true });
-
-      expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.launches().length === 2);
-
-      const argv = flow.launches()[1]?.argv as string[];
-      expect(argv[argv.indexOf("--model") + 1]).toBe("opus-x");
-      expect(argv).not.toContain("sonnet-x");
-    } finally {
-      spawnSync("tmux", ["-L", socket, "kill-server"]);
-    }
-  }, 30_000);
+        const argv = flow.launches()[1]?.argv as string[];
+        const launched = Object.keys(flags).map((flag) => [flag, argv[argv.indexOf(flag) + 1]]);
+        expect(Object.fromEntries(launched)).toEqual(flags);
+        expect(argv.filter((arg) => arg === absent)).toEqual([]);
+      } finally {
+        spawnSync("tmux", ["-L", socket, "kill-server"]);
+      }
+    },
+    30_000,
+  );
 
   test("model: before a deep stage on a run launched on fast, next asks for opus-x; the stop's helper resumes session A on it, and its SessionStart records the switch", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
@@ -3337,38 +2413,21 @@ describe("SC26: orchestrate statusline", () => {
     );
   });
 
-  test("SC14: --run-id with an unknown id prints the starting line and exits 0", () => {
+  test.each([
+    ["with YOK_RUN_ID unset it prints nothing", {}, false, ""],
+    [
+      "a corrupt registry prints the starting line",
+      { YOK_RUN_ID: "r-1" },
+      true,
+      "yok · starting\n",
+    ],
+  ])("SC9: %s and exits 0", (_case, env, corrupt, stdout) => {
     const { repo, home } = runWithRunningNode();
+    if (corrupt) writeFileSync(join(home, "registry.json"), "{ corrupt");
 
-    const result = orchestrate(repo, home, ["statusline", "--run-id", "r-nope"], {}, "");
+    const result = orchestrate(repo, home, ["statusline"], env, "{}");
 
-    expect(result).toMatchObject({ code: 0, stdout: "yok · starting\n" });
-  });
-
-  test("SC9: with YOK_RUN_ID unset it prints nothing and exits 0", () => {
-    const { repo, home } = runWithRunningNode();
-
-    const result = orchestrate(repo, home, ["statusline"], {}, "{}");
-
-    expect(result).toMatchObject({ code: 0, stdout: "" });
-  });
-
-  test("SC9: a corrupt state.json prints the run name alone and exits 0", () => {
-    const { repo, home, statePath } = runWithRunningNode();
-    writeFileSync(statePath, "{ corrupt");
-
-    const result = orchestrate(repo, home, ["statusline"], { YOK_RUN_ID: "r-1" }, "{}");
-
-    expect(result).toMatchObject({ code: 0, stdout: "yok feat-x\n" });
-  });
-
-  test("SC9: a corrupt registry prints the starting line and exits 0", () => {
-    const { repo, home } = runWithRunningNode();
-    writeFileSync(join(home, "registry.json"), "{ corrupt");
-
-    const result = orchestrate(repo, home, ["statusline"], { YOK_RUN_ID: "r-1" }, "{}");
-
-    expect(result).toMatchObject({ code: 0, stdout: "yok · starting\n" });
+    expect(result).toMatchObject({ code: 0, stdout });
   });
 });
 

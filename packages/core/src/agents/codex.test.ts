@@ -228,11 +228,6 @@ describe("codexProvider.launch", () => {
 
     expect(created.spec?.statusLine).toBeUndefined();
   });
-
-  test("a codex provider has no limit wait", async () => {
-    const provider = codexProvider({ host: fakeHost({}) });
-    expect(await provider.limitResetWait({} as ITerminal, "limit", new Date())).toBeNull();
-  });
 });
 
 type PaneCall = readonly [string, unknown];

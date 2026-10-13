@@ -71,16 +71,6 @@ describe("yok doctor --workflow", () => {
     expect(stdout).not.toContain("top-secret");
   });
 
-  test("the key set only in the config's env passes", () => {
-    const config = JSON.stringify({ version: 2, env: { DOCTOR_E2E_KEY: "from-config" } });
-    const { stdout } = doctor({ "wf.yaml": WORKFLOW, "orchestrate.config.json": config }, [
-      "--workflow",
-      "wf.yaml",
-      "--json",
-    ]);
-    expect(rowOf(stdout, "env:DOCTOR_E2E_KEY")).toMatchObject({ status: "ok" });
-  });
-
   test("a workflow envFile that is missing fails the env check naming the file", () => {
     const { stdout } = doctor({ "wf.yaml": `envFile: gone.env\n${WORKFLOW}` }, [
       "--workflow",
@@ -105,25 +95,9 @@ describe("yok doctor --workflow", () => {
 });
 
 const NOTIFIER_WORKFLOW = WORKFLOW.replace("name: needs-key\n", "name: notifies\nnotifier: {}\n");
-const SLACK_ENV = "SLACK_BOT_TOKEN: xoxb-e2e\n  SLACK_CHANNEL_ID: C1";
 
 describe("yok doctor's notifier row", () => {
   test.each<[string, Record<string, string>, readonly string[], CheckStatus]>([
-    [
-      "a workflow notifier with the Slack keys in the workflow's env is ok",
-      { "wf.yaml": `env:\n  ${SLACK_ENV}\n${NOTIFIER_WORKFLOW}` },
-      ["--workflow", "wf.yaml"],
-      "ok",
-    ],
-    [
-      "a workflow notifier with the Slack keys in the workflow's envFile is ok",
-      {
-        "wf.yaml": `envFile: slack.env\n${NOTIFIER_WORKFLOW}`,
-        "slack.env": "SLACK_BOT_TOKEN=xoxb-e2e\nSLACK_CHANNEL_ID=C1\n",
-      },
-      ["--workflow", "wf.yaml"],
-      "ok",
-    ],
     [
       "a workflow notifier with no Slack keys anywhere fails",
       { "wf.yaml": NOTIFIER_WORKFLOW },

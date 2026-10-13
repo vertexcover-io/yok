@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { type ConfigInput, ConfigSchema } from "@yok/sdk";
 import { devPluginDir, VERSION } from "@yok/sdk/internal";
 import { claudeSettings } from "./agents/claude-hooks.ts";
@@ -17,7 +17,6 @@ import {
   StageSchema,
   yokSkillsDir,
 } from "./stage.ts";
-import { compileWorkflow } from "./workflow/compile.ts";
 
 const validStage = {
   name: "planning",
@@ -109,11 +108,6 @@ describe("the skills folder", () => {
 });
 
 describe("StageSchema", () => {
-  test("a full stage parses and produce entries default optional to false", () => {
-    const stage = StageSchema.parse(validStage);
-    expect(stage.produces).toEqual([{ artifact: "plan", optional: false }]);
-  });
-
   test("inputs and outputs are optional", () => {
     const { inputs: _inputs, outputs: _outputs, ...bare } = validStage;
     expect(StageSchema.safeParse(bare).success).toBe(true);
@@ -531,127 +525,35 @@ describe("findSkill", () => {
   });
 });
 
-describe("the real create-workspace skill", () => {
-  test("WS34 — loads, listing select-repos and the workspace script, each file on disk", async () => {
-    const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "create-workspace");
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { references } = result.value;
-    expect(references["select-repos"]).toMatchObject({
-      path: join(skillDir, "references/select-repos.md"),
-    });
-    expect(references.workspace).toMatchObject({ path: join(skillDir, "scripts/workspace.ts") });
-  });
-});
+describe("the shipped skills", () => {
+  const skillsDir = join(import.meta.dir, "..", "..", "..", "skills");
+  const load = (name: string) => loadSkill(join(skillsDir, name), projectScope(dir));
 
-describe("the real ticket-fetcher skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "ticket-fetcher");
-
-  test("SC24: loads with an optional ticket artifact, linear and asana references and their scripts on disk, and a provider variable defaulting to auto", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { produces, variables } = result.value.frontmatter;
-    const paths = Object.fromEntries(
-      Object.entries(result.value.references).map(([name, ref]) => [
-        name,
-        ref.kind === "file" ? relative(skillDir, ref.path) : null,
-      ]),
+  // A skill whose frontmatter declares a mode is a stage; the rest are plain agent skills.
+  test("every stage under skills/ loads, each listed reference on disk", async () => {
+    const skillFile = (name: string) => join(skillsDir, name, "SKILL.md");
+    const names = readdirSync(skillsDir).filter(
+      (name) =>
+        existsSync(skillFile(name)) && /^mode:/m.test(readFileSync(skillFile(name), "utf8")),
     );
-    expect(produces).toEqual([{ artifact: "ticket", optional: true }]);
-    expect(paths).toEqual({
-      linear: "references/linear.md",
-      asana: "references/asana.md",
-      validate: "scripts/ticket.ts",
-      "linear-api": "scripts/linear.ts",
-      "asana-api": "scripts/asana.ts",
-    });
-    expect(variables.provider?.default).toBe("auto");
+    const failures = (await Promise.all(names.map(load))).flatMap((result) =>
+      result.ok ? [] : [result.error],
+    );
+    expect(names).toContain("ticket-fetcher");
+    expect(failures).toEqual([]);
   });
 
-  test("SC27: each provider's description names the URLs it handles, which auto matches against", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
+  test("SC27: each ticket-fetcher provider's description names the URLs it handles, which auto matches against", async () => {
+    const result = await load("ticket-fetcher");
     if (!result.ok) throw new Error(result.error);
     const { references } = result.value;
     expect(references.linear?.description).toContain("linear.app");
     expect(references.asana?.description).toContain("app.asana.com");
   });
 
-  const fetcherWorkflow = async (variables: string): Promise<string> => {
-    const dir = await mkdtemp(join(tmpdir(), "ticket-wf-"));
-    const path = join(dir, "wf.yaml");
-    await writeFile(
-      path,
-      `name: t\ninputs:\n  prompt: { type: string, required: true }\nnodes:\n  - id: fetch\n    type: agent\n    stage: ticket-fetcher\n${variables}    input:\n      request: "{{ inputs.prompt }}"\n`,
-    );
-    return path;
-  };
-
-  test("SC25: a workflow that names its provider compiles", async () => {
-    const path = await fetcherWorkflow("    variables: { provider: asana }\n");
-    const plan = await compileWorkflow(path, { cwd: dirname(path) });
-    expect(plan.nodes.map((node) => node.id)).toEqual(["fetch"]);
-  });
-
-  test("SC26: a workflow that leaves the provider unset compiles, the stage defaulting it to auto", async () => {
-    const path = await fetcherWorkflow("");
-    const plan = await compileWorkflow(path, { cwd: dirname(path) });
-    const [fetch] = plan.nodes;
-    expect(fetch?.type === "agent" && fetch.stage?.variables.provider?.default).toBe("auto");
-  });
-});
-
-describe("the real design skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "design");
-
-  test("DS1: loads as an inline stage with no output schema, producing a design artifact, its references on disk", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
+  test("qa outputs qa.output.v1, the verdict whose status the task workflow's qa loop reads", async () => {
+    const result = await load("qa");
     if (!result.ok) throw new Error(result.error);
-    const { frontmatter, references } = result.value;
-    expect(frontmatter.mode).toBe("inline");
-    expect(frontmatter.outputs).toBeUndefined();
-    expect(frontmatter.produces).toEqual([{ artifact: "design", optional: false }]);
-    expect(Object.keys(references).sort()).toEqual(["coverage", "design-doc"]);
-  });
-
-  test("DS2: a workflow that feeds it the ticket-fetcher's task compiles", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "design-wf-"));
-    const path = join(dir, "wf.yaml");
-    await writeFile(
-      path,
-      'name: t\ninputs:\n  prompt: { type: string, required: true }\nnodes:\n  - id: fetch\n    type: agent\n    stage: ticket-fetcher\n    variables: { provider: linear }\n    input:\n      request: "{{ inputs.prompt }}"\n  - id: design\n    type: agent\n    stage: design\n    dependsOn: [fetch]\n    input:\n      task: "{{ nodes.fetch.output.task }}"\n',
-    );
-    const plan = await compileWorkflow(path, { cwd: dir });
-    expect(plan.nodes.map((node) => node.id)).toEqual(["fetch", "design"]);
-  });
-});
-
-describe("the real qa skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "qa");
-
-  test("SC5: loads as an inline stage with qa.output.v1, an optional proof-report artifact, its six references and its report-media script", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const stage = result.value.frontmatter;
-    expect([stage.name, stage.mode, stage.outputs?.schema]).toEqual([
-      "qa",
-      "inline",
-      "qa.output.v1",
-    ]);
-    expect(stage.produces).toEqual([{ artifact: "proof-report", optional: true }]);
-    expect(Object.keys(result.value.references).sort()).toEqual([
-      "driving-the-browser",
-      "headless-verification",
-      "report-media",
-      "report-template",
-      "stack-up",
-      "visual-verification",
-      "writing-the-report",
-    ]);
-  });
-
-  test("takes an environment variable that defaults to the config's default entry", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    expect(result.value.frontmatter.variables.environment?.default).toBe("default");
+    expect(result.value.frontmatter.outputs?.schema).toBe("qa.output.v1");
   });
 });

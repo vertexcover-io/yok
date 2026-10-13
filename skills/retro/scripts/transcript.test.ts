@@ -212,42 +212,50 @@ describe("formatTime", () => {
 });
 
 describe("maskSecrets", () => {
-  test("common key shapes, bearer tokens and KEY=value pairs are masked; ordinary text is not", () => {
-    expect(maskSecrets("token ghp_0123456789abcdefghijABCDEF done")).toBe("token REDACTED done");
-    expect(maskSecrets("Authorization: Bearer abcdef0123456789abcdef")).toBe(
+  test.each([
+    ["a token shape", "token ghp_0123456789abcdefghijABCDEF done", "token REDACTED done"],
+    [
+      "a bearer token",
+      "Authorization: Bearer abcdef0123456789abcdef",
       "Authorization: Bearer REDACTED",
-    );
-    expect(maskSecrets('export ASANA_API_KEY="1/2345:abcdef"')).toBe(
-      "export ASANA_API_KEY=REDACTED",
-    );
-    expect(maskSecrets("bun run typecheck --filter core")).toBe("bun run typecheck --filter core");
-  });
-
-  test("a JSON pair with a key-like name keeps the name and loses the value, escaped quotes included", () => {
-    expect(maskSecrets('{"apiKey":"abcd1234efgh5678ijkl","password":"hunter2hunter2"}')).toBe(
+    ],
+    ["a KEY=value pair", 'export ASANA_API_KEY="1/2345:abcdef"', "export ASANA_API_KEY=REDACTED"],
+    [
+      "a JSON pair with a key-like name",
+      '{"apiKey":"abcd1234efgh5678ijkl","password":"hunter2hunter2"}',
       '{"apiKey":"REDACTED","password":"REDACTED"}',
-    );
-    expect(maskSecrets('{\\"client_secret\\": \\"abcd1234efgh5678\\"}')).toBe(
+    ],
+    [
+      "a JSON pair with escaped quotes",
+      '{\\"client_secret\\": \\"abcd1234efgh5678\\"}',
       '{\\"client_secret\\": \\"REDACTED\\"}',
-    );
-  });
-
-  test("a lowercase name=value pair and a NAME: value pair are masked", () => {
-    expect(maskSecrets("curl -d api_key=abcd1234efgh5678 host")).toBe(
+    ],
+    [
+      "a lowercase name=value pair",
+      "curl -d api_key=abcd1234efgh5678 host",
       "curl -d api_key=REDACTED host",
-    );
-    expect(maskSecrets("LINEAR_API_KEY: abcd1234efgh5678")).toBe("LINEAR_API_KEY: REDACTED");
-    expect(maskSecrets("https://x.test/cb?token=abcd1234efgh&next=/home")).toBe(
+    ],
+    ["a NAME: value pair", "LINEAR_API_KEY: abcd1234efgh5678", "LINEAR_API_KEY: REDACTED"],
+    [
+      "a query parameter",
+      "https://x.test/cb?token=abcd1234efgh&next=/home",
       "https://x.test/cb?token=REDACTED&next=/home",
-    );
-  });
-
-  test("a key-like word with no value, or a value under 8 characters, is left alone", () => {
-    const plain = 'token count: 5, password reset flow, key: "value", secret: none';
-    expect(maskSecrets(plain)).toBe(plain);
+    ],
+    [
+      "a quoted secret with no digit",
+      '{"password":"correcthorsebattery"}',
+      '{"password":"REDACTED"}',
+    ],
+  ])("%s is masked", (_, text, masked) => {
+    expect(maskSecrets(text)).toBe(masked);
   });
 
   test.each([
+    ["ordinary text", "bun run typecheck --filter core"],
+    [
+      "a key-like word with no value, or a value under 8 characters",
+      'token count: 5, password reset flow, key: "value", secret: none',
+    ],
     ["a word that only ends in key", "monkey: abcdefgh12 and MONKEY=abcdefgh12"],
     ["a bare key name, as in any JSON map", '{"key": "description12", "primaryKey": "user_id_12"}'],
     [
@@ -257,9 +265,5 @@ describe("maskSecrets", () => {
     ["a quoted phrase", '{"token": "the next token is 42"}'],
   ])("%s is not masked", (_, text) => {
     expect(maskSecrets(text)).toBe(text);
-  });
-
-  test("a quoted secret with no digit is still masked", () => {
-    expect(maskSecrets('{"password":"correcthorsebattery"}')).toBe('{"password":"REDACTED"}');
   });
 });

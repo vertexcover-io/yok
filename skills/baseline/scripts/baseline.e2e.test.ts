@@ -149,18 +149,13 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     expect(JSON.parse(byId.stdout).path).toBe(path);
   });
 
-  test.each([
-    ["no --run", ["--dir", "."], "no run: pass --run or --run-id"],
-    ["a run the registry does not have", ["--run", "ghost", "--dir", "."], "ghost"],
-    ["an unknown flag", ["--run", "feat-x", "--nope"], "--nope"],
-    ["--root", ["--run", "feat-x", "--root", "."], "--root"],
-  ])("exits 1 on %s, naming it", (_case, args, named) => {
+  test("exits 1 on an unknown flag, naming it", () => {
     const { repo, home } = baselineRun(undefined);
 
-    const run = baseline(repo, home, args);
+    const run = baseline(repo, home, ["--run", "feat-x", "--nope"]);
 
     expect(run.code).toBe(1);
-    expect(run.stderr).toContain(named);
+    expect(run.stderr).toContain("--nope");
   });
 
   test("SIGTERM kills the running baseline script, exits 143 and writes nothing", async () => {

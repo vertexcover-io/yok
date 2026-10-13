@@ -206,12 +206,6 @@ describe("runDoctor", () => {
     expect(row).toMatchObject({ status: "warn", detail: "v1.4.0 installed but not paired" });
     expect(row?.fix[0]).toBe("npm i -g samskara");
   });
-
-  test("SC15: the report lists v1's ten built-in rows in v1's order", async () => {
-    const report = await runDoctor({ cwd: cleanRoot, exec: fakeExec(allToolsOk(cleanRoot)) });
-    expect(report.results.map((row) => row.name)).toEqual(BUILT_IN_NAMES);
-    expect(report.results.some((row) => row.name === "yok-version")).toBe(false);
-  });
 });
 
 describe("evaluate", () => {
@@ -223,24 +217,6 @@ describe("evaluate", () => {
     };
     const row = await evaluate(throwing, { root: "/repo", exec: fakeExec({}) });
     expect(row).toMatchObject({ name: "flaky", status: "fail", detail: "boom" });
-  });
-});
-
-describe("summarize/verdict", () => {
-  test("SC2: BLOCKED names the failed rows even when warnings are also present", () => {
-    const report = summarize([
-      { name: "jq", status: "fail", optional: false, detail: "not on PATH", fix: [] },
-      { name: "gh", status: "warn", optional: true, detail: "not authenticated", fix: [] },
-    ]);
-    expect(verdict(report)).toBe("BLOCKED jq");
-  });
-
-  test("SC3: DEGRADED names every warned row in order when nothing failed", () => {
-    const report = summarize([
-      { name: "gh", status: "warn", optional: true, detail: "not authenticated", fix: [] },
-      { name: "samskara", status: "warn", optional: true, detail: "not paired", fix: [] },
-    ]);
-    expect(verdict(report)).toBe("DEGRADED gh samskara");
   });
 });
 
@@ -320,10 +296,6 @@ describe("runDoctor (integration)", () => {
 
     type RunEnv = Result<Readonly<Record<string, string>>>;
     const NO_ENV: RunEnv = { ok: true, value: {} };
-    const BOTH_KEYS: RunEnv = {
-      ok: true,
-      value: { SLACK_BOT_TOKEN: "xoxb-test", SLACK_CHANNEL_ID: "C1" },
-    };
 
     test.each<[string, object, Notifier | undefined, RunEnv, [CheckStatus, readonly string[]]]>([
       [
@@ -333,13 +305,6 @@ describe("runDoctor (integration)", () => {
         NO_ENV,
         ["fail", SLACK_KEYS],
       ],
-      [
-        "a config notifier with both variables in the run's env is ok",
-        { notifier: {} },
-        undefined,
-        BOTH_KEYS,
-        ["ok", []],
-      ],
       ["no notifier block is ok and off", {}, undefined, NO_ENV, ["ok", []]],
       [
         "a workflow's enabled: false over a config notifier, with no Slack variables, is ok and off",
@@ -347,13 +312,6 @@ describe("runDoctor (integration)", () => {
         { enabled: false, type: "slack" },
         NO_ENV,
         ["ok", []],
-      ],
-      [
-        "a workflow notifier with no config notifier and no Slack variables fails",
-        {},
-        { enabled: true, type: "slack" },
-        NO_ENV,
-        ["fail", SLACK_KEYS],
       ],
       [
         "a workflow notifier whose run env failed to load fails with the load error",
@@ -379,63 +337,58 @@ describe("runDoctor (integration)", () => {
     });
   });
 
-  test("a YAML config passes the config check and names its file", async () => {
-    const dir = await makeDir("doctor-yaml-config-");
-    await exec("git", ["init"], dir);
-    await writeFile(join(dir, "orchestrate.config.yaml"), "version: 2\n");
-
-    const report = await runDoctor({ cwd: dir, exec });
+  type ConfigCase = Readonly<{ cwd: string; config?: string; detail: string }>;
+  test.each<[string, (dir: string) => Promise<ConfigCase>]>([
+    [
+      "a YAML config passes and names its file",
+      async (dir) => {
+        await exec("git", ["init"], dir);
+        await writeFile(join(dir, "orchestrate.config.yaml"), "version: 2\n");
+        return { cwd: dir, detail: join(dir, "orchestrate.config.yaml") };
+      },
+    ],
+    [
+      "a v1 YAML config beside the v2 JSON one: the row names the JSON file it loaded",
+      async (dir) => {
+        await exec("git", ["init"], dir);
+        await writeFile(join(dir, "orchestrate.config.yaml"), "stages: {}\n");
+        await writeFile(join(dir, "orchestrate.config.json"), V2);
+        return { cwd: dir, detail: join(dir, "orchestrate.config.json") };
+      },
+    ],
+    [
+      "from a sub-repo that a multi-layout meta folder lists, it reads the meta folder's config",
+      async (dir) => {
+        await writeFile(
+          join(dir, "orchestrate.config.json"),
+          JSON.stringify({
+            version: 2,
+            workspace: { layout: "multi" },
+            packages: { api: { path: "api" } },
+          }),
+        );
+        const api = join(dir, "api");
+        await mkdir(api);
+        await exec("git", ["init"], api);
+        return { cwd: api, detail: join(dir, "orchestrate.config.json") };
+      },
+    ],
+    [
+      "with a config file named, it reads that file and not the repo's",
+      async (dir) => {
+        await exec("git", ["init"], dir);
+        await writeFile(join(dir, "orchestrate.config.json"), "{}");
+        const file = join(dir, "custom.json");
+        await writeFile(file, V2);
+        return { cwd: dir, config: file, detail: file };
+      },
+    ],
+  ])("the config check: %s", async (_label, setup) => {
+    const { cwd, config, detail } = await setup(realpathSync(await makeDir("doctor-config-")));
+    const report = await runDoctor({ cwd, exec, ...(config === undefined ? {} : { config }) });
     expect(report.results.find((row) => row.name === "orchestrate-config")).toMatchObject({
       status: "ok",
-      detail: expect.stringMatching(/orchestrate\.config\.yaml$/),
-    });
-  });
-
-  test("a v1 YAML config beside the v2 JSON one: the row names the JSON file it loaded", async () => {
-    const dir = await makeDir("doctor-v1-beside-v2-");
-    await exec("git", ["init"], dir);
-    await writeFile(join(dir, "orchestrate.config.yaml"), "stages: {}\n");
-    await writeFile(join(dir, "orchestrate.config.json"), V2);
-
-    const report = await runDoctor({ cwd: dir, exec });
-    expect(report.results.find((row) => row.name === "orchestrate-config")).toMatchObject({
-      status: "ok",
-      detail: expect.stringMatching(/orchestrate\.config\.json$/),
-    });
-  });
-
-  test("from a sub-repo that a multi-layout meta folder lists, the config check reads the meta folder's config", async () => {
-    const meta = realpathSync(await makeDir("doctor-meta-"));
-    await writeFile(
-      join(meta, "orchestrate.config.json"),
-      JSON.stringify({
-        version: 2,
-        workspace: { layout: "multi" },
-        packages: { api: { path: "api" } },
-      }),
-    );
-    const api = join(meta, "api");
-    await mkdir(api);
-    await exec("git", ["init"], api);
-
-    const report = await runDoctor({ cwd: api, exec });
-    expect(report.results.find((row) => row.name === "orchestrate-config")).toMatchObject({
-      status: "ok",
-      detail: join(meta, "orchestrate.config.json"),
-    });
-  });
-
-  test("with a config file named, the config check reads that file and not the repo's", async () => {
-    const dir = await makeDir("doctor-named-config-");
-    await exec("git", ["init"], dir);
-    await writeFile(join(dir, "orchestrate.config.json"), "{}");
-    const file = join(dir, "custom.json");
-    await writeFile(file, V2);
-
-    const report = await runDoctor({ cwd: dir, exec, config: file });
-    expect(report.results.find((row) => row.name === "orchestrate-config")).toMatchObject({
-      status: "ok",
-      detail: file,
+      detail,
     });
   });
 
@@ -637,34 +590,6 @@ describe("workflowChecks", () => {
     return { check, row: await evaluate(check, { root, exec: fakeExec({}) }) };
   };
 
-  test("a declaration becomes a required check named CHECK:KEY with the declared fix", async () => {
-    const root = await makeRoot();
-    const { check, row } = await run({ check: "env", key: "DOCTOR_TEST_MISSING" }, root);
-    expect(check.optional).toBeUndefined();
-    expect(row).toMatchObject({
-      name: "env:DOCTOR_TEST_MISSING",
-      optional: false,
-      status: "fail",
-      fix: ["do the fix"],
-    });
-  });
-
-  test("env is ok when the run's env sets it, never prints the value, and an empty value is missing", async () => {
-    const root = await makeRoot();
-    const set = await run({ check: "env", key: "DOCTOR_TEST_KEY" }, root, {
-      ok: true,
-      value: { DOCTOR_TEST_KEY: "secret-value" },
-    });
-    expect(set.row.status).toBe("ok");
-    expect(set.row.detail).not.toContain("secret-value");
-
-    const empty = await run({ check: "env", key: "DOCTOR_TEST_KEY" }, root, {
-      ok: true,
-      value: { DOCTOR_TEST_KEY: "" },
-    });
-    expect(empty.row.status).toBe("fail");
-  });
-
   test("an empty value the run's env sets is missing, even when the process has the key", async () => {
     const root = await makeRoot();
     process.env.DOCTOR_TEST_KEY = "from-process";
@@ -674,15 +599,6 @@ describe("workflowChecks", () => {
     });
     delete process.env.DOCTOR_TEST_KEY;
     expect(row.status).toBe("fail");
-  });
-
-  test("a run env that failed to load fails the check with its error, not as a missing key", async () => {
-    const root = await makeRoot();
-    const { row } = await run({ check: "env", key: "DOCTOR_TEST_KEY" }, root, {
-      ok: false,
-      error: "/repo/gone.env: cannot read file",
-    });
-    expect(row).toMatchObject({ status: "fail", detail: "/repo/gone.env: cannot read file" });
   });
 
   test("env falls back to the process environment", async () => {

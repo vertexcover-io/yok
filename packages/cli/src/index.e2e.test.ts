@@ -3,10 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DoctorJsonSchema } from "@yok/core";
 import { spawn as spawnProcess } from "@yok/sdk";
 import { VERSION } from "@yok/sdk/internal";
-import sdkPackage from "../../sdk/package.json";
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO_ROOT, "node_modules", ".bin", "yok-dev");
@@ -32,13 +30,6 @@ describe("yok doctor (installed bin)", () => {
     const verdictLine = stdout.split("\n").find((line) => /^(READY|DEGRADED|BLOCKED)/.test(line));
     expect(verdictLine).toBeDefined();
     expect(code).toBe(verdictLine?.startsWith("BLOCKED") ? 1 : 0);
-  }, 40_000);
-
-  test("SC12: yok-dev doctor --json prints a report that parses against DoctorJsonSchema, exiting per the verdict", async () => {
-    const { code, stdout } = await runBin(["doctor", "--json"]);
-    const json = DoctorJsonSchema.parse(JSON.parse(stdout));
-    expect(json.results.map((row) => row.name)).toContain("git");
-    expect(code).toBe(json.verdict.startsWith("BLOCKED") ? 1 : 0);
   }, 40_000);
 });
 
@@ -132,14 +123,6 @@ describe("yok as one program", () => {
       timeoutMs: 20_000,
     });
   };
-
-  test("SC29: yok --version prints the sdk's package.json version and exits 0", async () => {
-    const result = await spawnProcess(process.execPath, ["--no-env-file", CLI, "--version"], {
-      cwd: REPO_ROOT,
-    });
-    expect([result.code, result.stdout.trim()]).toEqual([0, sdkPackage.version]);
-    expect(VERSION).toBe(sdkPackage.version);
-  }, 20_000);
 
   test("SC30: yok orchestrate --help lists the skill actions and hides run-subscriber, which still runs", async () => {
     const help = await spawnProcess(

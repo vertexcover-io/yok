@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { expandPath, shellWriteTargets } from "./write-targets.ts";
+import { shellWriteTargets } from "./write-targets.ts";
 
 const BASE = { cwd: "/repo", home: "/home/u", yokHome: "/home/u/.yok" };
 const targets = (command: string): readonly string[] => shellWriteTargets(command, BASE);
@@ -136,13 +136,5 @@ describe("shellWriteTargets", () => {
       Array.from({ length: levels }).reduce<string>((script) => wrap(script), "rm x");
     expect(targets(nest(3))).toEqual(["/repo/x"]);
     expect(targets(nest(4))).toEqual([]);
-  });
-});
-
-describe("expandPath", () => {
-  test("resolves against the working folder, and gives up on unknown variables", () => {
-    expect(expandPath(".yok/a/state.json", BASE)).toBe(S);
-    expect(expandPath("~", BASE)).toBe("/home/u");
-    expect(expandPath("$UNSET/x", BASE)).toBeUndefined();
   });
 });

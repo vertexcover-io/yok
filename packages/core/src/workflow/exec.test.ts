@@ -272,34 +272,29 @@ describe("output schemas", () => {
     await expect(compileNode(root, missing("./missing.ts"))).rejects.toBeInstanceOf(WorkflowError);
   });
 
-  test("a schema only checks a script's output: the raw JSON it printed is stored", async () => {
-    const record = await runLeaf(
-      setupRoot(),
+  test.each([
+    [
+      "a script's output: the raw JSON it printed",
       '    type: exec\n    runtime: sh\n    script: echo \'{"n":"5"}\'\n    input: null\n    output: { module: ./schemas.ts, zodSchema: counted }',
-    );
-    expect(record).toMatchObject({ status: "completed", output: { n: "5" } });
-    expect(record.process?.stdout).toBe('{"n":"5"}\n');
-  });
-
-  test("a schema only checks a function's output: the value it returned is stored", async () => {
-    const record = await runLeaf(
-      setupRoot(),
+      { n: "5" },
+    ],
+    [
+      "a function's output: the value it returned",
       fnLines(
         "./fns/helpers.ts",
         "rawCount",
         "\n    output: { module: ./schemas.ts, zodSchema: counted }",
       ),
-    );
-    expect(record).toMatchObject({ status: "completed", output: { n: "7" } });
-    expect(record.process).toBeUndefined();
-  });
-
-  test("a function with the built-in Json schema keeps its value as returned", async () => {
-    const record = await runLeaf(
-      setupRoot(),
+      { n: "7" },
+    ],
+    [
+      "a function's output under the built-in Json schema: the value it returned",
       fnLines("./fns/helpers.ts", "rawCount", "\n    output: { zodSchema: Json }"),
-    );
-    expect(record).toMatchObject({ status: "completed", output: { n: "7" } });
+      { n: "7" },
+    ],
+  ])("a schema only checks %s is stored", async (_label, nodeLines, output) => {
+    const record = await runLeaf(setupRoot(), nodeLines);
+    expect(record).toMatchObject({ status: "completed", output });
   });
 });
 

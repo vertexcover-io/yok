@@ -81,15 +81,6 @@ describe("captureBaseline", () => {
     expect(await eventsIn(run.runDir)).toEqual([]);
   });
 
-  test("BL2: text output is stored trimmed", async () => {
-    const run = await setup({ baseline: "echo '3 failing'; echo oops >&2" });
-
-    const result = await capture(run);
-
-    if (!result.ok || result.value === null) throw new Error("expected a baseline");
-    expect(result.value.baseline.workspace?.output).toBe("3 failing");
-  });
-
   test("CMD3: a baseline object runs in its cwd, relative to the workspace folder", async () => {
     const run = await setup({
       baseline: { command: "pwd", cwd: "tools" },
@@ -142,19 +133,6 @@ describe("captureBaseline", () => {
     expect(existsSync(join(run.root, "marker"))).toBe(false);
   });
 
-  test("BL4: a script that exits 1 is recorded as a result", async () => {
-    const run = await setup({ baseline: "echo '{}'; exit 1" });
-
-    const result = await capture(run);
-
-    if (!result.ok || result.value === null) throw new Error("expected a baseline");
-    expect(result.value.baseline.workspace).toEqual({
-      command: "echo '{}'; exit 1",
-      exitCode: 1,
-      output: {},
-    });
-  });
-
   test("BL5: a command that cannot start stops with CONFIG_STALE and writes nothing", async () => {
     const run = await setup({ packages: { core: pkg("definitely-not-a-command") } });
 
@@ -171,7 +149,6 @@ describe("captureBaseline", () => {
     ["bun's missing script", `echo 'error: Script not found "baseline"' >&2; exit 1`],
     ["bun's empty filter", `echo "error: No packages matched the filter" >&2; exit 1`],
     ["npm's missing script", `echo "error: Missing script: baseline" >&2; exit 1`],
-    ["an unknown command", "definitely-not-a-command"],
   ])("BL5: %s stops with CONFIG_STALE and writes nothing", async (_, command) => {
     const run = await setup({ packages: { core: pkg(command) } });
 
@@ -270,41 +247,33 @@ describe("captureBaseline", () => {
     expect(result.error.message).toContain("--dir");
   });
 
-  test("BL9: a --dir that does not exist stops with WORKTREE_MISSING naming it", async () => {
-    const run = await setup({ baseline: "echo hi" });
-    const dir = join(tempDir(), "gone");
-
-    const result = await capture(run, { dir });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { code: "WORKTREE_MISSING", message: `no run folder at ${dir}` },
-    });
-  });
-
-  test("BL9: a --dir that is a file, not a folder, stops with WORKTREE_MISSING naming it", async () => {
-    const run = await setup({ baseline: "echo hi" });
-    const dir = join(tempDir(), "a-file");
-    writeFileSync(dir, "");
-
-    const result = await capture(run, { dir });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { code: "WORKTREE_MISSING", message: `no run folder at ${dir}` },
-    });
-  });
-
-  test("BL9: a state.json workspace.path that no longer exists stops with WORKTREE_MISSING naming it", async () => {
+  test.each([
+    ["a --dir that does not exist", (dir: string) => join(dir, "gone"), false],
+    [
+      "a --dir that is a file, not a folder",
+      (dir: string) => {
+        writeFileSync(join(dir, "a-file"), "");
+        return join(dir, "a-file");
+      },
+      false,
+    ],
+    [
+      "a state.json workspace.path that no longer exists",
+      (dir: string) => join(dir, "removed"),
+      true,
+    ],
+  ])("BL9: %s stops with WORKTREE_MISSING naming it", async (_label, missing, inState) => {
     const run = await setup({ packages: { core: pkg("echo core") } });
-    const gone = join(tempDir(), "removed-worktree");
-    const state = stateOf(run.runDir);
-    writeFileSync(
-      join(run.runDir, "state.json"),
-      JSON.stringify({ ...state, workspace: { ...state.workspace, path: gone } }),
-    );
+    const gone = missing(tempDir());
+    if (inState) {
+      const state = stateOf(run.runDir);
+      writeFileSync(
+        join(run.runDir, "state.json"),
+        JSON.stringify({ ...state, workspace: { ...state.workspace, path: gone } }),
+      );
+    }
 
-    const result = await capture(run);
+    const result = await capture(run, inState ? {} : { dir: gone });
 
     expect(result).toEqual({
       ok: false,

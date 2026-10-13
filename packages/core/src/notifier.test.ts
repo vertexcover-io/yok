@@ -385,23 +385,24 @@ const formOf = (request: Sent | undefined): Readonly<Record<string, string>> =>
   Object.fromEntries(new URLSearchParams(String(request?.body ?? "")));
 
 describe("createSlackNotifier", () => {
-  test("SC206: a post with no thread sends chat.postMessage without thread_ts and resolves to the reply's ts", async () => {
-    const slack = fakeSlack({ "chat.postMessage": { ok: true, ts: "171.1" } });
+  test.each([
+    ["with no thread sends no thread_ts and resolves to the reply's ts", undefined, {}, "171.1"],
+    [
+      "into thread 171.1 sends thread_ts=171.1 and resolves to 171.1",
+      "171.1",
+      { thread_ts: "171.1" },
+      "171.1",
+    ],
+  ])("SC206: a post %s", async (_label, thread, extra, expected) => {
+    const slack = fakeSlack({
+      "chat.postMessage": { ok: true, ts: thread === undefined ? "171.1" : "172.2" },
+    });
 
-    const threadId = await slack.notifier.post(titled(), undefined);
+    const threadId = await slack.notifier.post(titled(), thread);
 
-    expect(threadId).toBe("171.1");
+    expect(threadId).toBe(expected);
     expect(slack.sent[0]?.url).toBe("https://slack.com/api/chat.postMessage");
-    expect(formOf(slack.sent[0])).toEqual({ channel: "C1", text: "*Title*" });
-  });
-
-  test("SC206: a post into thread 171.1 sends thread_ts=171.1 and resolves to 171.1", async () => {
-    const slack = fakeSlack({ "chat.postMessage": { ok: true, ts: "172.2" } });
-
-    const threadId = await slack.notifier.post(titled(), "171.1");
-
-    expect(threadId).toBe("171.1");
-    expect(formOf(slack.sent[0])).toEqual({ channel: "C1", text: "*Title*", thread_ts: "171.1" });
+    expect(formOf(slack.sent[0])).toEqual({ channel: "C1", text: "*Title*", ...extra });
   });
 
   test("SC206: a reply of ok false rejects with Slack's error", async () => {
@@ -441,21 +442,25 @@ describe("createSlackNotifier", () => {
 });
 
 describe("the notifier's Slack variables", () => {
-  test("SC207: an env holding only SLACK_CHANNEL_ID fails to open the notifier, naming SLACK_BOT_TOKEN", () => {
-    const env = { SLACK_CHANNEL_ID: "C1" };
-
+  const SLACK_KEYS = ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"];
+  test.each([
+    [
+      "SC207: only SLACK_CHANNEL_ID fails to open the notifier, naming SLACK_BOT_TOKEN",
+      { SLACK_CHANNEL_ID: "C1" },
+      ["SLACK_BOT_TOKEN"],
+    ],
+    [
+      "SLACK_BOT_TOKEN and SLACK_CHANNEL_ID open the notifier with nothing missing",
+      { SLACK_BOT_TOKEN: "xoxb-test", SLACK_CHANNEL_ID: "C1" },
+      [],
+    ],
+  ])("an env holding %s", (_label, env, missing) => {
     const opened = openNotifier("slack", env);
 
-    expect(opened.ok ? "" : opened.error).toContain("SLACK_BOT_TOKEN");
-    expect(opened.ok ? "" : opened.error).not.toContain("SLACK_CHANNEL_ID");
-    expect(findMissingNotifierKeys(env)).toEqual(["SLACK_BOT_TOKEN"]);
-  });
-
-  test("an env holding SLACK_BOT_TOKEN and SLACK_CHANNEL_ID opens the notifier with nothing missing", () => {
-    const env = { SLACK_BOT_TOKEN: "xoxb-test", SLACK_CHANNEL_ID: "C1" };
-
-    expect(openNotifier("slack", env).ok).toBe(true);
-    expect(findMissingNotifierKeys(env)).toEqual([]);
+    expect(opened.ok ? [] : SLACK_KEYS.filter((key) => opened.error.includes(key))).toEqual(
+      missing,
+    );
+    expect(findMissingNotifierKeys(env)).toEqual(missing);
   });
 });
 

@@ -90,22 +90,6 @@ describe("deliveryMessage", () => {
       "Reply to each: yok orchestrate comments reply --run feat-x --id ID --status answered|changed|declined --text -",
     ]);
   });
-
-  test("SC8: an approve comment on design.md tells the agent the page is approved and to finish its stage", () => {
-    const at = NOW.toISOString();
-    const approve: Comment = {
-      id: "c1",
-      file: "artifacts/design.md",
-      kind: "approve",
-      text: "Approved",
-      status: "sent",
-      createdAt: at,
-      thread: [{ by: "user", text: "Approved", at }],
-    };
-    expect(deliveryMessage([approve], "feat-x").split("\n")[1]).toBe(
-      "c1 · artifacts/design.md · approved: finish the stage that waits on it",
-    );
-  });
 });
 
 describe("deliveryMessage follow-ups", () => {
@@ -222,32 +206,31 @@ describe("comment store", () => {
 });
 
 describe("CommentDraftSchema", () => {
-  test("SC20: a part-of-file comment needs an anchor and words, a global one keeps a stray anchor", () => {
-    const noAnchor = CommentDraftSchema.safeParse({
-      file: "artifacts/a.md",
-      kind: "comment",
-      text: "x",
-    });
-    const noText = CommentDraftSchema.safeParse({
-      file: "artifacts/a.md",
-      kind: "replace",
-      text: "",
-      anchor,
-    });
-    const globalWithAnchor = CommentDraftSchema.safeParse({ ...global("x"), anchor });
-    expect([noAnchor.success, noText.success, globalWithAnchor.success]).toEqual([
+  test.each<[string, Readonly<{ anchor?: typeof anchor } & Record<string, unknown>>, boolean]>([
+    [
+      "SC20: a part-of-file comment with no anchor",
+      { file: "artifacts/a.md", kind: "comment", text: "x" },
       false,
+    ],
+    [
+      "SC20: a part-of-file comment with no words",
+      { file: "artifacts/a.md", kind: "replace", text: "", anchor },
       false,
+    ],
+    [
+      "SC20: a global comment with a stray anchor, which it keeps,",
+      { ...global("x"), anchor },
       true,
-    ]);
-    expect(globalWithAnchor.data?.anchor).toEqual(anchor);
-  });
-
-  test("SC9: an approve draft with no anchor is accepted, a plain comment with no anchor is still refused", () => {
-    const file = "artifacts/design.md";
-    const approve = CommentDraftSchema.safeParse({ kind: "approve", text: "Approved", file });
-    const plain = CommentDraftSchema.safeParse({ kind: "comment", text: "x", file });
-    expect([approve.success, plain.success]).toEqual([true, false]);
+    ],
+    [
+      "SC9: an approve with no anchor",
+      { file: "artifacts/design.md", kind: "approve", text: "Approved" },
+      true,
+    ],
+  ])("%s is accepted: %p", (_label, draft, accepted) => {
+    const result = CommentDraftSchema.safeParse(draft);
+    expect(result.success).toBe(accepted);
+    expect(result.data?.anchor).toEqual(accepted ? draft.anchor : undefined);
   });
 });
 

@@ -33,21 +33,19 @@ const tempRegistryPath = (): string =>
 const OLD_NAME = ["har", "ness"].join("");
 
 describe("yokHome", () => {
-  test("SC1: the home is ~/.yok, YOK_HOME overrides it, and the old home variable is not read", () => {
-    expect(yokHome({}, true)).toBe(join(homedir(), ".yok"));
-    expect(yokHome({ YOK_HOME: "/tmp/y" })).toBe("/tmp/y");
-    expect(yokHome({ [`${OLD_NAME.toUpperCase()}_HOME`]: "/tmp/h" }, true)).toBe(
+  test.each([
+    ["SC34: from source the home is ~/.yok-dev", {}, false, join(homedir(), ".yok-dev")],
+    ["SC1: a compiled binary's home is ~/.yok", {}, true, join(homedir(), ".yok")],
+    ["SC1: YOK_HOME wins from source", { YOK_HOME: "/tmp/y" }, false, "/tmp/y"],
+    ["SC34: YOK_HOME wins in a compiled binary", { YOK_HOME: "/tmp/y" }, true, "/tmp/y"],
+    [
+      "SC1: the old home variable is not read",
+      { [`${OLD_NAME.toUpperCase()}_HOME`]: "/tmp/h" },
+      true,
       join(homedir(), ".yok"),
-    );
-  });
-
-  test("SC34: from source the home is ~/.yok-dev, a compiled binary keeps ~/.yok, and YOK_HOME wins over both", () => {
-    expect(yokHome({})).toBe(join(homedir(), ".yok-dev"));
-    expect(yokHome({}, true)).toBe(join(homedir(), ".yok"));
-    expect([false, true].map((compiled) => yokHome({ YOK_HOME: "/tmp/y" }, compiled))).toEqual([
-      "/tmp/y",
-      "/tmp/y",
-    ]);
+    ],
+  ])("%s", (_label, env, compiled, expected) => {
+    expect(yokHome(env, compiled)).toBe(expected);
   });
 });
 
@@ -123,24 +121,14 @@ describe("createRegistry", () => {
   });
 });
 
-describe("config", () => {
-  test("a run record written before config existed loads with config null", async () => {
+describe("records written before a field existed", () => {
+  test("SC2: a record without config and terminal loads with both null, and setTerminal stores a name", async () => {
     const path = tempRegistryPath();
-    const { config: _omitted, ...legacy } = run("r-old");
-    await writeFile(path, JSON.stringify({ version: 1, runs: { "r-old": legacy } }));
-
-    expect((await createRegistry(path).findRun("r-old"))?.config).toBeNull();
-  });
-});
-
-describe("terminal", () => {
-  test("SC2: a registry file written before terminal existed loads with null, and setTerminal stores a name", async () => {
-    const path = tempRegistryPath();
-    const { terminal: _omitted, ...legacy } = run("r-old");
+    const { config: _config, terminal: _terminal, ...legacy } = run("r-old");
     await writeFile(path, JSON.stringify({ version: 1, runs: { "r-old": legacy } }));
     const registry = createRegistry(path);
 
-    expect((await registry.findRun("r-old"))?.terminal).toBeNull();
+    expect(await registry.findRun("r-old")).toMatchObject({ config: null, terminal: null });
     await registry.setTerminal("r-old", "claude-fix-login-r-old");
 
     expect((await createRegistry(path).findRun("r-old"))?.terminal).toBe("claude-fix-login-r-old");
