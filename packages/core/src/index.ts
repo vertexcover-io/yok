@@ -18,6 +18,7 @@ export {
 export { findOpenContextRun } from "./context-step.ts";
 export {
   buildNotifierCheck,
+  builtInChecks,
   DOCTOR_TIMEOUT_MS,
   type DoctorJson,
   DoctorJsonSchema,
