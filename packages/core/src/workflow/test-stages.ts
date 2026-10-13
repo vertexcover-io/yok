@@ -80,6 +80,11 @@ export const DEMO_STAGES = {
     mode: "subagent",
     body: "## Subagent mode\n\nStart one subagent per phase.",
   },
+  "near-phased": {
+    tier: "deep",
+    mode: "subagent",
+    body: "## Subagent mode notes\n\nStart one subagent per phase.",
+  },
   summarized: { summary: "Say how many files changed." },
   plain: {},
   tuned: {

@@ -882,6 +882,14 @@ nodes:${stage("build", "phased", "\n    input: {}")}
     const second = await advanceTiered(plan, switched, FAST_AND_DEEP, HAIKU, true);
     expect(expectLeaf(second.stop).runsOn).toEqual({ mode: "subagent", model: OPUS_HIGH });
   });
+
+  test("a heading that only starts with Subagent mode is not the section: the stage goes whole to a subagent", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${stage("build", "near-phased", "\n    input: {}")}
+`);
+    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true);
+    expect(expectLeaf(stop).runsOn).toEqual({ mode: "subagent", model: OPUS_HIGH });
+  });
 });
 
 const SWITCH = `name: t

@@ -108,7 +108,7 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      `input` as its data, then finish it with the reply's `done` command the same way as a stage.
    - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. When the
      stage's SKILL.md has a `## Subagent mode` heading (check with
-     `grep -q '^## Subagent mode' SKILL`), run the stage yourself as a `mode: inline` stage and
+     `grep -qx '## Subagent mode' SKILL`), run the stage yourself as a `mode: inline` stage and
      follow that section; it starts its own subagents. Otherwise start a subagent in the
      background (the reference names the tool), on the reply's `model` and `effort` when
      present, with this brief:
