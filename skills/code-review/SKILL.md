@@ -73,7 +73,8 @@ absence is a gap, filled by the next source down.
 1. The input's `standards`, or `$ARGUMENTS` standalone, when it is a path to an existing file
 2. `.claude/rules/*` and `.claude/yok/code-review-reference.md` in the project root
 3. Any standards the repo documents — `CODING_STANDARDS.md`, `CONTRIBUTING.md`,
-   `STYLE_GUIDE.md`, `docs/` equivalents, or the conventions section of `CLAUDE.md`/`AGENTS.md`
+   `STYLE_GUIDE.md`, `docs/` equivalents, the learnings in `docs/learnings/` whose signal or
+   `paths` match the change, or the conventions section of `CLAUDE.md`/`AGENTS.md`
 4. The `references/persona-*.md` file each agent is given, and the `code-quality` and `tdd`
    skills those files name. Universal defaults, applied when nothing above speaks
 
