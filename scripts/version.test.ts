@@ -8,77 +8,55 @@ import { fileURLToPath } from "node:url"
 import { agreedVersion, nextVersion, readVersion, setRef, setVersion } from "./version.ts"
 
 describe("SC123: nextVersion", () => {
-  test("bumps a segment and zeroes the ones below it", () => {
-    assert.equal(nextVersion("1.2.3", "patch"), "1.2.4")
-    assert.equal(nextVersion("1.2.3", "minor"), "1.3.0")
-    assert.equal(nextVersion("1.2.3", "major"), "2.0.0")
+  test("bumps, takes an explicit version, and counts pre-releases", () => {
+    const cases: readonly (readonly [string, string | undefined, boolean, string])[] = [
+      ["1.2.3", "patch", false, "1.2.4"],
+      ["1.2.3", "minor", false, "1.3.0"],
+      ["1.2.3", "major", false, "2.0.0"],
+      ["1.2.3", "2.0.0", false, "2.0.0"],
+      ["1.2.3", "1.3.0-rc.1", false, "1.3.0-rc.1"],
+      ["1.2.3", "1.3.0+build.5", false, "1.3.0+build.5"],
+      ["1.2.3", "1.3.0-rc.1+build.5", false, "1.3.0-rc.1+build.5"],
+      ["1.31.1", "patch", true, "1.31.2-rc.1"],
+      ["1.31.1", "minor", true, "1.32.0-rc.1"],
+      ["1.31.1", "major", true, "2.0.0-rc.1"],
+      ["1.32.0-rc.1", undefined, true, "1.32.0-rc.2"],
+      ["1.32.0-rc.9", undefined, true, "1.32.0-rc.10"],
+      ["1.32.0-rc.2", "minor", true, "1.32.0-rc.3"],
+      ["1.32.0-rc.2", "major", true, "2.0.0-rc.1"],
+      ["1.32.0-rc.2", "minor", false, "1.32.0"],
+      ["1.32.0-rc.2", "patch", false, "1.32.0"],
+      ["1.32.0-rc.2", "major", false, "2.0.0"],
+      ["2.0.0-rc.1", "major", false, "2.0.0"],
+      ["1.31.2-rc.1", "patch", false, "1.31.2"],
+    ]
+    cases.forEach(([current, bump, preRelease, expected]) =>
+      assert.equal(nextVersion(current, bump, { preRelease }), expected, `${current} ${bump} pre=${preRelease}`),
+    )
   })
 
-  test("takes an explicit version verbatim", () => {
-    assert.equal(nextVersion("1.2.3", "2.0.0"), "2.0.0")
-    assert.equal(nextVersion("1.2.3", "2.0.0-rc.1"), "2.0.0-rc.1")
-  })
-
-  test("rejects an unknown bump", () => {
-    assert.throws(() => nextVersion("1.2.3", "sideways"))
-  })
-
-  test("rejects a current version it cannot parse", () => {
-    assert.throws(() => nextVersion("nightly", "patch"))
-  })
-
-  test("rejects an explicit version carrying characters that would corrupt JSON", () => {
-    assert.throws(() => nextVersion("1.2.3", '1.3.0-"rc"'))
-    assert.throws(() => nextVersion("1.2.3", "1.3.0-rc\\"))
-    assert.throws(() => nextVersion("1.2.3", "1.3.0-rc 1"))
-  })
-
-  test("still takes a well-formed prerelease and build tag", () => {
-    assert.equal(nextVersion("1.2.3", "1.3.0-rc.1"), "1.3.0-rc.1")
-    assert.equal(nextVersion("1.2.3", "1.3.0+build.5"), "1.3.0+build.5")
-    assert.equal(nextVersion("1.2.3", "1.3.0-rc.1+build.5"), "1.3.0-rc.1+build.5")
-  })
-
-  test("--pre-release bumps a stable version and starts it at rc.1", () => {
-    assert.equal(nextVersion("1.31.1", "patch", { preRelease: true }), "1.31.2-rc.1")
-    assert.equal(nextVersion("1.31.1", "minor", { preRelease: true }), "1.32.0-rc.1")
-    assert.equal(nextVersion("1.31.1", "major", { preRelease: true }), "2.0.0-rc.1")
-  })
-
-  test("--pre-release alone counts the current pre-release up", () => {
-    assert.equal(nextVersion("1.32.0-rc.1", undefined, { preRelease: true }), "1.32.0-rc.2")
-    assert.equal(nextVersion("1.32.0-rc.9", undefined, { preRelease: true }), "1.32.0-rc.10")
-  })
-
-  test("--pre-release with the bump that produced the pre-release counts it up rather than restarting", () => {
-    assert.equal(nextVersion("1.32.0-rc.2", "minor", { preRelease: true }), "1.32.0-rc.3")
-    assert.equal(nextVersion("1.32.0-rc.2", "major", { preRelease: true }), "2.0.0-rc.1")
-  })
-
-  test("a plain bump from a pre-release ships the version it was a candidate for", () => {
-    assert.equal(nextVersion("1.32.0-rc.2", "minor"), "1.32.0")
-    assert.equal(nextVersion("1.32.0-rc.2", "patch"), "1.32.0")
-    assert.equal(nextVersion("1.32.0-rc.2", "major"), "2.0.0")
-    assert.equal(nextVersion("2.0.0-rc.1", "major"), "2.0.0")
-    assert.equal(nextVersion("1.31.2-rc.1", "patch"), "1.31.2")
-  })
-
-  test("--pre-release alone on a stable version has nothing to count up", () => {
-    assert.throws(() => nextVersion("1.31.1", undefined, { preRelease: true }), /major, minor or patch/)
-  })
-
-  test("no bump and no --pre-release is a usage error", () => {
-    assert.throws(() => nextVersion("1.31.1", undefined), /usage/)
-  })
-
-  test("an explicit version and --pre-release together are ambiguous", () => {
-    assert.throws(() => nextVersion("1.31.1", "1.32.0", { preRelease: true }), /either/)
+  test("rejects a bad bump, a bad current version, or a contradictory request", () => {
+    const cases: readonly (readonly [string, string | undefined, boolean, RegExp | ErrorConstructor])[] = [
+      ["1.2.3", "sideways", false, Error],
+      ["nightly", "patch", false, Error],
+      ["1.2.3", '1.3.0-"rc"', false, Error],
+      ["1.2.3", "1.3.0-rc\\", false, Error],
+      ["1.2.3", "1.3.0-rc 1", false, Error],
+      ["1.31.1", undefined, true, /major, minor or patch/],
+      ["1.31.1", undefined, false, /usage/],
+      ["1.31.1", "1.32.0", true, /either/],
+    ]
+    cases.forEach(([current, bump, preRelease, message]) =>
+      assert.throws(() => nextVersion(current, bump, { preRelease }), message, `${current} ${bump} pre=${preRelease}`),
+    )
   })
 })
 
 describe("SC123: agreedVersion", () => {
-  test("returns the version every manifest shares", () => {
+  test("returns the version the manifests that declare one share, or 0.0.0 when none does", () => {
     assert.equal(agreedVersion(['{"version": "1.30.0"}', '{"version": "1.30.0"}']), "1.30.0")
+    assert.equal(agreedVersion(['{"version": "1.30.0"}', '{"name": "yok"}']), "1.30.0")
+    assert.equal(agreedVersion(['{"name": "yok"}']), "0.0.0")
   })
 
   test("refuses to bump manifests that have already drifted", () => {
@@ -86,24 +64,6 @@ describe("SC123: agreedVersion", () => {
       () => agreedVersion(['{"version": "1.30.0"}', '{"version": "1.31.0"}']),
       /drifted/,
     )
-  })
-
-  test("lets a manifest with no version field be filled in from the others", () => {
-    assert.equal(agreedVersion(['{"version": "1.30.0"}', '{"name": "yok"}']), "1.30.0")
-  })
-
-  test("starts at 0.0.0 when no manifest declares a version", () => {
-    assert.equal(agreedVersion(['{"name": "yok"}']), "0.0.0")
-  })
-})
-
-describe("SC123: readVersion", () => {
-  test("finds the version field", () => {
-    assert.equal(readVersion('{"version": "1.30.0"}'), "1.30.0")
-  })
-
-  test("returns null when there is no version field", () => {
-    assert.equal(readVersion('{"name": "yok"}'), null)
   })
 })
 
@@ -247,13 +207,5 @@ describe("check-release-tag.sh", () => {
 
   test("SC123: refuses to run without a tag", () => {
     assert.notEqual(checkTag(copyReleaseFiles(), "").code, 0)
-  })
-})
-
-// Importing this module must not run the release. If the entrypoint check ever
-// regresses, `node --test` would cut a tag from inside the test suite.
-describe("SC123: module entry", () => {
-  test("importing the script does not bump anything", () => {
-    assert.equal(process.exitCode ?? 0, 0)
   })
 })

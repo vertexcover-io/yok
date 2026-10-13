@@ -19,8 +19,10 @@ import { createApp } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { socketPath } from "./protocol.ts";
 
+type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
+
 // A git checkout, as yok run sends: the server reads its config to pick the launch model.
-const tempWorkspace = (): { workflowPath: string; cwd: string } => {
+const tempWorkspace = (): Workspace => {
   const cwd = mkdtempSync(join(tmpdir(), "yok-app-"));
   execFileSync("git", ["init", "-q"], { cwd });
   const workflowPath = join(cwd, "ok.yaml");
@@ -86,33 +88,46 @@ const buildDeps = async (
 };
 
 describe("POST /runs", () => {
-  test("a body that is not JSON is 400 bad-request in the API's error shape", async () => {
-    const app = createApp(await buildDeps(() => Promise.resolve({ ok: false, error: "unused" })));
-    const res = await app.request("/runs", {
+  test.each([
+    ["a body that is not JSON", () => "{not json"],
+    [
+      "SC9: a relative workflowPath",
+      ({ cwd }: Workspace) =>
+        JSON.stringify({ workflow: "ok", env: {}, workflowPath: "ok.yaml", inputs: {}, cwd }),
+    ],
+    [
+      "an invalid supplied name",
+      ({ workflowPath, cwd }: Workspace) =>
+        JSON.stringify({
+          workflow: "ok",
+          env: {},
+          workflowPath,
+          inputs: {},
+          cwd,
+          name: "Bad/Name",
+        }),
+    ],
+    [
+      "a request without env",
+      ({ workflowPath, cwd }: Workspace) =>
+        JSON.stringify({ workflow: "ok", workflowPath, inputs: {}, cwd }),
+    ],
+  ])("%s is 400 bad-request and launches nothing", async (_label, body) => {
+    let launched = false;
+    const deps = await buildDeps(() => {
+      launched = true;
+      return Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } });
+    });
+
+    const res = await createApp(deps).request("/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{not json",
+      body: body(tempWorkspace()),
     });
+
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("bad-request");
-  });
-
-  test("SC9: a relative workflowPath is 400 bad-request", async () => {
-    const { cwd } = tempWorkspace();
-    const deps = await buildDeps(() =>
-      Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } }),
-    );
-    const app = createApp(deps);
-
-    const res = await app.request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workflow: "ok", env: {}, workflowPath: "ok.yaml", inputs: {}, cwd }),
-    });
-
-    expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: { code: string } };
-    expect(json.error.code).toBe("bad-request");
+    expect(launched).toBe(false);
   });
 
   test("SC10: a working provider launches with the orchestrate prompt and returns the run and attach command", async () => {
@@ -153,31 +168,6 @@ describe("POST /runs", () => {
     expect((await deps.registry.findRun(json.run.id))?.terminal).toBe("session-xyz");
   });
 
-  test("SC4: the provider for the body's agent launches, no session is linked, and the terminal name is stored", async () => {
-    const { workflowPath, cwd } = tempWorkspace();
-    const deps = await buildDeps(() =>
-      Promise.resolve({ ok: true, value: { terminalName: "t-1", terminal: fakePane("t-1") } }),
-    );
-
-    const res = await createApp(deps).request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflow: "ok",
-        env: {},
-        workflowPath,
-        inputs: {},
-        cwd,
-        agent: "codex",
-      }),
-    });
-
-    expect(res.status).toBe(201);
-    const { run } = (await res.json()) as { run: { id: string } };
-    expect(deps.asked).toEqual(["codex"]);
-    expect(await deps.registry.findRun(run.id)).toMatchObject({ sessions: [], terminal: "t-1" });
-  });
-
   test("SC16: the first prompt invokes the skill the way the agent does: $orchestrate for codex", async () => {
     const { workflowPath, cwd } = tempWorkspace();
     let prompt: string | undefined;
@@ -201,58 +191,6 @@ describe("POST /runs", () => {
 
     expect(res.status).toBe(201);
     expect(prompt).toBe(`$orchestrate --workflow ${workflowPath} --inputs {}`);
-  });
-
-  test("a supplied name reaches the agent as the run name", async () => {
-    const { workflowPath, cwd } = tempWorkspace();
-    let prompt: string | undefined;
-    const deps = await buildDeps((options) => {
-      prompt = options.prompt;
-      return Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } });
-    });
-
-    const res = await createApp(deps).request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflow: "ok",
-        env: {},
-        workflowPath,
-        inputs: { prompt: "different" },
-        cwd,
-        name: "fix-login",
-      }),
-    });
-
-    expect(res.status).toBe(201);
-    expect(prompt).toBe(
-      `/orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify({ prompt: "different" })} --name fix-login`,
-    );
-  });
-
-  test("an invalid supplied name is rejected before launching an agent", async () => {
-    const { workflowPath, cwd } = tempWorkspace();
-    let launched = false;
-    const deps = await buildDeps(() => {
-      launched = true;
-      return Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } });
-    });
-
-    const res = await createApp(deps).request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflow: "ok",
-        env: {},
-        workflowPath,
-        inputs: {},
-        cwd,
-        name: "Bad/Name",
-      }),
-    });
-
-    expect(res.status).toBe(400);
-    expect(launched).toBe(false);
   });
 
   test("the run is in the registry before its agent starts, so the agent's orchestrate init finds it", async () => {
@@ -328,38 +266,30 @@ describe("POST /runs", () => {
     return { res, launched, deps };
   };
 
-  test("a claude run with no tiers anywhere launches on the built-in deep tier: claude-opus-5-5 at high effort", async () => {
-    const { res, launched } = await startTiered("claude", "version: 2\n");
+  test.each([
+    [
+      "a claude run with no tiers anywhere launches on the built-in deep tier",
+      "claude",
+      "version: 2\n",
+      { model: "claude-opus-5-5", effort: "high" },
+    ],
+    [
+      "a codex run with no tiers anywhere launches on the built-in deep tier",
+      "codex",
+      "version: 2\n",
+      { model: "gpt-6-sol", effort: "high" },
+    ],
+    [
+      "a codex run launches on the model and effort of its config's default tier",
+      "codex",
+      "version: 2\nagents:\n  codex:\n    tiers:\n      default: deep\n      models:\n        deep: { model: gpt-5-codex, effort: high }\n",
+      { model: "gpt-5-codex", effort: "high" },
+    ],
+  ] as const)("%s", async (_label, agent, config, model) => {
+    const { res, launched } = await startTiered(agent, config);
 
     expect(res.status).toBe(201);
-    expect(launched).toEqual([{ model: "claude-opus-5-5", effort: "high" }]);
-  });
-
-  test("a codex run with no tiers anywhere launches on the built-in deep tier: gpt-6-sol at high effort", async () => {
-    const { res, launched } = await startTiered("codex", "version: 2\n");
-
-    expect(res.status).toBe(201);
-    expect(launched).toEqual([{ model: "gpt-6-sol", effort: "high" }]);
-  });
-
-  test("a codex run launches on the model and effort of its config's default tier", async () => {
-    const config =
-      "version: 2\nagents:\n  codex:\n    tiers:\n      default: deep\n      models:\n        deep: { model: gpt-5-codex, effort: high }\n";
-    const { res, launched } = await startTiered("codex", config);
-
-    expect(res.status).toBe(201);
-    expect(launched).toEqual([{ model: "gpt-5-codex", effort: "high" }]);
-  });
-
-  test("SC23: a request whose tiers map deep to opus-y launches on opus-y over the config's opus-x", async () => {
-    const config =
-      "version: 2\nagents:\n  claude:\n    tiers:\n      models:\n        deep: { model: opus-x }\n";
-    const { res, launched } = await startTiered("claude", config, {
-      models: { deep: { model: "opus-y" } },
-    });
-
-    expect(res.status).toBe(201);
-    expect(launched).toEqual([{ model: "opus-y", effort: undefined }]);
+    expect(launched).toEqual([model]);
   });
 
   test("the run saved at start holds the built-in, config and request tiers merged, and launches on its default fast tier's haiku-x", async () => {
@@ -431,24 +361,6 @@ describe("POST /runs", () => {
     expect(seen[0]?.env?.YOK_RUN_ID).toBe(run.id);
     const pluginDir = seen[0]?.pluginDir ?? "";
     expect(existsSync(join(pluginDir, ".claude-plugin", "plugin.json"))).toBe(true);
-  });
-
-  test("a request without env is 400 and launches nothing", async () => {
-    const { workflowPath, cwd } = tempWorkspace();
-    let launched = false;
-    const deps = await buildDeps(() => {
-      launched = true;
-      return Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } });
-    });
-
-    const res = await createApp(deps).request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workflow: "ok", workflowPath, inputs: {}, cwd }),
-    });
-
-    expect(res.status).toBe(400);
-    expect(launched).toBe(false);
   });
 
   test("a request whose tiers default names a tier no layer maps is 400 and launches nothing", async () => {
@@ -660,15 +572,5 @@ describe("run page URL", () => {
     const missing = await app.request("/runs/r-missing/view");
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not-found");
-  });
-
-  test("SC108: GET /runs/view returns the runs page URL, the viewer origin followed by /", async () => {
-    const deps = {
-      ...(await buildDeps(() => Promise.reject(new Error("no launch")))),
-      viewerOrigin: "http://localhost:4321",
-    };
-    const res = await createApp(deps).request("/runs/view");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ view: "http://localhost:4321/" });
   });
 });

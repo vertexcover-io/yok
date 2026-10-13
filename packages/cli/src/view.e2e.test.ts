@@ -48,8 +48,12 @@ const setup = async () => {
 };
 
 describe("yok view", () => {
-  test("SC12: prints the page URL of a run in this repo, and refuses unknown or ambiguous targets", async () => {
+  test("SC12, SC109: prints the runs page URL with no target, a run's page URL by name, and refuses unknown or ambiguous targets", async () => {
     const { view, record } = await setup();
+
+    const list = view("--print");
+    expect(list.code).toBe(0);
+    expect(list.stdout).toMatch(/^http:\/\/localhost:\d+\/$/);
 
     const printed = view("fix-login", "--print");
     expect(printed.code).toBe(0);
@@ -62,17 +66,5 @@ describe("yok view", () => {
     const mismatched = view("other-run", "--run-id", record.id, "--print");
     expect(mismatched.code).toBe(1);
     expect(mismatched.stderr).toContain("name different runs");
-  }, 40_000);
-
-  test("SC109: with no name, --run-id or $YOK_RUN_ID, prints the runs page URL, and a named run still prints its own page", async () => {
-    const { view, record } = await setup();
-
-    const list = view("--print");
-    expect(list.code).toBe(0);
-    expect(list.stdout).toMatch(/^http:\/\/localhost:\d+\/$/);
-
-    const named = view("fix-login", "--print");
-    expect(named.code).toBe(0);
-    expect(named.stdout).toMatch(new RegExp(`^http://localhost:\\d+/runs/${record.id}$`));
   }, 40_000);
 });

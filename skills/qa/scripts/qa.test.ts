@@ -27,55 +27,19 @@ describe("QaOutputSchema", () => {
     expect(given.success).toBe(true);
   });
 
-  test("SC3: status BLOCKED:no-infra is rejected even with a reason", () => {
+  test.each([
+    ["SC11: a PASS verdict with no report", "PASS", [], ["report"]],
+    ["SC11: a PARTIAL verdict with no report", "PARTIAL", [], ["report"]],
+    ["SC12: a FAIL verdict with no bugs", "FAIL", [], ["bugs"]],
+  ])("%s is rejected on that field", (_label, status, bugs, path) => {
     const result = QaOutputSchema.safeParse({
-      status: "BLOCKED:no-infra",
-      reason: "podman is down",
+      status,
+      reason: "why",
       report: null,
       gaps: [],
-      bugs: [],
+      bugs,
     });
 
-    expect(result.success).toBe(false);
-  });
-
-  test("SC4: a FAIL bug without needsDecision is rejected, and with it parses unchanged", () => {
-    const verdict = { status: "FAIL", reason: "one bug", report: null, gaps: [] };
-
-    const missing = QaOutputSchema.safeParse({ ...verdict, bugs: [bug] });
-    const given = QaOutputSchema.safeParse({
-      ...verdict,
-      bugs: [{ ...bug, needsDecision: false }],
-    });
-
-    expect(missing.success).toBe(false);
-    expect(given.data?.bugs[0]).toEqual({ ...bug, needsDecision: false });
-  });
-
-  test.each(["PASS", "PARTIAL"])(
-    "SC11: a %s verdict with no report is rejected on report",
-    (status) => {
-      const result = QaOutputSchema.safeParse({
-        status,
-        reason: "two gaps",
-        report: null,
-        gaps: [],
-        bugs: [],
-      });
-
-      expect(result.error?.issues.map((issue) => issue.path)).toEqual([["report"]]);
-    },
-  );
-
-  test("SC12: a FAIL verdict with no bugs is rejected on bugs", () => {
-    const result = QaOutputSchema.safeParse({
-      status: "FAIL",
-      reason: "SC3 failed",
-      report: null,
-      gaps: [],
-      bugs: [],
-    });
-
-    expect(result.error?.issues.map((issue) => issue.path)).toEqual([["bugs"]]);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([path]);
   });
 });

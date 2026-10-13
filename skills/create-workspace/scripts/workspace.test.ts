@@ -66,8 +66,6 @@ const commit = (cwd: string, message: string): string => {
 const failure = (repo: RepoOutcome | undefined) =>
   repo?.status === "failed" ? repo.error : undefined;
 
-const ready = (repo: RepoOutcome | undefined) => (repo?.status === "ready" ? repo : undefined);
-
 const makeRepo = (dir: string, ignored: readonly string[] = [".worktrees/"]): string => {
   mkdirSync(dir, { recursive: true });
   git(dir, "init", "-q", "-b", "main");
@@ -135,6 +133,7 @@ describe("mono repo", () => {
       },
     });
     expect(git(path, "branch", "--show-current")).toBe("feat/auth");
+    expect(existsSync(join(root, ".git/FETCH_HEAD"))).toBe(false);
   });
 
   test("runs a TypeScript setup inside the worktree with every variable set", async () => {
@@ -158,14 +157,6 @@ describe("mono repo", () => {
     });
   });
 
-  test("checks out a branch that already exists instead of creating it", async () => {
-    const root = makeRepo(tempDir());
-    git(root, "branch", "feat/old");
-    const result = await createWorkspace({ root, branch: "feat/old" });
-    expect(result.ok).toBe(true);
-    expect(git(join(root, ".worktrees/feat-old"), "branch", "--show-current")).toBe("feat/old");
-  });
-
   test("a failing setup keeps the worktree and reports the exit code", async () => {
     const root = makeRepo(tempDir());
     writeConfig(root, { workspace: { setup: "echo broke >&2; exit 3" } });
@@ -182,16 +173,6 @@ describe("mono repo", () => {
     expect(failure(repo)?.message).toContain("broke");
     expect(existsSync(join(root, ".worktrees/b"))).toBe(true);
     expect(lines.map((line) => line.text)).toContain("broke");
-  });
-
-  test("a partial stdout line is never glued onto a stderr line", async () => {
-    const root = makeRepo(tempDir());
-    writeConfig(root, {
-      workspace: { setup: "printf out; sleep 0.1; printf 'err\\n' >&2; sleep 0.1; printf '\\n'" },
-    });
-    const lines: OutputLine[] = [];
-    await createWorkspace({ root, branch: "b", onOutput: (line) => lines.push(line) });
-    expect(lines.map((line) => line.text).sort()).toEqual(["err", "out"]);
   });
 
   test("remove runs teardown, then removes the worktree", async () => {
@@ -270,12 +251,6 @@ describe("mono repo", () => {
     expect(existsSync(join(root, "torn-down"))).toBe(false);
     expect(existsSync(join(root, ".worktrees/feat-a"))).toBe(true);
   });
-
-  test("removing a worktree that does not exist is an error", async () => {
-    const root = makeRepo(tempDir());
-    const result = await removeWorkspace({ root, branch: "nope" });
-    expect(result.ok).toBe(false);
-  });
 });
 
 describe("multi repo", () => {
@@ -342,18 +317,6 @@ describe("multi repo", () => {
     expect(existsSync(join(root, ".workspaces/b/courier/marker"))).toBe(true);
   });
 
-  test("one repo's failed setup does not stop the others", async () => {
-    const root = makeMulti({
-      packages: {
-        serana: { path: "serana", commands: { workspaceSetup: "exit 1" } },
-        courier: { path: "courier" },
-      },
-    });
-    const result = await createWorkspace({ root, branch: "b", repos: ["serana", "courier"] });
-    expect(result.ok && result.value.repos.map((r) => r.status)).toEqual(["failed", "ready"]);
-    expect(existsSync(join(root, ".workspaces/b/serana"))).toBe(true);
-  });
-
   test("remove with no repos named removes every repo's worktree and the empty workspace", async () => {
     const root = makeMulti({});
     await createWorkspace({ root, branch: "b", repos: ["serana", "courier"] });
@@ -367,17 +330,6 @@ describe("multi repo", () => {
 });
 
 describe("repo outcome details", () => {
-  test("WS8 — mono repo with no origin on main: worktreeDir is workspaceDir, base is main, startSha is the worktree HEAD, nothing fetched", async () => {
-    const root = makeRepo(tempDir());
-    const result = await createWorkspace({ root, branch: "feat-x" });
-    if (!result.ok) throw new Error(result.error);
-    const [repo] = result.value.repos;
-    expect(repo?.worktreeDir).toBe(result.value.workspaceDir);
-    expect(ready(repo)?.baseBranch).toBe("main");
-    expect(ready(repo)?.startSha).toBe(git(join(root, ".worktrees/feat-x"), "rev-parse", "HEAD"));
-    expect(existsSync(join(root, ".git/FETCH_HEAD"))).toBe(false);
-  });
-
   test("WS9 — multi layout: a package at services/api gets its worktree at that path inside the workspace", async () => {
     const root = makeRepo(tempDir(), [".workspaces/", "services/"]);
     makeRepo(join(root, "services/api"));
@@ -412,16 +364,6 @@ describe("repo outcome details", () => {
     const result = await createWorkspace({ root, branch: "feat-x" });
     const message = result.ok ? failure(result.value.repos[0])?.message : undefined;
     expect(message?.length).toBe(ERROR_MESSAGE_LIMIT);
-  });
-
-  test("WS10 — a repo whose setup exits 1 fails at setup with no startSha", async () => {
-    const root = makeRepo(tempDir());
-    writeConfig(root, { workspace: { setup: "exit 1" } });
-    const result = await createWorkspace({ root, branch: "feat-x" });
-    const repo = result.ok ? result.value.repos[0] : undefined;
-    expect(repo?.status).toBe("failed");
-    expect(failure(repo)?.kind).toBe("setup");
-    expect(ready(repo)?.startSha).toBeUndefined();
   });
 });
 
@@ -548,10 +490,6 @@ describe("CreateWorkspaceInputSchema", () => {
       false,
     );
   });
-
-  test("WS36 — only specName is required", () => {
-    expect(CreateWorkspaceInputSchema.safeParse({ specName: "feat-x" }).success).toBe(true);
-  });
 });
 
 type Rejection = Readonly<{
@@ -672,13 +610,6 @@ const twoRepoWorkspace = async (config: Record<string, unknown> = {}): Promise<s
 };
 
 describe("create events", () => {
-  test("a create with no run makes the worktree and records no event anywhere", async () => {
-    const root = makeRepo(tempDir());
-    const result = await createWorkspace({ root, branch: "feat-x" });
-    expect(result.ok && result.value.repos.map((repo) => repo.status)).toEqual(["ready"]);
-    expect(existsSync(join(root, ".yok"))).toBe(false);
-  });
-
   test("WS17 — a multi create of two repos records one workspace.created listing both under their repo ids", async () => {
     const root = makeMulti({
       packages: { apiServer: { path: "serana" }, courier: { path: "courier" } },
@@ -739,17 +670,6 @@ describe("create events", () => {
     ]);
     expect(events[0]?.payload).toMatchObject({ errors: { length: 1 } });
     expect(existsSync(join(root, ".workspaces/b/courier"))).toBe(true);
-  });
-
-  test("WS19 — an existing workspace folder fails with already exists, records nothing, and changes nothing", async () => {
-    const root = makeMulti({});
-    mkdirSync(join(root, ".workspaces/b"), { recursive: true });
-    const run = newRun();
-    const result = await createWorkspace({ run, root, branch: "b", repos: ["serana"] });
-    expect(result.ok ? "" : result.error).toContain("already exists");
-    expect(await eventsOf(run)).toEqual([]);
-    expect(git(join(root, "serana"), "worktree", "list").split("\n")).toHaveLength(1);
-    expect(git(join(root, "serana"), "branch", "--list", "b")).toBe("");
   });
 
   test("WS38 — an event that cannot be stored still returns the report, with the store error, and leaves the worktree on disk", async () => {

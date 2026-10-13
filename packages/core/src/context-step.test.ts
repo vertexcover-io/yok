@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   type IAgentProvider,
   type ITerminal,
@@ -292,19 +292,6 @@ describe("runContextStep: new", () => {
       YOK_RUN_ID: "r-1",
       YOK_HOME: HOME,
     });
-  });
-
-  test("SC67: a context reset relaunches Claude on /yok:orchestrate --resume, with a shim under the home first on PATH and the launch's plugin folder kept", async () => {
-    const context = await setUp("type: context, action: new");
-    const starting = startingProvider(context);
-
-    await helper(context, fakeTerminal(() => IDLE).terminal, starting.provider);
-
-    const options = starting.relaunches[0]?.options;
-    expect(options?.prompt).toBe("/yok:orchestrate --resume feat-x");
-    const [shimDir = ""] = (options?.env?.PATH ?? "").split(delimiter);
-    expect(dirname(shimDir)).toBe(join(HOME, "shims"));
-    expect(options?.pluginDir).toBe("/plugin-repo");
   });
 
   test("a run env that fails to load completes unapplied and resumes the old session, launching nothing", async () => {

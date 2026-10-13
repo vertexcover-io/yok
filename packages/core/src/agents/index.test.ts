@@ -10,14 +10,13 @@ describe("findSessionAgent", () => {
     { agent: "pi" as const, sessionId: "p1" },
   ];
 
-  test("a linked session gives its own agent, codex included", () => {
-    expect(findSessionAgent(sessions, "x1")).toBe("codex");
-    expect(findSessionAgent(sessions, "c1")).toBe("claude");
-  });
-
-  test("an unlinked session, or one whose agent has no provider, gives undefined", () => {
-    expect(findSessionAgent(sessions, "nope")).toBeUndefined();
-    expect(findSessionAgent(sessions, "p1")).toBeUndefined();
+  test.each([
+    ["a linked codex session", "x1", "codex"],
+    ["a linked claude session", "c1", "claude"],
+    ["an unlinked session", "nope", undefined],
+    ["a session whose agent has no provider", "p1", undefined],
+  ] as const)("%s gives %p", (_label, sessionId, agent) => {
+    expect(findSessionAgent(sessions, sessionId)).toBe(agent);
   });
 });
 

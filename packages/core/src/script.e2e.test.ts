@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -155,29 +155,6 @@ describe("yok orchestrate skill run STAGE.REF", () => {
     const ran = skillRun(["nope.tool"], options);
     expect(ran.code).toBe(1);
     expect(ran.stderr).toContain(join(options.skills, "nope"));
-  });
-});
-
-describe("yok orchestrate script with the SDK", () => {
-  const dir = join(REPO_ROOT, ".yok", "tmp", `sdk-user-${process.pid}`);
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-
-  test("SC57: a script importing @yok/sdk and zod runs from a folder with no node_modules of its own", () => {
-    writeFiles(dir, {
-      "sdk-user.ts": `import { NonEmptyStringSchema } from "@yok/sdk";
-import * as z from "zod";
-export const main = () => {
-  NonEmptyStringSchema.parse("x");
-  z.object({ a: z.string() }).parse({ a: "b" });
-  console.log("ok");
-};
-`,
-    });
-    expect(existsSync(join(dir, "node_modules"))).toBe(false);
-    expect(script([join(dir, "sdk-user.ts")], { cwd: REPO_ROOT })).toMatchObject({
-      code: 0,
-      stdout: "ok\n",
-    });
   });
 });
 

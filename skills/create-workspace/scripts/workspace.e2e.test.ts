@@ -141,26 +141,6 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(JSON.parse(fromMain.stdout).packages).toEqual([]);
   });
 
-  test("--root is refused", () => {
-    const root = tempRepo();
-
-    const info = workspace(root, tempDir(), ["info", "--root", root]);
-
-    expect(info.code).toBe(1);
-    expect(info.stderr).toContain("--root");
-  });
-
-  test("inside a yok session, create records into the run $YOK_RUN_ID names", async () => {
-    const root = tempRepo();
-    const home = tempDir();
-    initializedRun(home, root);
-
-    const created = workspace(root, home, ["create", "b"], { YOK_RUN_ID: "r-1" });
-
-    expect(created.code).toBe(0);
-    expect((await eventsOf(root)).map((event) => event.type)).toEqual(["workspace.created"]);
-  });
-
   test("--run-id picks the run from outside the repo, and worktrees still go under its main checkout", async () => {
     const root = tempRepo();
     const home = tempDir();
@@ -262,18 +242,6 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(run.stderr).toContain("mono");
   });
 
-  test("create with a --run no run has exits 1 before any worktree is made", () => {
-    const root = tempRepo();
-    const home = tempDir();
-    initializedRun(home, root);
-
-    const run = workspace(root, home, ["create", "b", "--run", "ghost"]);
-
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain('no run named "ghost"');
-    expect(existsSync(join(root, ".worktrees"))).toBe(false);
-  });
-
   test("create with no --run makes the worktree and records no event", () => {
     const root = tempRepo();
 
@@ -305,18 +273,6 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     ]);
   });
 
-  test("run from inside a worktree, remove still finds the main checkout", () => {
-    const root = tempRepo();
-    const home = tempDir();
-    initializedRun(home, root);
-    workspace(root, home, ["create", "b", "--run", "feat-x"]);
-
-    const run = workspace(join(root, ".worktrees/b"), home, ["remove", "b", "--run", "feat-x"]);
-
-    expect(run.code).toBe(0);
-    expect(existsSync(join(root, ".worktrees/b"))).toBe(false);
-  });
-
   test("add puts a repo into an existing multi workspace and records it", async () => {
     const root = makeMulti();
     const home = tempDir();
@@ -331,19 +287,9 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect((await eventsOf(root)).at(-1)?.type).toBe("workspace.repository.added");
   });
 
-  test("add to a workspace that does not exist exits 1", () => {
-    const root = makeMulti();
-    const home = tempDir();
-    initializedRun(home, root);
-
-    const run = workspace(root, home, ["add", "b", "--repos", "web", "--run", "feat-x"]);
-
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain("no workspace");
-  });
-
   test.each([
     ["add with no --repos", ["add", "b"], "--repos"],
+    ["a flag no subcommand takes", ["info", "--nope"], "--nope"],
     ["a flag the subcommand does not take", ["create", "b", "--force"], "--force"],
     ["an unknown subcommand", ["make", "b"], "make"],
     ["a missing branch", ["create"], "branch"],

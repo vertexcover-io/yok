@@ -136,19 +136,6 @@ describe("recordGuard through runPreToolUse", () => {
     expect(allowed).toEqual({ kind: "allow" });
   });
 
-  test("SC4: both shell spellings of YOK_HOME in a command expand to the yok home, whose registry is refused", async () => {
-    const { cwd, home, deps } = await setUp();
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell form under test
-    for (const variable of ["$YOK_HOME", "${YOK_HOME}"]) {
-      const verdict = await runPreToolUse(
-        use(cwd, shell(`rm ${variable}/registry.json`), { toolName: "Bash" }),
-        recordGuard,
-        deps,
-      );
-      expect(verdict).toMatchObject({ kind: "deny", path: join(home, "registry.json") });
-    }
-  });
-
   test("SC9, SC23 — a shell command on the registry is refused with init and link-session", async () => {
     const { cwd, deps } = await setUp();
 

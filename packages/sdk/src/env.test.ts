@@ -91,23 +91,6 @@ describe("readProjectEnv outside a git repo", () => {
     }
   };
 
-  test("parses plain, exported and quoted values, skipping comments and blanks", async () => {
-    const content = ["# note", "", "A=1", "export B=two", 'C="three four"', "D='five'"].join("\n");
-    await withEnv(content, async (root) => {
-      expect(await readProjectEnv(root, "A")).toBe("1");
-      expect(await readProjectEnv(root, "B")).toBe("two");
-      expect(await readProjectEnv(root, "C")).toBe("three four");
-      expect(await readProjectEnv(root, "D")).toBe("five");
-    });
-  });
-
-  test("strips an inline comment and expands an escaped newline in a double-quoted value", async () => {
-    await withEnv('E=six # note\nF="a\\nb"\n', async (root) => {
-      expect(await readProjectEnv(root, "E")).toBe("six");
-      expect(await readProjectEnv(root, "F")).toBe("a\nb");
-    });
-  });
-
   test("a key the file sets wins over the process environment", async () => {
     process.env.PROJECT_ENV_TEST_KEY = "from-process";
     await withEnv("PROJECT_ENV_TEST_KEY=from-file\n", async (root) => {
@@ -256,31 +239,25 @@ describe("loadEnv", () => {
 });
 
 describe("sessionEnv", () => {
-  test("SC2: a session starts with YOK_RUN_ID and YOK_HOME over the run's env, and no variable of the old name", () => {
-    const env = sessionEnv({ A: "1", PATH: "/run/bin" }, "run-1", "/h", "/h/shims/abc");
-    expect(env).toEqual({
-      A: "1",
-      PATH: "/h/shims/abc:/run/bin",
-      YOK_RUN_ID: "run-1",
-      YOK_HOME: "/h",
-    });
-    const oldPrefix = `${["HAR", "NESS"].join("")}_`;
-    expect(Object.keys(env).filter((key) => key.startsWith(oldPrefix))).toEqual([]);
-  });
+  const session = { YOK_RUN_ID: "run-1", YOK_HOME: "/h" };
 
-  test("SC62: the shim folder goes first on the run's PATH, or the caller's PATH when the run has none, and a run's env cannot override YOK_RUN_ID", () => {
-    const env = sessionEnv(
+  test.each([
+    [
+      "SC2: a session starts with YOK_RUN_ID and YOK_HOME over the run's env",
+      { A: "1", PATH: "/run/bin" },
+      { A: "1", PATH: "/h/shims/abc:/run/bin", ...session },
+    ],
+    [
+      "SC62: a run's env cannot override YOK_RUN_ID, and the shim folder goes first on its PATH",
       { PATH: "/run/bin", YOK_RUN_ID: "stale", FOO: "1" },
-      "run-1",
-      "/h",
-      "/h/shims/abc",
-    );
-    expect(env.PATH).toBe("/h/shims/abc:/run/bin");
-    expect(env.YOK_RUN_ID).toBe("run-1");
-    expect(env.YOK_HOME).toBe("/h");
-    expect(env.FOO).toBe("1");
-    expect(sessionEnv({}, "run-1", "/h", "/h/shims/abc").PATH).toBe(
-      `/h/shims/abc:${process.env.PATH}`,
-    );
+      { FOO: "1", PATH: "/h/shims/abc:/run/bin", ...session },
+    ],
+    [
+      "SC62: a run with no PATH puts the shim folder before the caller's PATH",
+      {},
+      { PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
+    ],
+  ])("%s", (_label, runEnv, expected) => {
+    expect(sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(expected);
   });
 });

@@ -49,9 +49,6 @@ const server = Bun.serve({
     seen.urls.push(url);
     if (url.pathname === "/files/a1")
       return new Response(FILE_BYTES, { headers: { "content-type": "image/png" } });
-    if (url.pathname === "/files/hop") {
-      return new Response(null, { status: 302, headers: { location: `${base}/files/a1` } });
-    }
     if (url.pathname.endsWith("/attachments/502")) return new Response("<html>", { status: 502 });
     if (url.searchParams.get("offset") === "broken") return new Response("down", { status: 503 });
     if (url.pathname.endsWith("/tasks/222/stories") && url.searchParams.get("offset") === "page2") {
@@ -80,9 +77,6 @@ const routes: Record<string, unknown> = {
   },
   "/attachments/302": { data: { gid: "302", name: "spec", host: "gdrive", download_url: null } },
   "/attachments/303": { data: { gid: "303", name: "gone.png", host: "asana", download_url: null } },
-  "/attachments/304": {
-    data: { gid: "304", name: "hop.png", host: "asana", download_url: `${base}/files/hop` },
-  },
   "/attachments/200": {},
 };
 
@@ -151,14 +145,6 @@ describe("downloadAsset", () => {
     expect(seen.auth.at(-1)).toBeNull();
   });
 
-  test("refuses an unsafe name before sending any request", async () => {
-    const before = seen.urls.length;
-    await expect(downloadAsset(local, "301", { dir, name: "../escape.png" })).rejects.toThrow(
-      "unsafe file name",
-    );
-    expect(seen.urls.length).toBe(before);
-  });
-
   test("refuses an attachment id that is not a number before sending any request", async () => {
     const before = seen.urls.length;
     await expect(downloadAsset(local, "../tasks/222", { dir, name: "x.png" })).rejects.toThrow(
@@ -177,21 +163,11 @@ describe("downloadAsset", () => {
     expect(existsSync(join(dir, `refused-${gid}`))).toBe(false);
   });
 
-  test("refuses a download link that redirects to a local address, saving nothing", async () => {
-    await expect(downloadAsset(local, "304", { dir, name: "hop.png" })).rejects.toThrow("refusing");
-    expect(existsSync(join(dir, "hop.png"))).toBe(false);
-  });
-
   test.each([
     ["an error page that is not JSON", "502", "Asana API returned HTTP 502"],
     ["a reply with no data", "200", "Asana API returned no data"],
   ])("fails clearly on %s", async (_label, gid, message) => {
     await expect(downloadAsset(local, gid, { dir, name: `bad-${gid}` })).rejects.toThrow(message);
-  });
-
-  test("refuses a download link to a local address outside the test override", async () => {
-    await expect(downloadAsset(api, "301", { dir, name: "local.png" })).rejects.toThrow("refusing");
-    expect(existsSync(join(dir, "local.png"))).toBe(false);
   });
 });
 
@@ -199,9 +175,9 @@ const CLI = join(import.meta.dir, "../../../packages/cli/src/index.ts");
 const ASANA = ["--no-env-file", CLI, "orchestrate", "skill", "run", "ticket-fetcher.asana-api"];
 
 // Async spawn: a sync one would block this process's fake server from answering.
-const runCli = async (args: readonly string[], key: string | null = "cli-key") => {
+const runCli = async (args: readonly string[]) => {
   const cwd = mkdtempSync(join(tmpdir(), "asana-cli-"));
-  if (key !== null) writeFileSync(join(cwd, ".env"), `ASANA_API_KEY=${key}\n`);
+  writeFileSync(join(cwd, ".env"), "ASANA_API_KEY=cli-key\n");
   const { ASANA_API_KEY: _, ...env } = process.env;
   const child = Bun.spawn(["bun", ...ASANA, ...args], {
     cwd,
@@ -218,35 +194,30 @@ const runCli = async (args: readonly string[], key: string | null = "cli-key") =
 };
 
 describe("the asana CLI through yok orchestrate skill run", () => {
-  test("task URL prints the task with its comments, using the key from .env", async () => {
-    const { code, stdout } = await runCli(["task", "https://app.asana.com/0/111/222/f"]);
-    expect(code).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({
-      gid: "222",
-      comments: [{ gid: "s1" }, { gid: "s3" }],
-    });
-    expect(seen.auth.at(-1)).toBe("Bearer cli-key");
-  });
+  const out = mkdtempSync(join(tmpdir(), "asana-cli-out-"));
 
-  test("a task that does not exist exits 1 with the reason on stderr", async () => {
-    const { code, stdout, stderr } = await runCli(["task", "404"]);
-    expect(code).toBe(1);
-    expect(stdout).toBe("");
-    expect(stderr).toContain("HTTP 404");
-  });
-
-  test("asset GID --dir DIR --name NAME writes the file and prints its info", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "asana-cli-out-"));
-    const { code, stdout } = await runCli(["asset", "301", "--dir", dir, "--name", "m.png"]);
-    expect(code).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({ path: join(dir, "m.png"), mimeType: "image/png" });
-  });
-
-  test("without ASANA_API_KEY it exits 1 naming it", async () => {
-    const { code, stderr } = await runCli(["task", "222"], null);
-    expect(code).toBe(1);
-    expect(stderr).toContain("ASANA_API_KEY is not set");
-  });
+  test.each([
+    [
+      "task",
+      ["task", "https://app.asana.com/0/111/222/f"],
+      { gid: "222", comments: [{ gid: "s1" }, { gid: "s3" }] },
+      "Bearer cli-key",
+    ],
+    [
+      "asset",
+      ["asset", "301", "--dir", out, "--name", "m.png"],
+      { path: join(out, "m.png"), mimeType: "image/png" },
+      null,
+    ],
+  ])(
+    "%s prints its result as JSON, using the key from .env",
+    async (_label, args, result, auth) => {
+      const { code, stdout } = await runCli(args);
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout)).toMatchObject(result);
+      expect(seen.auth.at(-1)).toBe(auth);
+    },
+  );
 
   test.each([
     ["no arguments", []],

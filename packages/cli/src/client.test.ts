@@ -32,19 +32,24 @@ describe("shouldOpenBrowser", () => {
 describe("isCurrentServer", () => {
   const server = { pid: 1, version: "1.2.3", startedAt: 100 };
 
-  test("keeps a server of this version started at or after replaceBefore", () => {
-    expect(isCurrentServer(server, 100, "1.2.3")).toBe(true);
-  });
-
-  test("replaces a server started before replaceBefore", () => {
-    expect(isCurrentServer(server, 101, "1.2.3")).toBe(false);
-  });
-
-  test("replaces a server of another version, so an upgrade by Homebrew or npm takes effect", () => {
-    expect(isCurrentServer(server, 0, "1.2.4")).toBe(false);
-  });
-
-  test("starts a server when none is running", () => {
-    expect(isCurrentServer(null, 0, "1.2.3")).toBe(false);
+  test.each([
+    [
+      "keeps a server of this version started at or after replaceBefore",
+      server,
+      100,
+      "1.2.3",
+      true,
+    ],
+    ["replaces a server started before replaceBefore", server, 101, "1.2.3", false],
+    [
+      "replaces a server of another version, so an upgrade by Homebrew or npm takes effect",
+      server,
+      0,
+      "1.2.4",
+      false,
+    ],
+    ["starts a server when none is running", null, 0, "1.2.3", false],
+  ])("%s", (_label, running, replaceBefore, version, expected) => {
+    expect(isCurrentServer(running, replaceBefore, version)).toBe(expected);
   });
 });

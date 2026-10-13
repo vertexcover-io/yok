@@ -147,21 +147,17 @@ describe("renderStatusline", () => {
     expect(await lineOf(makeRun({ status: "cancelled" }))).toStartWith("yok feat-x ▸ ✗ cancelled");
   });
 
-  test("SC4: elapsed time reads 45s, 12m and 1h05m", async () => {
-    const at = (ms: number) =>
-      makeRun({ nodeRuns: { a: node("running", { startedAt: ago(ms) }) } });
-    expect(await lineOf(at(45 * SECOND))).toEndWith(" · 45s");
-    expect(await lineOf(at(12 * MINUTE))).toEndWith(" · 12m");
-    expect(await lineOf(at(65 * MINUTE))).toEndWith(" · 1h05m");
-  });
-
-  test("elapsed time rolls over to minutes at 60s and to hours at 60m", async () => {
-    const at = (ms: number) =>
-      makeRun({ nodeRuns: { a: node("running", { startedAt: ago(ms) }) } });
-    expect(await lineOf(at(59 * SECOND))).toEndWith(" · 59s");
-    expect(await lineOf(at(60 * SECOND))).toEndWith(" · 1m");
-    expect(await lineOf(at(59 * MINUTE))).toEndWith(" · 59m");
-    expect(await lineOf(at(60 * MINUTE))).toEndWith(" · 1h00m");
+  test.each([
+    [45 * SECOND, "45s"],
+    [59 * SECOND, "59s"],
+    [60 * SECOND, "1m"],
+    [12 * MINUTE, "12m"],
+    [59 * MINUTE, "59m"],
+    [60 * MINUTE, "1h00m"],
+    [65 * MINUTE, "1h05m"],
+  ])("SC4: a node running for %pms shows an elapsed time of %s", async (ms, elapsed) => {
+    const run = makeRun({ nodeRuns: { a: node("running", { startedAt: ago(ms) }) } });
+    expect(await lineOf(run)).toEndWith(` · ${elapsed}`);
   });
 
   test("a running run between nodes shows the bar without a node or elapsed time", async () => {

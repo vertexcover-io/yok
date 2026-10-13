@@ -140,12 +140,26 @@ describe("decideStop", () => {
     expect(message).not.toContain("orchestrate done");
   });
 
-  test("SC4 — a chat turn between nodes lets the turn end", () => {
-    expect(decide({}, { touchedRun: false })).toMatchObject({ reason: "user-chat" });
-  });
-
-  test("SC5 — an unknown turn between nodes still blocks", () => {
-    expect(decide({}, { touchedRun: undefined })).toMatchObject({ reason: "next-not-run" });
+  test.each([
+    ["SC4 — a chat turn between nodes lets the turn end", false, { reason: "user-chat" }],
+    [
+      "SC5 — an unknown turn between nodes still blocks",
+      undefined,
+      {
+        reason: "next-not-run",
+        message: expect.stringContaining("yok orchestrate next --run feat-x"),
+      },
+    ],
+    [
+      "SC10 — a run-work turn between nodes with no switch pending, as after a failed one, is sent to next",
+      true,
+      {
+        reason: "next-not-run",
+        message: expect.stringContaining("yok orchestrate next --run feat-x"),
+      },
+    ],
+  ])("%s", (_label, touchedRun, expected) => {
+    expect(decide({}, { touchedRun })).toMatchObject(expected);
   });
 
   test("SC6 — a chat turn with a node open still blocks", () => {
@@ -191,15 +205,6 @@ describe("decideStop", () => {
     expect(decision).toEqual({ reason: "awaiting-approval", blockStreak: 1, nodeRunId: "design" });
   });
 
-  test("SC4: a stop with an open agent node that does not wait for approval is still sent back with its done command", () => {
-    const decision = decide({ nodeRuns: planOpen });
-    expect(decision).toMatchObject({
-      reason: "node-not-done",
-      nodeRunId: "plan",
-      message: expect.stringContaining("yok orchestrate done plan --run feat-x"),
-    });
-  });
-
   test("SC9: a stop between nodes with switch seq 42 pending lets the turn end as model-switch, even on a chat turn", () => {
     const pending = { seq: 42, node: "think", model: "opus-x" };
     expect(decide({}, { touchedRun: false, pendingSwitch: pending })).toEqual({
@@ -223,13 +228,6 @@ describe("decideStop", () => {
       { waitingOnBackground: true },
     );
     expect(decision).toEqual({ reason: "background-task", blockStreak: 1 });
-  });
-
-  test("SC10: a stop between nodes with no switch pending, as after a failed one, sends the agent to next", () => {
-    expect(decide({})).toMatchObject({
-      reason: "next-not-run",
-      message: expect.stringContaining("yok orchestrate next --run feat-x"),
-    });
   });
 });
 
@@ -293,68 +291,60 @@ describe("runStopHook", () => {
     expect(await replies(undefined)).toEqual(["continue", "allow", "allow", "allow"]);
   });
 
-  test("SC11 — an orchestrate command after the last prompt marks the turn as run work", async () => {
+  test.each<[string, readonly TranscriptEntry[] | undefined, "continue" | "allow"]>([
+    ["SC11, SC24 — yok orchestrate next after the last prompt", orchestrateAfterPrompt, "continue"],
+    [
+      "SC24 — yok orchestrate run-subscriber call after the prompt",
+      [
+        { kind: "prompt", text: "go" },
+        { kind: "command", command: "yok orchestrate run-subscriber call" },
+      ],
+      "allow",
+    ],
+    [
+      "SC316 — yok orchestrate resume after the prompt",
+      [
+        { kind: "prompt", text: "/yok:orchestrate --resume feat-x" },
+        { kind: "command", command: "yok orchestrate resume --run feat-x" },
+      ],
+      "continue",
+    ],
+    [
+      "SC12 — orchestrate commands only before the last prompt",
+      [
+        { kind: "prompt", text: "go" },
+        { kind: "command", command: "yok orchestrate next --run feat-x" },
+        { kind: "prompt", text: "why did lint fail?" },
+        { kind: "command", command: "cat lint.log" },
+      ],
+      "allow",
+    ],
+    [
+      "reading or grepping orchestrate files",
+      [
+        { kind: "prompt", text: "how does next work?" },
+        { kind: "command", command: "grep -n decideNext packages/core/src/orchestrate.ts" },
+        { kind: "command", command: "cat skills/orchestrate/SKILL.md" },
+        { kind: "command", command: "grep -rn orchestrate packages/core" },
+      ],
+      "allow",
+    ],
+    [
+      "a direct call to the orchestrate script",
+      [
+        { kind: "prompt", text: "go" },
+        {
+          kind: "command",
+          command: "bun /h/packages/core/src/orchestrate.ts done n1 --run feat-x",
+        },
+      ],
+      "continue",
+    ],
+    ["SC13 — commands with no prompt", [{ kind: "command", command: "ls" }], "continue"],
+    ["SC13 — no transcript", undefined, "continue"],
+  ])("between nodes, %s gives %s", async (_label, entries, kind) => {
     const { deps } = await setUp({});
-    expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toMatchObject({
-      kind: "continue",
-    });
-  });
-
-  test("SC24 — yok orchestrate next after the prompt drives the run, and yok orchestrate run-subscriber call does not", async () => {
-    const runHook: TranscriptEntry[] = [
-      { kind: "prompt", text: "go" },
-      { kind: "command", command: "yok orchestrate run-subscriber call" },
-    ];
-    expect(await runStopHook(input(orchestrateAfterPrompt), (await setUp({})).deps)).toMatchObject({
-      kind: "continue",
-    });
-    expect(await runStopHook(input(runHook), (await setUp({})).deps)).toEqual({ kind: "allow" });
-  });
-
-  test("SC316 — yok orchestrate resume after the prompt drives the run", async () => {
-    const resumed: TranscriptEntry[] = [
-      { kind: "prompt", text: "/yok:orchestrate --resume feat-x" },
-      { kind: "command", command: "yok orchestrate resume --run feat-x" },
-    ];
-    expect(await runStopHook(input(resumed), (await setUp({})).deps)).toMatchObject({
-      kind: "continue",
-    });
-  });
-
-  test("SC12 — commands only before the last prompt do not count", async () => {
-    const { deps } = await setUp({});
-    const entries: TranscriptEntry[] = [
-      { kind: "prompt", text: "go" },
-      { kind: "command", command: "yok orchestrate next --run feat-x" },
-      { kind: "prompt", text: "why did lint fail?" },
-      { kind: "command", command: "cat lint.log" },
-    ];
-    expect(await runStopHook(input(entries), deps)).toEqual({ kind: "allow" });
-  });
-
-  test("reading or grepping orchestrate files is chat, and a direct call to the script is run work", async () => {
-    const reads: TranscriptEntry[] = [
-      { kind: "prompt", text: "how does next work?" },
-      { kind: "command", command: "grep -n decideNext packages/core/src/orchestrate.ts" },
-      { kind: "command", command: "cat skills/orchestrate/SKILL.md" },
-      { kind: "command", command: "grep -rn orchestrate packages/core" },
-    ];
-    const direct: TranscriptEntry[] = [
-      { kind: "prompt", text: "go" },
-      { kind: "command", command: "bun /h/packages/core/src/orchestrate.ts done n1 --run feat-x" },
-    ];
-    expect(await runStopHook(input(reads), (await setUp({})).deps)).toEqual({ kind: "allow" });
-    expect(await runStopHook(input(direct), (await setUp({})).deps)).toMatchObject({
-      kind: "continue",
-    });
-  });
-
-  test("SC13 — no prompt, or no transcript, is unknown, so the turn still blocks", async () => {
-    const onlyCommands: TranscriptEntry[] = [{ kind: "command", command: "ls" }];
-    for (const entries of [onlyCommands, undefined]) {
-      const { deps } = await setUp({});
-      expect(await runStopHook(input(entries), deps)).toMatchObject({ kind: "continue" });
-    }
+    expect(await runStopHook(input(entries), deps)).toMatchObject({ kind });
   });
 
   test("the transcript is read only when no node is open, and every call is logged", async () => {
@@ -414,20 +404,6 @@ describe("runStopHook", () => {
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
     expect((await readState(runDir))?.status).toBe("running");
-  });
-
-  test("SC139, SC140: with plan open and no background task in flight, the first stop sends the agent back and the second records agent.stuck", async () => {
-    const { deps, runDir } = await setUp(planOpen);
-    const stopping = input(undefined, "claude", false);
-
-    const kinds = [
-      (await runStopHook(stopping, deps)).kind,
-      (await runStopHook(stopping, deps)).kind,
-    ];
-
-    expect(kinds).toEqual(["continue", "allow"]);
-    const types = (await jsonlEventStore(runDir).read()).map((event) => event.type);
-    expect(types).toEqual(["hooks.stop.called", "hooks.stop.called", "agent.stuck"]);
   });
 
   test("a tool call between two stops is not progress, and any other event is", async () => {

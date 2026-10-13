@@ -149,24 +149,35 @@ describe("claudeAdapter.stop background_tasks", () => {
 });
 
 describe("claudeSettings", () => {
-  test("SC18 — the settings run the hook command with every argument quoted", () => {
-    const settings = claudeSettings(["/usr/bin/bun", "/opt/it's here/orchestrate.ts"]);
-    expect(settings.hooks.Stop[0]?.hooks[0]).toEqual({
+  test("SC8, SC13, SC18, SC303 — the status line and every hook run the orchestrate argv with each argument quoted", () => {
+    const argv = "'/usr/bin/bun' '/opt/it'\\''s here/orchestrate.ts'";
+    const entry = (event: string, handler: string) => ({
       type: "command",
-      command:
-        "'/usr/bin/bun' '/opt/it'\\''s here/orchestrate.ts' 'hook' 'stop' '--agent' 'claude' '--handler' 'continue-workflow'",
+      command: `${argv} 'hook' '${event}' '--agent' 'claude' '--handler' '${handler}'`,
       timeout: 30,
     });
-  });
-});
 
-describe("claudeSettings statusLine", () => {
-  test("SC8 — the status line runs the same script as the hooks, ending in statusline, every 5 seconds", () => {
-    const settings = claudeSettings(["/usr/bin/bun", "/opt/it's here/orchestrate.ts"]);
-    expect(settings.statusLine).toEqual({
-      type: "command",
-      command: "'/usr/bin/bun' '/opt/it'\\''s here/orchestrate.ts' 'statusline'",
-      refreshInterval: 5,
+    expect(claudeSettings(["/usr/bin/bun", "/opt/it's here/orchestrate.ts"])).toEqual({
+      statusLine: { type: "command", command: `${argv} 'statusline'`, refreshInterval: 5 },
+      hooks: {
+        SessionStart: [{ hooks: [entry("session-start", "link-session")] }],
+        Stop: [{ hooks: [entry("stop", "continue-workflow")] }],
+        StopFailure: [
+          { matcher: "rate_limit", hooks: [entry("stop-failure", "resume-after-limit")] },
+          { matcher: "*", hooks: [entry("stop-failure", "record-agent-error")] },
+        ],
+        PreToolUse: [
+          {
+            matcher: "Write|Edit|MultiEdit|NotebookEdit|Bash",
+            hooks: [entry("pre-tool-use", "record-guard"), entry("pre-tool-use", "record-resumed")],
+          },
+          { matcher: "Bash", hooks: [entry("pre-tool-use", "bash-antipatterns")] },
+          { matcher: "AskUserQuestion", hooks: [entry("pre-tool-use", "question-notice")] },
+        ],
+        PostToolUse: [
+          { matcher: "AskUserQuestion", hooks: [entry("post-tool-use", "answer-notice")] },
+        ],
+      },
     });
   });
 });
@@ -401,27 +412,6 @@ describe("claudeAdapter.postToolUse", () => {
   );
 });
 
-describe("claudeSettings SessionStart", () => {
-  test("SC13: SessionStart runs link-session with no matcher, and Stop and PreToolUse are unchanged", () => {
-    const settings = claudeSettings(["/usr/bin/bun", "/o.ts"]);
-
-    expect(settings.hooks.SessionStart).toEqual([
-      {
-        hooks: [
-          {
-            type: "command",
-            command:
-              "'/usr/bin/bun' '/o.ts' 'hook' 'session-start' '--agent' 'claude' '--handler' 'link-session'",
-            timeout: 30,
-          },
-        ],
-      },
-    ]);
-    expect(settings.hooks.Stop).toHaveLength(1);
-    expect(settings.hooks.PreToolUse).toHaveLength(3);
-  });
-});
-
 describe("claudeAdapter.stopFailure", () => {
   const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
   test.each([
@@ -455,42 +445,6 @@ describe("claudeAdapter.stopFailure", () => {
       ]);
     },
   );
-});
-
-describe("claudeSettings question and stop handlers", () => {
-  const settings = claudeSettings(["/usr/bin/bun", "/o.ts"]);
-  const entry = (event: string, handler: string) => ({
-    type: "command",
-    command: `'/usr/bin/bun' '/o.ts' 'hook' '${event}' '--agent' 'claude' '--handler' '${handler}'`,
-    timeout: 30,
-  });
-
-  test("SC303 (regression): StopFailure keeps resume-after-limit on rate_limit and adds record-agent-error on every error", () => {
-    expect(settings.hooks.StopFailure).toEqual([
-      { matcher: "rate_limit", hooks: [entry("stop-failure", "resume-after-limit")] },
-      { matcher: "*", hooks: [entry("stop-failure", "record-agent-error")] },
-    ]);
-  });
-
-  test("SC303 (regression): PreToolUse runs record-guard and record-resumed on Bash and file writes, bash-antipatterns on Bash and question-notice on AskUserQuestion", () => {
-    expect(settings.hooks.PreToolUse).toEqual([
-      {
-        matcher: "Write|Edit|MultiEdit|NotebookEdit|Bash",
-        hooks: [entry("pre-tool-use", "record-guard"), entry("pre-tool-use", "record-resumed")],
-      },
-      { matcher: "Bash", hooks: [entry("pre-tool-use", "bash-antipatterns")] },
-      { matcher: "AskUserQuestion", hooks: [entry("pre-tool-use", "question-notice")] },
-    ]);
-  });
-
-  test("SC303 (regression): PostToolUse runs answer-notice on AskUserQuestion", () => {
-    expect(settings.hooks.PostToolUse).toEqual([
-      { matcher: "AskUserQuestion", hooks: [entry("post-tool-use", "answer-notice")] },
-    ]);
-    expect(settings.hooks.PostToolUse[0]?.hooks[0]?.command).toEndWith(
-      "'hook' 'post-tool-use' '--agent' 'claude' '--handler' 'answer-notice'",
-    );
-  });
 });
 
 describe("claudeSettings handlers", () => {
@@ -613,37 +567,34 @@ describe("Claude's StopFailure in a run", () => {
       last_assistant_message: message,
     });
 
-  test("SC306: authentication_failed records agent.stopped with its message, and no limit", async () => {
-    const { deps, events } = await linkedRun();
-
-    await claudeAdapter.stopFailure?.(
-      stopFailure("authentication_failed", "Invalid API key"),
-      deps,
-      recordAgentError,
-    );
-
-    expect((await events()).map((event) => [event.type, event.payload])).toEqual([
+  test.each([
+    [
+      "authentication_failed records agent.stopped with its message, and no limit",
+      "authentication_failed",
+      "Invalid API key",
       [
-        "agent.stopped",
-        {
-          agent: "claude",
-          sessionId: "s-1",
-          error: "authentication_failed",
-          message: "Invalid API key",
-        },
+        [
+          "agent.stopped",
+          {
+            agent: "claude",
+            sessionId: "s-1",
+            error: "authentication_failed",
+            message: "Invalid API key",
+          },
+        ],
       ],
-    ]);
-  });
-
-  test("SC306: rate_limit is a usage limit, so record-agent-error records nothing", async () => {
+    ],
+    [
+      "rate_limit is a usage limit, so record-agent-error records nothing",
+      "rate_limit",
+      "You've hit your limit · resets 3pm (UTC)",
+      [],
+    ],
+  ])("SC306: %s", async (_label, error, message, expected) => {
     const { deps, events } = await linkedRun();
 
-    await claudeAdapter.stopFailure?.(
-      stopFailure("rate_limit", "You've hit your limit · resets 3pm (UTC)"),
-      deps,
-      recordAgentError,
-    );
+    await claudeAdapter.stopFailure?.(stopFailure(error, message), deps, recordAgentError);
 
-    expect(await events()).toEqual([]);
+    expect((await events()).map((event) => [event.type, event.payload])).toEqual(expected);
   });
 });

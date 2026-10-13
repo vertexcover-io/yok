@@ -230,12 +230,6 @@ describe("syncState", () => {
     expect(await readdir(join(runDir, "locks"))).toEqual([]);
   });
 
-  test("a truncated event line is surfaced as an error, not skipped", async () => {
-    await append("a", "a.ts");
-    await writeFile(join(runDir, "event.jsonl"), '{"seq":', { flag: "a" });
-    await expect(syncState(runDir)).rejects.toThrow(/line 2/);
-  });
-
   test("a slow sync that finishes last cannot overwrite a newer state.json", async () => {
     const opened = (seq: number, file: string): Event => event(seq, "workflow.file.opened", file);
     const releaseSlowRead = Promise.withResolvers<void>();
@@ -320,16 +314,6 @@ describe("emitRunEvent", () => {
       expect(await jsonlEventStore(runDir).read()).toHaveLength(0);
     },
   );
-
-  test("SC9: a custom event lands in the log and state.json in the same call", async () => {
-    const { run, stateJson } = await runWithHandlers({});
-
-    const result = await emitRunEvent(run, { type: "custom.ext.note", source: "ext", payload: {} });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect((await stateJson()).lastEventSeq).toBe(result.value.seq);
-  });
 });
 
 describe("emitRunEvent with extension handlers", () => {

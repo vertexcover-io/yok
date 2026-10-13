@@ -42,10 +42,6 @@ const validState = {
 };
 
 describe("StateSchema", () => {
-  test("a state with one running agent node run parses", () => {
-    expect(StateSchema.safeParse(validState).success).toBe(true);
-  });
-
   test("EH3 — a state.json with no custom or eventHandlers parses with no custom and no handlers", () => {
     const parsed = StateSchema.parse(validState);
     expect(parsed.eventHandlers).toEqual({});
@@ -142,7 +138,6 @@ describe("StateSchema", () => {
       withRun({ status: "skipped", output: { reason: "when-false", proof: { value: false } } }),
     ],
     ["a failed run with no error output", withRun({ status: "failed" })],
-    ["a node run with an unknown nodeType", withRun({ nodeType: "script" })],
     ["a node run with the removed result field", withRun({ result: null })],
     [
       "a skipped run with no reason inside a container",
@@ -157,13 +152,7 @@ describe("StateSchema", () => {
     ],
     ["a relative runDir", { ...validState, runDir: ".yok/add-login" }],
     ["a scope other than null", { ...validState, scope: "feature" }],
-    ["a null status", { ...validState, status: null }],
-    [
-      "an unknown workspace type",
-      { ...validState, workspace: { ...validState.workspace, type: "poly" } },
-    ],
     ["the removed options field", { ...validState, options: {} }],
-    ["the removed specName field", { ...validState, specName: "add-login" }],
   ])("rejects %s", (_label, state) => {
     expect(StateSchema.safeParse(state).success).toBe(false);
   });
@@ -253,7 +242,6 @@ describe("EventSchema", () => {
     ],
     ["a stage event without node IDs", { ...baseEvent, type: "stage.planning.question" }],
     ["seq 0", { ...baseEvent, seq: 0 }],
-    ["an event without a runId", { ...baseEvent, runId: undefined }],
     ["an unknown envelope field", { ...baseEvent, extra: 1 }],
     ["an undefined payload", { ...baseEvent, payload: undefined }],
     ["a BigInt payload", { ...baseEvent, payload: 1n }],

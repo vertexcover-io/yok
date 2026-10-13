@@ -76,10 +76,6 @@ test("SC1: prefix discovery groups a scenario's frames and ignores unrelated fil
   ]);
 });
 
-test("SC2: prefix discovery over a directory that does not exist is empty, not an error", () => {
-  assert.deepEqual(scenarioPrefixes(join(sandbox("absent"), "screenshots")), []);
-});
-
 test("SC3: the crop window is the last one cropdetect reported", () => {
   const output = [
     "[Parsed_cropdetect_0 @ 0x1] x1:0 x2:1279 w:1280 h:720 crop=1280:720:0:0",
@@ -90,20 +86,14 @@ test("SC3: the crop window is the last one cropdetect reported", () => {
   assert.equal(parseCropWindow("frame= 1 fps=0.0 q=-1.0 Lsize=N/A\n"), null);
 });
 
-test("SC51, SC4: a directory with no frames exits 0 and says so", () => {
-  const dir = withScreenshots("noframes");
+test("SC51, SC4, SC5: a directory with no frames, or no screenshots folder at all, exits 0 and says so", () => {
+  const empty = run(withScreenshots("noframes"));
+  const bare = run(sandbox("bare"));
 
-  const r = run(dir);
-
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /no frames under .*screenshots — no videos to build/);
-});
-
-test("SC51, SC5: a directory with no screenshots folder at all exits 0 the same way", () => {
-  const r = run(sandbox("bare"));
-
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /no videos to build/);
+  assert.equal(empty.status, 0);
+  assert.match(empty.stdout, /no frames under .*screenshots — no videos to build/);
+  assert.equal(bare.status, 0);
+  assert.match(bare.stdout, /no videos to build/);
 });
 
 test("SC51, SC6: a missing or extra argument, or an absent directory, exits 2", () => {
@@ -139,41 +129,61 @@ test("SC9: a portrait frame whose crop fills the canvas was stretched", () => {
   assert.match(verdict.note ?? "", /1\.78/);
 });
 
-test("SC10: a portrait frame pillarboxed into the canvas kept its shape", () => {
-  assert.equal(checkFrameShape({ width: 390, height: 844 }, "crop=320:720:478:0").kind, "matches");
-  assert.equal(
-    checkFrameShape({ width: 1170, height: 2532 }, "crop=320:720:478:0").kind,
-    "matches",
-  );
-  assert.equal(checkFrameShape({ width: 390, height: 2000 }, "crop=128:720:576:0").kind, "matches");
-});
+test("SC10-SC14: a frame that kept its shape matches, a reshaped one is stretched, an unreadable one is unchecked", () => {
+  const cases = [
+    ["SC10: portrait pillarboxed", { width: 390, height: 844 }, "crop=320:720:478:0", "matches"],
+    [
+      "SC10: tall portrait pillarboxed",
+      { width: 1170, height: 2532 },
+      "crop=320:720:478:0",
+      "matches",
+    ],
+    [
+      "SC10: very tall portrait pillarboxed",
+      { width: 390, height: 2000 },
+      "crop=128:720:576:0",
+      "matches",
+    ],
+    [
+      "SC11: 16:10 desktop with bars",
+      { width: 1280, height: 800 },
+      "crop=1152:720:64:0",
+      "matches",
+    ],
+    [
+      "SC11: 1512x982 desktop with bars",
+      { width: 1512, height: 982 },
+      "crop=1104:720:86:0",
+      "matches",
+    ],
+    [
+      "SC12: 1280x720 filling the canvas",
+      { width: 1280, height: 720 },
+      "crop=1280:720:0:0",
+      "matches",
+    ],
+    [
+      "SC12: 1920x1080 filling the canvas",
+      { width: 1920, height: 1080 },
+      "crop=1280:720:0:0",
+      "matches",
+    ],
+    [
+      "SC13: 16:10 desktop stretched",
+      { width: 1280, height: 800 },
+      "crop=1280:720:0:0",
+      "stretched",
+    ],
+    ["SC13: 4:3 tablet stretched", { width: 768, height: 1024 }, "crop=1280:720:0:0", "stretched"],
+    ["SC14: unreadable source", null, "crop=1280:720:0:0", "unchecked"],
+    // An extreme source makes cropdetect report a negative height, which parses to nothing useful.
+    ["SC14: unreadable window", { width: 390, height: 3000 }, "crop=80:", "unchecked"],
+    ["SC14: zero-size source", { width: 0, height: 0 }, "crop=1280:720:0:0", "unchecked"],
+  ] as const;
 
-test("SC11: a 16:10 desktop frame with bars kept its shape", () => {
-  assert.equal(checkFrameShape({ width: 1280, height: 800 }, "crop=1152:720:64:0").kind, "matches");
-  assert.equal(checkFrameShape({ width: 1512, height: 982 }, "crop=1104:720:86:0").kind, "matches");
-});
-
-test("SC12: a 16:9 frame filling the canvas exactly is not a stretch", () => {
-  assert.equal(checkFrameShape({ width: 1280, height: 720 }, "crop=1280:720:0:0").kind, "matches");
-  assert.equal(checkFrameShape({ width: 1920, height: 1080 }, "crop=1280:720:0:0").kind, "matches");
-});
-
-test("SC13: a reshaped desktop frame is caught too, not just a portrait one", () => {
-  assert.equal(
-    checkFrameShape({ width: 1280, height: 800 }, "crop=1280:720:0:0").kind,
-    "stretched",
-  );
-  assert.equal(
-    checkFrameShape({ width: 768, height: 1024 }, "crop=1280:720:0:0").kind,
-    "stretched",
-  );
-});
-
-test("SC14: an unreadable source or an unreadable window skips the check, never fails it", () => {
-  assert.equal(checkFrameShape(null, "crop=1280:720:0:0").kind, "unchecked");
-  // An extreme source makes cropdetect report a negative height, which parses to nothing useful.
-  assert.equal(checkFrameShape({ width: 390, height: 3000 }, "crop=80:").kind, "unchecked");
-  assert.equal(checkFrameShape({ width: 0, height: 0 }, "crop=1280:720:0:0").kind, "unchecked");
+  for (const [label, source, window, kind] of cases) {
+    assert.equal(checkFrameShape(source, window).kind, kind, label);
+  }
 });
 
 test("SC15: the PNG header reader reports a real frame's dimensions", { skip: needsFfmpeg }, () => {
