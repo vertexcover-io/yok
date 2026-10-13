@@ -85,6 +85,8 @@ const nodeEndedEvents = {
       summary: NonEmptyStringSchema.optional(),
       process: ProcessRecordSchema.optional(),
       artifacts: z.array(ArtifactRefSchema).optional(),
+      // the session the node ran in, which a detached subscriber cannot read off the later state
+      session: SessionRefSchema.optional(),
     }),
   ),
   failed: nodeEvent(

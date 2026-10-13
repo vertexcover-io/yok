@@ -453,6 +453,43 @@ describe("the notifier at init", () => {
     expect(result.value.state.subscribers).toEqual(expected(cwd));
   });
 
+  const SAMSKARA_REF = {
+    name: "samskara",
+    blocking: false,
+    timeoutSeconds: 300,
+    module: "yok:samskara",
+    handler: "upload",
+  };
+  const samskaraOnly = { "workflow.node.completed": [SAMSKARA_REF] };
+
+  test.each([
+    ["a config samskara block freezes the upload", { samskara: {} }, "", samskaraOnly],
+    [
+      "a workflow's enabled: false turns the config's samskara off",
+      { samskara: {} },
+      "samskara: { enabled: false }\n",
+      {},
+    ],
+    ["a workflow samskara block alone turns it on", {}, "samskara: {}\n", samskaraOnly],
+    ["no samskara block freezes nothing", {}, "", {}],
+    [
+      "with the notifier on too, the notifier comes first on workflow.node.completed",
+      { notifier: {}, samskara: {} },
+      "",
+      {
+        ...notifierOnly,
+        "workflow.node.completed": [NOTIFIER_REF, SAMSKARA_REF],
+      },
+    ],
+  ])("SC409: %s", async (_label, config, workflowSamskara, expected) => {
+    const { init } = await notifierRun(config, workflowSamskara);
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.subscribers).toEqual(expected);
+  });
+
   test("SC85: a frozen notifier subscriber names yok:notifier and slack, and SubscriberRefSchema takes only yok: names as built-ins", async () => {
     const { init } = await notifierRun({ notifier: {} }, "");
 

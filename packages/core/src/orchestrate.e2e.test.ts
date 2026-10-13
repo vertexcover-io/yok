@@ -1008,6 +1008,76 @@ describe("SC26: subscribers", () => {
   });
 });
 
+describe("SC26: the samskara upload", () => {
+  // A samskara on PATH that records its arguments and refuses the session, as an unpaired CLI does.
+  const failingSamskara = () => {
+    const bin = tempDir();
+    const argsFile = join(bin, "args.txt");
+    writeFileSync(
+      join(bin, "samskara"),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\necho "Session s1 does not exist, or is not yours." >&2\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    return { env: { PATH: `${bin}:${process.env.PATH}` }, argsFile };
+  };
+
+  const samskaraCalls = (repo: string) =>
+    readFileSync(join(runDirOf(repo, "feat-x"), "event.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.type === "subscriber.called")
+      .filter((event) => event.payload.subscriber === "samskara");
+
+  test("SC410: with samskara on, a completed node's failed upload is a failed subscriber.called naming exit 1, and next still hands out the following node", async () => {
+    const samskara = failingSamskara();
+    // init copies the registry's sessions into the state's activeSessions.
+    const sessions = [{ agent: "claude" as const, sessionId: "s1" }];
+    const { repo, home } = startedRun(STAGES_WORKFLOW, { samskara: {} }, { sessions });
+    const step = (args: readonly string[]) =>
+      orchestrate(repo, home, args, { YOK_SKILLS_DIR: STAGE_SKILLS, ...samskara.env });
+    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const runDir = runDirOf(repo, "feat-x");
+    writeFileSync(join(runDir, "artifacts", "plan.md"), "plan\n");
+
+    const done = step([
+      ...["done", make.nodeRunId, "--run", "feat-x", "--summary", "Did the work."],
+      ...["--output", "{}", "--artifact", fileArtifact("plan", "artifacts/plan.md")],
+    ]);
+
+    expect(done.code).toBe(0);
+    await waitFor(() => samskaraCalls(repo).length > 0);
+    const [call] = samskaraCalls(repo);
+    expect(call.payload).toMatchObject({ status: "failed" });
+    expect(call.payload.error.message).toContain("exit 1");
+    const realRunDir = realpathSync(runDir);
+    expect(readFileSync(samskara.argsFile, "utf8").trim().split("\n")).toEqual([
+      ...["artifacts", "upload", "s1", join(realRunDir, "artifacts", "plan.md")],
+      ...["--base-dir", realRunDir],
+    ]);
+    expect(JSON.parse(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({ nodeId: "use" });
+  }, 30_000);
+
+  test("SC407: done on a node that ran in claude session s1 names s1 in its workflow.node.completed event", async () => {
+    const sessions = [{ agent: "claude" as const, sessionId: "s1" }];
+    const { repo, home } = startedRun(STAGES_WORKFLOW, undefined, { sessions });
+    const step = (args: readonly string[]) =>
+      orchestrate(repo, home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
+    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    writeFileSync(join(runDirOf(repo, "feat-x"), "artifacts", "plan.md"), "plan\n");
+
+    step([
+      ...["done", make.nodeRunId, "--run", "feat-x", "--summary", "Did the work."],
+      ...["--output", "{}", "--artifact", fileArtifact("plan", "artifacts/plan.md")],
+    ]);
+
+    const completed = (await eventsOf(repo)).find(
+      (event) => event.type === "workflow.node.completed",
+    );
+    expect(completed?.payload).toMatchObject({ session: { agent: "claude", sessionId: "s1" } });
+  }, 30_000);
+});
+
 describe("SC26: stage verifiers", () => {
   const verifiedRun = (verifiers: string | undefined, workflow = STAGES_WORKFLOW) => {
     const skills = tempDir();

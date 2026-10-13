@@ -182,6 +182,14 @@ const SubscriberTypeSchema = EventTypeSchema.refine(
 );
 // The built-in notifier's subscriber name, which no project subscriber may take.
 export const NOTIFIER_SUBSCRIBER = "notifier";
+// The built-in samskara upload's subscriber name, which no project subscriber may take.
+export const SAMSKARA_SUBSCRIBER = "samskara";
+
+// Each built-in subscriber's name, which no project subscriber may take, and what it is.
+const BUILT_IN_SUBSCRIBERS: Readonly<Record<string, string>> = {
+  [NOTIFIER_SUBSCRIBER]: "notifier",
+  [SAMSKARA_SUBSCRIBER]: "samskara upload",
+};
 
 export const uniqueNames = (entries: readonly Readonly<{ name: string }>[]): boolean =>
   new Set(entries.map((entry) => entry.name)).size === entries.length;
@@ -191,10 +199,17 @@ export const SubscribersSchema = recordOf(
   z
     .array(SubscriberEntrySchema)
     .refine(uniqueNames, "subscriber names must be unique for one event type")
-    .refine(
-      (entries) => entries.every((entry) => entry.name !== NOTIFIER_SUBSCRIBER),
-      `"${NOTIFIER_SUBSCRIBER}" is the built-in notifier's name`,
-    ),
+    .superRefine((entries, context) => {
+      for (const { name } of entries) {
+        // hasOwn, so a subscriber named "constructor" is not read off Object.prototype
+        if (!Object.hasOwn(BUILT_IN_SUBSCRIBERS, name)) continue;
+        const builtIn = BUILT_IN_SUBSCRIBERS[name];
+        context.addIssue({
+          code: "custom",
+          message: `"${name}" is the built-in ${builtIn}'s name`,
+        });
+      }
+    }),
 ).default({});
 export type Subscribers = z.infer<typeof SubscribersSchema>;
 
@@ -203,6 +218,10 @@ export const NotifierSchema = z.strictObject({
   type: z.enum(["slack"]).default("slack"),
 });
 export type Notifier = z.infer<typeof NotifierSchema>;
+
+// Uploads each completed node's artifact files to the run's samskara session.
+export const SamskaraSchema = z.strictObject({ enabled: z.boolean().default(true) });
+export type Samskara = z.infer<typeof SamskaraSchema>;
 
 // The top-level baseline runs once for the workspace; a package's commands.baseline runs for that package.
 export const ConfigSchema = z.strictObject({
@@ -218,6 +237,7 @@ export const ConfigSchema = z.strictObject({
   eventHandlers: recordOf(EventTypeSchema, z.array(EventHandlerSchema)).default({}),
   subscribers: SubscribersSchema,
   notifier: NotifierSchema.optional(),
+  samskara: SamskaraSchema.optional(),
 });
 
 export type ConfigInput = z.input<typeof ConfigSchema>;

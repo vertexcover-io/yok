@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import {
-  buildNotifierCheck,
+  builtInChecks,
   type DoctorReport,
   findWorkflowPath,
   loadStartEnv,
@@ -65,7 +65,7 @@ export const runCommand = () =>
         extraChecks: [
           ...runtimeChecks(plan.agent),
           ...workflowChecks(plan.doctor, env),
-          buildNotifierCheck(plan.notifier, env),
+          ...builtInChecks(plan, env),
         ],
         log: cliLog(),
       });

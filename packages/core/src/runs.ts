@@ -2,6 +2,7 @@ import { access, copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   type AgentType,
+  AgentTypeSchema,
   type ArtifactRef,
   type CheckoutConfig,
   type Config,
@@ -56,6 +57,7 @@ import {
 } from "@yok/sdk/internal";
 import * as z from "zod";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
+import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { extensionPath } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
 import {
@@ -152,14 +154,18 @@ const resolveSubscribers = (subscribers: Subscribers, base: string): SubscriberR
   );
 
 // A subscriber named twice for one event would run once: its call id would already exist.
+const concatSubscribers = (first: SubscriberRefs, second: SubscriberRefs): SubscriberRefs => {
+  const types = [...new Set([...Object.keys(first), ...Object.keys(second)])];
+  return Object.fromEntries(
+    types.map((type) => [type, [...(first[type] ?? []), ...(second[type] ?? [])]]),
+  );
+};
+
 const mergeSubscribers = (
   first: SubscriberRefs,
   second: SubscriberRefs,
 ): Result<SubscriberRefs> => {
-  const types = [...new Set([...Object.keys(first), ...Object.keys(second)])];
-  const merged = Object.fromEntries(
-    types.map((type) => [type, [...(first[type] ?? []), ...(second[type] ?? [])]]),
-  );
+  const merged = concatSubscribers(first, second);
   const clash = Object.entries(merged).find(([, list]) => !uniqueNames(list));
   if (clash === undefined) return { ok: true, value: merged };
   return {
@@ -168,8 +174,8 @@ const mergeSubscribers = (
   };
 };
 
-// The workflow's notifier block replaces the config's whole. Relative paths resolve against the
-// file that declares them.
+// The workflow's notifier and samskara blocks replace the config's whole. Relative paths resolve
+// against the file that declares them.
 export const freezeSubscribers = async (
   run: WorkflowRun,
   config: Config,
@@ -181,10 +187,12 @@ export const freezeSubscribers = async (
     resolveSubscribers(workflow.subscribers, dirname(run.workflowPath)),
   );
   if (!project.ok) return project;
-  return mergeSubscribers(
-    project.value,
+  // Built-in names are reserved from project subscribers, so these never clash.
+  const builtIns = concatSubscribers(
     buildNotifierSubscribers(pickNotifier(workflow.notifier, config.notifier)),
+    buildSamskaraSubscribers(pickSamskara(workflow.samskara, config.samskara)),
   );
+  return { ok: true, value: concatSubscribers(project.value, builtIns) };
 };
 
 const frozenHandlers = (config: Config, root: string): EventHandlerRefs =>
@@ -609,6 +617,14 @@ const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<R
   return { ok: true, value: step };
 };
 
+// A completed node names the session it ran in. A loop's next pass or a retry replaces the node's
+// record under the same id, so a subscriber that runs later cannot find it there.
+const sessionField = (agentState: NodeRun["agentState"]): Readonly<{ session?: SessionRef }> => {
+  const agent = AgentTypeSchema.safeParse(agentState?.agent);
+  if (!agent.success || !agentState?.sessionId) return {};
+  return { session: { agent: agent.data, sessionId: agentState.sessionId } };
+};
+
 const buildStepEndEvent = (
   step: RunningLeaf,
   record: NodeRecord,
@@ -628,6 +644,7 @@ const buildStepEndEvent = (
       ? {}
       : { error: eventError(record.error.kind, record.error.message, record.error.stack) }),
     ...(artifacts.length === 0 ? {} : { artifacts: [...artifacts] }),
+    ...sessionField(step.nodeRun.agentState),
     ...buildParentsField(step.node.parents),
   },
 });

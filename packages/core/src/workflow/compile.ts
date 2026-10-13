@@ -432,6 +432,7 @@ async function compileFile(path: string, at: Compiling): Promise<WorkflowPlan> {
     inputs: workflow.inputs,
     doctor,
     notifier: workflow.notifier,
+    samskara: workflow.samskara,
     nodes,
   });
 }

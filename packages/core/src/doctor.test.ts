@@ -12,9 +12,11 @@ import {
   fail,
   type Notifier,
   type Result,
+  type Samskara,
 } from "@yok/sdk";
 import {
   buildNotifierCheck,
+  buildSamskaraCheck,
   evaluate,
   runDoctor,
   summarize,
@@ -719,5 +721,80 @@ describe("workflowChecks", () => {
       "ok",
     );
     expect((await run({ check: "file", key: "absent.txt" }, root)).row.status).toBe("fail");
+  });
+});
+
+describe("the samskara-upload row", () => {
+  const UPLOAD_HELP = "Usage: samskara artifacts upload <session> <paths...> --base-dir <dir>";
+  const READY = {
+    "samskara --version": { code: 0, stdout: "0.5.0" },
+    "samskara status": { code: 0, stdout: "paired as ritesh" },
+    "samskara artifacts upload --help": { code: 0, stdout: UPLOAD_HELP },
+  };
+
+  const rowFor = async (
+    config: object,
+    workflowSamskara: Samskara | undefined,
+    entries: Parameters<typeof fakeExec>[0],
+  ) => {
+    const root = realpathSync(await mkdtemp(join(tmpdir(), "doctor-samskara-")));
+    const path = join(root, "orchestrate.config.json");
+    await writeFile(path, JSON.stringify({ version: 2, ...config }));
+    const check = buildSamskaraCheck(workflowSamskara);
+    return evaluate(check, { root, exec: fakeExec(entries), config: path });
+  };
+
+  test.each<[string, object, Samskara | undefined]>([
+    ["no block anywhere", {}, undefined],
+    ["a workflow's enabled: false alone", {}, { enabled: false }],
+    [
+      "a workflow's enabled: false over a config samskara: {}",
+      { samskara: {} },
+      { enabled: false },
+    ],
+  ])("SC413: %s is ok and off, without running samskara", async (_label, config, workflow) => {
+    const row = await rowFor(config, workflow, {});
+
+    expect(row).toMatchObject({ name: "samskara-upload", status: "ok", detail: "off" });
+  });
+
+  test.each<[string, Parameters<typeof fakeExec>[0], RegExp]>([
+    [
+      "samskara missing",
+      {
+        "samskara --version": { code: 127, stdout: "" },
+        "samskara artifacts upload --help": { code: 127, stdout: "" },
+      },
+      /not on PATH/,
+    ],
+    [
+      "samskara not paired",
+      { ...READY, "samskara status": { code: 0, stdout: "not paired" } },
+      /not paired/,
+    ],
+    [
+      "samskara without artifacts upload",
+      { ...READY, "samskara artifacts upload --help": { code: 1, stdout: "" } },
+      /no artifacts upload command/,
+    ],
+    [
+      "samskara whose upload has no --base-dir",
+      { ...READY, "samskara artifacts upload --help": { code: 0, stdout: "Usage: upload <p>" } },
+      /no --base-dir/,
+    ],
+  ])(
+    "SC414: with config samskara: {}, %s fails the row and blocks the run",
+    async (_label, entries, detail) => {
+      const row = await rowFor({ samskara: {} }, undefined, entries);
+
+      expect(row).toMatchObject({ status: "fail", detail: expect.stringMatching(detail) });
+      expect(verdict(summarize([row]))).toBe("BLOCKED samskara-upload");
+    },
+  );
+
+  test("SC415: a workflow's samskara: { enabled: true } with a paired 0.5.0 that has artifacts upload is ok", async () => {
+    const row = await rowFor({}, { enabled: true }, READY);
+
+    expect(row).toMatchObject({ status: "ok", detail: "on, v0.5.0 paired" });
   });
 });

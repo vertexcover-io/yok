@@ -22,7 +22,7 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 ```
 
-Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
+Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
 
 `yok verify workflows/task.yaml` compiles a workflow and prints the first error, so you can check a change without starting a run.
 
@@ -149,6 +149,7 @@ extensions:
 | `eventHandlers` | project functions that fold an event into `state.custom` |
 | `env`, `envFile` | variables every session starts with |
 | `notifier` | `{ enabled, type: slack }` |
+| `samskara` | `{ enabled }`: upload each completed node's artifact files, or the subfolder of `artifacts/` they sit in, to the run's Claude session in samskara |
 
 Init freezes which config file a run uses into `state.json`, so a run keeps its settings even if you edit the file mid-run.
 
@@ -217,7 +218,7 @@ The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has
 
 ## Doctor
 
-`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L153).
+`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
 
 ## Not built yet
 

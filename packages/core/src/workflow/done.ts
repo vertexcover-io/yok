@@ -96,6 +96,24 @@ export const isInsideDir = (parent: string, child: string): boolean => {
   return !(isAbsolute(fromParent) || fromParent === ".." || fromParent.startsWith("../"));
 };
 
+// Decides which files are safe to send off this machine. It checks where each file really is at the
+// moment of sending, and keeps only files inside this run's artifacts/ folder. A file that was
+// deleted, or replaced by a shortcut pointing elsewhere (say, to the .env secrets file), is left out.
+// So is the artifacts/ folder itself, which would send everything.
+export const realPathsInArtifacts = async (
+  runDir: string,
+  paths: readonly string[],
+): Promise<readonly string[]> => {
+  const root = await findArtifactsDir(runDir);
+  if (root === undefined || paths.length === 0) return [];
+  const real = await Promise.all(
+    paths.map((path) => realpath(join(runDir, path)).catch(() => null)),
+  );
+  return real.filter(
+    (path): path is string => path !== null && path !== root && isInsideDir(root, path),
+  );
+};
+
 type ArtifactFileIssue = Extract<CompletionIssue, { kind: "artifact-file" }>;
 
 const fileIssue = async (

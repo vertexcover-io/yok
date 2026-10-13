@@ -611,6 +611,32 @@ describe("yok run", () => {
   );
 
   test(
+    "a workflow with samskara: {} and a samskara that exits 127 blocks the run before any agent launches",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+      const bin = mkdtempSync(join(tmpdir(), "yok-run-e2e-bin-"));
+      cleanups.push(() => rmSync(bin, { recursive: true, force: true }));
+      writeFileSync(join(bin, "samskara"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+      writeFileSync(join(repo, "samskara.yaml"), `samskara: {}\n${OK_WORKFLOW}`);
+
+      const run = yok(
+        repo,
+        { ...env, PATH: `${bin}:${env.PATH}` },
+        "run",
+        "samskara.yaml",
+        "--prompt",
+        "x",
+      );
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("BLOCKED samskara-upload");
+      expect(readLines(fakeOut).filter((record) => isLaunch(record))).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "--config FILE, resolved against the current folder, is saved on the run and recorded by init, even with no config in the repo",
     () => {
       const repo = makeRepo();
