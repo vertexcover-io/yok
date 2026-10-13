@@ -1205,14 +1205,24 @@ describe("the shipped task workflow", () => {
         dependsOn: ["compact-after-planning"],
         input: { workspace },
       },
-      { id: "compact-after-implement", type: "context", action: "compact", dependsOn: ["implement"] },
+      {
+        id: "compact-after-implement",
+        type: "context",
+        action: "compact",
+        dependsOn: ["implement"],
+      },
       {
         id: "code-review",
         stage: { ref: "code-review" },
         dependsOn: ["compact-after-implement"],
         input: { workspace },
       },
-      { id: "compact-after-review", type: "context", action: "compact", dependsOn: ["code-review"] },
+      {
+        id: "compact-after-review",
+        type: "context",
+        action: "compact",
+        dependsOn: ["code-review"],
+      },
     ]);
   });
 
