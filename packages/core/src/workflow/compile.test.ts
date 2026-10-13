@@ -1187,29 +1187,32 @@ describe("the shipped task workflow", () => {
     });
   });
 
-  test("SC10: runs planning, implement and code-review in that order, each in the run's workspace", async () => {
+  test("SC10: runs planning, implement and code-review in that order, each in the run's workspace, compacting the session after each", async () => {
     const plan = await compileWorkflow(TASK_WORKFLOW);
     const workspace = "{{ nodes.create-workspace.output }}";
 
-    expect(plan.nodes.slice(-7, -4)).toMatchObject([
+    expect(plan.nodes.slice(-10, -4)).toMatchObject([
       {
         id: "planning",
         stage: { ref: "planning" },
         dependsOn: ["design"],
         input: { task: "{{ nodes.ticket-fetcher.output.task }}", workspace },
       },
+      { id: "compact-after-planning", type: "context", action: "compact", dependsOn: ["planning"] },
       {
         id: "implement",
         stage: { ref: "implement" },
-        dependsOn: ["planning"],
+        dependsOn: ["compact-after-planning"],
         input: { workspace },
       },
+      { id: "compact-after-implement", type: "context", action: "compact", dependsOn: ["implement"] },
       {
         id: "code-review",
         stage: { ref: "code-review" },
-        dependsOn: ["implement"],
+        dependsOn: ["compact-after-implement"],
         input: { workspace },
       },
+      { id: "compact-after-review", type: "context", action: "compact", dependsOn: ["code-review"] },
     ]);
   });
 
@@ -1219,7 +1222,7 @@ describe("the shipped task workflow", () => {
     expect(plan.nodes.at(-4)).toMatchObject({
       id: "qa-loop",
       type: "loop",
-      dependsOn: ["code-review"],
+      dependsOn: ["compact-after-review"],
       until: "{{ iteration.nodes.qa.output.status != 'FAIL' }}",
       maxIterations: 4,
       input: {
