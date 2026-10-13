@@ -384,7 +384,8 @@ describe("runContextStep: compact", () => {
       output: { action: "compact", applied: false },
     });
     expect(typesOf(fake.typed).slice(-2)).toEqual([RESUME, "Enter"]);
-  });
+    // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
+  }, 20_000);
 });
 
 describe("completeContextOnSessionStart", () => {
