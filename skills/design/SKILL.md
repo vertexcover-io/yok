@@ -8,6 +8,7 @@ description: >
   for "design this", "grill me on this", "help me think this through".
 summary: Say which approach the design chose and what it changes for the user.
 mode: inline
+hand-off: split
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, WebSearch, WebFetch]
 tier: deep
 produces:

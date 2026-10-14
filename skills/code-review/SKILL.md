@@ -8,6 +8,7 @@ description: >
   code", "review this change", or "review this against the plan".
 summary: Say the verdict, how many findings were fixed, and what was left unfixed.
 mode: inline
+hand-off: split
 allowed-tools: [Agent, Bash, Read, Write, Edit, Grep, Glob, Skill]
 tier: deep
 consumes:

@@ -6,6 +6,7 @@ description: >
   pipeline's implement stage after planning; also use it directly to build any change.
 summary: Say which phases were built and whether their tests pass.
 mode: inline
+hand-off: split
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Skill]
 tier: deep
 consumes:
@@ -66,13 +67,15 @@ feature:
 
 ## 3. Build the phases in waves
 
-In subagent mode, "Subagent mode" below changes how the waves are cut. Otherwise, a plan with
-one phase is built here, inline. With more, build in waves from the `## Phases` digraph: a wave
+When the reply's `handOff` is `split`, every wave is one phase, even for a one-phase plan: build
+the phases one after another, in an order the `## Phases` digraph allows, each sub-agent on the
+reply's `model` and `effort` when present. Otherwise, a plan with one phase is built here,
+inline. With more, build in waves from the `## Phases` digraph: a wave
 is every phase whose dependencies are all committed. Dispatch one sub-agent per phase in the
 wave, all in one message, in the same worktree. Give each: the paths to its phase file and
 `plan.md`, the worktree, the commands, and these parts of this skill: section 2, "For each
 phase", "The E2E leg" and section 4, plus the sub-agent rules below when the wave has two or
-more phases or the stage runs in subagent mode. The rest of this section is the stage's own
+more phases or the hand-off is split. The rest of this section is the stage's own
 work.
 
 Phases in one wave share the worktree, so they must not touch the same file. Planning orders any
@@ -98,7 +101,7 @@ When the wave's sub-agents have all returned:
 3. Commit each `COMPLETED` phase in phase order, staging only the files its sub-agent returned.
 4. When any phase is `BLOCKED`, stop after these commits. Otherwise start the next wave.
 
-Outside subagent mode, a wave of one phase builds that phase whole, checks, E2E and commit
+Without a split hand-off, a wave of one phase builds that phase whole, checks, E2E and commit
 included, as below.
 
 For each phase:
@@ -131,13 +134,6 @@ For each phase:
 - **Skipping.** Only when the phase changes no behavior seen from outside: an internal
   refactor, docs, config with no runtime effect. Write
   `.yok/RUN/artifacts/phase-N-e2e-skipped.md` naming the reason.
-
-## Subagent mode
-
-When the orchestrate skill runs this stage with `mode: subagent`, every wave in section 3 is one
-phase, even for a one-phase plan: build the phases one after another, in an order the
-`## Phases` digraph allows. Start each sub-agent on the reply's `model` and `effort` when
-present, and give it the sub-agent rules.
 
 ## 4. When blocked
 
