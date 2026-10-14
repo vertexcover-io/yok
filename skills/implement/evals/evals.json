@@ -52,12 +52,12 @@
     {
       "id": 4,
       "name": "commit-but-never-push",
-      "prompt": "Implement the change in this ticket: add a --json flag to the export command. You can commit when it's done.",
+      "prompt": "Implement the change in this ticket: add a --json flag to the export command.",
       "expected_output": "Builds the flag test-first, commits it, and stops without pushing.",
       "files": [],
       "expectations": [
         "Writes a failing test for --json before the code",
-        "Commits the change without asking again"
+        "Commits the change without asking"
       ],
       "anti_expectations": [
         "Runs git push",
