@@ -1,0 +1,22 @@
+diff --git a/task_manager.ts b/task_manager.ts
+index b2c3d4e..d4e5f6a 100644
+--- a/task_manager.ts
++++ b/task_manager.ts
+@@ -41,14 +41,14 @@ export async function runTask(
+   emitter.emit("task:started", task);
+
+   try {
+-    const result = handler(task);
++    const result = await handler(task);
+     task.result = result;
+     task.status = "done";
+     emitter.emit("task:completed", task);
+   } catch (err) {
+-    task.status = "failed";
++    task.status = "done";
+     task.error = String(err);
+-    emitter.emit("task:failed", task);
++    emitter.emit("task:completed", task);
+   }
+
+   return task;
