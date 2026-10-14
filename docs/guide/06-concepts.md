@@ -93,7 +93,7 @@ variables:
 - `verifiers` run inside `done`. Each is a function (`module` + `functionName`) or a script (`runtime` + `script`) and must return `{ pass, findings }`.
 - `variables` are named values the workflow's node can set, handed to the skill with the card.
 - `tier` names the model class the stage wants.
-- `mode` is the default for a node that sets none: `subagent` hands the stage to a subagent on its tier's model. A stage whose SKILL.md has a `## Subagent mode` section, such as implement, runs in the session in that mode, on its tier's model, and starts its own subagents. `scopes` and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
+- `mode` is the default for a node that sets none: `subagent` hands the stage to a subagent on its tier's model. `hand-off` says what subagent mode hands to a subagent: `whole` (the default) hands over the whole stage, and `split` keeps the stage in the session, on its tier's model, where it starts its own subagents. `split` needs `Agent` in `allowed-tools`; implement, code-review, design and planning use it. `scopes` and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
 
 ## Artifact
 
