@@ -2,15 +2,21 @@
 name: code-review
 description: >
   Deep code review that hunts for the sequence of events under which a change goes wrong, and
-  for code that works but should have been written differently. Runs eight reviewer personas
+  for code that works but should have been written differently. Runs five reviewer personas
   in parallel, rates each finding by how likely it is to fire, aggregates them into a report,
-  then applies the fixes and records them in it. Runs as the pipeline's
-  code-review stage, after implement; also use it when the user says "/code-review", "review
-  my code", "review this change", or "review this against the plan".
-summary: Say the verdict, how many findings were fixed, and what was left unfixed.
+  and ends with the open findings as a fix list. It never edits code: in a run the workflow's
+  review loop hands the list to the fix stage and reviews again on the fix commits; standalone,
+  the `fix` skill takes it from `review-fixes.json`.
+  Runs as the pipeline's code-review stage, after implement; also use it when the user says
+  "/yok:code-review", asks for a review by personas, or "review this against the plan".
+summary: Say the verdict, which pass this was, and how many findings are still open or left.
 mode: inline
 allowed-tools: [Agent, Bash, Read, Write, Edit, Grep, Glob, Skill]
 tier: deep
+outputs:
+  description: The verdict, the report path, and the open Medium-and-above findings to fix.
+  schema: review.output.v1
+  module: scripts/review.ts
 consumes:
   - artifact: plan
     optional: true
@@ -33,18 +39,9 @@ references:
   testing:
     path: references/persona-testing.md
     description: Checks the tests prove the behavior, at the right level.
-  reuse:
-    path: references/persona-reuse.md
-    description: Finds code that rebuilds something the repo already has.
-  simplification:
-    path: references/persona-simplification.md
-    description: Finds code that could say the same thing with less.
-  efficiency:
-    path: references/persona-efficiency.md
-    description: Finds wasted work on a path that matters.
-  altitude:
-    path: references/persona-altitude.md
-    description: Finds code sitting at the wrong layer or level of abstraction.
+  simplify:
+    path: references/persona-simplify.md
+    description: Finds code the repo already has, code that could say the same with less, wasted work, and fixes at the wrong layer.
 ---
 
 # Code Review
@@ -60,8 +57,8 @@ something for a fuller axis to paper over.
 **This runs unattended — ask the user nothing.** Every call is yours: make it, and record
 the assumption in the report.
 
-You have two jobs in order: review, then repair. The report comes first and records what the
-review found; the repair follows in Step 4 and is part of the work, not an offer.
+You review and report; you never change the code under review. The report records what you
+found, and Finish lists the open findings that need fixing.
 
 ## What Governs This Review
 
@@ -80,10 +77,6 @@ absence is a gap, filled by the next source down.
 4. The `references/persona-*.md` file each agent is given, and the `code-quality` and `tdd`
    skills those files name. Universal defaults, applied when nothing above speaks
 
-**This ladder sets the kind of finding.** A breach of rungs 1–3 is a **hard violation** — the
-repo wrote the rule down. A rung-4 finding is a **judgement call**: it may be right, but it can
-never block on its own.
-
 ## Severity
 
 Severity is impact **times likelihood**. Every finding states its **trigger** — who has to do
@@ -99,13 +92,13 @@ what for it to fire — and that sets the level:
 Every finding also states its **fix size**: `small` means one place, nothing changes for normal
 users, no new abstraction, and the persona names what it must not break. A rare-but-real Low
 with a small fix is rated **Medium** so it gets closed; a pre-existing, latent or cosmetic Low
-stays Low. Never more than one step up; a fix that grows in Step 4 drops back to Low. A Low
+stays Low. Never more than one step up; a fix that grows is left by the fixer, with why. A Low
 never moves the verdict.
 
 ## Input
 
 In a run, the input may hold these fields. RUN is the run's spec name. Standalone, the same
-names are flags: `/code-review [--plan PATH] [--pr NUMBER] [--commits RANGE] [--output PATH]`.
+names are flags: `/yok:code-review [--plan PATH] [--pr NUMBER] [--commits RANGE] [--output PATH]`.
 
 | Field | Meaning |
 |---|---|
@@ -114,10 +107,12 @@ names are flags: `/code-review [--plan PATH] [--pr NUMBER] [--commits RANGE] [--
 | `pr` | review a PR diff (`gh pr diff NUMBER`). |
 | `commits` | review a commit range, such as `HEAD~3..HEAD`. |
 | `output` | where to write the report. In a run it is always `.yok/RUN/artifacts/review.md`. |
+| `round`, `rounds` | which pass of the workflow's review loop this is, and how many it runs at most. Absent or `1`, the first pass. Above `1`, a later pass: see "A later pass" below. |
+| `previous` | on a later pass, the previous pass's JSON output: its `findings` and the `reviewed` head of each repo. |
 
 **Scope** (first match wins): `pr` → the PR diff · `commits` → that range, three-dot against its
-start ref · in a run → the run's branch against its merge-base with the base branch · none →
-the working tree (`git diff HEAD`, staged and unstaged).
+start ref · in a run, `round` above 1 → the fix commits, as "A later pass" says · in a run → the run's branch against its
+merge-base with the base branch · none → the working tree (`git diff HEAD`, staged and unstaged).
 
 ## Step 1 — Preflight
 
@@ -128,7 +123,8 @@ Every failure below stops here, not inside the sub-agent fan-out.
    report commits that landed on the base branch after this work started as if they were part
    of it. Confirm the ref resolves (`git rev-parse`). For PRs, also read the description
    (`gh pr view NUMBER`).
-2. **Stop and report** on: empty diff (write no report), unresolvable ref, PR not found or
+2. **Stop and report** on: empty diff (write no report; a later pass has its own rule),
+   unresolvable ref, PR not found or
    `gh` unauthenticated (suggest `gh auth login`), a `plan` path that doesn't exist, or —
    under `pr` — `git rev-parse HEAD` not matching the PR's `headRefOid` (name both SHAs). In a
    run, finish the stage with `--error -` and that reason.
@@ -143,38 +139,46 @@ present, and the paths of the governance sources you found on rungs 1–3. Skip 
 
 ## Step 2 — Dispatch in parallel
 
-Each axis has one persona reference. Spawn **one `general-purpose` sub-agent per axis, eight in
+Each axis has one persona reference. Spawn **one `general-purpose` sub-agent per axis, five in
 a single message** so they run concurrently. One agent holding every axis at once matches
 shallowly across all of them.
 
-| Agent | Reference | Also give it |
-|---|---|---|
-| Defects | `defects` | — |
-| Spec | `spec` | the full text of the plan and `design.md`, when they exist |
-| Security | `security` | — |
-| Testing | `testing` | — |
-| Reuse | `reuse` | — |
-| Simplification | `simplification` | — |
-| Efficiency | `efficiency` | — |
-| Altitude | `altitude` | — |
+| Agent | Reference | Model | Also give it |
+|---|---|---|---|
+| Defects | `defects` | default | — |
+| Spec | `spec` | default | the full text of the plan and `design.md`, when they exist |
+| Security | `security` | default | — |
+| Testing | `testing` | `sonnet` | — |
+| Simplify | `simplify` | `sonnet` | — |
 
 Get each persona file's path with `yok orchestrate skill ref --path
 code-review.NAME`, which honors a project's replacement. Outside a run, the files are this
 skill's `references/persona-NAME.md`.
 
-**All eight run on every review.** There is no gate and no team selection: an axis with nothing
-to report returns nothing, and that emptiness is a result you present.
+Set the Agent tool's `model` option to `sonnet` for Testing and Simplify; leave it unset for
+the other three. An agent with no `model` option (Codex) runs all five on its default model.
+Defects, Spec and Security bound the wall clock; if Simplify becomes the slowest, it holds too
+much and should be split again.
+
+**All five run on every review, with one exception:** when every changed path is prose for
+people (`README.md`, `CHANGELOG.md`, `docs/`), data config (`*.json`, `*.toml`, `*.yaml` that no
+engine runs) or CI (`.github/`), skip Simplify and write `### Simplify` with the line "Skipped:
+the diff touches no code file." Text an agent or engine follows is code here: a `SKILL.md`, a
+skill's `references/`, `CLAUDE.md`, `AGENTS.md`, a workflow file. There is no other gate: an axis
+with nothing to report returns nothing, and that emptiness is a result you present.
 
 Every prompt names that agent's persona file by path and tells it to read the file first, before
 anything else. Give each agent its own file and no other, so the only axis it can report under
-is its own. Tell the Defects, Reuse, Simplification, Efficiency and Altitude agents to also
-invoke the `code-quality` skill: it is the standard those five check against.
+is its own. Tell the Defects and Simplify agents to also invoke the `code-quality` skill: it is
+the standard both check against, with the project's overrides applied.
 
-Then paste in, as text: the map from Step 1, the governance sources you found on rungs 1–3, the
-Severity section above, and the brief below. A sub-agent shares none of your context, so a
-summary of a governance source leaves that standard out of the review.
+Then write one brief file in your scratch folder, once per pass: the map from Step 1, the
+governance sources you found on rungs 1–3 as their full text, the Severity section above, and
+the brief below. Every prompt tells its agent to read that file in full right after its persona
+file. A sub-agent shares none of your context, so a summary of a governance source leaves that
+standard out of the review: copy the text, never paraphrase it.
 
-**One diff, one review, eight agents.** A change spanning several packages or several repos is
+**One diff, one review, five agents.** A change spanning several packages or several repos is
 still one change. Give every agent the whole diff and treat the working set as a single tree.
 
 > *"You own exactly one review axis — the persona file named for you — and report only under it.
@@ -191,42 +195,46 @@ still one change. Give every agent the whole diff and treat the working set as a
 > return, reopen every file:line you cite and check the quoted text is there. Report everything
 > you can prove, worst first; drop only what you cannot stand behind. A finding changes what
 > the code does or what it costs; style, formatting, a name that does not mislead, and "run the
-> tests" are not findings. A finding is a judgement call unless the repo wrote the rule down, which makes it a hard violation — cite
-> the source file and rule when it did. The tree was committed before you were dispatched, so
+> tests" are not findings. When the repo wrote the rule down, cite the source file and rule.
+> The tree was committed before you were dispatched, so
 > edit freely to test a hypothesis and `git checkout --` when you're done. Return your report as
 > your final message — write no files."*
 
 **The tool result is the report.** Nothing lands on disk until you write it — wait for all
-eight results and go straight to Step 3 with them.
+five results and go straight to Step 3 with them.
 
 ## Step 3 — Aggregate
 
 Present each persona's report under a heading named for its axis — `### Defects`,
-`### Spec`, `### Security`, `### Testing`, `### Reuse`, `### Simplification`, `### Efficiency`,
-`### Altitude` — verbatim or lightly cleaned. Do **not** merge or rerank across axes: that
+`### Spec`, `### Security`, `### Testing`, `### Simplify` — verbatim or lightly cleaned. Do **not** merge or rerank across axes: that
 masking is what the separation exists to prevent. Drop only exact duplicates (same
 `file:line`, same finding); when two axes disagree, keep both — the disagreement is signal.
+Keep each Simplify finding's section tag (`[Reuse: …]`, `[Simplification: …]`, `[Efficiency: …]`,
+`[Altitude: …]`), and add it where the persona left it off.
 
 Move each `Handoff` line under the axis it names, marked `(handoff from AXIS)`. A handoff is
-unverified and never sets the verdict; it is there for Step 4 to look at. Then apply the
+unverified and never sets the verdict, and it stays out of `findings[]`. Then apply the
 Severity adjustments (Low + small fix → Medium; pre-existing → Low) and note each one next to
 its finding.
 
-Reuse, Simplification, Efficiency and Altitude are the exception, because they overlap by
-design — a duplicated block is a Reuse finding and a Simplification finding both. Across those
-four only, keep one copy per mechanism under the axis that names the fix best.
+Open the file with a header: date, scope, the plan path or "intent inferred", and one line per
+pass and repo, `Reviewed head: REPO SHA (pass N)`, the `git rev-parse HEAD` this pass reviewed in
+that repo. The JSON's `reviewed` carries the same heads for the next pass. Then a 2-3 sentence
+summary of what the change does, and the verdict:
 
-Open the file with a header: date, scope, and the plan path or "intent inferred". Then
-a 2-3 sentence summary of what the change does, and the verdict:
+- **`CHANGES_REQUESTED`** — at least one finding rated Medium or above is open: not closed, and
+  not left by the fixer.
+- **`APPROVED`** — nothing open above Low. The Lows in the report are the suggestions.
 
-- **`REQUEST CHANGES`** — a Critical finding, an uncontested hard violation, or a missing item
-  that breaks a core acceptance criterion.
-- **`APPROVE WITH SUGGESTIONS`** — High or Medium findings worth discussing, but nothing that
-  would cause a production incident.
-- **`APPROVE`** — nothing above Low, or only judgement calls.
+When a finding at Medium or above was left by the fixer, the verdict line says so, `APPROVED —
+2 findings left unfixed, worst High`, and so does the stage summary. A reader must never take
+an approval for "nothing is wrong".
 
-Those four cleanup axes must not turn an `APPROVE` into `REQUEST CHANGES` between them — volume
-on rung 4 is still rung 4.
+Give every finding an id, `AXIS-N` (`defects-1`, `simplify-3`), unique in the report and kept
+across passes. Its `file` is relative to its repo's checkout; in a multi-repo workspace, `repo`
+names that repo. Set `askUser: true` on a finding whose fix would go against the plan or
+`design.md`, or needs a bigger change than the finding names — a new component, a changed
+contract, more scope. It stays in the fix list; the fix stage asks the user before touching it.
 
 Close with one line per axis: total findings, and the worst issue *within that axis*. Don't
 pick a single winner across axes.
@@ -234,38 +242,72 @@ pick a single winner across axes.
 **Where it goes** — always write the file:
 
 - **In a run** → `.yok/RUN/artifacts/review.md`.
-- **Standalone with `--output PATH`** → write there and report the verdict plus every blocking
-  finding.
+- **Standalone with `--output PATH`** → write there and report the verdict plus every open
+  finding at Medium or above.
 - **Standalone without it** → write `.yok/review.md`, falling back to `./REVIEW.md` when
   there's no `.yok/`, **and** print the full review inline. A human asked; make them open a
   file to see the answer and they won't.
 
-## Step 4 — Apply the fixes
+## A later pass (round 2 and up)
 
-**Fix every finding.** Begin editing straight away — a fix that changes what the code does is
-still yours to make: the review found it, so repair it. Work sequentially and yourself — the
-personas ran in parallel on partial context and edit nothing, so turning them loose on one
-tree would collide.
+By round 2, the fix stage has already worked on the last round's findings. This pass checks
+those fixes, and looks only at the code they changed.
 
-Commit each repair on its own as you go, and record it in the report under a **Fixes applied**
-heading: `file:line`, what changed, and why. Add to the report; the findings above stay as
-written.
+Read these first:
 
-Run the repo's typecheck, lint, and tests once, after the last edit. If they fail, revert the
-repair commits newest-first until they pass, and record each reverted one under **Left
-unfixed** with the failure it caused.
+- `review.md`: the findings so far, each with its id.
+- `previous`: the last pass's output, with the head it reviewed in each repo.
+- `.yok/RUN/artifacts/fixes/review-ROUND.json`: what the fixer did with each finding —
+  `closed` with its commit, or `left` with why (and the user's `decision`, if it asked).
 
-**You are done when every finding sits under Fixes applied or Left unfixed** — walk the report
-axis by axis and account for each one, then restate the verdict. `REQUEST CHANGES` still stands
-when a blocking finding is one you left.
+Then:
+
+1. **Get the fix diff** in each repo: `git diff PREV...HEAD`, where PREV is `previous.reviewed`
+   for that repo. When it is empty in every repo, the fixer left everything: go to step 3.
+2. **Send the personas**, in one message: Defects, plus each persona that owns a `closed`
+   finding, on the same models as Step 2. Write a new brief file for this pass: the fix diff as
+   its map, the governance sources and the Severity section as in Step 2, and in place of the
+   Step 2 brief: *"Review the lines this fix diff changed, and follow them to their callers only
+   to check the fix did not break them. Report only a problem the fix diff added, not one that
+   was already there."* Give each one that brief, its own findings, and what the fixer did with
+   them. Each answers two questions:
+   - Is each of its closed findings really fixed? If not, why, with `file:line`.
+   - Did the fix diff add a new problem?
+3. **Update `review.md` in place**, never a second file:
+   - each old finding gets a status: `closed`, `still open` with the persona's reason, or
+     `left` with the fixer's reason (left ones move under **Left unfixed**);
+   - each new finding goes under its axis, marked `(pass ROUND)`;
+   - add this pass's `Reviewed head` lines, and rewrite the verdict.
+4. **Rebuild the JSON** from the updated report. `findings[]` holds the findings at Medium or
+   above that are `still open` or new. `left` ones are out, so no later pass retries them.
+
+On the last pass (`round` equals `rounds`), no fixer comes after you: list every finding still
+open under **Left unfixed** as well, marked "loop ended", and keep it in `findings[]` so the
+verdict stays `CHANGES_REQUESTED`. The run carries on.
 
 ## Finish
 
-In a run, push each repo's branch. The stage is done only when every repo has no dirty tracked
-file and `HEAD` equals `origin/BRANCH`. Never force-push; when the remote holds commits this
-checkout lacks, finish the stage with `--error -` naming them.
+In a run, push as the Push section of `yok orchestrate skill ref implement.working-instructions`
+says: Step 1 may have made a WIP commit.
 
-In a run, finish the stage with `--artifact '{"type":"review","name":"review","path":"artifacts/review.md"}'`. The output is the final
-verdict on its first line, then one line per finding left unfixed.
+In a run, finish the stage with `--artifact '{"type":"review","name":"review","path":"artifacts/review.md"}'` and this JSON as the
+output, checked against `review.output.v1` in `scripts/review.ts`. `verdict` comes first;
+`findings[]` is the fix list the workflow hands the fix stage, so write each `summary`, `trigger`
+and `hint` to stand on its own, without the report beside it:
+
+```json
+{
+  "verdict": "CHANGES_REQUESTED | APPROVED",
+  "report": "artifacts/review.md",
+  "reviewed": { "yok": "the HEAD this pass reviewed, per repo" },
+  "findings": [{ "id": "defects-1", "axis": "defects", "severity": "High", "size": "small",
+    "file": "src/run.ts", "line": 42, "summary": "what is wrong", "trigger": "who does what for it to fire",
+    "hint": "the fix, and what it must not break" }]
+}
+```
+
+Standalone, write `findings[]` as a JSON array to `review-fixes.json` in the same folder as the
+report, wherever Step 3 put it, and end by telling the user to run `/yok:fix` with that file as
+`fixes`.
 
 Standalone, this skill runs only when explicitly invoked — never trigger it on context clues.

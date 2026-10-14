@@ -5,7 +5,7 @@
       "id": 1,
       "name": "python-api-defects",
       "prompt": "Review this Python API code for bugs. The diff is at skills/code-review/evals/files/eval1.diff and the full source is at skills/code-review/evals/files/eval1_api.py.",
-      "expected_output": "A review report identifying mutable default argument in validate_email, bare except in delete_user, thread-safety issues on _users dict (lock imported but never used), naive datetime.now() calls, and get_user returning None without caller warning. Verdict should be REQUEST CHANGES due to critical defects.",
+      "expected_output": "A review report identifying mutable default argument in validate_email, bare except in delete_user, thread-safety issues on _users dict (lock imported but never used), naive datetime.now() calls, and get_user returning None without caller warning. Verdict should be CHANGES_REQUESTED due to critical defects.",
       "files": [
         "skills/code-review/evals/files/eval1.diff",
         "skills/code-review/evals/files/eval1_api.py"
@@ -20,7 +20,7 @@
         "Every defect finding explains what in the code makes it a defect",
         "Every defect explains why it is a problem, not just what it is",
         "Review includes a Summary section stating the inferred intent of the code",
-        "Review includes a Verdict (REQUEST CHANGES, APPROVE WITH SUGGESTIONS, or APPROVE)",
+        "Review includes a Verdict (CHANGES_REQUESTED or APPROVED)",
         "Findings are grouped by reviewer axis rather than merged into one ranked list",
         "Prints the review inline (invoked directly, no --output given), not only a path to a file"
       ],
@@ -35,7 +35,7 @@
       "id": 2,
       "name": "typescript-against-plan",
       "prompt": "Review this TypeScript task manager against its plan. Plan is at skills/code-review/evals/files/eval2_plan.md, diff at skills/code-review/evals/files/eval2.diff, and full source at skills/code-review/evals/files/eval2_task_manager.ts.",
-      "expected_output": "A review report with a Spec section checking the change against each acceptance criterion: runTask does not await handler (criterion 2), runAllPending uses forEach with an async callback instead of Promise.all (criterion 3), parseTaskConfig does not validate input (criterion 4), == used instead of === (criterion 5), findTask declares Task but can return undefined (criterion 6). A Security section flags prototype pollution in mergeTaskMetadata via Object.assign on user input, and unvalidated JSON.parse in parseTaskConfig. Verdict is REQUEST CHANGES.",
+      "expected_output": "A review report with a Spec section checking the change against each acceptance criterion: runTask does not await handler (criterion 2), runAllPending uses forEach with an async callback instead of Promise.all (criterion 3), parseTaskConfig does not validate input (criterion 4), == used instead of === (criterion 5), findTask declares Task but can return undefined (criterion 6). A Security section flags prototype pollution in mergeTaskMetadata via Object.assign on user input, and unvalidated JSON.parse in parseTaskConfig. Verdict is CHANGES_REQUESTED.",
       "files": [
         "skills/code-review/evals/files/eval2.diff",
         "skills/code-review/evals/files/eval2_task_manager.ts",
@@ -53,7 +53,7 @@
         "Review includes a '### Security' section flagging prototype pollution in mergeTaskMetadata via Object.assign on user-controlled input",
         "Security section names the entry point the untrusted data arrives through, not just the vulnerability class",
         "Every finding includes a file:line reference",
-        "Verdict is REQUEST CHANGES",
+        "Verdict is CHANGES_REQUESTED",
         "Prints the review inline (invoked directly, no --output given), not only a path to a file"
       ],
       "anti_expectations": [
@@ -84,31 +84,29 @@
     },
     {
       "id": 4,
-      "name": "reports-then-fixes",
+      "name": "reports-then-hands-off",
       "prompt": "Copy skills/code-review/evals/files/eval2_task_manager.ts and eval2.diff into a scratch working directory, then run /code-review on that copy with --output <scratch>/review.md. Do not modify the fixtures in skills/code-review/evals/files/.",
       "files": [
         "skills/code-review/evals/files/eval2.diff",
         "skills/code-review/evals/files/eval2_task_manager.ts"
       ],
-      "expected_output": "A review.md with a REQUEST CHANGES verdict and per-axis '###' sections naming the blocking defects (missing await in runTask, forEach-with-async in runAllPending, unvalidated JSON.parse, == comparisons, findTask return type, prototype pollution in mergeTaskMetadata), written before any edit. Then a fix pass on the scratch copy applying every finding, each repair recorded in review.md under a 'Fixes applied' heading, closing with the verdict restated.",
+      "expected_output": "A review.md with a CHANGES_REQUESTED verdict and per-axis '###' sections naming the blocking defects (missing await in runTask, forEach-with-async in runAllPending, unvalidated JSON.parse, == comparisons, findTask return type, prototype pollution in mergeTaskMetadata). review-fixes.json is written beside review.md and holds exactly the Medium-and-above findings, each with an AXIS-N id. The scratch copy is never edited, and the review closes by restating the verdict and telling the user to run /yok:fix with review-fixes.json.",
       "expectations": [
-        "review.md verdict is REQUEST CHANGES",
+        "review.md verdict is CHANGES_REQUESTED",
         "Findings are grouped under per-axis '###' headings rather than merged into one ranked list",
         "Every blocking defect carries a file:line and a reason it matters",
-        "Judgement-call findings are recorded and marked as non-blocking",
-        "All eight reviewer personas are dispatched as eight separate sub-agents in one message",
+        "All five reviewer personas are dispatched as five separate sub-agents in one message, Testing and Simplify with the model set to sonnet",
+        "Defects, Spec and Security are dispatched with no model option set",
+        "The Defects and Simplify agents are told to invoke the code-quality skill; Spec, Security and Testing are not",
         "Empty axes are presented as empty rather than dropped from the report",
-        "Cleanup findings appear under their own per-angle '###' headings (Reuse, Simplification, Efficiency, Altitude)",
-        "Cleanup findings are recorded as non-blocking judgement calls and do not by themselves drive the verdict",
-        "review.md is written before the scratch copy is edited",
+        "Cleanup findings appear under one '### Simplify' heading, each title starting with a [Reuse: …], [Simplification: …], [Efficiency: …] or [Altitude: …] tag",
+        "Cleanup findings rated Medium or above are in review-fixes.json like any other",
         "Every finding carries a trigger (who has to do what for it to fire) and a fix size",
-        "The fix pass edits the scratch copy for every finding, including ones that change behaviour",
-        "Each repair is recorded in review.md under a 'Fixes applied' heading with file:line and what changed",
-        "Closes by accounting for every finding and restating the verdict"
+        "review-fixes.json is written beside review.md and holds exactly the Medium-and-above findings, each with an `AXIS-N` id",
+        "Closes by restating the verdict and telling the user to run /yok:fix with review-fixes.json"
       ],
       "anti_expectations": [
-        "Does not edit the scratch copy before review.md is written",
-        "Does not ask the user which findings to apply before editing",
+        "Does not edit the scratch copy or make a commit",
         "Does not alter or remove the findings already written in review.md",
         "Does not re-dispatch the personas for a second review pass",
         "Does not modify the fixture files under skills/code-review/evals/files/",
@@ -119,12 +117,12 @@
       "id": 5,
       "name": "multi-package-single-fanout",
       "prompt": "Review the change at skills/code-review/evals/files/eval5_multipkg.diff. It spans packages/api and packages/auth.",
-      "expected_output": "One review covering both packages, produced by exactly eight sub-agents. Findings include the exp unit mismatch across the package boundary (packages/api writes milliseconds, packages/auth compares against seconds, so tokens never expire), the TOKEN_SECRET fallback to a hardcoded 'dev-secret', JSON.parse running before signature verification, and the unchecked destructure of raw.split('.'). Verdict is REQUEST CHANGES.",
+      "expected_output": "One review covering both packages, produced by exactly five sub-agents. Findings include the exp unit mismatch across the package boundary (packages/api writes milliseconds, packages/auth compares against seconds, so tokens never expire), the TOKEN_SECRET fallback to a hardcoded 'dev-secret', JSON.parse running before signature verification, and the unchecked destructure of raw.split('.'). Verdict is CHANGES_REQUESTED.",
       "files": [
         "skills/code-review/evals/files/eval5_multipkg.diff"
       ],
       "expectations": [
-        "Exactly eight sub-agents are dispatched for the whole diff, not eight per package",
+        "Exactly five sub-agents are dispatched for the whole diff, not five per package",
         "Each sub-agent receives the full diff covering both packages/api and packages/auth",
         "Review identifies the exp unit mismatch between packages/api/src/session.ts and packages/auth/src/token.ts, which stops tokens expiring",
         "The unit-mismatch finding cites a file:line in both packages, showing the agent read across the boundary",
@@ -132,13 +130,122 @@
         "Security section flags JSON.parse on the token body running before the HMAC signature is checked",
         "Review identifies that raw.split('.') is destructured without checking it produced two parts",
         "Findings for both packages appear under one set of per-axis '###' headings",
-        "Verdict is REQUEST CHANGES"
+        "Verdict is CHANGES_REQUESTED"
       ],
       "anti_expectations": [
         "Does not dispatch a separate persona set per package",
         "Does not produce a separate review report per package",
         "Does not review one package and defer the other",
         "Does not treat the two packages as unrelated changes"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "docs-only-skips-simplify",
+      "prompt": "Review the change at skills/code-review/evals/files/eval6_docs.diff. It touches only README.md and docs/guide/setup.md.",
+      "expected_output": "A review produced by four sub-agents (Defects, Spec, Security, Testing), with a '### Simplify' heading reading \"Skipped: the diff touches no code file.\" The review reports that docs/guide/setup.md replaces the wrong 'yok start' with 'yok launch', which is still not a yok command; README.md's 'yok run' is the correct name.",
+      "files": [
+        "skills/code-review/evals/files/eval6_docs.diff"
+      ],
+      "expectations": [
+        "Exactly four sub-agents are dispatched in one message: Defects, Spec, Security and Testing",
+        "The report has a '### Simplify' heading reading \"Skipped: the diff touches no code file.\"",
+        "The review reports that 'yok launch' in docs/guide/setup.md is a wrong command name and names 'yok run' as the right one"
+      ],
+      "anti_expectations": [
+        "Does not dispatch a Simplify agent"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "run-pass-1-reviews-only",
+      "prompt": "Copy skills/code-review/evals/files/eval2_task_manager.ts and eval2.diff into a scratch working directory. Run the code-review skill there as a yok run's code-review stage, pass 1 (input round: 1), with output <scratch>/review.md, and give the stage output you would pass to done. Do not modify the fixtures in skills/code-review/evals/files/.",
+      "expected_output": "review.md is written with a 'Reviewed head: REPO SHA (pass 1)' line in its header. The stage output is JSON that parses as review.output.v1: verdict CHANGES_REQUESTED, report, reviewed (the head it reviewed), and findings[] holding exactly the Medium-and-above findings, each with an AXIS-N id. Nothing in the scratch copy is edited.",
+      "files": [
+        "skills/code-review/evals/files/eval2.diff",
+        "skills/code-review/evals/files/eval2_task_manager.ts"
+      ],
+      "expectations": [
+        "review.md is written",
+        "The stage output is JSON that parses as review.output.v1 (verdict, report, reviewed, findings)",
+        "findings[] holds exactly the Medium-and-above findings in the report, each with an AXIS-N id",
+        "The verdict is CHANGES_REQUESTED, matching a non-empty findings[]",
+        "The report header has a 'Reviewed head' line for pass 1"
+      ],
+      "anti_expectations": [
+        "Does not edit any file in the scratch copy",
+        "Does not make a repair commit",
+        "Does not write review-fixes.json (that is for standalone runs)"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "pass-2-confirms-and-catches",
+      "prompt": "Copy skills/code-review/evals/files/eval2_task_manager.ts, eval8_review.md (as review.md) and eval8_fixes.json (as fixes/review-2.json) into a scratch working directory. Run the code-review skill there as a yok run's code-review stage with input round: 2, rounds: 3, and previous: the pass-1 output, whose reviewed is { \"task-manager\": \"aaaaaaa\" } and whose findings[] holds defects-1. Review the fix diff at skills/code-review/evals/files/eval8_fix.diff as the commits since that head, and give the stage output you would pass to done. Do not modify the fixtures in skills/code-review/evals/files/.",
+      "expected_output": "Defects is dispatched with the fix diff only. defects-1 is confirmed closed: runTask now awaits the handler, so a rejection reaches the catch. The fix's new `(err as Error).message` is a new Defects finding marked (pass 2): a handler that throws null or undefined now makes the catch itself throw, so runTask rejects instead of marking the task failed, and a thrown string records an undefined error. The same review.md is updated in place with a 'Reviewed head' line for pass 2, and the JSON's findings[] holds the new finding and not defects-1, with verdict CHANGES_REQUESTED.",
+      "files": [
+        "skills/code-review/evals/files/eval2_task_manager.ts",
+        "skills/code-review/evals/files/eval8_review.md",
+        "skills/code-review/evals/files/eval8_fix.diff",
+        "skills/code-review/evals/files/eval8_fixes.json"
+      ],
+      "expectations": [
+        "Defects is dispatched with the fix diff only, not the whole task manager diff",
+        "defects-1 is marked closed in review.md",
+        "The (err as Error).message change is a new Defects finding marked (pass 2), naming a thrown non-Error value",
+        "The same review.md is updated in place and gains a 'Reviewed head' line for pass 2",
+        "The JSON output's findings[] holds the new finding and not defects-1, and its reviewed names task-manager",
+        "The verdict is CHANGES_REQUESTED"
+      ],
+      "anti_expectations": [
+        "Does not write a second report file",
+        "Does not review the parts of task_manager.ts the fix diff does not touch",
+        "Does not edit the scratch copy or make a commit"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "last-pass-fixer-left-everything",
+      "prompt": "Copy skills/code-review/evals/files/eval2_task_manager.ts, eval8_review.md (as review.md) and eval9_fixes.json (as fixes/review-2.json) into a scratch working directory. Run the code-review skill there as a yok run's code-review stage with input round: 2, rounds: 2, and previous: the pass-1 output, whose reviewed is { \"task-manager\": \"aaaaaaa\" } and whose findings[] holds defects-1. The fix diff since that head is empty: the fixer made no commit. Give the stage output you would pass to done. Do not modify the fixtures in skills/code-review/evals/files/.",
+      "expected_output": "No persona is dispatched, because the fix diff is empty. review.md is updated in place: defects-1 is marked left with the fixer's reason and moves under Left unfixed, and a 'Reviewed head' line for pass 2 is added. The JSON's findings[] is empty and the verdict is APPROVED, but the verdict line in review.md and the stage summary both say one finding was left unfixed, worst High.",
+      "files": [
+        "skills/code-review/evals/files/eval2_task_manager.ts",
+        "skills/code-review/evals/files/eval8_review.md",
+        "skills/code-review/evals/files/eval9_fixes.json"
+      ],
+      "expectations": [
+        "No sub-agent is dispatched",
+        "defects-1 sits under Left unfixed with the fixer's reason",
+        "The JSON output's findings[] is empty and its verdict is APPROVED",
+        "The verdict line in review.md says one finding was left unfixed, worst High",
+        "review.md gains a 'Reviewed head' line for pass 2"
+      ],
+      "anti_expectations": [
+        "Does not stop with an error because the diff is empty",
+        "Does not write a second report file"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "last-pass-keeps-a-fix-that-did-not-hold",
+      "prompt": "Copy skills/code-review/evals/files/eval2_task_manager.ts, eval8_review.md (as review.md) and eval10_fixes.json (as fixes/review-2.json) into a scratch working directory. Run the code-review skill there as a yok run's code-review stage with input round: 2, rounds: 2, and previous: the pass-1 output, whose reviewed is { \"task-manager\": \"aaaaaaa\" } and whose findings[] holds defects-1. Review the fix diff at skills/code-review/evals/files/eval10_fix.diff as the commits since that head, and give the stage output you would pass to done. Do not modify the fixtures in skills/code-review/evals/files/.",
+      "expected_output": "The fix diff awaits the handler but the catch now sets status done, so a rejected handler still reads done: defects-1 is still open. On this last pass it goes under Left unfixed marked loop ended and stays in findings[], so the verdict is CHANGES_REQUESTED.",
+      "files": [
+        "skills/code-review/evals/files/eval2_task_manager.ts",
+        "skills/code-review/evals/files/eval8_review.md",
+        "skills/code-review/evals/files/eval10_fix.diff",
+        "skills/code-review/evals/files/eval10_fixes.json"
+      ],
+      "expectations": [
+        "defects-1 is marked still open, with the reason that the catch now sets status done",
+        "defects-1 is listed under Left unfixed, marked loop ended",
+        "The JSON output's findings[] holds defects-1 and its verdict is CHANGES_REQUESTED",
+        "review.md gains a 'Reviewed head' line for pass 2"
+      ],
+      "anti_expectations": [
+        "Gives the verdict APPROVED",
+        "Drops defects-1 from findings[] because the fixer marked it closed",
+        "Writes a second report file"
       ]
     }
   ]

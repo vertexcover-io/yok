@@ -9,6 +9,11 @@
       "skills/qa/**",
       "!skills/qa/references",
       "skills/retro/**",
+      "skills/fix/**",
+      "!skills/fix/evals",
+      "skills/code-review/**",
+      "!skills/code-review/references",
+      "!skills/code-review/evals",
       "*.json",
       "!packages/cli/src/sdk-types.json",
       "!!.worktrees"

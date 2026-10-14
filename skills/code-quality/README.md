@@ -4,7 +4,7 @@ The coding standard the other skills write and review against: strict types, imm
 
 ## When it runs
 
-No workflow runs it as a stage. It applies whenever an agent writes, reviews or refactors code: the `implement` stage loads it, and five of `code-review`'s eight reviewers check against it. You can also load it yourself:
+No workflow runs it as a stage. It applies whenever an agent writes, reviews or refactors code: the `implement` stage loads it, and `code-review`'s Defects and Simplify reviewers check against it. You can also load it yourself:
 
 - Claude Code: `/yok:code-quality`
 - Codex: `$code-quality`
