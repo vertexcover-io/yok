@@ -184,7 +184,7 @@ A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare na
 
 ### task: the full pipeline
 
-[workflows/task.yaml](./workflows/task.yaml) runs eleven stages. Each one is a skill under `skills/`.
+[workflows/task.yaml](./workflows/task.yaml) runs twelve stages. Each one is a skill under `skills/`.
 
 | Stage | What it does | What it needs |
 |---|---|---|
@@ -194,8 +194,9 @@ A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare na
 | `design` | Reads the code, asks you about the choices that change the shape of the build, writes a one-page `design.md` you approve. | you, at the terminal and in the browser |
 | `planning` | Turns the design into phases, each change written as a diff with its test scenarios, in `plan.md`. You approve it. | you |
 | `implement` | Builds each phase test-first and commits it. Independent phases run in parallel. | each package's commands in the config |
-| `code-review` | Eight reviewer personas read the diff in parallel, then the fixes are applied and recorded. | nothing extra |
-| `qa` | Drives the feature in a browser or a terminal, films the proof, and writes a proof report. A `FAIL` sends the bugs back to `implement`, up to 4 rounds. | `agent-browser`, `ffmpeg` |
+| `fix` | Fixes a list from qa or code-review test-first, one commit per item, and records what happened to each. Runs inside the qa and review loops. | each package's commands in the config |
+| `code-review` | Five reviewer personas read the diff in parallel. If they ask for changes, `fix` repairs them and the personas re-check only the fix commits, up to 2 passes. | nothing extra |
+| `qa` | Drives the feature in a browser or a terminal, films the proof, and writes a proof report. A `FAIL` sends the bugs to `fix`, up to 4 rounds. | `agent-browser`, `ffmpeg` |
 | `git-commit` | Squashes the branch, then regroups the changes into conventional commits. Skipped when QA ended `BLOCKED` (it could not verify the change). | git |
 | `visual-pr` | Pushes the branch and opens a pull request with a visual change outline and the proof. Skipped with `git-commit`. | `gh`, logged in |
 | `retro` | Audits the run's transcripts and writes a ranked report of yok's own defects. Runs after a failed stage too. | nothing extra |
@@ -204,7 +205,7 @@ A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare na
 
 ### quick: small tickets, fast execution
 
-[workflows/quick.yaml](./workflows/quick.yaml) runs `ticket-fetcher → create-workspace → implement → code-review → git-commit → visual-pr`. There is no baseline, design, planning or QA stage, so it asks you nothing up front and films no proof of the change.
+[workflows/quick.yaml](./workflows/quick.yaml) runs `ticket-fetcher → create-workspace → implement → review loop (code-review, fix) → git-commit → visual-pr`. There is no baseline, design, planning or QA stage, so it asks you nothing up front and films no proof of the change.
 
 ```bash
 yok run quick --prompt "Rename the Customer.fullName getter to displayName"
@@ -294,9 +295,10 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 |---|---|
 | [design](./skills/design/README.md) | Reads the code, asks you the questions that shape the build, writes a one-page design you approve |
 | [planning](./skills/planning/README.md) | Turns an approved design into phases, each change as a diff with its test scenarios |
-| [implement](./skills/implement/README.md) | Builds a change, a plan or review feedback test-first and commits each phase |
+| [implement](./skills/implement/README.md) | Builds a change or a plan test-first and commits each phase |
+| [fix](./skills/fix/README.md) | Fixes a list another stage found, test-first, one commit per item |
 | [tdd](./skills/tdd/README.md) | The RED-GREEN-REFACTOR cycle `implement` follows |
-| [code-review](./skills/code-review/README.md) | Eight reviewer personas read a diff, then the fixes are applied and recorded |
+| [code-review](./skills/code-review/README.md) | Five reviewer personas read a diff; in a run a separate fix pass repairs and they re-check it |
 | [refactor](./skills/refactor/README.md) | Assesses code for extraction, simplification and naming, then applies the changes |
 | [code-quality](./skills/code-quality/README.md) | Strict types, immutability, pure functions, early returns; the rules every coding skill follows |
 | [qa](./skills/qa/README.md) | Drives the feature, films the proof, writes the proof report |
