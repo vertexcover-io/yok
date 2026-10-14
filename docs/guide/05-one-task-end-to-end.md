@@ -250,15 +250,17 @@ Every node in `task.yaml` goes through hops 4 and 5 the same way. Here is what e
 | `design` | design | deep | the task | `design` artifact |
 | `planning` | planning | deep | task, workspace, consumes `design` | `plan` artifact |
 | `implement` | implement | deep | workspace, consumes `plan` | `implementation` artifact, commits in the worktree |
-| `code-review` | code-review | deep | workspace | review findings, fixes applied |
+| `review-loop` | loop of `compact-before-fix` + `fix` + `code-review` | deep | workspace | `verdict` APPROVED or CHANGES_REQUESTED, `findings` |
 | `qa-loop` | loop of `fix` + `qa` | deep | workspace, task | `status` of PASS, FAIL or BLOCKED, `bugs` |
 | `commit` | git-commit | deep | workspace | tidy commits, only if qa was not BLOCKED |
 | `pr` | visual-pr | deep | workspace, task, consumes `plan` and `proof-report` | the open pull request |
 | `retro` | retro | deep | nothing | a report of what the harness itself got wrong |
 
-Three nodes do something the others do not.
+Four nodes do something the others do not.
 
-**`qa-loop` is a loop node.** Its children are `fix` and `qa`. `fix` has `when: "{{ iteration.index > 1 }}"`, so on the first pass `next` records it as skipped and hands out `qa` straight away. If `qa` reports `FAIL`, the loop's `until` is false, so the next pass runs `fix` with `feedback: "{{ iteration.previous.bugs }}"`, then `qa` again. It stops after a pass that is not `FAIL`, or after four passes.
+**`qa-loop` is a loop node.** Its children are `fix` and `qa`. `fix` has `when: "{{ iteration.index > 1 }}"`, so on the first pass `next` records it as skipped and hands out `qa` straight away. If `qa` reports `FAIL`, the loop's `until` is false, so the next pass runs `fix` (the `fix` skill) with `fixes: "{{ iteration.previous.bugs }}"`, then `qa` again. It stops after a pass that is not `FAIL`, or after four passes.
+
+**`review-loop` works the same way, at most twice.** Pass 1 runs `code-review` alone. If its `verdict` is `CHANGES_REQUESTED`, pass 2 compacts the session (`compact-before-fix`), runs `fix` with `fixes: "{{ iteration.previous.findings }}"`, then runs `code-review` with `round: 2` and `previous: "{{ iteration.previous }}"`. That review covers only the fix commits, starting from the head each repo was at in `previous.reviewed`. `until` also holds on the last pass, so running out of passes never fails the run.
 
 **`commit` has a `when`.** `"{{ nodes.qa-loop.output.status != 'BLOCKED' }}"`. BLOCKED means qa could not verify at all, so nothing is published. The node is skipped, and because `pr` depends on `commit`, `pr` is skipped too.
 

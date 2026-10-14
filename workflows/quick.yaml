@@ -31,17 +31,44 @@ nodes:
       workspace: "{{ nodes.create-workspace.output }}"
       task: "{{ nodes.ticket-fetcher.output.task }}"
 
-  - id: code-review
-    type: agent
-    stage: code-review
+  - id: review-loop
+    type: loop
     dependsOn: [implement]
+    until: "{{ iteration.nodes.code-review.output.verdict == 'APPROVED' or iteration.index == iteration.max }}"
+    maxIterations: 2
     input:
       workspace: "{{ nodes.create-workspace.output }}"
+    nodes:
+      # A later pass starts the fix stage without pass 1's review in the session.
+      - id: compact-before-fix
+        type: context
+        action: compact
+        when: "{{ iteration.index > 1 }}"
+        prompt: "Keep the workspace path and the run name."
+
+      - id: fix
+        type: agent
+        stage: fix
+        dependsOn: [compact-before-fix]
+        input:
+          workspace: "{{ inputs.workspace }}"
+          fixes: "{{ iteration.previous.findings }}"
+          source: review
+          round: "{{ iteration.index }}"
+
+      - id: code-review
+        type: agent
+        stage: code-review
+        input:
+          workspace: "{{ inputs.workspace }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+          previous: "{{ iteration.previous }}"
 
   - id: commit
     type: agent
     stage: git-commit
-    dependsOn: [code-review]
+    dependsOn: [review-loop]
     input:
       workspace: "{{ nodes.create-workspace.output }}"
 

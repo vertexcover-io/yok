@@ -1142,6 +1142,57 @@ nodes:
   });
 });
 
+const REVIEW_LOOP = {
+  type: "loop",
+  until:
+    "{{ iteration.nodes.code-review.output.verdict == 'APPROVED' or iteration.index == iteration.max }}",
+  maxIterations: 2,
+  input: { workspace: "{{ nodes.create-workspace.output }}" },
+  nodes: [
+    {
+      id: "compact-before-fix",
+      type: "context",
+      action: "compact",
+      when: "{{ iteration.index > 1 }}",
+    },
+    {
+      id: "fix",
+      stage: { ref: "fix" },
+      dependsOn: ["compact-before-fix"],
+      input: {
+        workspace: "{{ inputs.workspace }}",
+        fixes: "{{ iteration.previous.findings }}",
+        source: "review",
+        round: "{{ iteration.index }}",
+      },
+    },
+    {
+      id: "code-review",
+      stage: { ref: "code-review", output: { name: "review.output.v1" } },
+      input: {
+        workspace: "{{ inputs.workspace }}",
+        round: "{{ iteration.index }}",
+        rounds: "{{ iteration.max }}",
+        previous: "{{ iteration.previous }}",
+      },
+    },
+  ],
+};
+
+describe("the shipped quick workflow", () => {
+  const QUICK_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "quick.yaml");
+
+  test("SC12: runs the same review loop after implement, and commit waits for it", async () => {
+    const plan = await compileWorkflow(QUICK_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "review-loop")).toMatchObject({
+      dependsOn: ["implement"],
+      ...REVIEW_LOOP,
+    });
+    expect(plan.nodes.find((node) => node.id === "commit")?.dependsOn).toEqual(["review-loop"]);
+  });
+});
+
 describe("the shipped task workflow", () => {
   test("declares the Linear key, bun and gh as its doctor checks", async () => {
     const plan = await compileWorkflow(

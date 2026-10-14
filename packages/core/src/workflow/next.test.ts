@@ -1345,9 +1345,14 @@ nodes:
   });
 });
 
-describe("the shipped task workflow's qa loop", () => {
+describe("the shipped task workflow's qa and review loops", () => {
   const TASK_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml");
-  const bug = { scenario: "SC1", cause: "the total skips refunds", fix: "subtract refunds" };
+  const bug = {
+    id: "SC1",
+    summary: "the total skips refunds",
+    trigger: "check out with a refund",
+    hint: "subtract refunds",
+  };
   const report = "artifacts/verification/proof-report.html";
   const VERDICTS: Readonly<Record<string, JsonObject>> = {
     PASS: { status: "PASS", report, gaps: [], bugs: [] },
@@ -1357,7 +1362,7 @@ describe("the shipped task workflow's qa loop", () => {
       reason: "SC1 failed",
       report: null,
       gaps: [],
-      bugs: [{ ...bug, needsDecision: false }],
+      bugs: [{ ...bug, askUser: false }],
     },
     BLOCKED: { status: "BLOCKED", reason: "no environment", report: null, gaps: [], bugs: [] },
   };
@@ -1365,6 +1370,12 @@ describe("the shipped task workflow's qa loop", () => {
   const OUTPUTS: Readonly<Record<string, JsonObject>> = {
     "ticket-fetcher": { task: "do X" },
     "create-workspace": workspace,
+  };
+  const APPROVED: JsonObject = {
+    verdict: "APPROVED",
+    report: "artifacts/review.md",
+    reviewed: { yok: "b2" },
+    findings: [],
   };
   // Every artifact a stage in task.yaml consumes, listed on each finished node so none is blocked.
   const artifacts = ["design", "plan", "implementation"].map((name) => ({
@@ -1381,43 +1392,59 @@ describe("the shipped task workflow's qa loop", () => {
   }>;
   type Walked = Readonly<{ state: State; stop: Stop; handed: readonly Handed[] }>;
 
-  // Walks task.yaml as the session would, answering each qa pass with the next verdict, and keeps
-  // every leaf it was handed. Nodes named in `failing` end failed.
+  type Answers = Readonly<{ qa?: readonly string[]; review?: readonly JsonObject[] }>;
+
+  // Walks task.yaml as the session would, answering each qa pass with the next verdict and each
+  // code-review pass with the next review (PASS and APPROVED once they run out), and keeps every
+  // leaf it was handed. Nodes named in `failing` end failed.
   const walkTask = async (
     plan: WorkflowPlan,
     state: State,
-    verdicts: readonly string[],
-    handed: readonly Handed[] = [],
+    answers: Answers,
     failing: readonly string[] = [],
+    handed: readonly Handed[] = [],
   ): Promise<Walked> => {
     const next = await advance(plan, state);
     if (next.stop.kind !== "leaf") return { state: next.state, stop: next.stop, handed };
     const { node, nodeRunId, input, variables } = next.stop;
-    const isQa = node.id === "qa";
-    const output = isQa ? (VERDICTS[verdicts[0] ?? ""] ?? null) : (OUTPUTS[node.id] ?? {});
+    const { qa = [], review = [] } = answers;
+    const output =
+      node.id === "qa"
+        ? (VERDICTS[qa[0] ?? "PASS"] ?? null)
+        : node.id === "code-review"
+          ? (review[0] ?? APPROVED)
+          : (OUTPUTS[node.id] ?? {});
     const ended = failing.includes(node.id)
       ? end(next.state, nodeRunId, "failed", {
           nodeType: "agent",
           error: { kind: "exit", message: "the retro sub-agent failed" },
         })
       : end(next.state, nodeRunId, "completed", { nodeType: "agent", output, artifacts });
-    return walkTask(
-      plan,
-      ended,
-      isQa ? verdicts.slice(1) : verdicts,
-      [...handed, { id: node.id, node, input, variables }],
-      failing,
-    );
+    const rest = {
+      qa: node.id === "qa" ? qa.slice(1) : qa,
+      review: node.id === "code-review" ? review.slice(1) : review,
+    };
+    return walkTask(plan, ended, rest, failing, [
+      ...handed,
+      { id: node.id, node, input, variables },
+    ]);
   };
 
   const loopIds = (handed: readonly Handed[]): readonly string[] =>
     handed.map(({ id }) => id).filter((id) => ["qa", "fix", "retro"].includes(id));
 
+  // The review loop's leaves: its code-review and fix, all handed out before the qa loop starts.
+  const reviewLeaves = (handed: readonly Handed[]): readonly Handed[] => {
+    const qaStart = handed.findIndex(({ id }) => id === "qa");
+    const beforeQa = qaStart === -1 ? handed : handed.slice(0, qaStart);
+    return beforeQa.filter(({ id }) => id === "code-review" || id === "fix");
+  };
+
   test("SC13: a first PASS hands out every stage in order in the run's workspace, runs qa once as round 1 of 4, and its verdict is the loop's output", async () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["PASS"],
+      { qa: ["PASS"] },
     );
 
     const task = "do X";
@@ -1445,19 +1472,22 @@ describe("the shipped task workflow's qa loop", () => {
     expect(stop).toEqual({ kind: "finished", status: "completed" });
   });
 
-  test("SC14: a FAIL hands its bugs to fix as feedback, then qa runs again as round 2", async () => {
+  test("SC14 (review-loop SC5): a FAIL hands fix its bugs as fixes for qa round 2, then qa runs again as round 2", async () => {
     const { state, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["FAIL", "PARTIAL"],
+      { qa: ["FAIL", "PARTIAL"] },
     );
 
     expect(loopIds(handed)).toEqual(["qa", "fix", "qa", "retro"]);
-    expect(handed.find(({ id }) => id === "fix")?.input).toMatchObject({
+    expect(handed.find(({ id }) => id === "fix")?.input).toEqual({
       workspace,
-      feedback: [{ ...bug, needsDecision: false }],
+      fixes: [{ ...bug, askUser: false }],
+      source: "qa",
+      round: 2,
     });
     expect(handed.filter(({ id }) => id === "qa")[1]?.input).toMatchObject({ round: 2, rounds: 4 });
+    expect(handed.find(({ id }) => id === "fix")?.node).toMatchObject({ stage: { ref: "fix" } });
     expect(findRun(state, "qa-loop")).toMatchObject({
       status: "completed",
       output: VERDICTS.PARTIAL,
@@ -1468,7 +1498,7 @@ describe("the shipped task workflow's qa loop", () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["FAIL", "FAIL", "FAIL", "FAIL"],
+      { qa: ["FAIL", "FAIL", "FAIL", "FAIL"] },
     );
 
     expect(loopIds(handed)).toEqual(["qa", "fix", "qa", "fix", "qa", "fix", "qa", "retro"]);
@@ -1487,7 +1517,7 @@ describe("the shipped task workflow's qa loop", () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["BLOCKED"],
+      { qa: ["BLOCKED"] },
     );
 
     expect(loopIds(handed)).toEqual(["qa", "retro"]);
@@ -1506,8 +1536,7 @@ describe("the shipped task workflow's qa loop", () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["PASS"],
-      [],
+      { qa: ["PASS"] },
       ["retro"],
     );
 
@@ -1515,5 +1544,79 @@ describe("the shipped task workflow's qa loop", () => {
     expect(findRun(state, "pr")?.status).toBe("completed");
     expect(findRun(state, "retro")?.status).toBe("failed");
     expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+  const finding = {
+    id: "defects-1",
+    axis: "defects",
+    severity: "High",
+    size: "small",
+    file: "src/run.ts",
+    summary: "runTask does not await the save",
+    trigger: "a task finishes while the save is pending",
+    hint: "await the save",
+  };
+  const CHANGES_REQUESTED: JsonObject = {
+    verdict: "CHANGES_REQUESTED",
+    report: "artifacts/review.md",
+    reviewed: { yok: "a1" },
+    findings: [finding],
+  };
+
+  test("SC13 (review-loop): a first CHANGES_REQUESTED hands fix its findings, then code-review runs as round 2, and APPROVED ends the loop", async () => {
+    const { state, stop, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [CHANGES_REQUESTED, APPROVED] },
+    );
+
+    const review = reviewLeaves(handed);
+    expect(review.map(({ id }) => id)).toEqual(["code-review", "fix", "code-review"]);
+    expect(review[1]?.node).toMatchObject({ stage: { ref: "fix" } });
+    expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("completed");
+    expect(review[1]?.input).toEqual({
+      workspace,
+      fixes: [finding],
+      source: "review",
+      round: 2,
+    });
+    expect(review[2]?.input).toEqual({
+      workspace,
+      round: 2,
+      rounds: 2,
+      previous: CHANGES_REQUESTED,
+    });
+    expect(findRun(state, "review-loop")).toMatchObject({ status: "completed", output: APPROVED });
+    expect(findRun(state, "qa-loop")?.status).toBe("completed");
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC14 (review-loop): two CHANGES_REQUESTED end the loop completed on its last pass, and the run goes on to qa", async () => {
+    const { state, stop } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [CHANGES_REQUESTED, CHANGES_REQUESTED] },
+    );
+
+    expect(findRun(state, "review-loop")).toMatchObject({
+      status: "completed",
+      iteration: 2,
+      output: CHANGES_REQUESTED,
+    });
+    expect(findRun(state, "qa-loop")?.status).toBe("completed");
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC15 (review-loop): a first APPROVED runs code-review once, as round 1, and never hands out fix", async () => {
+    const { state, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [APPROVED] },
+    );
+
+    const review = reviewLeaves(handed);
+    expect(review.map(({ id }) => id)).toEqual(["code-review"]);
+    expect(review[0]?.input).toEqual({ workspace, round: 1, rounds: 2, previous: null });
+    expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("skipped");
+    expect(findRun(state, "review-loop", "fix")?.status).toBe("skipped");
   });
 });
