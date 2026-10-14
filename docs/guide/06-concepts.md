@@ -109,9 +109,9 @@ OUT
 
 ## Verifier
 
-A check a stage declares that `done` runs before accepting. It receives the run name, the node run id, the output, the artifacts by name, and its `args`. It returns `{ pass: boolean, findings: [{ message, path?, line?, hint? }] }`. A failing result needs at least one finding. The contract is [verifier.ts](../../packages/sdk/src/verifier.ts).
+A check a stage declares, which `done` runs before it accepts the stage's work. The check sees what the stage was asked to do, what it produced (its output and the files it handed over), and any settings the stage gives the check. It either passes, or fails with findings, each saying what is wrong and where, so the agent knows what to fix. A failure always names at least one problem.
 
-A finding sends the agent back to fix the work with the same node run id. A verifier that throws, times out, exits non-zero, or returns a bad shape is a `verifier-error`, also retryable. Every run of a verifier is recorded as an `orchestrate.verifier` event with its duration.
+A failed check sends the agent back to fix the work and call `done` again on the same step. A check that cannot run to an answer counts as a failure too, so a broken check never lets work through. Every run of a check is recorded in the run's history. The exact shape is in [verifier.ts](../../packages/sdk/src/verifier.ts).
 
 ## Extension
 

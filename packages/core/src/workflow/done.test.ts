@@ -304,7 +304,7 @@ describe("runVerifiers", () => {
   const verify = async (verifiers: ReturnType<typeof fn>[], cwd = tempDir()) =>
     runVerifiers(
       await loadVerifiers(verifiers, SKILLS),
-      { run: "feat-x", nodeRunId: "nr-1", output: { ok: true }, artifacts: {} },
+      { run: "feat-x", nodeRunId: "nr-1", output: { ok: true }, artifacts: [], nodeInput: null },
       cwd,
       1,
     );
@@ -368,8 +368,9 @@ describe("runVerifiers", () => {
       run: "feat-x",
       nodeRunId: "nr-1",
       output: { ok: true },
-      artifacts: {},
+      artifacts: [],
       args: {},
+      nodeInput: null,
     });
   });
 });

@@ -76,6 +76,8 @@ export {
   EventTypeSchema,
   type FileArtifact,
   FileArtifactSchema,
+  type FixRequest,
+  FixRequestSchema,
   type GitState,
   GitStateSchema,
   isNormalizedRelativePath,
