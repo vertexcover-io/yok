@@ -59,7 +59,7 @@ import {
 } from "@yok/sdk/internal";
 import * as z from "zod";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
-import { type AgentMode, extensionPath } from "./stage.ts";
+import { type AgentMode, extensionPath, type HandOff } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
 import {
   type CompletionIssue,
@@ -359,6 +359,8 @@ export type StepReply =
       nodeRunId: string;
       nodeId: string;
       mode: AgentMode;
+      // a subagent node's hand-off: one subagent for the node, or the stage starts its own
+      handOff?: HandOff;
       // the model and effort a subagent runs on, when the run has tiers
       model?: TierModel["model"];
       effort?: TierModel["effort"];
@@ -377,6 +379,8 @@ export type StepReply =
       nodeRunId: string;
       nodeId: string;
       mode: AgentMode;
+      // always whole for a subagent node: with no stage, there is nothing to split
+      handOff?: HandOff;
       model?: TierModel["model"];
       effort?: TierModel["effort"];
       prompt: string;
@@ -520,7 +524,10 @@ const buildLeafReply = (
     };
   }
   const done = orchestrateLine({ verb: "done", run, nodeRunId });
-  const launch = { mode: runsOn?.mode ?? "inline", ...tierLaunch(runsOn?.model ?? null) };
+  const launch =
+    runsOn?.mode === "subagent" && runsOn.handOff !== null
+      ? { mode: runsOn.mode, handOff: runsOn.handOff, ...tierLaunch(runsOn.model) }
+      : { mode: "inline" as const };
   if (node.stage === undefined) {
     const prompt = node.prompt ?? "";
     return { kind: "agent", nodeRunId, nodeId: node.id, ...launch, prompt, input, done };

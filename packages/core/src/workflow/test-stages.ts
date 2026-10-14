@@ -8,6 +8,8 @@ export type DemoStage = Readonly<{
   variables?: string;
   tier?: string;
   mode?: string;
+  handOff?: string;
+  tools?: string;
   references?: string;
   summary?: string;
   body?: string;
@@ -40,8 +42,8 @@ export const writeStages = (dir: string, stages: Readonly<Record<string, DemoSta
   );
   writeFileSync(join(dir, "verifiers.ts"), VERIFIERS_MODULE);
   for (const [name, stage] of Object.entries(stages)) {
-    const { consumes, produces, verifiers, variables, references, tier, mode, summary, body } =
-      stage;
+    const { consumes, produces, verifiers, variables, references, tier, mode } = stage;
+    const { handOff, tools, summary, body } = stage;
     mkdirSync(join(dir, name), { recursive: true });
     const lines = [
       "---",
@@ -49,7 +51,8 @@ export const writeStages = (dir: string, stages: Readonly<Record<string, DemoSta
       `description: demo stage ${name}`,
       ...(summary === undefined ? [] : [`summary: ${summary}`]),
       `mode: ${mode ?? "inline"}`,
-      "allowed-tools: [Bash]",
+      ...(handOff === undefined ? [] : [`hand-off: ${handOff}`]),
+      `allowed-tools: ${tools ?? "[Bash]"}`,
       ...(tier === undefined ? [] : [`tier: ${tier}`]),
       "inputs: { description: in, schema: demo.input.v1 }",
       "outputs: { description: out, schema: demo.output.v1, module: ../schemas.ts }",
@@ -75,16 +78,7 @@ export const DEMO_STAGES = {
   thinker: { tier: "deep" },
   quick: { tier: "fast" },
   delegated: { tier: "deep", mode: "subagent" },
-  phased: {
-    tier: "deep",
-    mode: "subagent",
-    body: "## Subagent mode\n\nStart one subagent per phase.",
-  },
-  "near-phased": {
-    tier: "deep",
-    mode: "subagent",
-    body: "## Subagent mode notes\n\nStart one subagent per phase.",
-  },
+  split: { tier: "deep", mode: "subagent", handOff: "split", tools: "[Agent, Bash]" },
   summarized: { summary: "Say how many files changed." },
   plain: {},
   tuned: {

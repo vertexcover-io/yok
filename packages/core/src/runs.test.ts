@@ -854,9 +854,24 @@ describe("nextStep with stage tiers", () => {
       kind: "stage",
       nodeId: "make",
       mode: "subagent",
+      handOff: "whole",
       model: "claude-sonnet-5-5",
     });
     expect(reply.value).not.toHaveProperty("effort");
+  });
+
+  test("next replies to a subagent stage that splits with handOff: split", async () => {
+    const { ref } = await stagedRun(stageNode("build", "split"));
+
+    const reply = await nextStep(ref, agentAdapters);
+
+    if (!reply.ok) throw new Error(reply.error);
+    expect(reply.value).toMatchObject({
+      kind: "stage",
+      nodeId: "build",
+      mode: "subagent",
+      handOff: "split",
+    });
   });
 
   test("SC8: next on a Codex run replies to a subagent stage with mode: inline", async () => {
@@ -870,5 +885,6 @@ describe("nextStep with stage tiers", () => {
     if (!reply.ok) throw new Error(reply.error);
     expect(reply.value).toMatchObject({ kind: "stage", nodeId: "make", mode: "inline" });
     expect(reply.value).not.toHaveProperty("model");
+    expect(reply.value).not.toHaveProperty("handOff");
   });
 });

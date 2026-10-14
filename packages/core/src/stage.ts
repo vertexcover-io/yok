@@ -76,31 +76,42 @@ const VariableSchema = z.strictObject({
 export const AgentModeSchema = z.enum(["inline", "subagent"]);
 export type AgentMode = z.infer<typeof AgentModeSchema>;
 
-export const StageSchema = z.strictObject({
-  name: SlugSchema,
-  description: NonEmptyStringSchema,
-  // what the one-line summary at done must cover; without it, the orchestrate skill's rule applies
-  summary: NonEmptyStringSchema.optional(),
-  mode: AgentModeSchema,
-  tags: UniqueSlugsSchema.optional(),
-  "allowed-tools": z.array(NonEmptyStringSchema),
-  tier: NameSchema.optional(),
-  inputs: StagePortSchema.optional(),
-  outputs: StagePortSchema.extend({ module: NonEmptyStringSchema.optional() }).optional(),
-  consumes: z.array(ArtifactDeclarationSchema).optional(),
-  produces: z.array(ArtifactDeclarationSchema).optional(),
-  protocols: UniqueSlugsSchema,
-  scopes: UniqueSlugsSchema,
-  references: z.record(SlugSchema, ReferenceSchema).default({}),
-  verifiers: z
-    .array(VerifierSchema)
-    .refine(
-      (list) => new Set(list.map((v) => v.id)).size === list.length,
-      "Verifier ids must be unique",
-    )
-    .default([]),
-  variables: z.record(SlugSchema, VariableSchema).default({}),
-});
+// What subagent mode hands to a subagent: the whole stage, or each piece of work the stage starts
+// itself while it runs in the session.
+export const HandOffSchema = z.enum(["whole", "split"]);
+export type HandOff = z.infer<typeof HandOffSchema>;
+
+export const StageSchema = z
+  .strictObject({
+    name: SlugSchema,
+    description: NonEmptyStringSchema,
+    // what the one-line summary at done must cover; without it, the orchestrate skill's rule applies
+    summary: NonEmptyStringSchema.optional(),
+    mode: AgentModeSchema,
+    "hand-off": HandOffSchema.default("whole"),
+    tags: UniqueSlugsSchema.optional(),
+    "allowed-tools": z.array(NonEmptyStringSchema),
+    tier: NameSchema.optional(),
+    inputs: StagePortSchema.optional(),
+    outputs: StagePortSchema.extend({ module: NonEmptyStringSchema.optional() }).optional(),
+    consumes: z.array(ArtifactDeclarationSchema).optional(),
+    produces: z.array(ArtifactDeclarationSchema).optional(),
+    protocols: UniqueSlugsSchema,
+    scopes: UniqueSlugsSchema,
+    references: z.record(SlugSchema, ReferenceSchema).default({}),
+    verifiers: z
+      .array(VerifierSchema)
+      .refine(
+        (list) => new Set(list.map((v) => v.id)).size === list.length,
+        "Verifier ids must be unique",
+      )
+      .default([]),
+    variables: z.record(SlugSchema, VariableSchema).default({}),
+  })
+  .refine((stage) => stage["hand-off"] === "whole" || stage["allowed-tools"].includes("Agent"), {
+    path: ["hand-off"],
+    message: "hand-off split needs Agent in allowed-tools",
+  });
 export type Stage = z.infer<typeof StageSchema>;
 export type ArtifactDeclaration = z.infer<typeof ArtifactDeclarationSchema>;
 

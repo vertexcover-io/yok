@@ -835,7 +835,11 @@ describe("decideNext with subagent mode", () => {
 nodes:${stage("think", "thinker", "\n    mode: subagent\n    input: {}")}
 `);
     const { stop, events, run } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true);
-    expect(expectLeaf(stop).runsOn).toEqual({ mode: "subagent", model: OPUS_HIGH });
+    expect(expectLeaf(stop).runsOn).toEqual({
+      mode: "subagent",
+      model: OPUS_HIGH,
+      handOff: "whole",
+    });
     expect(events.map((event) => event.type)).not.toContain("workflow.model.requested");
     expect(run.state.nodeRuns.think?.agentState).toMatchObject({ tier: "deep", model: "opus-x" });
   });
@@ -845,7 +849,7 @@ nodes:${stage("think", "thinker", "\n    mode: subagent\n    input: {}")}
 nodes:${stage("hand", "delegated", "\n    input: {}")}
 `);
     const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true);
-    expect(expectLeaf(stop).runsOn?.mode).toBe("subagent");
+    expect(expectLeaf(stop).runsOn).toMatchObject({ mode: "subagent", handOff: "whole" });
   });
 
   test("SC3: a node's mode: inline overrides its stage's subagent mode, and the session switches as before", async () => {
@@ -861,7 +865,7 @@ nodes:${stage("hand", "delegated", "\n    mode: inline\n    input: {}")}
 nodes:${stage("hand", "delegated", "\n    input: {}")}
 `);
     const { stop } = await advanceTiered(plan, fresh(), null, null, false);
-    expect(expectLeaf(stop).runsOn).toEqual({ mode: "inline", model: null });
+    expect(expectLeaf(stop).runsOn).toEqual({ mode: "inline", model: null, handOff: null });
   });
 
   test("SC5: a subagent node on a run with no tiers carries no model", async () => {
@@ -869,26 +873,34 @@ nodes:${stage("hand", "delegated", "\n    input: {}")}
 nodes:${stage("hand", "delegated", "\n    input: {}")}
 `);
     const { stop } = await advanceTiered(plan, fresh(), null, null, true);
-    expect(expectLeaf(stop).runsOn).toEqual({ mode: "subagent", model: null });
+    expect(expectLeaf(stop).runsOn).toEqual({ mode: "subagent", model: null, handOff: "whole" });
   });
 
-  test("SC15: a subagent stage with its own Subagent mode section switches the session to its tier first", async () => {
+  test("SC15: a subagent stage that splits switches the session to its tier first, then hands out split", async () => {
     const plan = await compilePlan(`name: t
-nodes:${stage("build", "phased", "\n    input: {}")}
+nodes:${stage("build", "split", "\n    input: {}")}
 `);
     const first = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true);
     expect(first.stop).toEqual({ kind: "model", nodeId: "build", model: "opus-x", effort: "high" });
     const switched = answer(first.run, { applied: true, effort: "high" });
     const second = await advanceTiered(plan, switched, FAST_AND_DEEP, HAIKU, true);
-    expect(expectLeaf(second.stop).runsOn).toEqual({ mode: "subagent", model: OPUS_HIGH });
+    expect(expectLeaf(second.stop).runsOn).toEqual({
+      mode: "subagent",
+      model: OPUS_HIGH,
+      handOff: "split",
+    });
   });
 
-  test("a heading that only starts with Subagent mode is not the section: the stage goes whole to a subagent", async () => {
+  test("a split stage in inline mode runs inline, its hand-off unused", async () => {
     const plan = await compilePlan(`name: t
-nodes:${stage("build", "near-phased", "\n    input: {}")}
+nodes:${stage("build", "split", "\n    mode: inline\n    input: {}")}
 `);
-    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true);
-    expect(expectLeaf(stop).runsOn).toEqual({ mode: "subagent", model: OPUS_HIGH });
+    const switched = answer((await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU, true)).run, {
+      applied: true,
+      effort: "high",
+    });
+    const { stop } = await advanceTiered(plan, switched, FAST_AND_DEEP, HAIKU, true);
+    expect(expectLeaf(stop).runsOn).toEqual({ mode: "inline", model: null, handOff: null });
   });
 });
 

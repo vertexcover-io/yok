@@ -289,7 +289,7 @@ const loadPlanStage = async (ref: string, at: Compiling): Promise<PlanStage> => 
     skill: skillPath,
     tier: frontmatter.tier,
     mode: frontmatter.mode,
-    ownSubagents: /^## Subagent mode$/m.test(await readFile(skillPath, "utf8")),
+    handOff: frontmatter["hand-off"],
     consumes: frontmatter.consumes ?? [],
     produces: frontmatter.produces ?? [],
     variables: frontmatter.variables,

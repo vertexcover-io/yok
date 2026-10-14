@@ -13,7 +13,7 @@ import {
 } from "@yok/sdk";
 import { findNodeRuns, isRunLive, type ModelSwitch, nodePath } from "@yok/sdk/internal";
 import { z } from "zod";
-import { type AgentMode, own } from "../stage.ts";
+import { type AgentMode, type HandOff, own } from "../stage.ts";
 import { findConsumedArtifacts } from "./done.ts";
 import {
   evaluateBoolean,
@@ -43,7 +43,12 @@ export type Leaf = PlanExecNode | PlanWaitNode | PlanAgentNode | PlanContextNode
 
 // How the session runs an agent node, and the tier model a subagent it starts runs on: null when
 // inline or the run has no tiers.
-export type RunsOn = Readonly<{ mode: AgentMode; model: TierModel | null }>;
+export type RunsOn = Readonly<{
+  mode: AgentMode;
+  model: TierModel | null;
+  // a subagent node's hand-off: the whole node to one subagent, or the stage split by itself
+  handOff: HandOff | null;
+}>;
 
 // What `next` replies. The events it recorded on the way are already saved.
 export type Decision =
@@ -372,7 +377,8 @@ const pickNodeMode = (node: PlanAgentNode, subagents: boolean): AgentMode => {
 
 const pickRunsOn = (node: PlanAgentNode, walk: Walk, target: TierModel | undefined): RunsOn => {
   const mode = pickNodeMode(node, walk.subagents);
-  return { mode, model: mode === "subagent" ? (target ?? null) : null };
+  if (mode === "inline") return { mode, model: null, handOff: null };
+  return { mode, model: target ?? null, handOff: node.stage?.handOff ?? "whole" };
 };
 
 // Who runs an agent step and on what. A run that cannot switch models runs every step on its
@@ -469,9 +475,8 @@ const executeLeaf = async (
   if (target instanceof NodeFailure) return recordSkipOrFail(node, target, walk, state);
   const runsOn = node.type === "agent" ? pickRunsOn(node, walk, target) : null;
   // a subagent runs on its tier's model, so the session stays on the one it has, unless the stage
-  // runs in the session and starts its own subagents
-  const ownSubagents = node.type === "agent" && node.stage?.ownSubagents === true;
-  const inSession = runsOn?.mode !== "subagent" || ownSubagents;
+  // splits: then it runs in the session and starts its own subagents
+  const inSession = runsOn?.mode !== "subagent" || runsOn.handOff === "split";
   if (inSession && target !== undefined && !isSameModel(target, walk.switching.current)) {
     return requestModel(node, target, walk, state);
   }

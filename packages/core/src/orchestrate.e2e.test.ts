@@ -1920,6 +1920,7 @@ nodes:
     expect(JSON.parse(next.stdout)).toMatchObject({
       kind: "agent",
       mode: "subagent",
+      handOff: "whole",
       prompt: "check it",
       input: {},
     });

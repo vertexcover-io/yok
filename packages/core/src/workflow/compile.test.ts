@@ -191,6 +191,16 @@ describe("compile", () => {
     expect(error.code).toBe("schema");
   });
 
+  test("hand-off belongs to the stage: on a workflow node it is a schema error", async () => {
+    const error = await rejection(
+      workflow(
+        "\n  - id: ask\n    type: agent\n    prompt: p\n    input: null\n    hand-off: split",
+      ),
+    );
+    expect(error.code).toBe("schema");
+    expect(error.message).toContain("hand-off");
+  });
+
   test("SC5 — two nodes with the same id are rejected", async () => {
     const error = await rejection(workflow(script("build") + script("build")));
     expect(error.code).toBe("duplicate-id");
@@ -1218,14 +1228,24 @@ describe("the shipped task workflow", () => {
         dependsOn: ["compact-after-planning"],
         input: { workspace },
       },
-      { id: "compact-after-implement", type: "context", action: "compact", dependsOn: ["implement"] },
+      {
+        id: "compact-after-implement",
+        type: "context",
+        action: "compact",
+        dependsOn: ["implement"],
+      },
       {
         id: "code-review",
         stage: { ref: "code-review" },
         dependsOn: ["compact-after-implement"],
         input: { workspace },
       },
-      { id: "compact-after-review", type: "context", action: "compact", dependsOn: ["code-review"] },
+      {
+        id: "compact-after-review",
+        type: "context",
+        action: "compact",
+        dependsOn: ["code-review"],
+      },
     ]);
   });
 

@@ -318,9 +318,8 @@ export type PlanStage = Readonly<{
   tier?: string | undefined;
   // the SKILL.md mode, which the node's own mode overrides; see pickNodeMode
   mode: Stage["mode"];
-  // the SKILL.md has a `## Subagent mode` section: in subagent mode the stage runs in the session,
-  // on its tier's model, and starts its own subagents
-  ownSubagents: boolean;
+  // what subagent mode hands to a subagent; see pickRunsOn
+  handOff: Stage["hand-off"];
   consumes: readonly ArtifactDeclaration[];
   produces: readonly ArtifactDeclaration[];
   variables: Stage["variables"];
