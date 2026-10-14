@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { EventSchema, ResolvedTiersSchema, StateSchema, tierLaunch } from "./contracts.ts";
+import {
+  EventSchema,
+  FixRequestSchema,
+  ResolvedTiersSchema,
+  StateSchema,
+  tierLaunch,
+} from "./contracts.ts";
 
 const agentRun = {
   nodeRunId: "plan-1",
@@ -276,5 +282,37 @@ describe("ResolvedTiersSchema", () => {
     ],
   ])("%s parses: %p", (_label, tiers, parses) => {
     expect(ResolvedTiersSchema.safeParse(tiers).success).toBe(parses);
+  });
+});
+
+describe("FixRequestSchema", () => {
+  const REQUEST = { id: "03", summary: "total skips refunds", trigger: "refund", hint: "subtract" };
+
+  test.each([
+    ["only id, summary, trigger and hint", REQUEST, true],
+    [
+      "every optional field",
+      {
+        ...REQUEST,
+        repo: "api",
+        file: "src/cart.ts",
+        line: 12,
+        severity: "High",
+        size: "small",
+        askUser: true,
+      },
+      true,
+    ],
+    ["a camelCase repo name, as create-workspace emits it", { ...REQUEST, repo: "myApi" }, true],
+    ["a key outside the shape", { ...REQUEST, fix: "x" }, false],
+    ["an unknown severity", { ...REQUEST, severity: "Blocker" }, false],
+    ["an unknown size", { ...REQUEST, size: "tiny" }, false],
+    ["no summary", { ...REQUEST, summary: undefined }, false],
+    ["no trigger", { ...REQUEST, trigger: undefined }, false],
+    ["no hint", { ...REQUEST, hint: undefined }, false],
+    ["an absolute file", { ...REQUEST, file: "/Users/x/.zshrc" }, false],
+    ["a file that climbs out with ..", { ...REQUEST, file: "../main/src/cart.ts" }, false],
+  ])("SC1: a fix request with %s parses: %p", (_label, request, parses) => {
+    expect(FixRequestSchema.safeParse(request).success).toBe(parses);
   });
 });

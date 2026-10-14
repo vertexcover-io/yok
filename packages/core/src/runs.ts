@@ -90,7 +90,7 @@ import {
   WorkflowError,
   type WorkflowPlan,
 } from "./workflow/types.ts";
-import { artifactPaths, issuesOf, runVerifiers } from "./workflow/verifiers.ts";
+import { artifactPaths, issuesOf, resolveArtifacts, runVerifiers } from "./workflow/verifiers.ts";
 
 export type InitOptions = Readonly<{
   registry: Registry;
@@ -856,7 +856,7 @@ const finishStepChecked = async (
   const { output, issues, rejected } = await checkCompletion(
     run,
     node,
-    nodeRunId,
+    step.value.nodeRun,
     outcome,
     artifacts,
   );
@@ -901,12 +901,13 @@ const storeStepEnd = async (
 const checkCompletion = async (
   run: RunRef,
   node: PlanAgentNode,
-  nodeRunId: string,
+  nodeRun: NodeRun,
   outcome: Readonly<{ output: string; summary?: string | undefined }>,
   artifacts: readonly ArtifactRef[],
 ): Promise<
   Readonly<{ output: JsonValue; issues: readonly CompletionIssue[]; rejected: number }>
 > => {
+  const { nodeRunId } = nodeRun;
   const text = outcome.output;
   const read = readOutput(node, text);
   const output = read.ok ? read.value : text;
@@ -924,7 +925,8 @@ const checkCompletion = async (
     run: run.name,
     nodeRunId,
     output,
-    artifacts: artifactPaths(runDirOf(run.cwd, run.name), artifacts),
+    artifacts: resolveArtifacts(runDirOf(run.cwd, run.name), artifacts),
+    nodeInput: nodeRun.input ?? null,
   };
   const runs = await runVerifiers(verifiers, input, run.cwd, rejected + 1);
   await logVerifierRuns(run, node, nodeRunId, runs);

@@ -226,6 +226,24 @@ export const WorkspaceSchema = z.strictObject({
 export const TicketSchema = z.record(NonEmptyStringSchema, z.json());
 export const NotificationSchema = z.record(NonEmptyStringSchema, z.json());
 
+// One thing a stage hands the fix stage: qa's bugs and code-review's findings both extend this shape.
+export const FixRequestSchema = z.strictObject({
+  id: NonEmptyStringSchema,
+  // file is relative to the repo's checkout; repo names that repo in a multi-repo workspace
+  repo: NonEmptyStringSchema.optional(),
+  file: NonEmptyStringSchema.refine(
+    isNormalizedRelativePath,
+    "Expected a path relative to the repo",
+  ).optional(),
+  line: z.int().positive().optional(),
+  summary: NonEmptyStringSchema,
+  trigger: NonEmptyStringSchema,
+  hint: NonEmptyStringSchema,
+  severity: z.enum(["Critical", "High", "Medium", "Low"]).optional(),
+  size: z.enum(["small", "medium", "large"]).optional(),
+  askUser: z.boolean().optional(),
+});
+
 export const WorkflowRefSchema = z.strictObject({
   name: SlugSchema,
   path: RunPathSchema,
@@ -377,6 +395,7 @@ export type Repository = z.infer<typeof RepositorySchema>;
 export type Workspace = z.infer<typeof WorkspaceSchema>;
 export type Ticket = z.infer<typeof TicketSchema>;
 export type Notification = z.infer<typeof NotificationSchema>;
+export type FixRequest = z.infer<typeof FixRequestSchema>;
 export type WorkflowRef = z.infer<typeof WorkflowRefSchema>;
 export type EventHandlerRef = z.infer<typeof EventHandlerRefSchema>;
 export type EventHandlerRefs = z.infer<typeof EventHandlerRefsSchema>;

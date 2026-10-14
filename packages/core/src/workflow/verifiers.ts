@@ -154,6 +154,10 @@ export const issuesOf = (runs: readonly VerifierRun[]): readonly VerifierIssue[]
     return [{ kind: "verifier-error", verifier: run.verifier, ...run.error }];
   });
 
+// The artifacts a verifier receives: as passed to done, with each file's path made absolute.
+export const resolveArtifacts = (runDir: string, refs: readonly ArtifactRef[]): ArtifactRef[] =>
+  refs.map((ref) => ("path" in ref ? { ...ref, path: join(runDir, ref.path) } : ref));
+
 // Keyed by type, or TYPE:NAME when the name is not the type: a file's absolute path, a link's url.
 export const artifactPaths = (
   runDir: string,

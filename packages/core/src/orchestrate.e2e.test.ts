@@ -911,13 +911,13 @@ describe("SC26: the samskara upload", () => {
 });
 
 describe("SC26: stage verifiers", () => {
-  const verifiedRun = (verifiers: string | undefined) => {
+  const verifiedRun = (verifiers: string | undefined, workflow = STAGES_WORKFLOW) => {
     const skills = tempDir();
     writeStages(skills, {
       producer: { produces: DEMO_STAGES.producer.produces },
       consumer: { consumes: DEMO_STAGES.consumer.consumes, ...(verifiers ? { verifiers } : {}) },
     });
-    const run = startedRun(STAGES_WORKFLOW);
+    const run = startedRun(workflow);
     const env = { YOK_SKILLS_DIR: skills };
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args, env);
     const artifactsDir = join(runDirOf(run.repo, "feat-x"), "artifacts");
@@ -982,17 +982,27 @@ describe("SC26: stage verifiers", () => {
   test("SC31: a function verifier receives its input, args and context", () => {
     const file = join(tempDir(), "seen.json");
     const args = `, args: { file: ${JSON.stringify(file)} }`;
-    const { repo, finishProducer, finish } = verifiedRun(`[${fn("rec", "record", args)}]`);
+    const workflow = STAGES_WORKFLOW.replace("input: {}", "input: { source: review, round: 2 }");
+    const { repo, finishProducer, step } = verifiedRun(`[${fn("rec", "record", args)}]`, workflow);
     const use = finishProducer();
-    const refused = finish(use.nodeRunId);
-    expect(refused.code).toBe(0);
+    const pr = { type: "pull-request", name: "api", url: "https://github.com/o/r/pull/1" };
+    const done = step([
+      ...["done", use.nodeRunId, "--run", "feat-x", "--summary", "Did the work."],
+      ...["--output", '{"ok":true}', "--artifact", fileArtifact("plan", "artifacts/plan.md")],
+      ...["--artifact", JSON.stringify(pr)],
+    ]);
+    expect(done.code).toBe(0);
     const seen = JSON.parse(readFileSync(file, "utf8"));
     expect(seen.input).toEqual({
       run: "feat-x",
       nodeRunId: use.nodeRunId,
       output: { ok: true },
-      artifacts: {},
+      artifacts: [
+        { type: "plan", name: "plan", path: join(runDirOf(repo, "feat-x"), "artifacts/plan.md") },
+        pr,
+      ],
       args: { file },
+      nodeInput: { source: "review", round: 2 },
     });
     expect(seen.cwd).toBe(repo);
     expect(seen.attempt).toBe(1);
