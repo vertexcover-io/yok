@@ -1,7 +1,7 @@
 ---
 name: implement
 description: >
-  Build a requested change, an approved plan, one of its phases, or review feedback test-first,
+  Build a requested change, an approved plan or one of its phases test-first,
   with independent phases in parallel, commit each phase and push the branch. Runs as the
   pipeline's implement stage after planning; also use it directly to build any change.
 summary: Say which phases were built and whether their tests pass.
@@ -15,6 +15,10 @@ produces:
   - artifact: implementation
 protocols: []
 scopes: []
+references:
+  working-instructions:
+    path: references/working-instructions.md
+    description: The commands, baseline and push rule the implement and fix stages share.
 ---
 
 # Implement
@@ -29,24 +33,17 @@ RUN below is the run's name. The input may hold:
 |---|---|
 | `workspace` | the create-workspace stage's output. Work in each repo's `worktreeDir`; without it, work in the current checkout. When a phase changes a repo the workspace lacks, add it first with `yok orchestrate skill run create-workspace.workspace add RUN --repos NAME --run RUN`, then do all reads, edits, checks and commits for that repo in the `worktreeDir` the command's JSON report prints, never in the main checkout, and name the added repo in the report. |
 | `phases` | the phase numbers to build. Without it, every phase in the plan. |
-| `feedback` | review items to fix. With it, the assignment is those items; the plan supplies context only. Each item is a defect to reproduce; its `fix` is a suggestion, never a reason to change files outside the assignment. An item with `needsDecision: true` is a product question: ask the user what to do before changing code, and record the answer in `implementation.md`, where qa reads it. |
 
 The first that applies is the assignment:
 
-1. `feedback` in the input: fix those items.
-2. `.yok/RUN/artifacts/plan.md` exists: build its phases.
-3. Otherwise the user's request, or the plan or phase file they name.
+1. `.yok/RUN/artifacts/plan.md` exists: build its phases.
+2. Otherwise the user's request, or the plan or phase file they name.
+
+A list of things to fix is the `fix` skill's job, not this one's.
 
 ## 2. Load the working instructions
 
-Read the project's orchestrate config (`orchestrate.config.yaml` or `orchestrate.config.json`
-at the repo root). Each package's `commands` holds its
-`test_all`, `test_file`, `typecheck` and `lint`; use the packages that own the assigned files.
-A missing config or a declared command that cannot run is a blocker. An omitted command is
-`NOT_APPLICABLE`, with a reason. The run's baseline, when there is one, is
-`.yok/RUN/artifacts/baseline.json`; use it to tell an existing failure from a regression.
-
-Load `code-quality` before edits and `tdd` before changing code.
+Run `yok orchestrate skill ref implement.working-instructions` and follow its Commands section.
 
 ### Reading the plan
 
@@ -100,8 +97,7 @@ A wave of one phase builds that phase whole, checks, E2E and commit included, as
 
 For each phase:
 
-- Use `tdd` one behavior at a time. Use the phase's scenarios and levels as written. For
-  feedback, reproduce the reported problem before changing code.
+- Use `tdd` one behavior at a time. Use the phase's scenarios and levels as written.
 - A scenario is done when a test **at its assigned level** ran green. "Already covered by a
   unit test" does not satisfy an integration or E2E scenario; moving one to a cheaper level is
   `BLOCKED`, not a pass.
@@ -141,9 +137,7 @@ needs a decision, missing access or a change of scope:
 
 ## 5. Report and finish
 
-Push each repo's branch. The stage is done only when every repo has no dirty tracked file and
-`HEAD` equals `origin/BRANCH`. Never force-push; when the remote holds commits this checkout
-lacks, finish the stage with `--error -` naming them.
+Push as the working instructions' Push section says.
 
 Load `writing-style`, then write `.yok/RUN/artifacts/implementation.md`:
 
@@ -152,11 +146,10 @@ Load `writing-style`, then write `.yok/RUN/artifacts/implementation.md`:
 - each scenario id and the test that proves it
 - each check run, with pass and fail counts, and every justified skip
 - the E2E report or skip note per phase
-- for feedback, what was done about each item
 
 Finish the stage with `--artifact '{"type":"implementation","name":"implementation","path":"artifacts/implementation.md"}'` and one line as
 the output: how many phases were built and the pushed head. `COMPLETED` means the assignment
 met its checks; it is not a verdict that the work can ship.
 
-Standalone, review the finished work with the `code-review` skill, then give the same report in
-the reply.
+Standalone, review the finished work with the `code-review` skill, run the `fix` skill on the
+`review-fixes.json` it writes, then give the same report in the reply.
