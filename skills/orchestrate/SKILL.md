@@ -107,28 +107,19 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
    - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
      `input` as its data, then finish it with the reply's `done` command the same way as a stage.
    - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. Start a
-     subagent in the background (the reference names the tool), on the reply's `tier` when
-     present, with this brief:
-     - For a stage: "Run the yok stage STAGE. Follow the file at SKILL, and the file at
-       EXTENSION when given, which wins where they differ. Use this input: INPUT, these
-       variables: VARIABLES, and these extra instructions: PROMPT. Read a reference with
-       `yok orchestrate skill ref STAGE.REF` and run a script with
-       `yok orchestrate skill run STAGE.REF ARGS`."
-     - For an agent node: "Do this: PROMPT, with this input: INPUT."
-     - Always: "Send any question for the user to me and wait for my answer. Where the skill
-       says to ask for approval of a file, or to run `await-approval`, send me its path instead
-       and wait: I pass on each review comment and the approval. Where the skill says to run
-       `done`, end instead with a line `YOK-RESULT` and one JSON object with `output`, `summary`
-       and `artifacts`; if you cannot finish, a line `YOK-ERROR` and the reason. Run no
-       `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`."
+     background subagent (the reference names the tool) on the reply's `tier` when present.
+     Brief it to do the node as the `mode: inline` steps above say, with the reply's fields, and:
+     - send you its questions and approval requests and wait, instead of asking the user or
+       running `await-approval`;
+     - end with a `YOK-RESULT` line and a JSON object of `output`, `summary` and `artifacts`, or
+       a `YOK-ERROR` line and the reason, instead of running `done`;
+     - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
 
-     When it sends a question, ask the user the way the reference says and send back the
-     answer. When it asks for approval of a file, run
-     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE` and end the turn with
-     one line: approve with the Approve button in the viewer, or type approve here. Send it each
-     `[review]` message and the user's approval as they arrive. When it ends, run the reply's
-     `done` with its output, summary and artifacts, or with `--error -` and its reason. When
-     `done` asks for a fix, send the issues to the same subagent and wait for it to end again.
+     Relay its questions to the user and send back the answers. For an approval, run
+     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn asking
+     the user to approve in the viewer or here, then send it each `[review]` message and the
+     approval. When it ends, run `done` with its result, or with `--error -` and its reason.
+     When `done` asks for a fix, send the issues back to it.
    - `context`: tell the user `↻ NODE_ID: ACTION` (the reply's `nodeId` and `action`, e.g.
      `↻ fresh: new`), then end the turn at once, without running any other command. The work
      starts once the turn is over: for `new` the yok replaces this session with a fresh one,
