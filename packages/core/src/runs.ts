@@ -473,6 +473,10 @@ const readRunState = async (runDir: string): Promise<State> => {
   return state;
 };
 
+// The run's saved policies; a run saved before policies follows the defaults.
+export const readRunPolicies = async (run: RunRef): Promise<Policies> =>
+  readPolicies((await readRunState(runDirOf(run.cwd, run.name))).policies);
+
 type RunDirRef = Pick<RunRef, "cwd" | "name">;
 
 const loadRunPlan = async (run: RunDirRef, state: State): Promise<Result<WorkflowPlan>> => {
@@ -721,11 +725,23 @@ export const requestApproval = async (
   run: RunRef,
   nodeRunId: string,
   path: string,
-): Promise<Result<Readonly<{ nodeRunId: string; path: string }>>> => {
+): Promise<Result<Readonly<{ nodeRunId: string; path: string; autoApproved?: true }>>> => {
   const step = await loadRunningLeaf(run, nodeRunId);
   if (!step.ok) return step;
   const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
   if (issue !== undefined) return { ok: false, error: issue.message };
+  // No one reviews in this run: the file counts as approved, and nothing waits.
+  if (!(await readRunPolicies(run)).interaction) {
+    const nodeId = step.value.node.id;
+    const applied = await appendRunEvent(run, {
+      type: "policy.applied",
+      source: "orchestrate",
+      nodeId,
+      nodeRunId,
+      payload: { policy: "interaction", effect: "auto-approved", nodeId, path },
+    });
+    return applied.ok ? { ok: true, value: { nodeRunId, path, autoApproved: true } } : applied;
+  }
   const stored = await appendRunEvent(run, {
     type: "artifact.approval.requested",
     source: "orchestrate",
@@ -860,7 +876,9 @@ const finishStepChecked = async (
     };
   }
   if ("error" in outcome) {
-    const error = { kind: "exception" as const, message: outcome.error };
+    const { interaction } = await readRunPolicies(run);
+    const kind = interaction ? ("exception" as const) : ("needs-input" as const);
+    const error = { kind, message: outcome.error };
     const record: NodeRecord = {
       path: nodeRunId,
       type: node.type,

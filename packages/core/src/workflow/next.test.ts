@@ -287,6 +287,50 @@ nodes:${exec("a", "\n    allowFailure: true\n    input: {}")}${exec("b", "\n    
     expect(findRun(done.state, "c")).toBeUndefined();
   });
 
+  test("SC512: after allowFailure a fails with needs-input, b never starts, always c is handed out, and the run ends failed", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    allowFailure: true\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("c", "\n    always: true\n    dependsOn: [b]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const failed = end(first.state, expectLeaf(first.stop).nodeRunId, "failed", {
+      error: { kind: "needs-input", message: "Which region?" },
+    });
+    const second = await advance(plan, failed);
+    expect(expectLeaf(second.stop).node.id).toBe("c");
+    const ended = end(second.state, expectLeaf(second.stop).nodeRunId, "completed", { output: {} });
+    const done = await advance(plan, ended);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(findRun(done.state, "b")).toBeUndefined();
+  });
+
+  test("SC513: after allowFailure a fails with exception, b is handed out and the run ends completed", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    allowFailure: true\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("c", "\n    always: true\n    dependsOn: [b]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const failed = end(first.state, expectLeaf(first.stop).nodeRunId, "failed", {
+      error: { kind: "exception", message: "boom" },
+    });
+    expect(expectLeaf((await advance(plan, failed)).stop).node.id).toBe("b");
+    const { state } = await runLeaves(plan, failed, ["completed", "completed"]);
+    const done = await advance(plan, state);
+    expect(done.stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC514: an always, allowFailure retro that fails with needs-input after a completed leaves the run completed", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("retro", "\n    always: true\n    allowFailure: true\n    dependsOn: [a]\n    input: {}")}
+`);
+    const { state } = await runLeaves(plan, start(), ["completed"]);
+    const second = await advance(plan, state);
+    const failed = end(second.state, expectLeaf(second.stop).nodeRunId, "failed", {
+      error: { kind: "needs-input", message: "Which region?" },
+    });
+    const done = await advance(plan, failed);
+    expect(done.stop).toEqual({ kind: "finished", status: "completed" });
+    expect(findRun(done.state, "retro")?.status).toBe("failed");
+  });
+
   test("IW4 — while background a runs, nothing else starts, not even independent c; then b and c follow one at a time", async () => {
     const plan = await compilePlan(`name: t
 nodes:${exec("a", "\n    mode: background\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("c", "\n    input: {}")}
@@ -1134,7 +1178,27 @@ nodes:
     expect(findRun(done.state, "other")?.status).toBe("completed");
   });
 
-  test("IW27 — an include runs the included workflow with its defaults applied, and fails at start on a wrong-typed input", async () => {
+  test("SC515: an allowFailure loop whose allowFailure child fails with needs-input fails with needs-input, after never starts, and the run ends failed", async () => {
+    const after = `
+  - { id: after, type: exec, runtime: sh, script: "true", input: {} }`;
+    const source = loop("{{ iteration.index >= 1 }}", 3, after)
+      .replace("    maxIterations", "    allowFailure: true\n    maxIterations")
+      .replace('script: "true", input: "pass', 'script: "true", allowFailure: true, input: "pass');
+    const plan = await compilePlan(source);
+    const first = await advance(plan, start());
+    const failed = end(first.state, expectLeaf(first.stop).nodeRunId, "failed", {
+      error: { kind: "needs-input", message: "Which region?" },
+    });
+    const done = await advance(plan, failed);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(findRun(done.state, "fix")).toMatchObject({
+      status: "failed",
+      output: { kind: "needs-input" },
+    });
+    expect(findRun(done.state, "after")).toBeUndefined();
+  });
+
+  test("IW27 —an include runs the included workflow with its defaults applied, and fails at start on a wrong-typed input", async () => {
     const child = `name: child
 inputs:
   word: { type: string, default: hi }

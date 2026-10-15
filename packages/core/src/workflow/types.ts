@@ -247,6 +247,8 @@ export const FailureKindSchema = z.enum([
   "validation",
   "exception",
   "exhausted",
+  // a stage stopped because only a person can answer; it stops the run even under allowFailure
+  "needs-input",
 ]);
 
 export const WorkflowErrorCodeSchema = z.enum([

@@ -311,6 +311,7 @@ const ENGINE_OWNED: readonly (readonly [prefix: string, reason: string])[] = [
   ["orchestrate.", "is written only by the orchestrate script"],
   ["hooks.", "is written only by the agent's hooks"],
   ["subscriber.", "is written only by the run's subscribers"],
+  ["policy.", "is written only by the engine and the agent's hooks, as a policy applies"],
 ];
 
 export const emitRunEvent = async (run: RunRef, input: EmitInput): Promise<Result<Event>> => {

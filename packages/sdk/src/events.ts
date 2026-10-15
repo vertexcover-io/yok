@@ -32,6 +32,7 @@ import {
   TierModelSchema,
 } from "./contracts.ts";
 import type { IEventStore } from "./event-store.ts";
+import { PoliciesSchema } from "./policies.ts";
 import type { EventHandler, EventHandlers } from "./state.ts";
 import { VerifierRunSchema } from "./verifier.ts";
 
@@ -486,6 +487,17 @@ const ApprovalRequestedEvent = nodeEvent(
   z.strictObject({ path: FileArtifactSchema.shape.path, ...placement }),
 );
 
+// A run policy changed what would have happened: a question refused, an approval given without a
+// person, or a node failed because its agent stopped with no one to answer.
+export const PolicyAppliedEvent = z.object({
+  payload: z.strictObject({
+    policy: PoliciesSchema.keyof(),
+    effect: z.enum(["question-refused", "auto-approved", "unanswered-stop"]),
+    nodeId: NonEmptyStringSchema.optional(),
+    path: FileArtifactSchema.shape.path.optional(),
+  }),
+});
+
 const catalog: Readonly<Record<string, z.ZodType>> = {
   "workflow.started": WorkflowStartedEvent,
   "workflow.completed": WorkflowEndedEvent,
@@ -533,6 +545,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "artifact.comment.delivered": CommentDeliveredEvent,
   "artifact.comment.replied": CommentRepliedEvent,
   "artifact.approval.requested": ApprovalRequestedEvent,
+  "policy.applied": PolicyAppliedEvent,
 };
 
 // An event before the emitter fills runId, ts and (when not given) id. Built from the shape,
