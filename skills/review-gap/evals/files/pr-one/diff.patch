@@ -1,0 +1,8 @@
+diff --git a/src/publish.ts b/src/publish.ts
+--- a/src/publish.ts
++++ b/src/publish.ts
+@@ -1,3 +1,6 @@
+-const old = 1;
++for (const dir of dirs) {
++  publish(dir);
++}

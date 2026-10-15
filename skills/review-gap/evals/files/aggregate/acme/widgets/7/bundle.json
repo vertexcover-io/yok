@@ -1,0 +1,37 @@
+{
+  "repo": "acme/widgets",
+  "number": 7,
+  "title": "feat: pick the deploy target",
+  "prBody": "",
+  "state": "closed",
+  "mergedAt": "2026-10-01T00:00:00Z",
+  "baseRef": "main",
+  "baseSha": "base000",
+  "headSha": "head7",
+  "diffLines": 40,
+  "findings": [
+    {
+      "id": "acme/widgets#7:701",
+      "commentId": 701,
+      "reviewer": "xhawk-ai[bot]",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Deploy target decided in the CLI and again in the workflow; they disagree on staging",
+      "path": "src/deploy.ts",
+      "line": 10,
+      "commitSha": "sha7",
+      "body": "Deploy target decided in the CLI and again in the workflow; they disagree on staging",
+      "replies": [],
+      "humanReply": ""
+    }
+  ],
+  "dropped": [],
+  "reviews": [],
+  "issueComments": [],
+  "commits": [
+    {
+      "sha": "sha7",
+      "message": "change"
+    }
+  ]
+}
