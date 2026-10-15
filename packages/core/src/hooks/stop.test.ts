@@ -250,7 +250,11 @@ describe("decideStop", () => {
   });
 });
 
-const setUp = async (nodeRuns: State["nodeRuns"], agent: "claude" | "codex" = "claude") => {
+const setUp = async (
+  nodeRuns: State["nodeRuns"],
+  agent: "claude" | "codex" = "claude",
+  overrides: Partial<State> = {},
+) => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "hooks-repo-")));
   const registry = createRegistry(registryPath(home));
@@ -270,7 +274,7 @@ const setUp = async (nodeRuns: State["nodeRuns"], agent: "claude" | "codex" = "c
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const config = { path: null, root: cwd };
-  await writeFile(join(runDir, "state.json"), JSON.stringify({ ...seed, nodeRuns, config }));
+  await writeFile(join(runDir, "state.json"), JSON.stringify({ ...seed, ...overrides, nodeRuns, config }));
   return { runDir, cwd, deps: { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger } };
 };
 
@@ -443,6 +447,29 @@ describe("runStopHook", () => {
     const run = { id: "r-1", cwd, name: "feat-x" };
     await emitRunEvent(run, { type: "custom.test.progress", source: "test", payload: {} });
     expect(await runStopHook(input(undefined), deps)).toMatchObject({ kind: "continue" });
+  });
+
+  test("with interaction off, shell commands run since the last stop are progress, so only a stop with no work since fails the node", async () => {
+    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const worked = (commands: number): TranscriptEntry[] => [
+      { kind: "prompt", text: "go" },
+      ...Array.from({ length: commands }, (_, i) => ({ kind: "command" as const, command: `t${i}` })),
+    ];
+
+    await runStopHook(input(worked(1)), deps);
+    await runStopHook(input(worked(3)), deps);
+    await runStopHook(input(worked(3)), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual([
+      "node-not-done",
+      "node-not-done",
+      "unanswered-stop",
+    ]);
   });
 
   test("a block that cannot be logged lets the turn end, so an unsaved count can't trap the session", async () => {
