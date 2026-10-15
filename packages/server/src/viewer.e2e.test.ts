@@ -553,6 +553,8 @@ describe("viewer in a browser", () => {
       );
     } finally {
       rmSync(join(runDir, "state.json"), { force: true });
+      // the next test opens this same URL, which does not reload the page
+      await until("document.querySelector('#modeBtn').hidden === false");
     }
   }, 30000);
 
