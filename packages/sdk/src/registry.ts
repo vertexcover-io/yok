@@ -13,6 +13,7 @@ import {
 } from "./contracts.ts";
 import { readIfExists, withLock } from "./files.ts";
 import { type ILogger, noopLogger } from "./logger.ts";
+import { SavedPoliciesSchema } from "./policies.ts";
 import { isCompiled } from "./process.ts";
 
 // The release binary and yok-dev never share a home, so they never share a server.
@@ -39,6 +40,8 @@ export const WorkflowRunSchema = z.strictObject({
   config: AbsolutePathSchema.nullable().default(null),
   // the run's merged tier set, resolved once by the server at launch; init copies it into state
   tiers: ResolvedTiersSchema.nullable(),
+  // the run's merged policies, resolved once by the server at launch; init copies them into state
+  policies: SavedPoliciesSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;

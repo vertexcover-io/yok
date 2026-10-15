@@ -209,6 +209,17 @@ export {
   noopLogger,
 } from "./logger.ts";
 export {
+  POLICY_NAMES,
+  type Policies,
+  PoliciesSchema,
+  type PolicyLayer,
+  PolicyLayerSchema,
+  type PolicyName,
+  readPolicies,
+  type SavedPolicies,
+  SavedPoliciesSchema,
+} from "./policies.ts";
+export {
   execWithTimeout,
   killRunning,
   NOT_FOUND,

@@ -427,6 +427,7 @@ async function compileFile(path: string, at: Compiling): Promise<WorkflowPlan> {
     name: workflow.name,
     agent: workflow.agent,
     tiers: workflow.tiers,
+    policies: workflow.policies,
     env: workflow.env,
     envFile: workflow.envFile,
     inputs: workflow.inputs,

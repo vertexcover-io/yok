@@ -23,9 +23,11 @@ import {
   loadStartConfig,
   type NodeRun,
   NodeStartedEvent,
+  type Policies,
   type ResolvedTiers,
   type Result,
   type RunRef,
+  readPolicies,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -216,6 +218,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     subscribers,
     config,
     tiers: run.tiers,
+    ...(run.policies === undefined ? {} : { policies: run.policies }),
   });
   const appended = await appendRunEvent(
     { id: run.id, cwd: run.cwd, name },
@@ -370,6 +373,7 @@ export type StepReply =
       prompt?: string;
       input: JsonValue;
       variables: Readonly<Record<string, string>>;
+      policies: Policies;
       done: string;
     }>
   | Readonly<{
@@ -378,6 +382,7 @@ export type StepReply =
       nodeId: string;
       prompt: string;
       input: JsonValue;
+      policies: Policies;
       done: string;
     }>
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
@@ -501,6 +506,7 @@ const buildLeafReply = (
   decision: Extract<Decision, { kind: "leaf" }>,
   run: RunRef,
   options: CheckoutConfig,
+  policies: Policies,
 ): StepReply => {
   const { node, nodeRunId, input, variables } = decision;
   if (node.type === "context") {
@@ -518,7 +524,15 @@ const buildLeafReply = (
   }
   const done = orchestrateLine({ verb: "done", run, nodeRunId });
   if (node.stage === undefined) {
-    return { kind: "agent", nodeRunId, nodeId: node.id, prompt: node.prompt ?? "", input, done };
+    return {
+      kind: "agent",
+      nodeRunId,
+      nodeId: node.id,
+      prompt: node.prompt ?? "",
+      input,
+      policies,
+      done,
+    };
   }
   const extension = extensionPath(options.config, node.stage.name);
   return {
@@ -532,6 +546,7 @@ const buildLeafReply = (
     ...(node.prompt === undefined ? {} : { prompt: node.prompt }),
     input,
     variables,
+    policies,
     done,
   };
 };
@@ -554,7 +569,9 @@ const walkToNextStep = async (
   const tiers = pickSwitchTiers(plan.agent, state.tiers, modelSwitchAgents);
   const switching = foldModelSwitch(events, state.tiers);
   const { decision } = await decideNext(plan, state, emit, { tiers, switching });
-  const reply = decision.kind === "leaf" ? buildLeafReply(decision, run, config.value) : decision;
+  const policies = readPolicies(state.policies);
+  const reply =
+    decision.kind === "leaf" ? buildLeafReply(decision, run, config.value, policies) : decision;
   return { ok: true, value: reply };
 };
 

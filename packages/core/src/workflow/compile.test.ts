@@ -73,6 +73,15 @@ describe("compile", () => {
     }
   });
 
+  test("SC504: policies.interaction false reaches the plan, and 3 is a schema error naming policies.interaction and the allowed values", async () => {
+    const plan = await compile(`policies: { interaction: false }\n${workflow(script("a"))}`);
+    expect(plan.policies).toEqual({ interaction: false });
+    const bad = await rejection(`policies: { interaction: 3 }\n${workflow(script("a"))}`);
+    expect(bad.code).toBe("schema");
+    expect(bad.message).toContain("policies.interaction");
+    expect(bad.message).toContain("must be true or false");
+  });
+
   test("a top-level env and envFile reach the plan, a missing env is empty, and a lowercase env name is a schema error", async () => {
     const plan = await compile(
       `env: { API_URL: "http://x" }\nenvFile: ../shared/dev.env\n${workflow(script("a"))}`,

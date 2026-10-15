@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import * as z from "zod";
 import { AgentTypeSchema, EffortSchema } from "./agent.ts";
+import { SavedPoliciesSchema } from "./policies.ts";
 
 export const NonEmptyStringSchema = z.string().min(1);
 export const NameSchema = z.string().regex(/^[a-z][a-zA-Z0-9]*$/, "Expected a camelCase name");
@@ -320,6 +321,9 @@ export const StateSchema = z
     activeSessions: z.array(SessionRefSchema).default([]),
     // Written once by init; null when the run's agent has no tiers.
     tiers: ResolvedTiersSchema.nullable(),
+    // Written once by init from the registry entry. Absent in runs saved before policies; read it
+    // with readPolicies, which gives those runs the defaults.
+    policies: SavedPoliciesSchema.optional(),
     custom: JsonObjectSchema.optional(),
     eventHandlers: EventHandlerRefsSchema.default({}),
     subscribers: SubscriberRefsSchema.default({}),

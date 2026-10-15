@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { ERROR_MESSAGE_LIMIT, type JsonValue, runDirOf, type WorkflowRun } from "@yok/sdk";
+import {
+  ERROR_MESSAGE_LIMIT,
+  type JsonValue,
+  runDirOf,
+  type SavedPolicies,
+  type WorkflowRun,
+} from "@yok/sdk";
 import { appendRunEvent, jsonlEventStore, RegistryFileSchema } from "@yok/sdk/internal";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./workflow/test-stages.ts";
@@ -1102,8 +1108,41 @@ describe("SC26: orchestrate next and done with stages", () => {
       extension: join(repo, "docs/producer-ext.md"),
       input: { request: "hi" },
       variables: {},
+      policies: { interaction: true },
       done: `yok orchestrate done ${reply.nodeRunId} --run feat-x`,
     });
+  });
+
+  test("SC508: init copies the saved policies into state.json, and the stage and agent replies carry interaction false", () => {
+    const POLICED = `name: policed
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: make, type: agent, stage: plain, input: {} }
+  - { id: plan, type: agent, prompt: plan it, dependsOn: [make], input: {} }
+`;
+    const policies: SavedPolicies = {
+      values: { interaction: false },
+      sources: { interaction: "workflow" },
+    };
+    const run = startedRun(POLICED, undefined, { policies });
+    const step = (args: readonly string[]) =>
+      orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
+    expect(stateOf(run.repo).policies).toEqual(policies);
+
+    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(make).toMatchObject({ kind: "stage", policies: { interaction: false } });
+
+    const summary = ["--summary", "Made it.", "--output", "{}"];
+    expect(step(["done", make.nodeRunId, "--run", "feat-x", ...summary]).code).toBe(0);
+    const plan = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(plan).toMatchObject({ kind: "agent", policies: { interaction: false } });
+
+    const unsaved = startedRun(POLICED);
+    const first = orchestrate(unsaved.repo, unsaved.home, ["next", "--run", "feat-x"], {
+      YOK_SKILLS_DIR: STAGE_SKILLS,
+    });
+    expect(JSON.parse(first.stdout)).toMatchObject({ policies: { interaction: true } });
   });
 
   test("next hands a stage its summary hint, and done records the summary in state", () => {

@@ -108,6 +108,7 @@ export const createState = async ({
   subscribers,
   config,
   tiers = null,
+  policies,
 }: Readonly<{
   runId: string;
   runDir: string;
@@ -116,6 +117,7 @@ export const createState = async ({
   subscribers?: SubscriberRefs;
   config?: State["config"];
   tiers?: State["tiers"];
+  policies?: State["policies"];
 }>): Promise<State> => {
   const cwd = dirname(dirname(runDir));
   const state: State = {
@@ -139,6 +141,7 @@ export const createState = async ({
     nodeRuns: {},
     activeSessions: [],
     tiers,
+    ...(policies === undefined ? {} : { policies }),
     eventHandlers,
     subscribers: subscribers ?? {},
     ...(config === undefined ? {} : { config }),

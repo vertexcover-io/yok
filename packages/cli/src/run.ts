@@ -9,8 +9,15 @@ import {
   verdict,
   workflowChecks,
 } from "@yok/core";
-import { createGit, type JsonObject, spawnInteractive } from "@yok/sdk";
-import { isCompiled, VERSION } from "@yok/sdk/internal";
+import {
+  createGit,
+  type JsonObject,
+  POLICY_NAMES,
+  PoliciesSchema,
+  readPolicies,
+  spawnInteractive,
+} from "@yok/sdk";
+import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
 import { runtimeChecks } from "@yok/server";
 import {
   apiErrorText,
@@ -38,8 +45,8 @@ const blockedText = (report: DoctorReport): string =>
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
 
-export const runCommand = () =>
-  new Command("run")
+export const runCommand = () => {
+  const command = new Command("run")
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
     .requiredOption("--prompt <text>", "first message sent to the agent")
     .option("--name <name>", "run name (default: derived from the prompt)")
@@ -50,6 +57,9 @@ export const runCommand = () =>
     .action(async (workflowArg, opts) => {
       const log = commandLog("run");
       const cwd = process.cwd();
+      // the flags are read as YAML and checked, so a bad value fails before anything starts
+      const cliPolicies = parsePolicyFlags(opts);
+      if (!cliPolicies.ok) return fail(cliPolicies.error);
       const workflowPath = findWorkflowPath(workflowArg, cwd);
 
       const config = opts.config === undefined ? undefined : resolve(cwd, opts.config);
@@ -89,6 +99,7 @@ export const runCommand = () =>
         agent: plan.agent,
         env: env.value,
         tiers: plan.tiers,
+        policies: { workflow: plan.policies, cli: cliPolicies.value },
         ...(opts.name === undefined ? {} : { name: opts.name }),
         ...(config === undefined ? {} : { config }),
       });
@@ -100,11 +111,13 @@ export const runCommand = () =>
       console.log(run.id);
       console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
       console.log(`view: ${result.value.view}`);
-      openForPerson(result.value.view, opts.open === false);
+      // the run's saved value decides, so a workflow that turns interaction off never opens one either
+      const unattended = !readPolicies(run.policies).interaction;
+      openForPerson(result.value.view, opts.open === false || unattended);
 
       // A script, CI job or test has no terminal for tmux to attach to.
       const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal) {
+      if (opts.attach && hasTerminal && !unattended) {
         const [command, ...args] = result.value.attach;
         // Without TMUX, the attach also works from inside the user's own tmux.
         const exitCode = await spawnInteractive(command as string, args, {
@@ -115,3 +128,9 @@ export const runCommand = () =>
         process.exitCode = exitCode;
       }
     });
+  // one `--NAME <value>` option per policy, with the policy's help text
+  for (const name of POLICY_NAMES) {
+    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
+  }
+  return command;
+};

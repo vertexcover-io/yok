@@ -16,6 +16,7 @@ import {
   TierModelSchema,
 } from "./contracts.ts";
 import { parseYaml, readIfExists } from "./files.ts";
+import { PolicyLayerSchema } from "./policies.ts";
 
 const CONFIG_FILES = [
   "orchestrate.config.yaml",
@@ -238,6 +239,8 @@ export const ConfigSchema = z.strictObject({
   subscribers: SubscribersSchema,
   notifier: NotifierSchema.optional(),
   samskara: SamskaraSchema.optional(),
+  // the run policies every run in this checkout starts with; a workflow or `yok run` overrides each
+  policies: PolicyLayerSchema.optional(),
 });
 
 export type ConfigInput = z.input<typeof ConfigSchema>;

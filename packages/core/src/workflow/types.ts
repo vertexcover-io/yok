@@ -7,6 +7,8 @@ import {
   NonEmptyStringSchema,
   type Notifier,
   NotifierSchema,
+  type PolicyLayer,
+  PolicyLayerSchema,
   type ProcessRecord,
   ProcessRecordSchema,
   type Samskara,
@@ -224,6 +226,9 @@ export const WorkflowSchema = z.strictObject({
   // over the yok's and the config's agents.AGENT.tiers, for this workflow's agent. Only the
   // top workflow's apply; an included one's are ignored.
   tiers: TiersConfigSchema.default({}),
+  // over the config's policies; `yok run --NAME VALUE` overrides these. Only the top workflow's
+  // apply; an included one's are ignored.
+  policies: PolicyLayerSchema.default({}),
   // set in every agent session of the run, over the config's; envFile is relative to the folder
   // the run starts in (the repo root). Only the top workflow's apply; an included one's are ignored.
   ...EnvLayerSchema.shape,
@@ -368,6 +373,7 @@ export type WorkflowPlan = Readonly<{
   name: string;
   agent: WorkflowAgent;
   tiers: TiersConfig;
+  policies: PolicyLayer;
   env: Readonly<Record<string, string>>;
   envFile?: string | undefined;
   inputs: InputDeclarations;
