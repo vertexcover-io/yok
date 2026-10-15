@@ -7,6 +7,8 @@ import {
   parseJson,
   type Result,
   type RunRef,
+  readState,
+  runDirOf,
   type SessionRef,
   type State,
   type ToolVerdict,
@@ -37,6 +39,22 @@ export const findSessionRun = async (
   );
   return linked ? run?.ref : undefined;
 };
+
+// The run this agent session belongs to and its state; undefined outside a yok run.
+export const findSessionState = async (
+  input: Readonly<{ agent: AgentType; sessionId: string }>,
+  deps: HookDeps,
+): Promise<Readonly<{ run: RunRef; state: State }> | undefined> => {
+  const run = await findSessionRun(input, deps);
+  if (run === undefined) return undefined;
+  const state = await readState(runDirOf(run.cwd, run.name));
+  return state === null ? undefined : { run, state };
+};
+
+// What an agent is told when it tries to reach a person in a run with interaction off.
+export const noAnswerMessage = (done: string): string =>
+  "No one will answer in this run. If a sensible default exists, use it and record it as an " +
+  `assumption. If it's a blocker, fail the run with \`${done} --error -\` and list the question.`;
 
 type HookEvent = Readonly<{ type: string; payload: JsonValue }>;
 

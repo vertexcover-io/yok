@@ -5,6 +5,7 @@ import {
   type HookReply,
   type NodeRun,
   type RunRef,
+  readPolicies,
   readState,
   runDirOf,
   type State,
@@ -21,8 +22,8 @@ import {
   type ModelSwitch,
 } from "@yok/sdk/internal";
 import { startContextStep, startModelStep } from "../context-step.ts";
-import { completeContextStep, findContextPlanNode, orchestrateLine } from "../runs.ts";
-import { findSessionRun, recordRunEvent } from "./common.ts";
+import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
+import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
 // `yok orchestrate next` or `bun …/index.ts orchestrate done`, but not a path like orchestrate/SKILL.md
@@ -43,6 +44,8 @@ type ActiveLeaf = Readonly<{
 export type StopCheck = Readonly<{
   run: RunRef;
   state: State;
+  // the run's interaction policy; off, no stop with an agent node open goes through
+  interaction?: boolean;
   touchedRun: boolean | undefined;
   // whether anything but a hook's own log happened since the last Stop check
   progressSinceCheck: boolean;
@@ -66,7 +69,13 @@ export type StopDecision =
   | Readonly<{ reason: "model-switch"; blockStreak: number; seq: number }>
   | Readonly<{ reason: "awaiting-approval"; blockStreak: number; nodeRunId: string }>
   | Readonly<{ reason: "next-not-run"; blockStreak: number; message: string }>
-  | Readonly<{ reason: "node-not-done"; blockStreak: number; message: string; nodeRunId: string }>;
+  | Readonly<{ reason: "node-not-done"; blockStreak: number; message: string; nodeRunId: string }>
+  | Readonly<{
+      reason: "unanswered-stop";
+      blockStreak: number;
+      message: string;
+      nodeRunId: string;
+    }>;
 
 type Position =
   | Readonly<{ kind: "finished" }>
@@ -145,6 +154,14 @@ const openNodeMessage = (run: RunRef, leaf: ActiveLeaf): string => {
   );
 };
 
+const unansweredStopMessage = (run: RunRef, leaf: ActiveLeaf): string => {
+  const done = orchestrateLine({ verb: "done", run, nodeRunId: leaf.nodeRunId });
+  return (
+    `Yok run ${run.name}: node ${leaf.nodeId} is still open. ${noAnswerMessage(done)} ` +
+    `Otherwise finish it with \`${done} --output -\`.`
+  );
+};
+
 const positionOf = (state: State): Position => {
   if (!isRunLive(state.status)) return { kind: "finished" };
   const leaf = findActiveLeaf(state.nodeRuns);
@@ -154,6 +171,7 @@ const positionOf = (state: State): Position => {
 export const decideStop = ({
   run,
   state,
+  interaction = true,
   touchedRun,
   progressSinceCheck,
   maxBlocks,
@@ -179,6 +197,21 @@ export const decideStop = ({
   if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
+  // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
+  if (!interaction && position.kind === "open-node" && position.leaf.nodeType === "agent") {
+    const { leaf } = position;
+    const { nodeRunId } = leaf;
+    if (prior >= maxBlocks) {
+      return {
+        reason: "unanswered-stop",
+        blockStreak: prior + 1,
+        message: nextMessage(run),
+        nodeRunId,
+      };
+    }
+    const message = unansweredStopMessage(run, leaf);
+    return { reason: "node-not-done", blockStreak: prior + 1, message, nodeRunId };
+  }
   if (prior >= maxBlocks) return { reason: "max-blocks-reached", blockStreak: prior };
   if (position.kind === "between-nodes") {
     return { reason: "next-not-run", blockStreak: prior + 1, message: nextMessage(run) };
@@ -239,6 +272,25 @@ const decideForAgent = async (input: StopInput, check: StopCheck): Promise<StopD
   };
 };
 
+// The agent kept stopping with its node open and no one to answer: the node fails with what it
+// last said, which is usually its question. done records it as needs-input, which ends the run.
+const failUnansweredNode = async (
+  run: RunRef,
+  nodeRunId: string,
+  lastMessage: string | undefined,
+  deps: HookDeps,
+): Promise<void> => {
+  const said = lastMessage?.trim() || "(the agent's last message was not available)";
+  const error = `The agent stopped without finishing, and no one will answer. It last said: ${said}`;
+  const failed = await finishStep(run, nodeRunId, { error }, []);
+  if (!failed.ok) {
+    deps.log.warn({ error: failed.error }, "the unanswered node was not failed");
+    return;
+  }
+  const payload = { policy: "interaction", effect: "unanswered-stop", nodeId: failed.value.nodeId };
+  await recordRunEvent(run, { type: "policy.applied", payload }, deps);
+};
+
 // Decides whether the agent may end its turn and logs the call as hooks.stop.called. It never
 // throws: a hook that fails must let the turn end, or it could trap the session.
 export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
@@ -258,6 +310,7 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     const check = {
       run,
       state,
+      interaction: readPolicies(state.policies).interaction,
       touchedRun,
       progressSinceCheck: progressSince(events, state.stopHook?.seq),
       maxBlocks: maxBlocksOf(deps.env),
@@ -276,6 +329,9 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     }
     if (decision.reason === "model-switch") {
       await startModelStep(run, input.sessionId, decision.seq);
+    }
+    if (decision.reason === "unanswered-stop") {
+      await failUnansweredNode(run, decision.nodeRunId, input.lastMessage, deps);
     }
     if (decision.reason === "max-blocks-reached") {
       const payload = { agent: input.agent, sessionId: input.sessionId };

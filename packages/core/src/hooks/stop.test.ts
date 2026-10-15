@@ -162,6 +162,22 @@ describe("decideStop", () => {
     expect(decide({}, { touchedRun })).toMatchObject(expected);
   });
 
+  test("SC522: with interaction off and an agent node open, a first stop is sent back with the policy's message, and one at maxBlocks is unanswered-stop, not max-blocks-reached", () => {
+    const first = decide({ nodeRuns: planOpen }, { interaction: false });
+    const atMax = decide(
+      { nodeRuns: planOpen, stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 12 },
+      { interaction: false },
+    );
+
+    expect(first).toMatchObject({
+      reason: "node-not-done",
+      blockStreak: 1,
+      nodeRunId: "plan",
+      message: expect.stringContaining("No one will answer in this run."),
+    });
+    expect(atMax).toMatchObject({ reason: "unanswered-stop", blockStreak: 2, nodeRunId: "plan" });
+  });
+
   test("SC6 — a chat turn with a node open still blocks", () => {
     const decision = decide({ nodeRuns: planOpen }, { touchedRun: false });
     expect(decision).toMatchObject({

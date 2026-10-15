@@ -15,18 +15,20 @@ import {
 } from "@yok/sdk";
 import * as z from "zod";
 import { parseStdin, preToolUseReply, runNoReplyHook, stopReply } from "../hooks/common.ts";
-import { recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
+import { questionGuard, recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
 import { continueWorkflow, runStop } from "../hooks/stop.ts";
-import { shellQuote } from "./common.ts";
+import { parseQuestionCall, shellQuote } from "./common.ts";
 
 const HOOK_TIMEOUT_S = 30;
 const SHELL_TOOLS = ["Bash", "shell", "exec_command", "local_shell"] as const;
 const PATCH_TOOL = "apply_patch";
+const QUESTION_TOOL = "request_user_input";
 
 const CodexStopInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   transcript_path: z.string().nullish(),
+  last_assistant_message: z.string().nullish(),
 });
 
 const CodexSessionStartInputSchema = z.looseObject({
@@ -59,6 +61,8 @@ const toToolCalls = (
   toolName: string,
   toolInput: Readonly<Record<string, unknown>>,
 ): readonly ToolCall[] => {
+  // read first: a question call has no command, so the parse below would drop it
+  if (toolName === QUESTION_TOOL) return [parseQuestionCall(toolInput)];
   const parsed = ToolCommandSchema.safeParse(toolInput);
   if (!parsed.success) return [];
   const command = parsed.data;
@@ -73,7 +77,11 @@ const codexStop = async (stdin: string, deps: HookDeps, handler: StopHandler): P
     deps.log.warn({ error: parsed.error }, "stop allowed: hook input not understood");
     return "";
   }
-  const { session_id: sessionId, transcript_path: transcriptPath } = parsed.value;
+  const {
+    session_id: sessionId,
+    transcript_path: transcriptPath,
+    last_assistant_message: lastMessage,
+  } = parsed.value;
   const reply = await runStop(
     {
       agent: "codex",
@@ -81,6 +89,7 @@ const codexStop = async (stdin: string, deps: HookDeps, handler: StopHandler): P
       contextSteps: codexAdapter.contextSteps,
       waitingOnBackground: false,
       readTranscript: () => readCodexTranscript(transcriptPath ?? undefined),
+      ...(lastMessage == null ? {} : { lastMessage }),
     },
     handler,
     deps,
@@ -245,6 +254,7 @@ const codexHooks = () =>
     Stop: [{ handlers: [continueWorkflow] }],
     PreToolUse: [
       { matcher: [...SHELL_TOOLS, PATCH_TOOL].join("|"), handlers: [recordGuard, recordResumed] },
+      { matcher: QUESTION_TOOL, handlers: [questionGuard] },
     ],
   }) as const;
 

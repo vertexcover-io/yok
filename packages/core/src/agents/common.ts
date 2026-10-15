@@ -3,11 +3,13 @@ import {
   type AgentResult,
   type ILogger,
   type ITerminal,
+  NonEmptyStringSchema,
   parseJson,
   type Result,
   type TerminalSpec,
+  type ToolCall,
 } from "@yok/sdk";
-import type * as z from "zod";
+import * as z from "zod";
 
 // An agent's TUI never returns while it is waiting for Enter to submit; the spike found 150ms reliable.
 const SUBMIT_DELAY_MS = 150;
@@ -85,4 +87,29 @@ export const respawnAgent = async (
   if (respawned.ok) log.info({}, `${agent} relaunched in its pane`);
   else log.error({ err: respawned.error }, `${agent} not relaunched`);
   return respawned;
+};
+
+export const OTHER_TOOL: ToolCall = { kind: "other" };
+
+export const QuestionInputSchema = z.looseObject({
+  questions: z
+    .array(
+      z.looseObject({
+        question: NonEmptyStringSchema,
+        header: z.string().optional(),
+        options: z.array(z.looseObject({ label: z.string() })).default([]),
+      }),
+    )
+    .min(1),
+});
+
+export const parseQuestionCall = (toolInput: Readonly<Record<string, unknown>>): ToolCall => {
+  const parsed = QuestionInputSchema.safeParse(toolInput);
+  if (!parsed.success) return OTHER_TOOL;
+  const questions = parsed.data.questions.map(({ question, header, options }) => ({
+    question,
+    ...(header === undefined ? {} : { header }),
+    options: options.map((option) => option.label),
+  }));
+  return { kind: "question", questions };
 };

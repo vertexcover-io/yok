@@ -39,6 +39,8 @@ export type StopInput = Readonly<{
   waitingOnBackground: boolean;
   // undefined when the transcript is missing or cannot be read
   readTranscript: () => Promise<readonly TranscriptEntry[] | undefined>;
+  // the text the agent ended its turn with, when the agent reports it
+  lastMessage?: string;
 }>;
 
 // One rule for the end of a turn, shared by every agent: it sees only the parsed input.

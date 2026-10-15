@@ -119,14 +119,15 @@ export const WorkflowStartedEvent = z.object({
 
 export const WorkflowEndedEvent = z.object({ payload: z.strictObject({}) });
 
-// Why the Stop hook answered as it did. node-not-done and next-not-run send the agent back to
-// work; the rest let the turn end.
+// Why the Stop hook answered as it did. node-not-done, next-not-run and unanswered-stop send the
+// agent back to work; the rest let the turn end.
 export const StopReasonSchema = z.enum([
   "run-finished",
   "user-chat",
   "max-blocks-reached",
   "node-not-done",
   "next-not-run",
+  "unanswered-stop",
   "context-node",
   "model-switch",
   "awaiting-approval",

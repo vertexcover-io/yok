@@ -20,6 +20,7 @@ import { parseStdin, preToolUseReply, runNoReplyHook, stopReply } from "../hooks
 import { answerNotice } from "../hooks/post-tool-use.ts";
 import {
   bashAntipatterns,
+  questionGuard,
   questionNotice,
   recordGuard,
   recordResumed,
@@ -28,7 +29,7 @@ import {
 import { sessionStartHandlers } from "../hooks/session-start.ts";
 import { continueWorkflow, runStop } from "../hooks/stop.ts";
 import { recordAgentError, resumeAfterLimit } from "../hooks/stop-failure.ts";
-import { shellQuote } from "./common.ts";
+import { OTHER_TOOL, parseQuestionCall, QuestionInputSchema, shellQuote } from "./common.ts";
 
 const HOOK_TIMEOUT_S = 30;
 // Claude's tools that write a file, and the input field that names it; Bash is parsed separately.
@@ -51,6 +52,7 @@ const BackgroundTaskSchema = z.looseObject({ status: z.string() }).nullable().ca
 const ClaudeStopInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   transcript_path: z.string().optional(),
+  last_assistant_message: z.string().optional(),
   // absent from older Claude Code and when its task registry is unreachable
   background_tasks: z
     .array(BackgroundTaskSchema)
@@ -147,6 +149,7 @@ const claudeStop = async (stdin: string, deps: HookDeps, handler: StopHandler): 
     session_id: sessionId,
     transcript_path: transcriptPath,
     background_tasks: waitingOnBackground,
+    last_assistant_message: lastMessage,
   } = parsed.value;
   const reply = await runStop(
     {
@@ -155,6 +158,7 @@ const claudeStop = async (stdin: string, deps: HookDeps, handler: StopHandler): 
       contextSteps: claudeAdapter.contextSteps,
       waitingOnBackground,
       readTranscript: () => readClaudeTranscript(transcriptPath),
+      ...(lastMessage === undefined ? {} : { lastMessage }),
     },
     handler,
     deps,
@@ -217,31 +221,6 @@ const ClaudePreToolUseInputSchema = z.looseObject({
   // set only when a sub-agent makes the call
   agent_id: z.string().optional(),
 });
-
-const OTHER_TOOL: ToolCall = { kind: "other" };
-
-const QuestionInputSchema = z.looseObject({
-  questions: z
-    .array(
-      z.looseObject({
-        question: NonEmptyStringSchema,
-        header: z.string().optional(),
-        options: z.array(z.looseObject({ label: z.string() })).default([]),
-      }),
-    )
-    .min(1),
-});
-
-const parseQuestionCall = (toolInput: Readonly<Record<string, unknown>>): ToolCall => {
-  const parsed = QuestionInputSchema.safeParse(toolInput);
-  if (!parsed.success) return OTHER_TOOL;
-  const questions = parsed.data.questions.map(({ question, header, options }) => ({
-    question,
-    ...(header === undefined ? {} : { header }),
-    options: options.map((option) => option.label),
-  }));
-  return { kind: "question", questions };
-};
 
 const toToolCall = (toolName: string, toolInput: Readonly<Record<string, unknown>>): ToolCall => {
   const { command } = toolInput;
@@ -385,7 +364,7 @@ const claudeHooks = () =>
         handlers: [recordGuard, recordResumed],
       },
       { matcher: "Bash", handlers: [bashAntipatterns] },
-      { matcher: "AskUserQuestion", handlers: [questionNotice] },
+      { matcher: "AskUserQuestion", handlers: [questionGuard, questionNotice] },
     ],
     PostToolUse: [{ matcher: "AskUserQuestion", handlers: [answerNotice] }],
   }) as const;
