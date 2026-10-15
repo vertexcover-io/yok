@@ -665,7 +665,8 @@ const buildStepEndEvent = (
       ? {}
       : { error: eventError(record.error.kind, record.error.message, record.error.stack) }),
     ...(artifacts.length === 0 ? {} : { artifacts: [...artifacts] }),
-    ...sessionField(step.nodeRun.agentState),
+    // only a completed node's event carries the session; the others refuse the field
+    ...(record.status === "completed" ? sessionField(step.nodeRun.agentState) : {}),
     ...buildParentsField(step.node.parents),
   },
 });

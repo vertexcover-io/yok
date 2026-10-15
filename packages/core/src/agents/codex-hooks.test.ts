@@ -15,6 +15,7 @@ import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { questionGuard, recordGuard } from "../hooks/pre-tool-use.ts";
 import { continueWorkflow } from "../hooks/stop.ts";
 import { initializeRun, nextStep } from "../runs.ts";
+import { claudeAdapter } from "./claude-hooks.ts";
 import { codexAdapter, readCodexTranscript } from "./codex-hooks.ts";
 
 const NO_RUNS: RegistryReader = {
@@ -33,9 +34,9 @@ const INTERACTION_OFF: SavedPolicies = {
 };
 const NO_SWITCHES = new Set<never>();
 
-// Run feat-x of a one-agent-node workflow in a fresh git repo, owned by codex session s1, saved
+// Run feat-x of a one-agent-node workflow in a fresh git repo, owned by AGENT's session s1, saved
 // with POLICIES, and with its node `ask` open.
-const openAgentRun = async (policies?: SavedPolicies) => {
+const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" = "codex") => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "codex-run-")));
   const git = (...args: string[]) => execFileSync("git", args, { cwd });
   git("init", "-q", "-b", "main");
@@ -54,7 +55,7 @@ const openAgentRun = async (policies?: SavedPolicies) => {
     workflowPath,
     inputs: {},
     cwd,
-    sessions: [{ agent: "codex", sessionId: "s1" }],
+    sessions: [{ agent, sessionId: "s1" }],
     name: null,
     terminal: null,
     config: null,
@@ -110,11 +111,15 @@ describe("codexAdapter.stop", () => {
   });
 });
 
-describe("a Codex agent that keeps stopping with its node open", () => {
+describe("an agent that keeps stopping with its node open", () => {
   const stop = JSON.stringify({
     session_id: "s1",
     transcript_path: null,
     stop_hook_active: false,
+    last_assistant_message: "Which database should this use?",
+  });
+  const claudeStop = JSON.stringify({
+    session_id: "s1",
     last_assistant_message: "Which database should this use?",
   });
   const stopTwice = async (deps: Parameters<NonNullable<typeof codexAdapter.stop>>[1]) => [
@@ -122,35 +127,42 @@ describe("a Codex agent that keeps stopping with its node open", () => {
     await codexAdapter.stop?.(stop, deps, continueWorkflow),
   ];
 
-  test("SC525: with interaction off, the first stop is sent back with the policy's message, the second with next, and the node fails as needs-input with the agent's question", async () => {
-    const { run, runDir, deps, events } = await openAgentRun(INTERACTION_OFF);
+  test.each([
+    ["codex", codexAdapter, stop],
+    ["claude", claudeAdapter, claudeStop],
+  ] as const)(
+    "SC525: with interaction off, a %s agent's first stop is sent back with the policy's message, the second with next, and the node fails as needs-input with the agent's question",
+    async (agent, adapter, stdin) => {
+      const { run, runDir, deps, events } = await openAgentRun(INTERACTION_OFF, agent);
 
-    const [first, second] = await stopTwice(deps);
+      const first = await adapter.stop?.(stdin, deps, continueWorkflow);
+      const second = await adapter.stop?.(stdin, deps, continueWorkflow);
 
-    expect(JSON.parse(first ?? "")).toEqual({
-      decision: "block",
-      reason: expect.stringContaining("No one will answer in this run."),
-    });
-    expect(JSON.parse(second ?? "")).toEqual({
-      decision: "block",
-      reason: expect.stringContaining("yok orchestrate next --run feat-x"),
-    });
-    const ask = (await readState(runDir))?.nodeRuns.ask;
-    expect(ask?.status).toBe("failed");
-    expect(ask?.output).toEqual({
-      kind: "needs-input",
-      message: expect.stringContaining("Which database should this use?"),
-    });
-    const stored = await events();
-    expect(stored.filter((e) => e.type === "policy.applied").map((e) => e.payload)).toEqual([
-      { policy: "interaction", effect: "unanswered-stop", nodeId: "ask" },
-    ]);
-    expect(stored.map((event) => event.type)).not.toContain("agent.stuck");
-    expect(await nextStep(run, NO_SWITCHES)).toEqual({
-      ok: true,
-      value: { kind: "finished", status: "failed" },
-    });
-  });
+      expect(JSON.parse(first ?? "")).toEqual({
+        decision: "block",
+        reason: expect.stringContaining("No one will answer in this run."),
+      });
+      expect(JSON.parse(second ?? "")).toEqual({
+        decision: "block",
+        reason: expect.stringContaining("yok orchestrate next --run feat-x"),
+      });
+      const ask = (await readState(runDir))?.nodeRuns.ask;
+      expect(ask?.status).toBe("failed");
+      expect(ask?.output).toEqual({
+        kind: "needs-input",
+        message: expect.stringContaining("Which database should this use?"),
+      });
+      const stored = await events();
+      expect(stored.filter((e) => e.type === "policy.applied").map((e) => e.payload)).toEqual([
+        { policy: "interaction", effect: "unanswered-stop", nodeId: "ask" },
+      ]);
+      expect(stored.map((event) => event.type)).not.toContain("agent.stuck");
+      expect(await nextStep(run, NO_SWITCHES)).toEqual({
+        ok: true,
+        value: { kind: "finished", status: "failed" },
+      });
+    },
+  );
 
   test("SC526 (regression): with no saved policies, the second stop goes through as max-blocks-reached, records agent.stuck and leaves the node open", async () => {
     const { runDir, deps, events } = await openAgentRun();
