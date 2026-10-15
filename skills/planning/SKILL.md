@@ -7,7 +7,6 @@ description: >
   design; also use it for "plan this" or "how should we implement" once a design is approved.
 summary: Say how many phases the plan has and what each one builds.
 mode: inline
-hand-off: split
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Skill, WebSearch, WebFetch]
 tier: deep
 consumes:

@@ -238,20 +238,6 @@ describe("loadSkill", () => {
     expect(result.value.frontmatter.tier).toBeUndefined();
   });
 
-  test("a SKILL.md with no hand-off hands its whole stage to a subagent; one that starts subagents may split", async () => {
-    const whole = await loadAt(await writeSkill("planning", validFrontmatter));
-    const frontmatter = validFrontmatter
-      .replace("allowed-tools: [Read, Write]", "allowed-tools: [Agent, Read, Write]")
-      .replace("mode: subagent", "mode: subagent\nhand-off: split");
-    const split = await loadAt(await writeSkill("planning", frontmatter));
-    if (!whole.ok) throw new Error(whole.error);
-    if (!split.ok) throw new Error(split.error);
-    expect([whole.value.frontmatter["hand-off"], split.value.frontmatter["hand-off"]]).toEqual([
-      "whole",
-      "split",
-    ]);
-  });
-
   test("WS28 — scopes: [] loads", async () => {
     const frontmatter = validFrontmatter.replace("scopes: [feature]", "scopes: []");
     expect((await loadAt(await writeSkill("planning", frontmatter))).ok).toBe(true);
@@ -265,16 +251,6 @@ describe("loadSkill", () => {
     ],
     ["an unknown field", validFrontmatter.replace("tier:", "extra: 1\ntier:"), /extra/],
     ["a bad mode", validFrontmatter.replace("mode: subagent", "mode: parallel"), /mode/],
-    [
-      "a hand-off other than whole or split",
-      validFrontmatter.replace("mode: subagent", "mode: subagent\nhand-off: parts"),
-      /hand-off/,
-    ],
-    [
-      "a split hand-off on a stage that cannot start subagents",
-      validFrontmatter.replace("mode: subagent", "mode: subagent\nhand-off: split"),
-      /hand-off split needs Agent in allowed-tools/,
-    ],
     [
       "duplicate tags",
       validFrontmatter.replace("[planning, design]", "[design, design]"),
@@ -693,28 +669,5 @@ describe("the real retro skill", () => {
     if (retro?.type !== "agent") throw new Error("retro is not an agent node");
     expect(retro.mode).toBeUndefined();
     expect(retro.stage?.mode).toBe("subagent");
-  });
-});
-
-describe("the real skills' hand-off", () => {
-  const skillsDir = join(import.meta.dir, "..", "..", "..", "skills");
-
-  test("the stages that start their own subagents split in subagent mode; the others go whole", async () => {
-    const names = ["implement", "code-review", "design", "planning", "qa", "retro"];
-    const handOffs = await Promise.all(
-      names.map(async (name) => {
-        const result = await loadSkill(join(skillsDir, name), projectScope(dir));
-        if (!result.ok) throw new Error(result.error);
-        return [name, result.value.frontmatter["hand-off"]];
-      }),
-    );
-    expect(Object.fromEntries(handOffs)).toEqual({
-      implement: "split",
-      "code-review": "split",
-      design: "split",
-      planning: "split",
-      qa: "whole",
-      retro: "whole",
-    });
   });
 });

@@ -842,7 +842,7 @@ describe("nextStep with stage tiers", () => {
       value: { kind: "stage", nodeId: "make" },
     });
   });
-  test("SC7: next on a Claude run replies to a fast subagent stage with its model and no model step", async () => {
+  test("SC7: next on a Claude run replies to a fast subagent stage with its tier and no model step", async () => {
     const { ref } = await stagedRun(
       "  - { id: make, type: agent, stage: stages/quick, input: {}, mode: subagent }\n",
     );
@@ -854,24 +854,9 @@ describe("nextStep with stage tiers", () => {
       kind: "stage",
       nodeId: "make",
       mode: "subagent",
-      handOff: "whole",
-      model: "claude-sonnet-5-5",
+      tier: "fast",
     });
-    expect(reply.value).not.toHaveProperty("effort");
-  });
-
-  test("next replies to a subagent stage that splits with handOff: split", async () => {
-    const { ref } = await stagedRun(stageNode("build", "split"));
-
-    const reply = await nextStep(ref, agentAdapters);
-
-    if (!reply.ok) throw new Error(reply.error);
-    expect(reply.value).toMatchObject({
-      kind: "stage",
-      nodeId: "build",
-      mode: "subagent",
-      handOff: "split",
-    });
+    expect(reply.value).not.toHaveProperty("model");
   });
 
   test("SC8: next on a Codex run replies to a subagent stage with mode: inline", async () => {
@@ -884,7 +869,6 @@ describe("nextStep with stage tiers", () => {
 
     if (!reply.ok) throw new Error(reply.error);
     expect(reply.value).toMatchObject({ kind: "stage", nodeId: "make", mode: "inline" });
-    expect(reply.value).not.toHaveProperty("model");
-    expect(reply.value).not.toHaveProperty("handOff");
+    expect(reply.value).not.toHaveProperty("tier");
   });
 });

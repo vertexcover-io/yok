@@ -106,11 +106,9 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      `done --error`. Log `✓` or `✗` from the printed JSON, then go back to 1.
    - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
      `input` as its data, then finish it with the reply's `done` command the same way as a stage.
-   - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. With
-     `handOff: split`, run the stage yourself as a `mode: inline` stage; it starts its own
-     subagents, on the reply's `model` and `effort` when present. With `handOff: whole`, start a
-     subagent in the background (the reference names the tool), on the reply's `model` and
-     `effort` when present, with this brief:
+   - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. Start a
+     subagent in the background (the reference names the tool), on the reply's `tier` when
+     present, with this brief:
      - For a stage: "Run the yok stage STAGE. Follow the file at SKILL, and the file at
        EXTENSION when given, which wins where they differ. Use this input: INPUT, these
        variables: VARIABLES, and these extra instructions: PROMPT. Read a reference with
