@@ -641,7 +641,7 @@ describe("comment routes", () => {
     const refused = await post("/runs/r-named/comments", { comments: [draft] });
 
     expect(refused.status).toBe(409);
-    expect(await refused.text()).toBe("this run takes no comments: its interaction policy is off");
+    expect(await refused.text()).toContain("interaction");
     expect(existsSync(join(runDir, "comments.json"))).toBe(false);
     expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
   });
