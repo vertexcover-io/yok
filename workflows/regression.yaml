@@ -1,0 +1,135 @@
+# Cover an existing product flow with regression tests: find what changes its behavior, keep the
+# factors that matter, write scenarios for them, write the tests, then review and fix them in a
+# loop.
+name: regression
+inputs:
+  prompt:
+    type: string
+    required: true
+doctor:
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
+nodes:
+  - id: ticket-fetcher
+    type: agent
+    stage: ticket-fetcher
+    input:
+      request: "{{ inputs.prompt }}"
+
+  - id: create-workspace
+    type: agent
+    stage: create-workspace
+    notify: false
+    dependsOn: [ticket-fetcher]
+    input:
+      request: "{{ nodes.ticket-fetcher.output.task }}"
+
+  - id: find-factors
+    type: agent
+    stage: find-factors
+    dependsOn: [create-workspace]
+    input:
+      flow: "{{ nodes.ticket-fetcher.output.task }}"
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: write-scenarios
+    type: agent
+    stage: write-scenarios
+    dependsOn: [find-factors]
+    input:
+      flow: "{{ nodes.ticket-fetcher.output.task }}"
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  # Taken after the approvals, which change no code, so the person sees the factors sooner.
+  - id: baseline
+    type: agent
+    stage: baseline
+    notify: false
+    dependsOn: [write-scenarios]
+    input: {}
+
+  - id: compact-after-scenarios
+    type: context
+    action: compact
+    prompt: "Keep the approved scenarios, the workspace path, and the run name."
+    dependsOn: [baseline]
+
+  - id: write-regression-tests
+    type: agent
+    stage: write-regression-tests
+    dependsOn: [compact-after-scenarios]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: compact-after-tests
+    type: context
+    action: compact
+    prompt: "Keep which test covers each scenario, the workspace path, and the run name."
+    dependsOn: [write-regression-tests]
+
+  # Pass 1 reviews; a later pass has write-regression-tests fix the previous pass's findings, then
+  # reviews again. It stops on APPROVED, or after its last pass with the rest left in the report.
+  - id: review-loop
+    type: loop
+    dependsOn: [compact-after-tests]
+    until: "{{ iteration.nodes.review-regression-tests.output.verdict == 'APPROVED' or iteration.index == iteration.max }}"
+    maxIterations: 2
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+    nodes:
+      # A later pass starts the fix without pass 1's review in the session.
+      - id: compact-before-fix
+        type: context
+        action: compact
+        when: "{{ iteration.index > 1 }}"
+        prompt: "Keep the workspace path and the run name."
+
+      - id: fix-tests
+        type: agent
+        stage: write-regression-tests
+        dependsOn: [compact-before-fix]
+        input:
+          workspace: "{{ inputs.workspace }}"
+          fixes: "{{ iteration.previous.findings }}"
+          round: "{{ iteration.index }}"
+
+      - id: review-regression-tests
+        type: agent
+        stage: review-regression-tests
+        input:
+          workspace: "{{ inputs.workspace }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+
+  - id: compact-after-review
+    type: context
+    action: compact
+    prompt: "Keep the review verdict, the findings left open, and the workspace path."
+    dependsOn: [review-loop]
+
+  - id: commit
+    type: agent
+    stage: git-commit
+    dependsOn: [compact-after-review]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: pr
+    type: agent
+    stage: visual-pr
+    dependsOn: [commit]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      task: "{{ nodes.ticket-fetcher.output.task }}"
+
+  # Audits the run for yok defects. always: it runs after a failed node too; allowFailure:
+  # its own failure never changes the run's status.
+  - id: retro
+    type: agent
+    stage: retro
+    notify: false
+    dependsOn: [pr]
+    always: true
+    allowFailure: true
+    input: {}
