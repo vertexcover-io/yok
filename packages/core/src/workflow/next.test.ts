@@ -1454,6 +1454,7 @@ describe("the shipped task workflow's qa and review loops", () => {
       { id: "baseline", input: {} },
       { id: "design", input: { task } },
       { id: "planning", input: { task, workspace } },
+      { id: "learn" },
       { id: "compact-after-planning", node: { type: "context", action: "compact" } },
       { id: "implement", input: { workspace } },
       { id: "compact-after-implement", node: { type: "context", action: "compact" } },

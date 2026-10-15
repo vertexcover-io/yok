@@ -77,6 +77,9 @@ The first round of this run exposed two defects, both fixed before the numbers a
 told the agent to run the scripts from the skill's folder, so events went to the plugin's repo; and
 the sim's mistake detector missed writes made from inside `apps/`.
 
+After rebasing on main (the review loop, compact steps, `recordResumed`): run-two-passes,
+viewer-comment and shared-list-edited all pass.
+
 ## Not measured yet
 
 - Real sessions. These are scripted users in one dummy repo; the Learn events page in Samskara
