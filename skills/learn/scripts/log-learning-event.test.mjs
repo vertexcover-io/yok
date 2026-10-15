@@ -10,10 +10,10 @@ import {
   logEvent,
   parseTranscript,
   resolveEvidence,
+  runSessionId,
   skillVersion,
-  usableSessionId,
   validate,
-} from "./log-event.mjs";
+} from "./log-learning-event.mjs";
 
 const valid = {
   trigger: "auto",
@@ -24,7 +24,7 @@ const valid = {
   optionsShown: ["rethrow", "structured logger", "Sentry"],
 };
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "learn-log-event-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "learn-log-learning-event-")));
 after(() => rmSync(root, { recursive: true, force: true }));
 const tempDir = (prefix) => mkdtempSync(join(root, prefix));
 
@@ -62,7 +62,9 @@ const transcript = [
   line({
     type: "user",
     uuid: "u2",
-    message: { content: "No, I told you, errors go to Sentry. And fix log-event.mjs too." },
+    message: {
+      content: "No, I told you, errors go to Sentry. And fix log-learning-event.mjs too.",
+    },
   }),
   line({
     type: "user",
@@ -78,7 +80,7 @@ const transcript = [
         {
           type: "tool_use",
           name: "Bash",
-          input: { command: "node log-event.mjs <<EOF errors go to Sentry" },
+          input: { command: "node log-learning-event.mjs <<EOF errors go to Sentry" },
         },
       ],
     },
@@ -179,7 +181,11 @@ test("finds the messages that start and end the exchange, ignoring case and spac
 });
 
 test("a message that names this script can still be evidence", () => {
-  const { ids } = resolveEvidence(parseTranscript(transcript), "", "fix log-event.mjs too");
+  const { ids } = resolveEvidence(
+    parseTranscript(transcript),
+    "",
+    "fix log-learning-event.mjs too",
+  );
   assert.equal(ids.evidenceToMessage, "u2");
 });
 
@@ -252,11 +258,38 @@ test("fills id, timestamp, cwd and version, and swaps the snippets for message i
   assert.match(event.eventId, /^[0-9a-f-]{36}$/);
 });
 
-test("the session id falls back to the agent's environment, then to a dated name", () => {
-  assert.equal(usableSessionId("abc", { CLAUDE_CODE_SESSION_ID: "from-env" }), "abc");
-  assert.equal(usableSessionId(undefined, { CLAUDE_CODE_SESSION_ID: "claude" }), "claude");
-  assert.equal(usableSessionId("", { CODEX_THREAD_ID: "codex" }), "codex");
-  assert.match(usableSessionId(undefined, {}), /^unknown-\d{4}-\d{2}-\d{2}$/);
+// One line of a run's event.jsonl, as yok writes it.
+const runEvent = (seq, type, payload) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    seq,
+    id: `e${seq}`,
+    ts: "2026-10-15T10:00:00.000Z",
+    type,
+    source: "test",
+    runId: "r-1",
+    payload,
+  });
+
+test("without a session id, the event goes under the run's current session", () => {
+  const runDir = tempDir("run-");
+  writeFileSync(
+    join(runDir, "event.jsonl"),
+    `${[
+      runEvent(1, "workflow.started", {
+        workflow: "task",
+        inputs: {},
+        activeSessions: [{ agent: "codex", sessionId: "first" }],
+      }),
+      runEvent(2, "workflow.session.replaced", {
+        agent: "codex",
+        previousSessionId: "first",
+        sessionId: "after-compact",
+      }),
+    ].join("\n")}\n`,
+  );
+  assert.equal(runSessionId(runDir), "after-compact");
+  assert.equal(runSessionId(tempDir("empty-run-")), undefined);
 });
 
 test("generated fields win over the same keys in the input", () => {

@@ -13,8 +13,8 @@ references:
   candidates:
     path: scripts/candidates.ts
     description: Prints what the user said since the last learn pass, with the agent's reply before each message.
-  log-event:
-    path: scripts/log-event.mjs
+  log-learning-event:
+    path: scripts/log-learning-event.mjs
     description: Validates one learning event and appends it to .yok/learning-events/.
 ---
 
@@ -153,15 +153,19 @@ Read [references/learning-format.md](references/learning-format.md) and copy its
 frontmatter with `signal`, `paths` (inline list), `tags` and `strength`, then `# <title>`, a body of a
 few sentences, `**Occurrences:**` and `**Stale when:**` with a concrete condition a later cleanup can
 check. Save it as `docs/learnings/<kebab-title>.md` and add its line to `docs/learnings/index.md`.
-The learning says only what the user agreed to; add no rules of your own. The learning goes in with the
-user's current changes, so it gets reviewed in their PR; don't commit it separately.
+The learning says only what the user agreed to; add no rules of your own. The body may explain the
+rule, but never adds a case, exception or fallback ("leave a TODO in the meantime") the picked text
+doesn't have. If you think one is needed, show the user the full new text before writing it: it is
+saved only if they agree, and logged as `edited` with that text. Never add it and tell them after.
+The learning goes in with the user's current changes, so it gets reviewed in their PR; don't commit
+it separately.
 
 ## 7. Log every outcome
 
 Log one event for each candidate that reached step 2, apart from the ones step 2 says to skip:
 
 ```bash
-yok orchestrate skill run learn.log-event SESSION_ID <<'EOF'
+yok orchestrate skill run learn.log-learning-event SESSION_ID <<'EOF'
 {"trigger": "auto", "whyTriggered": "…", "evidenceFrom": "…", "evidenceTo": "…",
  "optionsShown": ["…"], "proposedLearning": "…", "optionUserPicked": "2", "outcome": "new",
  "status": "edited", "finalLearning": "…", "rejectionReason": "",
@@ -171,7 +175,7 @@ EOF
 
 SESSION_ID is the session the `candidates` list showed the correction under. When it showed none
 (the user stated the rule, or the agent's transcripts can't be read), leave SESSION_ID out: the
-script uses your own session's id.
+script uses the run's current session.
 
 Every event has `trigger` (`manual`/`auto`), `whyTriggered` (one sentence: what in the session
 made this a candidate), and the two ends of the exchange it came from, each a few words copied

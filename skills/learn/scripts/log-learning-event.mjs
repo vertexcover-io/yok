@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Appends one learning event (JSON on stdin) to the session's events file.
-// Usage: node log-event.mjs [sessionId] <<'EOF'
+// Usage: yok orchestrate skill run learn.log-learning-event [SESSION_ID] <<'EOF'
 //        { ...event fields... }
 //        EOF
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,14 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  createRegistryReader,
+  readEvents,
+  readRunSessions,
+  registryPath,
+  requireRun,
+  runDirOf,
+} from "@yok/sdk";
 import { PLUGIN, readPlugin } from "./plugin.mjs";
 import { parseRecords } from "./transcript.mjs";
 
@@ -51,11 +59,24 @@ export const skillVersion = (manifestPath) => {
   return version ? `${name}@${version}` : "";
 };
 
-// Without an argument, the agent's own session: Claude Code and Codex each put it in the
-// environment of the commands they run. Sessions without an id share one file per day.
-export const usableSessionId = (id, env) =>
-  [id, env.CLAUDE_CODE_SESSION_ID, env.CODEX_THREAD_ID].find(Boolean) ??
-  `unknown-${new Date().toISOString().slice(0, 10)}`;
+// The run's current session, from its event log: the hooks record each session the run starts and
+// each one a context step replaces, for every agent. Undefined when the log names none.
+export const runSessionId = (runDir) => {
+  const path = join(runDir, "event.jsonl");
+  return existsSync(path) ? readRunSessions(readEvents(path)).at(-1)?.sessionId : undefined;
+};
+
+const currentRunSessionId = async () => {
+  const run = await requireRun({
+    registry: createRegistryReader(registryPath()),
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (!run.ok) throw new Error(`learn works only in a yok run: ${run.error}`);
+  const sessionId = runSessionId(runDirOf(run.value.cwd, run.value.name));
+  if (sessionId === undefined) throw new Error("the run's event log names no session");
+  return sessionId;
+};
 
 const transcriptPath = (sessionId, env) => {
   const projects = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
@@ -88,7 +109,7 @@ const searchableText = (record) => {
   const text = content
     .flatMap((block) => {
       if (block.type === "text") return [block.text];
-      if (block.type !== "tool_use" || String(block.input?.command).includes("log-event"))
+      if (block.type !== "tool_use" || String(block.input?.command).includes("log-learning-event"))
         return [];
       return stringsIn(block.input);
     })
@@ -186,13 +207,12 @@ export const buildEvent = (
   skillVersion: version,
 });
 
-// Snippets are only checked against a transcript that was found: without one (Codex, or a run
-// outside a session) the event is logged with empty ids.
-export const logEvent = (raw, sessionIdArg, { env = process.env, cwd = process.cwd() } = {}) => {
+// Snippets are only checked against a transcript that was found: without one (Codex's, which this
+// does not read) the event is logged with empty ids.
+export const logEvent = (raw, sessionId, { env = process.env, cwd = process.cwd() } = {}) => {
   const input = JSON.parse(raw);
   const invalid = validate(input);
   if (invalid.length > 0) throw new Error(invalid.join("; "));
-  const sessionId = usableSessionId(sessionIdArg, env);
   const path = transcriptPath(sessionId, env);
   const messages = path ? parseTranscript(readFileSync(path, "utf8")) : [];
   const { ids, missing } = resolveEvidence(messages, input.evidenceFrom, input.evidenceTo);
@@ -211,16 +231,17 @@ export const logEvent = (raw, sessionIdArg, { env = process.env, cwd = process.c
 
 // `yok orchestrate skill run` imports this file and calls main. Run directly, it calls main itself;
 // Node before 24.2 has no import.meta.main, so the file's own path decides there.
-export const main = (argv) => {
+export const main = async (argv) => {
   try {
-    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), argv[0])}`);
+    const sessionId = argv[0] || (await currentRunSessionId());
+    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), sessionId)}`);
     return 0;
   } catch (error) {
-    console.error(`log-event: ${error.message}`);
+    console.error(`log-learning-event: ${error.message}`);
     return 1;
   }
 };
 
 if (import.meta.main ?? import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 }

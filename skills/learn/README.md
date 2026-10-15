@@ -25,9 +25,9 @@ The agent needs Sonnet or Opus: on Haiku the learning files and events were not 
 
 - `SKILL.md`: the steps and the event fields for each outcome.
 - `references/learning-format.md`: the learning file and index line format.
-- `scripts/log-event.mjs`: validates an event, looks up the message ids in the session transcript, and appends it.
+- `scripts/log-learning-event.mjs`: validates an event, looks up the message ids in the session transcript, and appends it.
 - `scripts/candidates.ts`: prints what the user said since the last pass, each with the agent's reply before it. Reads transcripts with `@yok/sdk`'s readers. A pass ends with a `learning.reviewed` event in the run's log, which is where the next one starts.
-- `scripts/transcript.mjs`: parses a session transcript, for `log-event.mjs`.
+- `scripts/transcript.mjs`: parses a session transcript, for `log-learning-event.mjs`.
 - `scripts/plugin.mjs`: the plugin's name and version from its manifest (events folder, `skillVersion`).
 - `scripts/*.test.mjs`, `scripts/*.test.ts`: unit tests.
 - `evals/sim/`: simulated multi-turn sessions against a dummy repo, end to end to Samskara (costs model calls; run by hand). `evals/baseline.md` has what they measured.

@@ -344,7 +344,7 @@ const eventChecks = (event, label) => {
     const isAppWrite = (record) =>
       (Array.isArray(record.message?.content) ? record.message.content : []).flatMap(writeOf).some((write) => APP_FILE.test(write.file));
     const logged = transcript.findIndex((record) =>
-      (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && /log-event/.test(block.input?.command ?? "")),
+      (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && /log-learning-event/.test(block.input?.command ?? "")),
     );
     const nextUser = transcript.findIndex((record, index) => index > logged && record.type === "user" && typeof record.message?.content === "string");
     const lateWrite = transcript.slice(logged + 1, nextUser === -1 ? undefined : nextUser).findIndex(isAppWrite);
