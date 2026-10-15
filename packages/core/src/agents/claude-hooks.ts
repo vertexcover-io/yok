@@ -75,6 +75,7 @@ type ClaudeLine = z.infer<typeof ClaudeLineSchema>;
 
 const BlockSchema = z.looseObject({ type: z.string() });
 const TextBlockSchema = z.looseObject({ type: z.literal("text"), text: z.string() });
+const ToolCallSchema = z.looseObject({ type: z.literal("tool_use"), name: z.string() });
 const BashCallSchema = z.looseObject({
   type: z.literal("tool_use"),
   name: z.literal("Bash"),
@@ -107,15 +108,17 @@ const userEntries = (line: ClaudeLine): TranscriptEntry[] => {
   return [{ kind: "prompt", text }];
 };
 
-const commandEntries = (line: ClaudeLine): TranscriptEntry[] =>
-  blocksOf(line.message?.content).flatMap((block) => {
-    const call = BashCallSchema.safeParse(block);
-    return call.success ? [{ kind: "command" as const, command: call.data.input.command }] : [];
+const toolEntries = (line: ClaudeLine): TranscriptEntry[] =>
+  blocksOf(line.message?.content).flatMap((block): TranscriptEntry[] => {
+    const bash = BashCallSchema.safeParse(block);
+    if (bash.success) return [{ kind: "command", command: bash.data.input.command }];
+    const tool = ToolCallSchema.safeParse(block);
+    return tool.success ? [{ kind: "tool", name: tool.data.name }] : [];
   });
 
 const toEntries = (line: ClaudeLine): TranscriptEntry[] => {
   if (line.type === "user") return userEntries(line);
-  if (line.type === "assistant") return commandEntries(line);
+  if (line.type === "assistant") return toolEntries(line);
   return [];
 };
 

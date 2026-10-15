@@ -452,19 +452,21 @@ describe("runStopHook", () => {
     expect(await runStopHook(input(undefined), deps)).toMatchObject({ kind: "continue" });
   });
 
-  test("with interaction off, shell commands run since the last stop are progress, so only a stop with no work since fails the node", async () => {
+  test("with interaction off, any tool call since the last stop is progress, file edits included, so only a stop with no work since fails the node", async () => {
     const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
-    const worked = (commands: number): TranscriptEntry[] => [
+    const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
-      ...Array.from({ length: commands }, (_, i) => ({
-        kind: "command" as const,
-        command: `t${i}`,
-      })),
+      { kind: "command", command: "ls" },
+    ];
+    const edited: TranscriptEntry[] = [
+      ...ran,
+      { kind: "tool", name: "Write" },
+      { kind: "tool", name: "Edit" },
     ];
 
-    await runStopHook(input(worked(1)), deps);
-    await runStopHook(input(worked(3)), deps);
-    await runStopHook(input(worked(3)), deps);
+    await runStopHook(input(ran), deps);
+    await runStopHook(input(edited), deps);
+    await runStopHook(input(edited), deps);
 
     const events = await jsonlEventStore(runDir).read();
     const reasons = events.flatMap((event) => {

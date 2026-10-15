@@ -268,7 +268,7 @@ describe("codexAdapter.preToolUse", () => {
 });
 
 describe("readCodexTranscript", () => {
-  test("SC11: prompts and shell commands come out of a rollout, from every shell shape", async () => {
+  test("SC11: prompts, shell commands from every shell shape, and other tool calls come out of a rollout", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "codex-rollout-")), "rollout.jsonl");
     const lines = [
       line("session_meta", { id: "s1" }),
@@ -295,6 +295,7 @@ describe("readCodexTranscript", () => {
         input: 'const r = await tools.exec_command({cmd: "echo \\"hi\\"", yield_time_ms: 1});',
       }),
       line("response_item", { type: "function_call", name: "update_plan", arguments: "{}" }),
+      line("response_item", { type: "custom_tool_call", name: "apply_patch", input: "*** Begin" }),
       "{not json",
       line("event_msg", { type: "user_message", message: "why?" }),
     ];
@@ -306,6 +307,8 @@ describe("readCodexTranscript", () => {
       { kind: "command", command: "ls -la" },
       { kind: "command", command: "git status" },
       { kind: "command", command: 'echo "hi"' },
+      { kind: "tool", name: "update_plan" },
+      { kind: "tool", name: "apply_patch" },
       { kind: "prompt", text: "why?" },
     ]);
   });

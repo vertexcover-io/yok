@@ -25,10 +25,12 @@ export type AgentAdapter = Readonly<{
 export type HookReply =
   | { readonly kind: "allow" }
   | { readonly kind: "continue"; readonly message: string };
-// One step of a session, in order: a message the user typed, or a shell command the agent ran.
+// One step of a session, in order: a message the user typed, a shell command the agent ran, or
+// any other tool it called, such as a file edit.
 export type TranscriptEntry =
   | { readonly kind: "prompt"; readonly text: string }
-  | { readonly kind: "command"; readonly command: string };
+  | { readonly kind: "command"; readonly command: string }
+  | { readonly kind: "tool"; readonly name: string };
 
 export type StopInput = Readonly<{
   agent: AgentType;

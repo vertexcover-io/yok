@@ -148,8 +148,8 @@ export const StopCalledEvent = z.object({
     // the text the agent was sent back with
     message: z.string().optional(),
     nodeRunId: NonEmptyStringSchema.optional(),
-    // shell commands in the session's transcript at this check, when the hook read it
-    commands: z.int().nonnegative().optional(),
+    // tool calls in the session's transcript at this check, when the hook read it
+    toolCalls: z.int().nonnegative().optional(),
   }),
 });
 

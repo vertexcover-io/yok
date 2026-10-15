@@ -172,7 +172,7 @@ const FunctionCallSchema = z.looseObject({
 });
 const CustomToolCallSchema = z.looseObject({
   type: z.literal("custom_tool_call"),
-  name: z.literal("exec"),
+  name: z.string(),
   input: z.string(),
 });
 const ExecArgsSchema = z.looseObject({ cmd: z.string() });
@@ -180,6 +180,7 @@ const ShellArgsSchema = z.looseObject({ command: z.array(z.string()) });
 
 const command = (text: string): TranscriptEntry[] =>
   text === "" ? [] : [{ kind: "command", command: text }];
+const tool = (name: string): TranscriptEntry[] => [{ kind: "tool", name }];
 
 // `bash -lc X` is the shell tool's own wrapper; the command the agent wrote is X.
 const shellCommand = (argv: readonly string[]): string => {
@@ -195,7 +196,7 @@ const functionCallEntries = (call: z.infer<typeof FunctionCallSchema>): Transcri
     const parsed = ExecArgsSchema.safeParse(args.value);
     return parsed.success ? command(parsed.data.cmd) : [];
   }
-  if (call.name !== "shell") return [];
+  if (call.name !== "shell") return tool(call.name);
   const parsed = ShellArgsSchema.safeParse(args.value);
   return parsed.success ? command(shellCommand(parsed.data.command)) : [];
 };
@@ -219,7 +220,11 @@ const toEntries = (line: z.infer<typeof RolloutLineSchema>): TranscriptEntry[] =
   const call = FunctionCallSchema.safeParse(line.payload);
   if (call.success) return functionCallEntries(call.data);
   const custom = CustomToolCallSchema.safeParse(line.payload);
-  return custom.success ? codeModeEntries(custom.data.input) : [];
+  if (!custom.success) return [];
+  // a code-mode script that runs no shell command still did work
+  if (custom.data.name !== "exec") return tool(custom.data.name);
+  const commands = codeModeEntries(custom.data.input);
+  return commands.length === 0 ? tool("exec") : commands;
 };
 
 const parseLine = (text: string): z.infer<typeof RolloutLineSchema>[] => {

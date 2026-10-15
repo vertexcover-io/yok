@@ -231,7 +231,7 @@ const stopCalledEvent = (
   input: StopInput,
   check: StopCheck,
   decision: StopDecision,
-  commands: number | undefined,
+  toolCalls: number | undefined,
 ): EmitInput => ({
   type: "hooks.stop.called",
   source: "hooks",
@@ -244,40 +244,40 @@ const stopCalledEvent = (
     blockStreak: decision.blockStreak,
     ...("message" in decision ? { message: decision.message } : {}),
     ...("nodeRunId" in decision ? { nodeRunId: decision.nodeRunId } : {}),
-    ...(commands === undefined ? {} : { commands }),
+    ...(toolCalls === undefined ? {} : { toolCalls }),
   },
 });
 
 // A turn between nodes reads touchedRun from the transcript. An unattended agent node counts its
-// shell commands, since its work leaves no run event and a stop after real work is not a lapse.
+// tool calls, since its work leaves no run event and a stop after real work is not a lapse.
 const readTranscriptFacts = async (
   input: StopInput,
   state: State,
-): Promise<Readonly<{ touchedRun: boolean | undefined; commands: number | undefined }>> => {
+): Promise<Readonly<{ touchedRun: boolean | undefined; toolCalls: number | undefined }>> => {
   const position = positionOf(state);
   const unattendedNode =
     !readPolicies(state.policies).interaction &&
     position.kind === "open-node" &&
     position.leaf.nodeType === "agent";
   if (position.kind !== "between-nodes" && !unattendedNode) {
-    return { touchedRun: undefined, commands: undefined };
+    return { touchedRun: undefined, toolCalls: undefined };
   }
   const entries = await input.readTranscript();
   return {
     touchedRun: position.kind === "between-nodes" ? touchedRunSinceLastPrompt(entries) : undefined,
-    commands: entries?.filter((entry) => entry.kind === "command").length,
+    toolCalls: entries?.filter((entry) => entry.kind !== "prompt").length,
   };
 };
 
-// Whether the transcript holds more shell commands than it did at the last check.
+// Whether the transcript holds more tool calls than it did at the last check.
 const workedSince = (
   events: readonly Event[],
   seq: number | undefined,
-  commands: number | undefined,
+  toolCalls: number | undefined,
 ): boolean => {
   const last = StopCalledEvent.safeParse(events.find((event) => event.seq === seq));
-  const before = last.success ? last.data.payload.commands : undefined;
-  return commands !== undefined && before !== undefined && commands > before;
+  const before = last.success ? last.data.payload.toolCalls : undefined;
+  return toolCalls !== undefined && before !== undefined && toolCalls > before;
 };
 
 // An agent without context steps: the node ends as not applied and the session goes on to `next`.
@@ -330,7 +330,7 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     const runDir = runDirOf(run.cwd, run.name);
     const state = await readState(runDir);
     if (state === null) return ALLOW;
-    const [{ touchedRun, commands }, events] = await Promise.all([
+    const [{ touchedRun, toolCalls }, events] = await Promise.all([
       readTranscriptFacts(input, state),
       jsonlEventStore(runDir).read(),
     ]);
@@ -339,13 +339,13 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       run,
       state,
       touchedRun,
-      progressSinceCheck: progressSince(events, seq) || workedSince(events, seq, commands),
+      progressSinceCheck: progressSince(events, seq) || workedSince(events, seq, toolCalls),
       maxBlocks: maxBlocksOf(deps.env),
       waitingOnBackground: input.waitingOnBackground,
       pendingSwitch: foldModelSwitch(events, state.tiers).pending,
     };
     const decision = await decideForAgent(input, check);
-    const stored = await appendRunEvent(run, stopCalledEvent(input, check, decision, commands));
+    const stored = await appendRunEvent(run, stopCalledEvent(input, check, decision, toolCalls));
     if (!stored.ok) {
       // An unrecorded block would reset the count, so it could block forever.
       deps.log.warn({ error: stored.error }, "stop allowed: the hook call was not recorded");

@@ -49,7 +49,7 @@ const assistant = (content: unknown) =>
   line({ type: "assistant", message: { role: "assistant", content } });
 
 describe("readClaudeTranscript", () => {
-  test("SC15 — the Claude transcript reads as prompts and shell commands, in order", async () => {
+  test("SC15 — the Claude transcript reads as prompts, shell commands and other tool calls, in order", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "claude-transcript-")), "s1.jsonl");
     const lines = [
       user("go"),
@@ -77,6 +77,7 @@ describe("readClaudeTranscript", () => {
     expect(await readClaudeTranscript(path)).toEqual([
       { kind: "prompt", text: "go" },
       { kind: "command", command: "yok orchestrate next --run feat-x" },
+      { kind: "tool", name: "Read" },
       { kind: "prompt", text: "why?" },
     ]);
   });
