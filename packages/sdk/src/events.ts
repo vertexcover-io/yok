@@ -870,6 +870,15 @@ const onCustomStateUpdated: EventHandler = (state, event) => {
   return { ...state, custom: { ...state.custom, ...parsed.data.payload } };
 };
 
+const onPolicyApplied: EventHandler = (state, event) => {
+  const parsed = PolicyAppliedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { effect, path } = parsed.data.payload;
+  const approved = state.autoApproved ?? [];
+  if (effect !== "auto-approved" || path === undefined || approved.includes(path)) return state;
+  return { ...state, autoApproved: [...approved, path] };
+};
+
 const onApprovalRequested: EventHandler = (state, event) => {
   const parsed = ApprovalRequestedEvent.safeParse(event);
   if (!parsed.success) return state;
@@ -1001,4 +1010,5 @@ export const builtInHandlers: EventHandlers = {
   "custom.state.updated": onCustomStateUpdated,
   "artifact.comment.added": onCommentAdded,
   "artifact.approval.requested": onApprovalRequested,
+  "policy.applied": onPolicyApplied,
 };

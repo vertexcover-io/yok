@@ -324,6 +324,8 @@ export const StateSchema = z
     // Written once by init from the registry entry. Absent in runs saved before policies; read it
     // with readPolicies, which gives those runs the defaults.
     policies: SavedPoliciesSchema.optional(),
+    // the files a run with interaction off approved with no one to review them
+    autoApproved: z.array(ArtifactPathSchema).optional(),
     custom: JsonObjectSchema.optional(),
     eventHandlers: EventHandlerRefsSchema.default({}),
     subscribers: SubscriberRefsSchema.default({}),

@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
 import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
+import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import {
@@ -262,20 +262,13 @@ describe("listArtifacts", () => {
     expect(noState.every((f) => f.draft)).toBe(true);
   });
 
-  test("SC528: design.md, named by a policy.applied auto-approved event, lists as auto-approved and plan.md does not", async () => {
+  test("SC528: design.md, which the run's state lists as auto-approved, lists as auto-approved and plan.md does not", async () => {
     const runDir = tempDir("list-auto");
     put(runDir, "artifacts/design.md", "# d");
     put(runDir, "artifacts/plan.md", "# p");
-    await jsonlEventStore(runDir).append({
-      id: "e1",
-      ts: "2026-01-01T00:00:00.000Z",
-      type: "policy.applied",
-      source: "engine",
-      runId: "r-1",
-      payload: { policy: "interaction", effect: "auto-approved", path: "artifacts/design.md" },
-    });
+    const state = { ...seedState(runDir, {}), autoApproved: ["artifacts/design.md"] };
 
-    const files = await listArtifacts(runDir, null);
+    const files = await listArtifacts(runDir, state);
     expect(files.map((f) => [f.path, f.autoApproved])).toEqual([
       ["artifacts/design.md", true],
       ["artifacts/plan.md", false],

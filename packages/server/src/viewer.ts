@@ -21,12 +21,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
-import {
-  CommentDraftSchema,
-  jsonlEventStore,
-  PolicyAppliedEvent,
-  type Registry,
-} from "@yok/sdk/internal";
+import { CommentDraftSchema, type Registry } from "@yok/sdk/internal";
 import hljs from "highlight.js/lib/common";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
@@ -451,20 +446,6 @@ const byListOrder = (a: string, b: string): number => {
 // The engine writes its own state file and its temp copies beside the artifacts.
 const ENGINE_FILES = /^(state\.json|\.state\..*\.tmp)$/;
 
-// The files a run with interaction off approved on its own, from its policy.applied events.
-const findAutoApprovedFiles = async (runDir: string): Promise<ReadonlySet<string>> => {
-  const events = await jsonlEventStore(runDir).read();
-  return new Set(
-    events.flatMap((event) => {
-      if (event.type !== "policy.applied") return [];
-      const parsed = PolicyAppliedEvent.safeParse(event);
-      if (!parsed.success) return [];
-      const { effect, path } = parsed.data.payload;
-      return effect === "auto-approved" && path !== undefined ? [path] : [];
-    }),
-  );
-};
-
 export const listArtifacts = async (
   runDir: string,
   state: State | null,
@@ -476,7 +457,7 @@ export const listArtifacts = async (
     ),
   );
   const awaited = new Set(findAwaitedFiles(state));
-  const autoApproved = await findAutoApprovedFiles(runDir);
+  const autoApproved = new Set(state?.autoApproved ?? []);
   const inside = (await walk(artifactsDir)).filter(
     (file) => resolveArtifactPath(runDir, relative(runDir, file).split(sep).join("/")) !== null,
   );

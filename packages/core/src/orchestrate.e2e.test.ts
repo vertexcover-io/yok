@@ -1913,6 +1913,7 @@ describe("SC26: orchestrate hook stop", () => {
         autoApproved: true,
       });
       expect(stateOf(run.repo).nodeRuns.plan.awaitingApproval).toBeUndefined();
+      expect(stateOf(run.repo).autoApproved).toEqual(["artifacts/design.md"]);
       const events = await eventsOf(run.repo);
       expect(events.filter((event) => event.type === "policy.applied")).toEqual([
         expect.objectContaining({

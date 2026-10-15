@@ -26,7 +26,6 @@ export {
   type IEventEmitter,
   type ModelSwitch,
   nodePath,
-  PolicyAppliedEvent,
   type StepOutcome,
   type StepReport,
 } from "./events.ts";
