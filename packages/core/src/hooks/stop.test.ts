@@ -74,6 +74,7 @@ const nodeRun = (
 });
 
 const planOpen = { plan: nodeRun("plan", "running") };
+const UNATTENDED = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
 
 const decide = (overrides: Partial<State>, check: Partial<Omit<StopCheck, "run" | "state">> = {}) =>
   decideStop({
@@ -163,11 +164,13 @@ describe("decideStop", () => {
   });
 
   test("SC522: with interaction off and an agent node open, a first stop is sent back with the policy's message, and one at maxBlocks is unanswered-stop, not max-blocks-reached", () => {
-    const first = decide({ nodeRuns: planOpen }, { interaction: false });
-    const atMax = decide(
-      { nodeRuns: planOpen, stopHook: { blockStreak: 1, seq: 12 }, lastEventSeq: 12 },
-      { interaction: false },
-    );
+    const first = decide({ nodeRuns: planOpen, policies: UNATTENDED });
+    const atMax = decide({
+      nodeRuns: planOpen,
+      policies: UNATTENDED,
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
 
     expect(first).toMatchObject({
       reason: "node-not-done",

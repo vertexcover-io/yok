@@ -44,8 +44,6 @@ type ActiveLeaf = Readonly<{
 export type StopCheck = Readonly<{
   run: RunRef;
   state: State;
-  // the run's interaction policy; off, no stop with an agent node open goes through
-  interaction?: boolean;
   touchedRun: boolean | undefined;
   // whether anything but a hook's own log happened since the last Stop check
   progressSinceCheck: boolean;
@@ -171,7 +169,6 @@ const positionOf = (state: State): Position => {
 export const decideStop = ({
   run,
   state,
-  interaction = true,
   touchedRun,
   progressSinceCheck,
   maxBlocks,
@@ -198,6 +195,7 @@ export const decideStop = ({
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
+  const { interaction } = readPolicies(state.policies);
   if (!interaction && position.kind === "open-node" && position.leaf.nodeType === "agent") {
     const { leaf } = position;
     const { nodeRunId } = leaf;
@@ -310,7 +308,6 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     const check = {
       run,
       state,
-      interaction: readPolicies(state.policies).interaction,
       touchedRun,
       progressSinceCheck: progressSince(events, state.stopHook?.seq),
       maxBlocks: maxBlocksOf(deps.env),
