@@ -56,6 +56,11 @@ export const noAnswerMessage = (done: string): string =>
   "No one will answer in this run. If a sensible default exists, use it and record it as an " +
   `assumption. If it's a blocker, fail the run with \`${done} --error -\` and list the question.`;
 
+// The same, when no agent node is open for done to fail.
+export const noAnswerBetweenNodesMessage = (next: string): string =>
+  "No one will answer in this run. Use a sensible default, record it as an assumption, and go " +
+  `on with \`${next}\`.`;
+
 type HookEvent = Readonly<{ type: string; payload: JsonValue }>;
 
 // Stores an event from the agent's hooks, if `allowed` passes on the state under the run's lock.

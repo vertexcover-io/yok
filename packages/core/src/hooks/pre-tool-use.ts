@@ -19,6 +19,7 @@ import { orchestrateLine } from "../runs.ts";
 import {
   findSessionRun,
   findSessionState,
+  noAnswerBetweenNodesMessage,
   noAnswerMessage,
   recordRunEvent,
   recordSessionEvent,
@@ -162,17 +163,20 @@ export const questionGuard: PreToolUseHandler = {
     if (use.call.kind !== "question") return ALLOW;
     const found = await findSessionState(use, deps);
     if (found === undefined || readPolicies(found.state.policies).interaction) return ALLOW;
+    // done finishes only an agent node; a loop waiting between its children is not one.
     const leaf = findRunningLeaf(found.state.nodeRuns);
+    const node = leaf?.run.nodeType === "agent" ? leaf : undefined;
     const payload = {
       policy: "interaction",
       effect: "question-refused",
-      ...(leaf === undefined ? {} : { nodeId: leaf.path }),
+      ...(node === undefined ? {} : { nodeId: node.path.slice(node.path.lastIndexOf(".") + 1) }),
     };
     await recordRunEvent(found.run, { type: "policy.applied", payload }, deps);
-    const done =
-      leaf === undefined
-        ? "yok orchestrate done NODE_RUN_ID"
-        : orchestrateLine({ verb: "done", run: found.run, nodeRunId: leaf.run.nodeRunId });
+    if (node === undefined) {
+      const next = orchestrateLine({ verb: "next", run: found.run });
+      return { kind: "deny", message: noAnswerBetweenNodesMessage(next) };
+    }
+    const done = orchestrateLine({ verb: "done", run: found.run, nodeRunId: node.run.nodeRunId });
     return { kind: "deny", message: noAnswerMessage(done) };
   },
 };

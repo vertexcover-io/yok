@@ -13,6 +13,7 @@ import {
   type State,
   type ToolCall,
   type ToolUse,
+  type ToolVerdict,
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import {
@@ -372,17 +373,18 @@ describe("a question in a run", () => {
     completedAt: null,
     artifacts: [],
   };
-  // setUp's run with design open, saved with the given interaction policy, or with none.
-  const runWithDesignOpen = async (interaction?: boolean) => {
+  // setUp's run with these nodes open, saved with the given interaction policy, or with none.
+  const runWithOpen = async (nodeRuns: Record<string, NodeRun>, interaction?: boolean) => {
     const setup = await setUp();
     const policies =
       interaction === undefined
         ? {}
         : { policies: { values: { interaction }, sources: { interaction: "cli" as const } } };
-    const state = { ...running(setup.runDir, setup.cwd), nodeRuns: { design }, ...policies };
+    const state = { ...running(setup.runDir, setup.cwd), nodeRuns, ...policies };
     await writeFile(join(setup.runDir, "state.json"), JSON.stringify(state));
     return setup;
   };
+  const runWithDesignOpen = (interaction?: boolean) => runWithOpen({ design }, interaction);
 
   test("SC520: with interaction off, questionGuard refuses the question with the node's done command and records policy.applied, while questionNotice records no question and the run stays running", async () => {
     const { cwd, runDir, deps } = await runWithDesignOpen(false);
@@ -401,6 +403,39 @@ describe("a question in a run", () => {
     );
     expect(events.map((event) => event.type)).not.toContain("agent.question.asked");
     expect((await readState(runDir))?.status).toBe("running");
+  });
+
+  test("with interaction off inside a loop, the refusal names the running agent node by its own id, and between the loop's children it names next, not the loop", async () => {
+    const loop = (nodes: Record<string, NodeRun>): NodeRun => ({
+      ...design,
+      nodeRunId: "loop-1",
+      nodeType: "loop",
+      nodes,
+    });
+    const inFix = await runWithOpen(
+      { review: loop({ fix: { ...design, nodeRunId: "fix-1" } }) },
+      false,
+    );
+    const between = await runWithOpen({ review: loop({}) }, false);
+    const ask_ = (cwd: string) => use(cwd, ask, { toolName: "AskUserQuestion" });
+
+    const fixVerdict = await runPreToolUse(ask_(inFix.cwd), questionGuard, inFix.deps);
+    const betweenVerdict = await runPreToolUse(ask_(between.cwd), questionGuard, between.deps);
+
+    const messageOf = (verdict: ToolVerdict) => (verdict.kind === "deny" ? verdict.message : "");
+    expect(messageOf(fixVerdict)).toContain("`yok orchestrate done fix-1 --run feat-x --error -`");
+    expect(messageOf(betweenVerdict)).toContain("`yok orchestrate next --run feat-x`");
+    expect(messageOf(betweenVerdict)).not.toContain("orchestrate done");
+    const applied = async (runDir: string) =>
+      (await jsonlEventStore(runDir).read())
+        .filter((event) => event.type === "policy.applied")
+        .map((event) => event.payload);
+    expect(await applied(inFix.runDir)).toEqual([
+      { policy: "interaction", effect: "question-refused", nodeId: "fix" },
+    ]);
+    expect(await applied(between.runDir)).toEqual([
+      { policy: "interaction", effect: "question-refused" },
+    ]);
   });
 
   test("SC521 (regression): with no saved policies, or from a session no run knows, questionGuard allows and records nothing, and questionNotice still records the question", async () => {
