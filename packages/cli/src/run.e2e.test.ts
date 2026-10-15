@@ -637,13 +637,20 @@ describe("yok run", () => {
     TIMEOUT_MS,
   );
 
-  test(
-    "SC510: --interaction false is saved on the run as interaction false from cli",
-    () => {
+  test.each([
+    ["--interaction false", ["ok.yaml", "--interaction", "false"], "cli"],
+    ["a workflow file with interaction: false", ["unattended.yaml"], "workflow"],
+  ] as const)(
+    "SC510: %s is saved on the run as interaction false, with where it came from",
+    (_case, args, source) => {
       const repo = makeRepo();
+      writeFileSync(
+        join(repo, "unattended.yaml"),
+        OK_WORKFLOW.replace("name: ok", "name: ok\npolicies:\n  interaction: false"),
+      );
       const { env, home } = makeEnv();
 
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x", "--interaction", "false");
+      const run = yok(repo, env, "run", ...args, "--prompt", "x");
 
       expect(run.stderr).not.toContain("BLOCKED");
       expect(run.code).toBe(0);
@@ -651,7 +658,7 @@ describe("yok run", () => {
       const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8"));
       expect(registry.runs[runId].policies).toEqual({
         values: { interaction: false },
-        sources: { interaction: "cli" },
+        sources: { interaction: source },
       });
 
       stopServer(repo, env);
