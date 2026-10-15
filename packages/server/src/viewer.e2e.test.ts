@@ -107,6 +107,15 @@ const STEPS = [
 
 const LIST = ["# List", "", "- First item", "- Second item", "- Third item", ""].join("\n");
 
+const CHECKLIST = [
+  "# Factors",
+  "",
+  "- [x] **F1 Coupon**: changes the total",
+  "- [x] **F2 Threshold**: decides the discount",
+  "- [ ] **F3 Quantity**: refuses a bad cart",
+  "",
+].join("\n");
+
 const MOCKUP = `<!doctype html><html><body>
 <div class="mk-card"><h2 class="mk-title">Sign in</h2><button id="go">Loading</button></div>
 <script>document.getElementById("go").textContent = "Continue";</script>
@@ -204,6 +213,8 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "artifacts", "outline.md"), OUTLINE);
     writeFileSync(join(runDir, "artifacts", "steps.md"), STEPS);
     writeFileSync(join(runDir, "artifacts", "list.md"), LIST);
+    writeFileSync(join(runDir, "artifacts", "factors.md"), CHECKLIST);
+    writeFileSync(join(runDir, "artifacts", "scenarios.md"), CHECKLIST);
     mkdirSync(join(cwd, "src"));
     writeFileSync(join(cwd, "src", "sample.ts"), `${SAMPLE.join("\n")}\n`);
     const registry = createRegistry(join(home, "registry.json"), noopLogger);
@@ -667,5 +678,91 @@ describe("viewer in a browser", () => {
         "['ul', 'li:nth-child(1)', 'li:nth-child(2)', 'li:nth-child(3)'].map((s) => getComputedStyle(document.querySelector('#docRoot ' + s)).backgroundColor !== 'rgba(0, 0, 0, 0)')",
       ),
     ).toEqual([false, false, true, false]);
+  }, 30000);
+  const box = (n: number): string => `#docRoot li.task:nth-of-type(${n}) .task-box`;
+  const awaiting = (file: string): void => {
+    const state = seedState(runDir, {
+      gate: {
+        nodeRunId: "n1",
+        nodeType: "agent",
+        status: "running",
+        startedAt: null,
+        completedAt: null,
+        artifacts: [],
+        awaitingApproval: `artifacts/${file}`,
+      },
+    });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+  };
+  const openFile = async (file: string): Promise<void> => {
+    await browser("open", `${url}#artifacts/${file}`);
+    await until(`document.querySelector('#docPath').textContent === 'artifacts/${file}'`);
+    await until("!!document.querySelector('#docRoot .task-box')");
+  };
+  const batchLabel = "(document.querySelector('.batch .group-label')?.textContent ?? '')";
+
+  test("SC40: a checklist's boxes can only be clicked while its file waits for approval", async () => {
+    await openFile("factors.md");
+    expect(await evaluate(`document.querySelector('${box(1)}').disabled`)).toBe(true);
+    awaiting("factors.md");
+    try {
+      await browser("reload");
+      await until("!document.querySelector('#approveBtn').hidden");
+      await until(`!document.querySelector('${box(1)}').disabled`);
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+    }
+  }, 30000);
+
+  test("SC41: each box changed from the file adds one draft, a box changed back removes it, and Send delivers them as one message", async () => {
+    awaiting("factors.md");
+    try {
+      await openFile("factors.md");
+      await until(`!document.querySelector('${box(2)}').disabled`);
+      await browser("click", box(2));
+      expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(false);
+      await until(`${batchLabel} === 'Not sent yet · 1'`);
+      expect(await evaluate(`!!${cardWith("Untick this")}`)).toBe(true);
+
+      await browser("click", box(2));
+      await until("!document.querySelector('.batch')");
+      expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(true);
+
+      await browser("click", box(2));
+      await browser("click", box(3));
+      await until(`${batchLabel} === 'Not sent yet · 2'`);
+      expect(await evaluate(`!!${cardWith("Tick this")}`)).toBe(true);
+      const before = typed.length;
+      await browser("click", "#sendBtn");
+      await until("!document.querySelector('.batch')");
+      for (let i = 0; i < 50 && typed.length === before; i++) await Bun.sleep(100);
+      const message = typed.slice(before).join("\n");
+      expect(message).toContain(
+        'factors.md:4 on "F2 Threshold: decides the discount"\n  Untick this',
+      );
+      expect(message).toContain('factors.md:5 on "F3 Quantity: refuses a bad cart"\n  Tick this');
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+    }
+  }, 30000);
+
+  test("SC42: Approve sends the waiting drafts with the approval, in one message with the approval last", async () => {
+    awaiting("scenarios.md");
+    try {
+      await openFile("scenarios.md");
+      await until(`!document.querySelector('${box(1)}').disabled`);
+      await browser("click", box(1));
+      await until(`${batchLabel} === 'Not sent yet · 1'`);
+      const before = typed.length;
+      await browser("click", "#approveBtn");
+      await until("!document.querySelector('.batch')");
+      for (let i = 0; i < 50 && !typed.slice(before).some((t) => t.includes("approved:")); i++)
+        await Bun.sleep(100);
+      const message = typed.slice(before).find((t) => t.includes("approved:")) ?? "";
+      expect(message).toContain('scenarios.md:3 on "F1 Coupon: changes the total"\n  Untick this');
+      expect(message.indexOf("Untick this")).toBeLessThan(message.indexOf("approved:"));
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+    }
   }, 30000);
 });
