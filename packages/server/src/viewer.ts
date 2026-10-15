@@ -20,8 +20,13 @@ import type {
   State,
   WorkflowRun,
 } from "@yok/sdk";
-import { emitRunEvent, NonEmptyStringSchema, runDirOf } from "@yok/sdk";
-import { CommentDraftSchema, type Registry } from "@yok/sdk/internal";
+import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
+import {
+  CommentDraftSchema,
+  jsonlEventStore,
+  PolicyAppliedEvent,
+  type Registry,
+} from "@yok/sdk/internal";
 import hljs from "highlight.js/lib/common";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
@@ -65,6 +70,7 @@ export type ArtifactEntry = Readonly<{
   type: FileType;
   draft: boolean;
   awaitingApproval: boolean;
+  autoApproved: boolean;
 }>;
 export type ViewedRun =
   | Readonly<{ kind: "missing" }>
@@ -445,6 +451,20 @@ const byListOrder = (a: string, b: string): number => {
 // The engine writes its own state file and its temp copies beside the artifacts.
 const ENGINE_FILES = /^(state\.json|\.state\..*\.tmp)$/;
 
+// The files a run with interaction off approved on its own, from its policy.applied events.
+const findAutoApprovedFiles = async (runDir: string): Promise<ReadonlySet<string>> => {
+  const events = await jsonlEventStore(runDir).read();
+  return new Set(
+    events.flatMap((event) => {
+      if (event.type !== "policy.applied") return [];
+      const parsed = PolicyAppliedEvent.safeParse(event);
+      if (!parsed.success) return [];
+      const { effect, path } = parsed.data.payload;
+      return effect === "auto-approved" && path !== undefined ? [path] : [];
+    }),
+  );
+};
+
 export const listArtifacts = async (
   runDir: string,
   state: State | null,
@@ -456,6 +476,7 @@ export const listArtifacts = async (
     ),
   );
   const awaited = new Set(findAwaitedFiles(state));
+  const autoApproved = await findAutoApprovedFiles(runDir);
   const inside = (await walk(artifactsDir)).filter(
     (file) => resolveArtifactPath(runDir, relative(runDir, file).split(sep).join("/")) !== null,
   );
@@ -470,6 +491,7 @@ export const listArtifacts = async (
         type: fileType(path),
         draft: !delivered.has(path),
         awaitingApproval: awaited.has(path),
+        autoApproved: autoApproved.has(path),
       };
     });
 };
@@ -755,7 +777,11 @@ export const viewerRoutes = (deps: ViewerDeps) =>
         return c.text("a batch can approve each file only once", 409);
       }
       return inRunQueue(id, async () => {
-        const awaited = new Set(findAwaitedFiles(await readStateOrNull(page.runDir)));
+        const state = await readStateOrNull(page.runDir);
+        if (!readPolicies(state?.policies).interaction) {
+          return c.text("this run takes no comments: its interaction policy is off", 409);
+        }
+        const awaited = new Set(findAwaitedFiles(state));
         const unawaited = approved.find((file) => !awaited.has(file));
         if (unawaited !== undefined) {
           return c.text(`nothing waits for approval on ${unawaited}`, 409);

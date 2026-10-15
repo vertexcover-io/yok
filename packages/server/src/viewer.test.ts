@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
 import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, type Registry } from "@yok/sdk/internal";
+import { createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import {
@@ -260,6 +260,26 @@ describe("listArtifacts", () => {
 
     const noState = await listArtifacts(runDir, null);
     expect(noState.every((f) => f.draft)).toBe(true);
+  });
+
+  test("SC528: design.md, named by a policy.applied auto-approved event, lists as auto-approved and plan.md does not", async () => {
+    const runDir = tempDir("list-auto");
+    put(runDir, "artifacts/design.md", "# d");
+    put(runDir, "artifacts/plan.md", "# p");
+    await jsonlEventStore(runDir).append({
+      id: "e1",
+      ts: "2026-01-01T00:00:00.000Z",
+      type: "policy.applied",
+      source: "engine",
+      runId: "r-1",
+      payload: { policy: "interaction", effect: "auto-approved", path: "artifacts/design.md" },
+    });
+
+    const files = await listArtifacts(runDir, null);
+    expect(files.map((f) => [f.path, f.autoApproved])).toEqual([
+      ["artifacts/design.md", true],
+      ["artifacts/plan.md", false],
+    ]);
   });
 });
 
@@ -614,6 +634,23 @@ describe("comment routes", () => {
     expect(await statusesOf(runDir)).toEqual([]);
 
     expect((await approve("artifacts/design.md")).status).toBe(201);
+  });
+
+  test("SC530: a comment on design.md in a run whose interaction policy is off is refused with 409, and nothing is stored or logged", async () => {
+    const { post, runDir } = await setup();
+    put(runDir, "artifacts/design.md", "# d");
+    const state: State = {
+      ...seedState(runDir, {}),
+      policies: { values: { interaction: false }, sources: { interaction: "cli" } },
+    };
+    put(runDir, "state.json", JSON.stringify(state));
+
+    const refused = await post("/runs/r-named/comments", { comments: [draft] });
+
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toBe("this run takes no comments: its interaction policy is off");
+    expect(existsSync(join(runDir, "comments.json"))).toBe(false);
+    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
   });
 
   const seedWaitingDesign = async () => {
