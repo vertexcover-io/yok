@@ -121,6 +121,7 @@ button { cursor: pointer; }
 .mode-btn[aria-pressed="true"] .knob { background: var(--accent); }
 .mode-btn[aria-pressed="true"] .knob::after { left: 13px; }
 .mode-btn:disabled { opacity: .45; cursor: default; }
+.mode-btn[hidden] { display: none; }
 kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
 .code-view { margin: 28px 24px 80px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; counter-reset: ln; padding: 10px 0; }
 .code-view span { display: block; white-space: pre; padding-right: 16px; }
