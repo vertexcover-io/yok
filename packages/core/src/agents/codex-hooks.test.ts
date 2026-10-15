@@ -296,6 +296,7 @@ describe("readCodexTranscript", () => {
       }),
       line("response_item", { type: "function_call", name: "update_plan", arguments: "{}" }),
       line("response_item", { type: "custom_tool_call", name: "apply_patch", input: "*** Begin" }),
+      line("response_item", { type: "function_call", name: "request_user_input", arguments: "{}" }),
       "{not json",
       line("event_msg", { type: "user_message", message: "why?" }),
     ];
@@ -309,6 +310,7 @@ describe("readCodexTranscript", () => {
       { kind: "command", command: 'echo "hi"' },
       { kind: "tool", name: "update_plan" },
       { kind: "tool", name: "apply_patch" },
+      { kind: "question" },
       { kind: "prompt", text: "why?" },
     ]);
   });

@@ -249,7 +249,8 @@ const stopCalledEvent = (
 });
 
 // A turn between nodes reads touchedRun from the transcript. An unattended agent node counts its
-// tool calls, since its work leaves no run event and a stop after real work is not a lapse.
+// tool calls, since its work leaves no run event and a stop after real work is not a lapse. A
+// question is not work: the guard refuses it, and an agent that keeps asking must still fail.
 const readTranscriptFacts = async (
   input: StopInput,
   state: State,
@@ -265,7 +266,7 @@ const readTranscriptFacts = async (
   const entries = await input.readTranscript();
   return {
     touchedRun: position.kind === "between-nodes" ? touchedRunSinceLastPrompt(entries) : undefined,
-    toolCalls: entries?.filter((entry) => entry.kind !== "prompt").length,
+    toolCalls: entries?.filter((entry) => entry.kind === "command" || entry.kind === "tool").length,
   };
 };
 

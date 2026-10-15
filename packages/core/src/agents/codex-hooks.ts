@@ -190,13 +190,14 @@ const shellCommand = (argv: readonly string[]): string => {
 };
 
 const functionCallEntries = (call: z.infer<typeof FunctionCallSchema>): TranscriptEntry[] => {
+  if (call.name === QUESTION_TOOL) return [{ kind: "question" }];
+  if (call.name !== "exec_command" && call.name !== "shell") return tool(call.name);
   const args = parseJson(call.arguments);
   if (!args.ok) return [];
   if (call.name === "exec_command") {
     const parsed = ExecArgsSchema.safeParse(args.value);
     return parsed.success ? command(parsed.data.cmd) : [];
   }
-  if (call.name !== "shell") return tool(call.name);
   const parsed = ShellArgsSchema.safeParse(args.value);
   return parsed.success ? command(shellCommand(parsed.data.command)) : [];
 };

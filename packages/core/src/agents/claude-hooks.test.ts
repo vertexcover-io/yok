@@ -66,6 +66,9 @@ describe("readClaudeTranscript", () => {
       user("Stop hook feedback: node plan is still open", { isMeta: true }),
       user([{ type: "text", text: "Stop hook feedback: run next" }]),
       assistant([{ type: "tool_use", id: "t2", name: "Read", input: { file_path: "/a" } }]),
+      assistant([
+        { type: "tool_use", id: "t3", name: "AskUserQuestion", input: { questions: [] } },
+      ]),
       "{not json",
       user("<task-notification>task b1 completed</task-notification>", {
         origin: { kind: "task-notification" },
@@ -78,6 +81,7 @@ describe("readClaudeTranscript", () => {
       { kind: "prompt", text: "go" },
       { kind: "command", command: "yok orchestrate next --run feat-x" },
       { kind: "tool", name: "Read" },
+      { kind: "question" },
       { kind: "prompt", text: "why?" },
     ]);
   });

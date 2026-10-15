@@ -476,6 +476,24 @@ describe("runStopHook", () => {
     expect(reasons).toEqual(["node-not-done", "node-not-done", "unanswered-stop"]);
   });
 
+  test("with interaction off, a question tried between stops is not work, so the stop after it still fails the node", async () => {
+    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const ran: TranscriptEntry[] = [
+      { kind: "prompt", text: "go" },
+      { kind: "command", command: "ls" },
+    ];
+
+    await runStopHook(input(ran), deps);
+    await runStopHook(input([...ran, { kind: "question" }]), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual(["node-not-done", "unanswered-stop"]);
+  });
+
   test("a block that cannot be logged lets the turn end, so an unsaved count can't trap the session", async () => {
     const { deps, runDir } = await setUp(planOpen);
     const log = join(runDir, "event.jsonl");

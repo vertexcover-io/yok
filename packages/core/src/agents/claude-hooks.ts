@@ -113,7 +113,9 @@ const toolEntries = (line: ClaudeLine): TranscriptEntry[] =>
     const bash = BashCallSchema.safeParse(block);
     if (bash.success) return [{ kind: "command", command: bash.data.input.command }];
     const tool = ToolCallSchema.safeParse(block);
-    return tool.success ? [{ kind: "tool", name: tool.data.name }] : [];
+    if (!tool.success) return [];
+    if (tool.data.name === "AskUserQuestion") return [{ kind: "question" }];
+    return [{ kind: "tool", name: tool.data.name }];
   });
 
 const toEntries = (line: ClaudeLine): TranscriptEntry[] => {
