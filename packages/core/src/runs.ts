@@ -473,10 +473,6 @@ const readRunState = async (runDir: string): Promise<State> => {
   return state;
 };
 
-// The run's saved policies; a run saved before policies follows the defaults.
-export const readRunPolicies = async (run: RunRef): Promise<Policies> =>
-  readPolicies((await readRunState(runDirOf(run.cwd, run.name))).policies);
-
 type RunDirRef = Pick<RunRef, "cwd" | "name">;
 
 const loadRunPlan = async (run: RunDirRef, state: State): Promise<Result<WorkflowPlan>> => {
@@ -627,7 +623,11 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
 export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
   logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
 
-const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<RunningLeaf>> => {
+// The running step, with the run's policies read from the same state.
+const loadRunningLeaf = async (
+  run: RunRef,
+  nodeRunId: string,
+): Promise<Result<RunningLeaf & Readonly<{ policies: Policies }>>> => {
   const state = await readRunState(runDirOf(run.cwd, run.name));
   const plan = await loadRunPlan(run, state);
   if (!plan.ok) return plan;
@@ -635,7 +635,7 @@ const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<R
   if (step === undefined) {
     return { ok: false, error: `${nodeRunId} is not the step this run is running` };
   }
-  return { ok: true, value: step };
+  return { ok: true, value: { ...step, policies: readPolicies(state.policies) } };
 };
 
 // A completed node names the session it ran in. A loop's next pass or a retry replaces the node's
@@ -731,7 +731,7 @@ export const requestApproval = async (
   const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
   if (issue !== undefined) return { ok: false, error: issue.message };
   // No one reviews in this run: the file counts as approved, and nothing waits.
-  if (!(await readRunPolicies(run)).interaction) {
+  if (!step.value.policies.interaction) {
     const nodeId = step.value.node.id;
     const applied = await appendRunEvent(run, {
       type: "policy.applied",
@@ -876,8 +876,9 @@ const finishStepChecked = async (
     };
   }
   if ("error" in outcome) {
-    const { interaction } = await readRunPolicies(run);
-    const kind = interaction ? ("exception" as const) : ("needs-input" as const);
+    const kind = step.value.policies.interaction
+      ? ("exception" as const)
+      : ("needs-input" as const);
     const error = { kind, message: outcome.error };
     const record: NodeRecord = {
       path: nodeRunId,
