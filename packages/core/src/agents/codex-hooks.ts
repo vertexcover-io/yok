@@ -17,7 +17,7 @@ import * as z from "zod";
 import { parseStdin, preToolUseReply, runNoReplyHook, stopReply } from "../hooks/common.ts";
 import { questionGuard, recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
-import { continueWorkflow, runStop } from "../hooks/stop.ts";
+import { continueWorkflow, offerLearn, runStop } from "../hooks/stop.ts";
 import { parseQuestionCall, shellQuote } from "./common.ts";
 
 const HOOK_TIMEOUT_S = 30;
@@ -263,7 +263,7 @@ export const codexAdapter: AgentAdapter = {
 const codexHooks = () =>
   ({
     SessionStart: [{ handlers: Object.values(sessionStartHandlers) }],
-    Stop: [{ handlers: [continueWorkflow] }],
+    Stop: [{ handlers: [continueWorkflow, offerLearn] }],
     PreToolUse: [
       { matcher: [...SHELL_TOOLS, PATCH_TOOL].join("|"), handlers: [recordGuard, recordResumed] },
       { matcher: QUESTION_TOOL, handlers: [questionGuard] },

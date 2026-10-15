@@ -77,8 +77,41 @@ The first round of this run exposed two defects, both fixed before the numbers a
 told the agent to run the scripts from the skill's folder, so events went to the plugin's repo; and
 the sim's mistake detector missed writes made from inside `apps/`.
 
-After rebasing on main (the review loop, compact steps, `recordResumed`): run-two-passes,
-viewer-comment and shared-list-edited all pass.
+## After the run: the offer on push, October 2026
+
+Re-run after the readers moved to `@yok/sdk`, `log-event` got its `main`, and yok's offer-learn
+Stop hook was added. 21 sessions over four rounds.
+
+- shared-list-edited, reject-with-reason: pass. viewer-comment: 2 of 2 pass, the correction arriving
+  as the viewer's `[review]` message (a first round failed in the sim: the simulated user wrote a chat
+  line before the comment, and it went out as chat).
+- run-two-passes: the second pass found a new correction for the first time ("add dependencies from
+  the root", after `pnpm add` inside the app made a second lockfile) and logged it as `manual`, beside
+  the stage's `auto` shared-config learning. Graded a fail only because the scenario expected the npm
+  mistake, not this one.
+- after-push-offer (new): the run is already finished, the session has yok's real Stop hook, and the
+  agent pushes the task, then a review fix, then the learning file. In every session that reached
+  the review push, the first push only started the watch, and the agent asked before running learn;
+  the user said yes, and the learning was logged as `auto` with a mark.
+
+Found and fixed along the way:
+
+- After the run had finished, learn listed candidates with `--session` though `$YOK_RUN_ID` was set,
+  which reads past the mark. The agent often runs `echo $YOK_RUN_ID` and the listing in one command,
+  so it picks before it sees the value: wording alone did not fix it (1 of 3 after the SKILL.md
+  change). `candidates` now lists the run whenever `$YOK_RUN_ID` is set, whatever the arguments.
+- The offer came at every push, including a push of only the learning file, and those passes found
+  nothing. The offer now tells the agent not to ask when nothing the user said since the last pass
+  corrected it. Final round, 3 of 3 pass: asked after the review fix's push, and did not ask after
+  the push of only the learning file. In an earlier round one agent asked a second time, rightly: the
+  user had complained "you didn't answer my question", and that became a second learning.
+
+Last round: after-push-offer 3 of 3 pass. run-two-passes logged the stage's shared-config learning;
+the agent used pnpm on its own, the simulated user typed `/yok:learn` three times anyway, and each
+pass found nothing new and left its mark (4 marks for 4 passes), which the check counted as 2 expected.
+
+After rebasing on main (the review loop, compact steps, `recordResumed`): after-push-offer 2 of 2,
+run-two-passes, viewer-comment and shared-list-edited all pass.
 
 ## Not measured yet
 
@@ -86,5 +119,4 @@ viewer-comment and shared-list-edited all pass.
   shows the real accept and reject rates once people use it.
 - A real `yok run`: the stage starting after the plan is approved, a comment sent from the viewer
   through the server, and the run moving on to implement after the stage's `done`.
-- A second pass that finds a new correction, and Codex sessions, whose transcripts the candidates
-  script does not read.
+- Codex sessions, whose transcripts the candidates script does not read.

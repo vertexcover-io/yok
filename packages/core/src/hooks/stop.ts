@@ -23,6 +23,7 @@ import {
   jsonlEventStore,
   type ModelSwitch,
 } from "@yok/sdk/internal";
+import * as z from "zod";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
 import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
@@ -389,9 +390,84 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
 // Keeps a workflow run moving: sends the agent back when it stops with work still owed.
 export const continueWorkflow: StopHandler = { name: "continue-workflow", run: runStopHook };
 
+// After the workflow ends, the user reviews the code and asks for changes in the same session.
+// Each push of those changes is when to offer the learn skill: once per push, and never for the
+// workflow's own first PR, which is pushed in the turn the workflow ends.
+const PUSH = /\bgit\b[^;&|\n]*\spush\b/;
+const LEARN_OFFER =
+  "You pushed changes after the yok run finished. If nothing the user said since the last " +
+  "learning session corrected you, don't ask; end your turn. Otherwise ask the user one question: " +
+  "start a learning session now, from their corrections since the last one? If they say yes, run " +
+  `the learn skill (/yok:learn). If they say no, end your turn. ${ASK_RULE}`;
+const OfferedEvent = z.object({
+  type: z.literal("learning.offered"),
+  payload: z.object({ prompts: z.int() }),
+});
+
+type LearnOffer =
+  | Readonly<{ kind: "allow" }>
+  | Readonly<{ kind: "start-watch" }>
+  | Readonly<{ kind: "offer"; prompts: number }>;
+
+const pushedSinceLastPrompt = (entries: readonly TranscriptEntry[]): boolean =>
+  entries
+    .slice(entries.findLastIndex((entry) => entry.kind === "prompt") + 1)
+    .some((entry) => entry.kind === "command" && PUSH.test(entry.command));
+
+// The user's message count names the turn, so a turn's push is offered once.
+export const decideLearnOffer = (
+  events: readonly Event[],
+  entries: readonly TranscriptEntry[] | undefined,
+): LearnOffer => {
+  if (!events.some((event) => event.type === "learning.watch.started")) {
+    return { kind: "start-watch" };
+  }
+  if (entries === undefined || !pushedSinceLastPrompt(entries)) return { kind: "allow" };
+  const prompts = entries.filter((entry) => entry.kind === "prompt").length;
+  const offered = events.some(
+    (event) => OfferedEvent.safeParse(event).data?.payload.prompts === prompts,
+  );
+  return offered ? { kind: "allow" } : { kind: "offer", prompts };
+};
+
+const offerEvent = (offer: Exclude<LearnOffer, { kind: "allow" }>): EmitInput =>
+  offer.kind === "start-watch"
+    ? { type: "learning.watch.started", source: "hooks", payload: {} }
+    : { type: "learning.offered", source: "hooks", payload: { prompts: offer.prompts } };
+
+// Never throws, like the workflow's Stop handler: a failure lets the turn end.
+const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
+  try {
+    const run = await findSessionRun(input, deps);
+    if (run === undefined) return ALLOW;
+    const runDir = runDirOf(run.cwd, run.name);
+    const state = await readState(runDir);
+    if (state === null || state.status === "running") return ALLOW;
+    const [events, entries] = await Promise.all([
+      jsonlEventStore(runDir).read(),
+      input.readTranscript(),
+    ]);
+    const offer = decideLearnOffer(events, entries);
+    if (offer.kind === "allow") return ALLOW;
+    const stored = await appendRunEvent(run, offerEvent(offer));
+    if (!stored.ok) {
+      // An unrecorded offer would be made again at every stop.
+      deps.log.warn({ error: stored.error }, "learn not offered: the offer was not recorded");
+      return ALLOW;
+    }
+    return offer.kind === "offer" ? { kind: "continue", message: LEARN_OFFER } : ALLOW;
+  } catch (error) {
+    deps.log.error({ err: error }, "learn not offered: the offer check failed");
+    return ALLOW;
+  }
+};
+
+// Offers the learn skill when the agent pushes the user's review changes after the workflow.
+export const offerLearn: StopHandler = { name: "offer-learn", run: runLearnOffer };
+
 // The handlers an agent can register, by the name `orchestrate hook stop --handler` takes.
 export const stopHandlers: Readonly<Record<string, StopHandler>> = Object.fromEntries(
-  [continueWorkflow].map((handler) => [handler.name, handler]),
+  [continueWorkflow, offerLearn].map((handler) => [handler.name, handler]),
 );
 
 // Runs one Stop handler. It never throws: a handler that fails lets the turn end, or it could

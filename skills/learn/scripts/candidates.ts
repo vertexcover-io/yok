@@ -150,7 +150,11 @@ const pick = async (argv: readonly string[]): Promise<Result<string>> => {
   const projectsDir =
     values.projects ??
     join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
-  if (values.session) return listSession({ sessionId: values.session, projectsDir });
+  // In a run, the run's list is the one that starts after the last pass's mark, so it wins over
+  // --session (the agent may pass --session before it has checked $YOK_RUN_ID).
+  if (values.session && !process.env.YOK_RUN_ID) {
+    return listSession({ sessionId: values.session, projectsDir });
+  }
   const runDir = await findRunDir(values.run, values["run-id"]);
   return runDir.ok ? listRun({ runDir: runDir.value, projectsDir }) : runDir;
 };

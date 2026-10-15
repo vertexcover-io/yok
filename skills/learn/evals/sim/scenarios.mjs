@@ -328,6 +328,31 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
         : { none: true, why: "the plan used shared-config on its own, so there was nothing to comment on" },
   },
 
+  "after-push-offer": {
+    source: "after the run: a push of review changes makes yok offer a learning session, and the user says yes",
+    yokRun: true,
+    afterRun: true,
+    task:
+      INVOICE_TASK +
+      " The yok run for it has already finished in this session; you are now reviewing the code it wrote. Have every change committed and pushed (git push).",
+    knowledge: SHARED_CONFIG_KNOWLEDGE,
+    behaviour: [
+      "Your first message asks the agent to do the task, then commit and push it, in your own words.",
+      "Once it has pushed, review it. If the agent wrote the list of activation types that need an invoice inside an app, correct it once: shared-config already has a place for this; fix it, commit and push. Otherwise ask it to label the new field 'Invoice number', commit and push.",
+      "If the agent says it can't add the flag from this repo, say you'll add and publish it yourself, and ask it to leave a TODO pointing at shared-config next to each hardcoded list, then commit and push that now.",
+      "Answer any question the agent asks, briefly and in character.",
+      NEVER_LEARN,
+      "If the agent asks whether to start a learning session, say yes.",
+      "If it asks how a learning should read, pick the option closest to keeping cross-app lists in shared-config. If it says there is nothing worth keeping, accept that.",
+      "After it reports a learning file it wrote, ask it to commit and push that file, nothing else. After that push, reply DONE.",
+    ],
+    mistake: listInApps,
+    expect: (mistakeMade) =>
+      mistakeMade
+        ? { outcome: "new", status: ["accepted", "edited"], lesson: SHARED_CONFIG_LESSON }
+        : { none: true, why: "the agent used shared-config on its own; the label rename is a one-off" },
+  },
+
   "compact-mid-session": {
     source: "/compact between the correction and /learn",
     task: INVOICE_TASK,

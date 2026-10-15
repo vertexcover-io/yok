@@ -24,11 +24,12 @@ Turn what the user had to correct into a learning short enough to be read every 
 Most passes produce none. A wrong learning is worse than a missing one, because the agent will
 follow it in every later session.
 
-Trigger is `auto` when this runs as the pipeline's learn stage, and `manual` when the user invoked
-it (`/yok:learn`, or they asked for a learning). Text the user gave with `/yok:learn` is the rule
+Trigger is `auto` when this runs as the pipeline's learn stage, or after the user said yes to the
+learning session yok offers when the agent pushes once the run has finished. It is `manual` when
+the user invoked it unprompted (`/yok:learn`, or they asked for a learning). Text the user gave with `/yok:learn` is the rule
 they want; with none, look at everything since the last pass.
 
-**Running the scripts.** In a yok run (`$YOK_RUN_ID` is set), run a script with
+**Running the scripts.** In a yok run (`$YOK_RUN_ID` is set, even after the run has finished), run a script with
 `yok orchestrate skill run learn.NAME ARGS` and read a reference with
 `yok orchestrate skill ref learn.NAME`. Outside a run, run `bun "${CLAUDE_SKILL_DIR}/scripts/candidates.ts"`
 and `node "${CLAUDE_SKILL_DIR}/scripts/log-event.mjs"`, and read `references/` in that folder
@@ -39,8 +40,8 @@ from the project's folder, never `cd` into the skill's: the event goes in the re
 
 When the user gave the rule, skip the script: that rule is the only candidate.
 
-Otherwise run `candidates` with no arguments in a run, or with `--session ${CLAUDE_SESSION_ID}`
-outside one. It reads Claude Code transcripts only: in Codex, or when it prints no Claude session,
+Otherwise run `candidates` with no arguments when `$YOK_RUN_ID` is set, so the list starts after the
+last pass's mark; only when it is unset, run it with `--session ${CLAUDE_SESSION_ID}`. It reads Claude Code transcripts only: in Codex, or when it prints no Claude session,
 work from this conversation, and ask the user what they corrected if it isn't clear.
 It prints, per session, each message the user typed (`TYPED`, or `QUEUED` when typed while you
 worked) and each answer to a question (`ANSWER`, such as a plan `Revise` with notes) since the last

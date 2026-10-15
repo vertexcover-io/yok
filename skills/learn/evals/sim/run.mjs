@@ -4,6 +4,7 @@
 // It tests the plugin this file sits in. See README.md for cost and setup.
 // Usage: node run.mjs <scenario> <outDir>
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -79,6 +80,23 @@ const startRun = (id) => {
   };
   writeFileSync(join(runDir, "event.jsonl"), `${JSON.stringify(started)}\n`);
 };
+// An afterRun scenario starts once the workflow has finished: state.json says completed, the repo
+// has a remote to push to, and the session gets yok's offer-learn Stop hook, as `yok run` installs it.
+const finishRun = () => {
+  const at = new Date().toISOString();
+  const state = {
+    schemaVersion: 1, lastEventSeq: 1, runId: RUN.id, runName: RUN.name, runDir, version: "2.0.0",
+    workflow: { name: "task", path: "workflow.yaml" }, input: {}, scope: null, startedAt: at, completedAt: at, status: "completed",
+    workspace: { type: "mono", path: repo, repositories: { shop: { path: repo, git: { branch: "feat/invoice-id", baseBranch: "main", startSha: "init" } } } },
+    nodeRuns: {}, activeSessions: [], tiers: null, eventHandlers: {}, subscribers: {}, config: { path: null, root: repo },
+  };
+  writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
+  const remote = join(simCwd, "origin.git");
+  spawnSync("git", ["init", "-q", "--bare", remote]);
+  spawnSync("git", ["remote", "add", "origin", remote], { cwd: repo });
+  spawnSync("git", ["checkout", "-qb", "feat/invoice-id"], { cwd: repo });
+  spawnSync("git", ["push", "-qu", "origin", "feat/invoice-id"], { cwd: repo });
+};
 if (scenario.yokRun && !previous) {
   mkdirSync(runDir, { recursive: true });
   mkdirSync(yokHome, { recursive: true });
@@ -86,13 +104,21 @@ if (scenario.yokRun && !previous) {
   writeFileSync(join(runDir, "workflow.yaml"), readFileSync(join(PLUGIN_ROOT, "workflows", "task.yaml")));
   writeFileSync(join(yokBin, "yok"), `#!/bin/sh\nexec bun ${join(PLUGIN_ROOT, "packages", "cli", "src", "index.ts")} "$@"\n`, { mode: 0o755 });
   writeRegistry([]);
+  if (scenario.afterRun) finishRun();
 }
+const hookSettings = scenario.afterRun
+  ? ["--settings", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `${join(yokBin, "yok")} orchestrate hook stop --agent claude --handler offer-learn`, timeout: 30 }] }] } })]
+  : [];
 // What the viewer does with a comment: store it in the run's comments.json and type the same
 // [review] message the server delivers (deliveryMessage in packages/core/src/comments.ts).
-const COMMENT = /^COMMENT:\s*"([^"]+)"\s*=>\s*([\s\S]+)$/;
+// The simulated user sometimes writes a chat line before the comment; the viewer's message goes
+// first, as the server would deliver it, and the chat line follows.
+const COMMENT = /COMMENT:\s*"([^"]+)"\s*=>\s*([\s\S]+)$/;
 const deliverComment = (said) => {
-  const [, quote, text] = said.match(COMMENT) ?? [];
-  if (!quote) return said;
+  const match = said.match(COMMENT);
+  if (!match) return said;
+  const [, quote, text] = match;
+  const chat = said.slice(0, match.index).trim();
   const file = "artifacts/plan.md";
   const commentsPath = join(runDir, "comments.json");
   const stored = existsSync(commentsPath) ? JSON.parse(readFileSync(commentsPath, "utf8")) : { version: 1, comments: [] };
@@ -110,6 +136,7 @@ const deliverComment = (said) => {
     "[review] 1 new comment from the viewer:",
     `${id} · ${file}${line > 0 ? `:${line}` : ""} on "${quote}"\n  ${text.trim()}`,
     `Reply to each: yok orchestrate comments reply --run ${RUN.name} --id ID --status answered|changed|declined --text -`,
+    ...(chat ? ["", chat] : []),
   ].join("\n");
 };
 
@@ -143,13 +170,14 @@ const nextUserMessage = (conversation) => {
 };
 
 // --- the agent ---------------------------------------------------------------------------------
-const agentTurn = (message, sessionId) =>
+const agentTurn = (message, sessionId, firstId) =>
   claude(
     [
       "--plugin-dir", plugin.dir,
       "--permission-mode", "bypassPermissions",
       "--model", AGENT_MODEL,
-      ...(sessionId ? ["--resume", sessionId] : []),
+      ...(sessionId ? ["--resume", sessionId] : firstId ? ["--session-id", firstId] : []),
+      ...hookSettings,
     ],
     message,
     repo,
@@ -165,17 +193,22 @@ const STAGE_PROMPT = scenario.yokRun
 
 const conversation = previous?.conversation ?? [];
 let sessionId = previous?.sessionId ?? null;
+// After the run there is no stage: learn starts only when the user takes the offer.
+const runsStage = (scenario.auto || scenario.yokRun) && !scenario.afterRun;
+// The run must name the session before its first turn ends, for the Stop hook to find the run.
+const firstId = scenario.afterRun && !previous ? randomUUID() : null;
+if (firstId) startRun(firstId);
 let stageStarted = false;
 for (let turn = 0; !previous && turn < MAX_TURNS; turn += 1) {
   const said = nextUserMessage(conversation);
   const done = !said || said === "DONE" || said.endsWith("\nDONE");
-  const startStage = done && (scenario.auto || scenario.yokRun) && !stageStarted;
+  const startStage = done && runsStage && !stageStarted;
   if (done && !startStage) break;
   stageStarted ||= startStage;
   const sent = done ? STAGE_PROMPT : deliverComment(said.replace(/^\/learn\b/, `/${pluginName}:learn`));
   conversation.push({ role: done ? "stage" : "user", text: sent });
-  const reply = agentTurn(sent, sessionId);
-  if (scenario.yokRun && !sessionId && reply.session_id) startRun(reply.session_id);
+  const reply = agentTurn(sent, sessionId, firstId);
+  if (scenario.yokRun && !firstId && !sessionId && reply.session_id) startRun(reply.session_id);
   sessionId = reply.session_id ?? sessionId;
   conversation.push({ role: "agent", text: reply.result ?? "(no reply)", error: reply.is_error === true });
   if (reply.is_error && !reply.session_id) break;
@@ -229,7 +262,10 @@ const writeOf = (block) => {
     ...command.matchAll(/(?:writeFileSync|open)\(\s*["']([\w./-]+)["']/g),
     ...command.matchAll(/^p\s*=\s*["']([\w./-]+)["']/gm),
   ].map((match) => match[1]);
-  return [...new Set(targets)].map((file) => ({ file, text: command }));
+  // A command that starts with `cd DIR &&` writes relative to DIR.
+  const dir = command.match(/^\s*cd\s+["']?([\w./-]+)["']?\s*&&/)?.[1];
+  const resolved = targets.map((file) => (dir && !file.startsWith("/") ? `${dir}/${file}` : file));
+  return [...new Set(resolved)].map((file) => ({ file, text: command }));
 };
 const writes = transcript.flatMap((record) => (Array.isArray(record.message?.content) ? record.message.content : []).flatMap(writeOf));
 
@@ -240,9 +276,18 @@ const commands = transcript.flatMap((record) =>
     .map((block) => block.input.command),
 );
 const mistakeFiles = scenario.mistake(writes, commands, conversation);
-const expected = scenario.expect(mistakeFiles.length > 0);
+// After the run, the offer needs a push of review changes on top of the run's own first push.
+const pushes = commands.filter((command) => /\bgit\b[^;&|\n]*\spush\b/.test(command)).length;
+const expected = scenario.afterRun && pushes < 2
+  ? { notExercised: "the agent pushed only once, so there was no review push to offer learn after" }
+  : scenario.expect(mistakeFiles.length > 0);
 const userMessages = conversation.filter((turn) => turn.role === "user").map((turn) => turn.text.trim());
 const addedLearningFiles = () => changedFiles.filter((line) => line.startsWith("??") && /docs\/learnings\/(?!index\.md)/.test(line));
+
+const readRunEvents = () =>
+  existsSync(join(runDir, "event.jsonl"))
+    ? readFileSync(join(runDir, "event.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    : [];
 
 // --- checks ------------------------------------------------------------------------------------
 const checks = [];
@@ -256,7 +301,36 @@ const skillStart = transcript.findIndex((record) =>
     record.message.content.some((block) => block.type === "tool_use" && block.name === "Skill" && /(^|:)learn$/.test(block.input?.skill ?? ""))),
 );
 const typedLearn = userMessages.some((text) => text.startsWith(`/${pluginName}:learn`));
-if (scenario.auto) {
+if (scenario.afterRun) {
+  check("user never typed /learn", !typedLearn);
+  // yok's Stop hook skips the first push (the run's own PR) and offers once on the review push.
+  const runEvents = readRunEvents().map((event) => event.type);
+  check("the first push (the run's own PR) only started the watch", runEvents.indexOf("learning.watch.started") !== -1 && runEvents.indexOf("learning.watch.started") < runEvents.indexOf("learning.offered"), runEvents.join(", "));
+  // Each offer comes back as hook feedback; its learn pass may start only after the user's answer.
+  const isOffer = (record) => record.type === "user" && recordText(record).includes("You pushed changes after the yok run finished");
+  const isTyped = (record) => record.type === "user" && userMessages.includes(recordText(record).trim());
+  const isLearn = (record) =>
+    (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && block.name === "Skill" && /(^|:)learn$/.test(block.input?.skill ?? ""));
+  const learnStarts = transcript.flatMap((record, index) => (isLearn(record) ? [index] : []));
+  const askedFirst = learnStarts.every((start) => {
+    const offer = transcript.findLastIndex((record, index) => index < start && isOffer(record));
+    return offer !== -1 && transcript.slice(offer + 1, start).some(isTyped);
+  });
+  check("learn ran, and each pass only after the user answered an offer", learnStarts.length > 0 && askedFirst, `learn at records ${learnStarts.join(", ")}`);
+  // The agent asks only when the user corrected it since the last pass: the push of the review fix
+  // is asked about; the last push, of just the learning file, is not. Pushes between them may
+  // follow another correction the simulated user made, so they can go either way.
+  const offers = transcript.flatMap((record, index) => (isOffer(record) ? [index] : []));
+  const asked = offers.map((offer) => {
+    const next = transcript.findIndex((record, index) => index > offer && isTyped(record));
+    return transcript.slice(offer + 1, next === -1 ? undefined : next).some((record) =>
+      record.type === "assistant" && /learning session/i.test(recordText(record)) && recordText(record).includes("?"));
+  });
+  if (mistakeFiles.length > 0) {
+    check("asked after the review fix's push", asked[0] === true, `asked per offer: ${asked.join(", ")}`);
+    check("did not ask after pushing just the learning file", asked.length > 1 && asked.at(-1) === false, `asked per offer: ${asked.join(", ")}`);
+  }
+} else if (scenario.auto) {
   check("user never typed /learn", !typedLearn);
   if (!expected.none) check("the learn stage ran", skillStart !== -1);
 } else if (!expected.none) {
@@ -266,7 +340,7 @@ if (scenario.auto) {
 const eventChecks = (event, label) => {
   const statuses = [expected.status].flat();
   check(`${label}status is ${statuses.join(" or ")}`, statuses.includes(event.status), event.status);
-  const triggers = scenario.auto ? ["auto"] : ["manual", "auto"];
+  const triggers = scenario.auto || scenario.afterRun ? ["auto"] : ["manual", "auto"];
   check(`${label}trigger is ${triggers.join(" or ")}`, triggers.includes(event.trigger), event.trigger);
   if (event.trigger === "auto") {
     // The proposal must wait for the corrected work: no app edits between logging the learning and
@@ -344,14 +418,16 @@ const eventChecks = (event, label) => {
 // Inside a run, every learn pass must find the run itself and leave its mark, so a later /learn
 // starts after it instead of reading the whole session again.
 if (scenario.yokRun) {
-  const passes = scenario.passes ?? 1;
+  const runEvents = readRunEvents();
+  // After the run, each offer the user takes is a pass, and they may decline some.
+  const offers = runEvents.filter((event) => event.type === "learning.offered").length;
+  const passes = scenario.afterRun ? 1 : (scenario.passes ?? 1);
+  // With $YOK_RUN_ID set the script lists the run (from the last mark) whatever the arguments.
   const listCalls = commands.filter((command) => /learn\.candidates|scripts\/candidates\.ts/.test(command));
-  check("candidates listed through the run, never by --session", listCalls.length >= passes && listCalls.every((command) => !command.includes("--session")), listCalls.join(" | ").slice(0, 300));
-  const runEvents = existsSync(join(runDir, "event.jsonl"))
-    ? readFileSync(join(runDir, "event.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    : [];
+  check("candidates listed for each pass", listCalls.length >= passes, listCalls.join(" | ").slice(0, 300));
   const marks = runEvents.filter((event) => event.type === "learning.reviewed").length;
-  check(`each pass left a learning.reviewed mark (${passes})`, marks === passes, `${marks} mark(s)`);
+  const marksOk = scenario.afterRun ? marks >= 1 && marks <= offers : marks === passes;
+  check(scenario.afterRun ? `each pass left a learning.reviewed mark (1 to ${offers})` : `each pass left a learning.reviewed mark (${passes})`, marksOk, `${marks} mark(s)`);
   const triggers = [...new Set(events.map((event) => event.trigger))];
   if (passes > 1 && events.length > 1) check("the stage logged auto and /learn logged manual", triggers.includes("auto") && triggers.includes("manual"), triggers.join(", "));
 }

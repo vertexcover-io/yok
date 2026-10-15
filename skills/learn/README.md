@@ -5,6 +5,7 @@ Turns a correction from the current session into a short learning in `docs/learn
 ## When it runs
 
 - **As the `learn` stage of the `task` workflow**, right after the plan is approved, while you are still at the terminal. It looks at what you said during design and planning (chat, plan comments, `Revise` notes) and asks about the corrections worth keeping. A failure here never stops the run.
+- **After each push once the run has finished**: yok's Stop hook (`offer-learn` in `packages/core/src/hooks/stop.ts`) sees the agent ran `git push` in its reply and has it ask whether to start a learning session; on yes it runs learn. The workflow's own first PR is skipped, and each push is offered once.
 - **By hand** with `/yok:learn` in Claude Code or `$learn` in Codex, for example after the PR. In a run it looks only at what was said since the last pass; with a rule (`/yok:learn use pnpm here`) it turns that rule into a learning.
 
 One-off steering and PR review comments are not learnings.

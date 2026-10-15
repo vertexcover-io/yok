@@ -27,7 +27,7 @@ import {
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
 import { recordGuard, runPreToolUse } from "./pre-tool-use.ts";
-import { decideStop, runStopHook, type StopCheck } from "./stop.ts";
+import { decideStop, offerLearn, runStopHook, type StopCheck } from "./stop.ts";
 
 const seed: State = {
   schemaVersion: 1,
@@ -652,5 +652,94 @@ describe("an open context node", () => {
     });
 
     expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toEqual({ kind: "allow" });
+  });
+});
+
+describe("offerLearn", () => {
+  // A run whose workflow has finished: the user now reviews the code and asks for changes.
+  const setUpFinished = async () => {
+    const run = await setUp({});
+    const statePath = join(run.runDir, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, status: "completed" }));
+    return run;
+  };
+
+  const firstPr: TranscriptEntry[] = [
+    { kind: "prompt", text: "run the ticket" },
+    { kind: "command", command: "git push -u origin feat-x" },
+    { kind: "command", command: "yok orchestrate done n9 --run feat-x" },
+  ];
+  const reviewPush: TranscriptEntry[] = [
+    ...firstPr,
+    { kind: "prompt", text: "why is there no error handling here? fix it and push" },
+    { kind: "command", command: "git -C /repo push origin feat-x" },
+  ];
+  const offer = (entries: readonly TranscriptEntry[], deps: Parameters<typeof offerLearn.run>[1]) =>
+    offerLearn.run(input(entries), deps);
+  const eventTypes = async (runDir: string) =>
+    (await jsonlEventStore(runDir).read()).map((event) => event.type);
+
+  test("while the workflow runs it never offers, even after a push", async () => {
+    const { deps, runDir } = await setUp({});
+    expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
+    expect(await eventTypes(runDir)).toEqual([]);
+  });
+
+  test("the stop that first sees the workflow finished starts the watch and skips the first PR's push", async () => {
+    const { deps, runDir } = await setUpFinished();
+    expect(await offer(firstPr, deps)).toEqual({ kind: "allow" });
+    expect(await eventTypes(runDir)).toEqual(["learning.watch.started"]);
+  });
+
+  test("after the watch started, a push since the user's last message has the agent ask before running learn", async () => {
+    const { deps, runDir } = await setUpFinished();
+    await offer(firstPr, deps);
+    const reply = await offer(reviewPush, deps);
+    expect(reply).toMatchObject({ kind: "continue" });
+    expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
+    expect(await eventTypes(runDir)).toEqual(["learning.watch.started", "learning.offered"]);
+  });
+
+  test("it asks once per push: the stop after the user answers lets the turn end", async () => {
+    const { deps } = await setUpFinished();
+    await offer(firstPr, deps);
+    expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
+    expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("a push after the next message asks again", async () => {
+    const { deps } = await setUpFinished();
+    await offer(firstPr, deps);
+    await offer(reviewPush, deps);
+    const secondPush: TranscriptEntry[] = [
+      ...reviewPush,
+      { kind: "prompt", text: "also rename this helper and push" },
+      { kind: "command", command: "git push" },
+    ];
+    expect(await offer(secondPush, deps)).toMatchObject({ kind: "continue" });
+  });
+
+  test("a turn without a push since the user's last message lets the turn end", async () => {
+    const { deps } = await setUpFinished();
+    await offer(firstPr, deps);
+    const chatAfterPush: TranscriptEntry[] = [
+      ...reviewPush,
+      { kind: "prompt", text: "what does this function do?" },
+      { kind: "command", command: "cat src/jobs.ts" },
+    ];
+    const notAPush: TranscriptEntry[] = [
+      ...firstPr,
+      { kind: "prompt", text: "check the branch" },
+      { kind: "command", command: "git status && echo push later" },
+    ];
+    expect(await offer(chatAfterPush, deps)).toEqual({ kind: "allow" });
+    expect(await offer(notAPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("a session that is not a yok run's lets the turn end", async () => {
+    const { deps } = await setUpFinished();
+    const stranger = { ...input(reviewPush), sessionId: "someone-else" };
+    expect(await offerLearn.run(stranger, { ...deps, env: {} })).toEqual({ kind: "allow" });
   });
 });
