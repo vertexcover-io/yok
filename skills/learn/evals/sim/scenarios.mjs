@@ -19,7 +19,7 @@ export const APP_FILE = /(^|\/)(apps\/)?(admin-api|admin-panel)\//;
 const listInApps = (writes) =>
   [...new Set(writes.filter((write) => APP_FILE.test(write.file) && HARDCODED_LIST.test(write.text)).map((write) => write.file.replace(/^.*?(?:apps\/)?(admin-api|admin-panel)\//, "apps/$1/")))];
 
-const ranNpm = (commands) => commands.some((command) => /(^|[;&|\s])npm\s+(i|install|add|ci)\b/.test(command));
+const ranNpm = (commands) => commands.some((command) => /(^|[;&|\s])npm\s+(i|install|add|ci|run)\b/.test(command));
 
 // One label per kind of mistake made: the shared-config list, and npm.
 const listOrNpm = (writes, commands) => [
@@ -276,7 +276,7 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
 
   "run-two-passes": {
     source: "inside a yok run: the learn stage, then /learn after a follow-up (the after-PR pass)",
-    yokRun: true,
+    stage: true,
     passes: 2,
     task:
       INVOICE_TASK +
@@ -305,7 +305,7 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
 
   "viewer-comment": {
     source: "inside a yok run: the correction is a plan-viewer comment, then the learn stage",
-    yokRun: true,
+    stage: true,
     task:
       INVOICE_TASK +
       " First write a short implementation plan to .yok/sim/artifacts/plan.md and wait for the user's review before writing any code.",
@@ -330,7 +330,6 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
 
   "after-push-offer": {
     source: "after the run: a push of review changes makes yok offer a learning session, and the user says yes",
-    yokRun: true,
     afterRun: true,
     task:
       INVOICE_TASK +

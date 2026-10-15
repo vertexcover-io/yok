@@ -390,9 +390,6 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
 // Keeps a workflow run moving: sends the agent back when it stops with work still owed.
 export const continueWorkflow: StopHandler = { name: "continue-workflow", run: runStopHook };
 
-// After the workflow ends, the user reviews the code and asks for changes in the same session.
-// Each push of those changes is when to offer the learn skill: once per push, and never for the
-// workflow's own first PR, which is pushed in the turn the workflow ends.
 const PUSH = /\bgit\b[^;&|\n]*\spush\b/;
 const LEARN_OFFER =
   "You pushed changes after the yok run finished. If nothing the user said since the last " +
@@ -404,24 +401,17 @@ const OfferedEvent = z.object({
   payload: z.object({ prompts: z.int() }),
 });
 
-type LearnOffer =
-  | Readonly<{ kind: "allow" }>
-  | Readonly<{ kind: "start-watch" }>
-  | Readonly<{ kind: "offer"; prompts: number }>;
+type LearnOffer = Readonly<{ kind: "allow" }> | Readonly<{ kind: "offer"; prompts: number }>;
 
 const pushedSinceLastPrompt = (entries: readonly TranscriptEntry[]): boolean =>
   entries
     .slice(entries.findLastIndex((entry) => entry.kind === "prompt") + 1)
     .some((entry) => entry.kind === "command" && PUSH.test(entry.command));
 
-// The user's message count names the turn, so a turn's push is offered once.
 export const decideLearnOffer = (
   events: readonly Event[],
   entries: readonly TranscriptEntry[] | undefined,
 ): LearnOffer => {
-  if (!events.some((event) => event.type === "learning.watch.started")) {
-    return { kind: "start-watch" };
-  }
   if (entries === undefined || !pushedSinceLastPrompt(entries)) return { kind: "allow" };
   const prompts = entries.filter((entry) => entry.kind === "prompt").length;
   const offered = events.some(
@@ -429,11 +419,6 @@ export const decideLearnOffer = (
   );
   return offered ? { kind: "allow" } : { kind: "offer", prompts };
 };
-
-const offerEvent = (offer: Exclude<LearnOffer, { kind: "allow" }>): EmitInput =>
-  offer.kind === "start-watch"
-    ? { type: "learning.watch.started", source: "hooks", payload: {} }
-    : { type: "learning.offered", source: "hooks", payload: { prompts: offer.prompts } };
 
 // Never throws, like the workflow's Stop handler: a failure lets the turn end.
 const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
@@ -449,20 +434,27 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
     ]);
     const offer = decideLearnOffer(events, entries);
     if (offer.kind === "allow") return ALLOW;
-    const stored = await appendRunEvent(run, offerEvent(offer));
+    const stored = await appendRunEvent(run, {
+      type: "learning.offered",
+      source: "hooks",
+      payload: { prompts: offer.prompts },
+    });
     if (!stored.ok) {
       // An unrecorded offer would be made again at every stop.
       deps.log.warn({ error: stored.error }, "learn not offered: the offer was not recorded");
       return ALLOW;
     }
-    return offer.kind === "offer" ? { kind: "continue", message: LEARN_OFFER } : ALLOW;
+    return { kind: "continue", message: LEARN_OFFER };
   } catch (error) {
     deps.log.error({ err: error }, "learn not offered: the offer check failed");
     return ALLOW;
   }
 };
 
-// Offers the learn skill when the agent pushes the user's review changes after the workflow.
+// Runs when the agent finishes a reply. If the workflow has finished and any command the agent
+// ran since the user's last message was `git push`, it sends the agent LEARN_OFFER. The agent asks
+// the user if it can start a learning session only if there are user corrections since the
+// previous learning session.
 export const offerLearn: StopHandler = { name: "offer-learn", run: runLearnOffer };
 
 // The handlers an agent can register, by the name `orchestrate hook stop --handler` takes.

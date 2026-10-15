@@ -52,7 +52,7 @@ const repo = previous?.repo ?? realpathSync(mkdtempSync(join(tmpdir(), "learn-si
 const simCwd = realpathSync(mkdtempSync(join(tmpdir(), "learn-sim-user-")));
 if (!previous) createRepo(repo, scenario.files);
 
-// A yokRun scenario runs inside a fake yok run: a private yok home whose registry names the run, the
+// Every scenario runs inside a fake yok run, since learn works only in one: a private yok home whose registry names the run, the
 // run's folder with its workflow and event log, and a `yok` on PATH that runs this checkout's CLI.
 // The event log gets workflow.started, naming the session, once the first turn gives its id.
 const RUN = { id: "learn-sim-run", name: "sim" };
@@ -97,7 +97,7 @@ const finishRun = () => {
   spawnSync("git", ["checkout", "-qb", "feat/invoice-id"], { cwd: repo });
   spawnSync("git", ["push", "-qu", "origin", "feat/invoice-id"], { cwd: repo });
 };
-if (scenario.yokRun && !previous) {
+if (!previous) {
   mkdirSync(runDir, { recursive: true });
   mkdirSync(yokHome, { recursive: true });
   mkdirSync(yokBin, { recursive: true });
@@ -140,9 +140,7 @@ const deliverComment = (said) => {
   ].join("\n");
 };
 
-const agentEnv = scenario.yokRun
-  ? { ...process.env, PATH: `${yokBin}:${process.env.PATH}`, YOK_HOME: yokHome, YOK_RUN_ID: RUN.id }
-  : process.env;
+const agentEnv = { ...process.env, PATH: `${yokBin}:${process.env.PATH}`, YOK_HOME: yokHome, YOK_RUN_ID: RUN.id };
 
 // --- the simulated user ------------------------------------------------------------------------
 const SPEAKER = { user: "YOU", agent: "AGENT", stage: "PIPELINE (starts the learn stage, not you)" };
@@ -185,16 +183,14 @@ const agentTurn = (message, sessionId, firstId) =>
     agentEnv,
   );
 
-// An auto scenario stands for a run: once the user is done, the pipeline starts the learn stage in
+// An auto or stage scenario has the learn stage: once the user is done, the pipeline starts it in
 // the same session, and the user answers its questions.
-const STAGE_PROMPT = scenario.yokRun
-  ? `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). This session is inside the yok run $YOK_RUN_ID; there is no done command to call.`
-  : `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). There is no yok run in this session, so list candidates with --session.`;
+const STAGE_PROMPT = `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). This session is inside the yok run $YOK_RUN_ID; there is no done command to call.`;
 
 const conversation = previous?.conversation ?? [];
 let sessionId = previous?.sessionId ?? null;
 // After the run there is no stage: learn starts only when the user takes the offer.
-const runsStage = (scenario.auto || scenario.yokRun) && !scenario.afterRun;
+const runsStage = (scenario.auto || scenario.stage) && !scenario.afterRun;
 // The run must name the session before its first turn ends, for the Stop hook to find the run.
 const firstId = scenario.afterRun && !previous ? randomUUID() : null;
 if (firstId) startRun(firstId);
@@ -208,7 +204,7 @@ for (let turn = 0; !previous && turn < MAX_TURNS; turn += 1) {
   const sent = done ? STAGE_PROMPT : deliverComment(said.replace(/^\/learn\b/, `/${pluginName}:learn`));
   conversation.push({ role: done ? "stage" : "user", text: sent });
   const reply = agentTurn(sent, sessionId, firstId);
-  if (scenario.yokRun && !firstId && !sessionId && reply.session_id) startRun(reply.session_id);
+  if (!firstId && !sessionId && reply.session_id) startRun(reply.session_id);
   sessionId = reply.session_id ?? sessionId;
   conversation.push({ role: "agent", text: reply.result ?? "(no reply)", error: reply.is_error === true });
   if (reply.is_error && !reply.session_id) break;
@@ -303,9 +299,6 @@ const skillStart = transcript.findIndex((record) =>
 const typedLearn = userMessages.some((text) => text.startsWith(`/${pluginName}:learn`));
 if (scenario.afterRun) {
   check("user never typed /learn", !typedLearn);
-  // yok's Stop hook skips the first push (the run's own PR) and offers once on the review push.
-  const runEvents = readRunEvents().map((event) => event.type);
-  check("the first push (the run's own PR) only started the watch", runEvents.indexOf("learning.watch.started") !== -1 && runEvents.indexOf("learning.watch.started") < runEvents.indexOf("learning.offered"), runEvents.join(", "));
   // Each offer comes back as hook feedback; its learn pass may start only after the user's answer.
   const isOffer = (record) => record.type === "user" && recordText(record).includes("You pushed changes after the yok run finished");
   const isTyped = (record) => record.type === "user" && userMessages.includes(recordText(record).trim());
@@ -317,17 +310,20 @@ if (scenario.afterRun) {
     return offer !== -1 && transcript.slice(offer + 1, start).some(isTyped);
   });
   check("learn ran, and each pass only after the user answered an offer", learnStarts.length > 0 && askedFirst, `learn at records ${learnStarts.join(", ")}`);
-  // The agent asks only when the user corrected it since the last pass: the push of the review fix
-  // is asked about; the last push, of just the learning file, is not. Pushes between them may
-  // follow another correction the simulated user made, so they can go either way.
+  // yok's Stop hook offers on every push, the run's own first one included. The agent asks only
+  // when the user corrected it since the last pass: not after the first push (nothing corrected
+  // yet), yes after the review fix's push, and not after the last push, of just the learning file.
   const offers = transcript.flatMap((record, index) => (isOffer(record) ? [index] : []));
+  const secondTyped = transcript.findIndex((record, index) => isTyped(record) && transcript.slice(0, index).some(isTyped));
+  check("the first push (the run's own PR) was offered too", offers.length > 0 && (secondTyped === -1 || offers[0] < secondTyped), `offers at records ${offers.join(", ")}`);
   const asked = offers.map((offer) => {
     const next = transcript.findIndex((record, index) => index > offer && isTyped(record));
     return transcript.slice(offer + 1, next === -1 ? undefined : next).some((record) =>
       record.type === "assistant" && /learning session/i.test(recordText(record)) && recordText(record).includes("?"));
   });
   if (mistakeFiles.length > 0) {
-    check("asked after the review fix's push", asked[0] === true, `asked per offer: ${asked.join(", ")}`);
+    check("did not ask after the first push, with nothing corrected yet", asked[0] === false, `asked per offer: ${asked.join(", ")}`);
+    check("asked after the review fix's push", asked.slice(1).includes(true), `asked per offer: ${asked.join(", ")}`);
     check("did not ask after pushing just the learning file", asked.length > 1 && asked.at(-1) === false, `asked per offer: ${asked.join(", ")}`);
   }
 } else if (scenario.auto) {
@@ -354,56 +350,56 @@ const eventChecks = (event, label) => {
     const lateWrite = transcript.slice(logged + 1, nextUser === -1 ? undefined : nextUser).findIndex(isAppWrite);
     check(`${label}proposed only after the corrected work was done`, logged !== -1 && lateWrite === -1, `logged at record ${logged}${lateWrite === -1 ? "" : `, app edited ${lateWrite + 1} records later in the same turn`}`);
   }
-  check(`${label}skill_version is ${pluginName}@…`, event.skill_version?.startsWith(`${pluginName}@`), event.skill_version);
-  if (event.status === "edited") check(`${label}final_learning filled`, Boolean(event.final_learning));
-  if (expected.picked) check(`${label}option_user_picked is ${expected.picked}`, event.option_user_picked === expected.picked, event.option_user_picked);
+  check(`${label}skillVersion is ${pluginName}@…`, event.skillVersion?.startsWith(`${pluginName}@`), event.skillVersion);
+  if (event.status === "edited") check(`${label}finalLearning filled`, Boolean(event.finalLearning));
+  if (expected.picked) check(`${label}optionUserPicked is ${expected.picked}`, event.optionUserPicked === expected.picked, event.optionUserPicked);
 
-  const toRecord = transcript.find((record) => record.uuid === event.evidence_to_message);
-  const fromRecord = transcript.find((record) => record.uuid === event.evidence_from_message);
-  check(`${label}evidence_to is a message in the transcript`, toRecord, event.evidence_to_message);
+  const toRecord = transcript.find((record) => record.uuid === event.evidenceToMessage);
+  const fromRecord = transcript.find((record) => record.uuid === event.evidenceFromMessage);
+  check(`${label}evidenceTo is a message in the transcript`, toRecord, event.evidenceToMessage);
   // A rule the user stated with nothing corrected has no mistake to point at.
-  const fromOptional = scenario.ruleInLearn && !event.evidence_from_message;
-  check(`${label}evidence_from is a message in the transcript`, fromOptional || fromRecord, event.evidence_from_message);
+  const fromOptional = scenario.ruleInLearn && !event.evidenceFromMessage;
+  check(`${label}evidenceFrom is a message in the transcript`, fromOptional || fromRecord, event.evidenceFromMessage);
   const toText = recordText(toRecord).trim();
   // When the user typed the rule with /learn, that message is the evidence.
   // A /learn that carries the rule is the user's own words too; a bare /learn is not evidence.
   const learnWithRule = /<command-args>\s*\S/.test(toText);
   check(
-    `${label}evidence_to is something the user typed (a bare /learn does not count)`,
+    `${label}evidenceTo is something the user typed (a bare /learn does not count)`,
     toRecord?.type === "user" && (userMessages.some((text) => text === toText) || learnWithRule),
     toText.slice(0, 200),
   );
   const fromIndex = transcript.indexOf(fromRecord);
   const toIndex = transcript.indexOf(toRecord);
-  check(`${label}evidence_from comes before evidence_to`, fromOptional || (fromIndex !== -1 && toIndex !== -1 && fromIndex <= toIndex));
+  check(`${label}evidenceFrom comes before evidenceTo`, fromOptional || (fromIndex !== -1 && toIndex !== -1 && fromIndex <= toIndex));
   if (expected.fromViewer) {
-    check(`${label}evidence_to is the viewer's [review] message`, toText.startsWith("[review]"), toText.slice(0, 120));
+    check(`${label}evidenceTo is the viewer's [review] message`, toText.startsWith("[review]"), toText.slice(0, 120));
   }
   if (expected.options) {
-    const count = event.options_shown?.length ?? 0;
-    check(`${label}offered ${expected.options.label}`, expected.options.test(count), `${count} option(s): ${JSON.stringify(event.options_shown)}`);
+    const count = event.optionsShown?.length ?? 0;
+    check(`${label}offered ${expected.options.label}`, expected.options.test(count), `${count} option(s): ${JSON.stringify(event.optionsShown)}`);
   }
 
   if (event.outcome === "rejected") {
-    check(`${label}rejection reason logged`, Boolean(event.rejection_reason?.trim()), event.rejection_reason);
+    check(`${label}rejection reason logged`, Boolean(event.rejectionReason?.trim()), event.rejectionReason);
     check(`${label}no learning file written`, addedLearningFiles().length === 0, addedLearningFiles().join(", "));
     return;
   }
   if (event.outcome === "lint") {
-    check(`${label}learning_file is the lint config`, event.learning_file === expected.learningFile, event.learning_file);
+    check(`${label}learningFile is the lint config`, event.learningFile === expected.learningFile, event.learningFile);
     check(`${label}lint config changed`, changedFiles.some((line) => line.endsWith(expected.learningFile)), changedFiles.join(", "));
     check(`${label}no learning file written`, addedLearningFiles().length === 0, addedLearningFiles().join(", "));
     return;
   }
-  const file = event.learning_file?.split("/").pop();
+  const file = event.learningFile?.split("/").pop();
   const learning = learnings[file];
-  check(`${label}learning file exists`, Boolean(learning), event.learning_file);
+  check(`${label}learning file exists`, Boolean(learning), event.learningFile);
   if (learning) {
     check(`${label}learning has frontmatter, Occurrences and Stale when`, /^---\n[\s\S]*signal:[\s\S]*paths:[\s\S]*strength:[\s\S]*\n---/.test(learning) && learning.includes("**Occurrences:**") && learning.includes("**Stale when:**"));
     check(`${label}index.md links it`, (learnings["index.md"] ?? "").includes(`(${file})`));
   }
   if (expected.learningFile) {
-    check(`${label}points at the existing learning`, event.learning_file === expected.learningFile, event.learning_file);
+    check(`${label}points at the existing learning`, event.learningFile === expected.learningFile, event.learningFile);
     check(`${label}existing learning got a second occurrence`, (learning?.match(/^- \d{4}-\d{2}-\d{2} ·/gm) ?? []).length >= 2);
     check(`${label}no duplicate learning file`, addedLearningFiles().length === 0, addedLearningFiles().join(", "));
   }
@@ -415,16 +411,17 @@ const eventChecks = (event, label) => {
   }
 };
 
-// Inside a run, every learn pass must find the run itself and leave its mark, so a later /learn
-// starts after it instead of reading the whole session again.
-if (scenario.yokRun) {
+// Every learn pass must find the run itself and leave its mark, so a later /learn starts after it
+// instead of reading the whole session again. A scenario where learn never ran has no pass.
+if (typedLearn || skillStart !== -1) {
   const runEvents = readRunEvents();
   // After the run, each offer the user takes is a pass, and they may decline some.
   const offers = runEvents.filter((event) => event.type === "learning.offered").length;
   const passes = scenario.afterRun ? 1 : (scenario.passes ?? 1);
   // With $YOK_RUN_ID set the script lists the run (from the last mark) whatever the arguments.
   const listCalls = commands.filter((command) => /learn\.candidates|scripts\/candidates\.ts/.test(command));
-  check("candidates listed for each pass", listCalls.length >= passes, listCalls.join(" | ").slice(0, 300));
+  // A rule the user stated with /learn is the only candidate, so nothing is listed.
+  if (!scenario.ruleInLearn) check("candidates listed for each pass", listCalls.length >= passes, listCalls.join(" | ").slice(0, 300));
   const marks = runEvents.filter((event) => event.type === "learning.reviewed").length;
   const marksOk = scenario.afterRun ? marks >= 1 && marks <= offers : marks === passes;
   check(scenario.afterRun ? `each pass left a learning.reviewed mark (1 to ${offers})` : `each pass left a learning.reviewed mark (${passes})`, marksOk, `${marks} mark(s)`);
@@ -434,7 +431,7 @@ if (scenario.yokRun) {
 
 // A proposal the user rejected, where none was expected, is a false positive the skill recorded,
 // not a broken pipeline; it is reported apart from passes and failures.
-const falsePositive = expected.none && events.length > 0 && events.every((event) => event.status === "rejected" && event.rejection_reason);
+const falsePositive = expected.none && events.length > 0 && events.every((event) => event.status === "rejected" && event.rejectionReason);
 if (expected.notExercised) {
   // Reported apart from passes and failures: the scenario's setup did not happen.
 } else if (expected.none) {
@@ -446,7 +443,7 @@ if (expected.notExercised) {
   check(`${count} event(s), outcome ${expected.outcome}`, events.length === count && matching.length === count, `${events.length} event(s): ${events.map((e) => `${e.outcome}/${e.status}`).join(", ")}`);
   matching.forEach((event, index) => eventChecks(event, count > 1 ? `#${index + 1} ` : ""));
   if (count > 1) {
-    const ends = new Set(matching.map((event) => event.evidence_to_message));
+    const ends = new Set(matching.map((event) => event.evidenceToMessage));
     check("each event points at a different correction", ends.size === matching.length);
   }
 }
@@ -454,14 +451,14 @@ if (expected.notExercised) {
 // The lesson itself is judged by a model: wording varies, the meaning must not.
 if (expected.lesson) {
   const event = events.find((candidate) => candidate.outcome === expected.outcome);
-  const learning = event ? learnings[event.learning_file?.split("/").pop()] : null;
+  const learning = event ? learnings[event.learningFile?.split("/").pop()] : null;
   const verdict = claude(
     ["--model", MODEL, "--tools", ""],
     `You grade whether a written learning says the intended lesson. Reply with JSON only: {"pass": true|false, "reason": "<one sentence>"}.
 
 Intended lesson: ${expected.lesson}
 
-Options the agent offered: ${JSON.stringify(event?.options_shown ?? [])}
+Options the agent offered: ${JSON.stringify(event?.optionsShown ?? [])}
 Saved learning file:
 ${learning ?? "(none)"}
 

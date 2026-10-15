@@ -1,7 +1,6 @@
 // Prints what the user said since the last learn pass, each message with the end of the agent's
 // reply before it, for the learn skill to pick corrections from.
 //   candidates.ts [--run NAME | --run-id ID]  a yok run's sessions; with neither, $YOK_RUN_ID's
-//   candidates.ts --session ID                one session, outside a run
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -112,54 +111,30 @@ export const listRun = (options: {
   return { ok: true, value: report(since, sessions) };
 };
 
-export const listSession = (options: {
-  readonly sessionId: string;
-  readonly projectsDir: string;
-}): Result<string> => {
-  const list = readSession(options.projectsDir, options.sessionId, undefined);
-  if (list === undefined) {
-    return { ok: false, error: `no transcript for session ${options.sessionId}` };
-  }
-  return {
-    ok: true,
-    value: report(undefined, list.length > 0 ? [formatSession(options.sessionId, list)] : []),
-  };
-};
-
-const findRunDir = async (name?: string, id?: string): Promise<Result<string>> => {
-  const run = await requireRun({
-    registry: createRegistryReader(registryPath()),
-    name,
-    id,
-    env: process.env,
-    cwd: process.cwd(),
-  });
-  return run.ok ? { ok: true, value: runDirOf(run.value.cwd, run.value.name) } : run;
-};
-
 const pick = async (argv: readonly string[]): Promise<Result<string>> => {
   const { values } = parseArgs({
     args: [...argv],
     options: {
       run: { type: "string" },
       "run-id": { type: "string" },
-      session: { type: "string" },
       projects: { type: "string" },
     },
   });
   const projectsDir =
     values.projects ??
     join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
-  // In a run, the run's list is the one that starts after the last pass's mark, so it wins over
-  // --session (the agent may pass --session before it has checked $YOK_RUN_ID).
-  if (values.session && !process.env.YOK_RUN_ID) {
-    return listSession({ sessionId: values.session, projectsDir });
-  }
-  const runDir = await findRunDir(values.run, values["run-id"]);
-  return runDir.ok ? listRun({ runDir: runDir.value, projectsDir }) : runDir;
+  const run = await requireRun({
+    registry: createRegistryReader(registryPath()),
+    name: values.run,
+    id: values["run-id"],
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (!run.ok) return { ok: false, error: `learn works only in a yok run: ${run.error}` };
+  return listRun({ runDir: runDirOf(run.value.cwd, run.value.name), projectsDir });
 };
 
-// `yok orchestrate skill run` imports this file and calls main; bun runs it directly outside a run.
+// `yok orchestrate skill run` imports this file and calls main; bun can also run it directly.
 export const main = async (argv: readonly string[]): Promise<number> => {
   const result = await pick(argv);
   if (!result.ok) {

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Event, EventSchema, type Rec, runDirOf } from "@yok/sdk";
-import { exchanges, lastReviewedAt, listRun, listSession, main } from "./candidates.ts";
+import { exchanges, lastReviewedAt, listRun, main } from "./candidates.ts";
 
 const at = (minute: number): string => `2026-10-12T10:${String(minute).padStart(2, "0")}:00Z`;
 
@@ -224,39 +224,36 @@ describe("listing a run", () => {
   });
 });
 
-describe("listing one session outside a run", () => {
-  test("prints every exchange of that session", () => {
-    const { projectsDir } = fixture([], { S: [user(at(1), "use pnpm here")] });
-    const listed = listSession({ sessionId: "S", projectsDir });
-    expect(listed.ok && listed.value).toContain("use pnpm here");
-  });
-
-  test("fails when the transcript is missing", () => {
-    const { projectsDir } = fixture([], {});
-    expect(listSession({ sessionId: "missing", projectsDir }).ok).toBe(false);
-  });
-});
-
 describe("choosing what to list", () => {
-  const saved = { home: process.env.YOK_HOME, runId: process.env.YOK_RUN_ID };
+  const saved = { YOK_HOME: process.env.YOK_HOME, YOK_RUN_ID: process.env.YOK_RUN_ID };
   afterEach(() => {
-    process.env.YOK_HOME = saved.home;
-    process.env.YOK_RUN_ID = saved.runId;
-    if (saved.home === undefined) delete process.env.YOK_HOME;
-    if (saved.runId === undefined) delete process.env.YOK_RUN_ID;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
-  test("in a run, --session still lists the run, so the list starts after the last pass", async () => {
+  test("in a run, lists the run's sessions from the last pass", async () => {
     const { runDir, projectsDir } = fixture([started("A"), reviewed(at(4))], {
       A: [user(at(1), "before the pass"), user(at(6), "after the pass")],
     });
     inRun(runDir);
     const log = spyOn(console, "log").mockImplementation(() => {});
-    const code = await main(["--session", "A", "--projects", projectsDir]);
+    const code = await main(["--projects", projectsDir]);
     const printed = log.mock.calls.flat().join("\n");
     log.mockRestore();
     expect(code).toBe(0);
     expect(printed).toContain("after the pass");
     expect(printed).not.toContain("before the pass");
+  });
+
+  test("outside a run, says learn needs one and fails", async () => {
+    delete process.env.YOK_RUN_ID;
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const code = await main([]);
+    const printed = error.mock.calls.flat().join("\n");
+    error.mockRestore();
+    expect(code).toBe(1);
+    expect(printed).toContain("learn works only in a yok run");
   });
 });

@@ -686,19 +686,19 @@ describe("offerLearn", () => {
     expect(await eventTypes(runDir)).toEqual([]);
   });
 
-  test("the stop that first sees the workflow finished starts the watch and skips the first PR's push", async () => {
+  test("once the workflow finished, its own PR's push has the agent ask before running learn", async () => {
     const { deps, runDir } = await setUpFinished();
-    expect(await offer(firstPr, deps)).toEqual({ kind: "allow" });
-    expect(await eventTypes(runDir)).toEqual(["learning.watch.started"]);
-  });
-
-  test("after the watch started, a push since the user's last message has the agent ask before running learn", async () => {
-    const { deps, runDir } = await setUpFinished();
-    await offer(firstPr, deps);
-    const reply = await offer(reviewPush, deps);
+    const reply = await offer(firstPr, deps);
     expect(reply).toMatchObject({ kind: "continue" });
     expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
-    expect(await eventTypes(runDir)).toEqual(["learning.watch.started", "learning.offered"]);
+    expect(await eventTypes(runDir)).toEqual(["learning.offered"]);
+  });
+
+  test("a review push after the next message asks too", async () => {
+    const { deps, runDir } = await setUpFinished();
+    await offer(firstPr, deps);
+    expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
+    expect(await eventTypes(runDir)).toEqual(["learning.offered", "learning.offered"]);
   });
 
   test("it asks once per push: the stop after the user answers lets the turn end", async () => {
@@ -706,18 +706,6 @@ describe("offerLearn", () => {
     await offer(firstPr, deps);
     expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
-  });
-
-  test("a push after the next message asks again", async () => {
-    const { deps } = await setUpFinished();
-    await offer(firstPr, deps);
-    await offer(reviewPush, deps);
-    const secondPush: TranscriptEntry[] = [
-      ...reviewPush,
-      { kind: "prompt", text: "also rename this helper and push" },
-      { kind: "command", command: "git push" },
-    ];
-    expect(await offer(secondPush, deps)).toMatchObject({ kind: "continue" });
   });
 
   test("a turn without a push since the user's last message lets the turn end", async () => {

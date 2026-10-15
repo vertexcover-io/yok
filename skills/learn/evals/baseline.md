@@ -113,6 +113,12 @@ pass found nothing new and left its mark (4 marks for 4 passes), which the check
 After rebasing on main (the review loop, compact steps, `recordResumed`): after-push-offer 2 of 2,
 run-two-passes, viewer-comment and shared-list-edited all pass.
 
+## Only in a run, October 2026
+
+Learn now works only in a yok run, so every scenario runs inside a fake one. All 16 pass;
+contradiction-replaces was not exercised on its first and third tries (the agent used pnpm on its
+own) and passed on the second.
+
 ## Not measured yet
 
 - Real sessions. These are scripted users in one dummy repo; the Learn events page in Samskara

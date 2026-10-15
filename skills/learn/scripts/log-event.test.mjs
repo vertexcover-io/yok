@@ -17,11 +17,11 @@ import {
 
 const valid = {
   trigger: "auto",
-  why_triggered: "User said caught errors in jobs must go to Sentry",
-  proposed_learning: "Report caught errors in background jobs to Sentry",
+  whyTriggered: "User said caught errors in jobs must go to Sentry",
+  proposedLearning: "Report caught errors in background jobs to Sentry",
   outcome: "new",
   status: "accepted",
-  options_shown: ["rethrow", "structured logger", "Sentry"],
+  optionsShown: ["rethrow", "structured logger", "Sentry"],
 };
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "learn-log-event-")));
@@ -113,21 +113,21 @@ test("accepts a new learning that replaces an old one, and rejects the old repla
   assert.deepEqual(validate({ ...valid, replaces: 1 }), ["replaces must be text"]);
 });
 
-test("final_learning goes with status edited and nothing else", () => {
-  assert.deepEqual(validate({ ...valid, status: "edited", final_learning: "A1" }), []);
+test("finalLearning goes with status edited and nothing else", () => {
+  assert.deepEqual(validate({ ...valid, status: "edited", finalLearning: "A1" }), []);
   assert.deepEqual(validate({ ...valid, status: "edited" }), [
-    "final_learning is required when status is edited",
+    "finalLearning is required when status is edited",
   ]);
-  assert.deepEqual(validate({ ...valid, status: "accepted", final_learning: "A1" }), [
-    "final_learning is only for status edited",
+  assert.deepEqual(validate({ ...valid, status: "accepted", finalLearning: "A1" }), [
+    "finalLearning is only for status edited",
   ]);
 });
 
 test("reports every missing required field", () => {
   assert.deepEqual(validate({}), [
     "trigger is required",
-    "why_triggered is required",
-    "proposed_learning is required",
+    "whyTriggered is required",
+    "proposedLearning is required",
     "outcome is required",
     "status is required",
   ]);
@@ -139,14 +139,14 @@ test("rejects values outside the enums, wrong types, unknown fields and non-obje
       ...valid,
       outcome: "maybe",
       status: "sure",
-      options_shown: "a",
-      evidence_from: 1,
+      optionsShown: "a",
+      evidenceFrom: 1,
       evidence_form: "x",
     }),
     [
       "evidence_form is not a known field",
-      "evidence_from must be text",
-      "options_shown must be a list",
+      "evidenceFrom must be text",
+      "optionsShown must be a list",
       "outcome must be one of new, occurrence, lint, rejected",
     ],
   );
@@ -174,13 +174,13 @@ test("finds the messages that start and end the exchange, ignoring case and spac
     "wrap it in try/catch with console.error",
     "ERRORS GO TO SENTRY",
   );
-  assert.deepEqual(ids, { evidence_from_message: "a2", evidence_to_message: "u2" });
+  assert.deepEqual(ids, { evidenceFromMessage: "a2", evidenceToMessage: "u2" });
   assert.deepEqual(missing, []);
 });
 
 test("a message that names this script can still be evidence", () => {
   const { ids } = resolveEvidence(parseTranscript(transcript), "", "fix log-event.mjs too");
-  assert.equal(ids.evidence_to_message, "u2");
+  assert.equal(ids.evidenceToMessage, "u2");
 });
 
 test("the start is the last mistake before the first correction, so an earlier mention cannot stretch it", () => {
@@ -191,8 +191,8 @@ test("the start is the last mistake before the first correction, so an earlier m
     { uuid: "again", text: "npm install once more" },
   ];
   assert.deepEqual(resolveEvidence(messages, "npm install", "use pnpm").ids, {
-    evidence_from_message: "mistake",
-    evidence_to_message: "fix",
+    evidenceFromMessage: "mistake",
+    evidenceToMessage: "fix",
   });
 });
 
@@ -208,8 +208,8 @@ test("a correction that quotes the agent's words is not taken for the mistake", 
   assert.deepEqual(
     resolveEvidence(messages, "catch (e) { console.log(e) }", "send it to sentry").ids,
     {
-      evidence_from_message: "mistake",
-      evidence_to_message: "fix",
+      evidenceFromMessage: "mistake",
+      evidenceToMessage: "fix",
     },
   );
 });
@@ -219,68 +219,65 @@ test("the end of the exchange is only ever something the user said", () => {
     { uuid: "agent", byUser: false, text: "i will use pnpm here from now on" },
     { uuid: "user", byUser: true, text: "yes, use pnpm here" },
   ];
-  assert.equal(resolveEvidence(messages, "", "use pnpm here").ids.evidence_to_message, "user");
+  assert.equal(resolveEvidence(messages, "", "use pnpm here").ids.evidenceToMessage, "user");
 });
 
 test("snippets that were given but not found, or a start only after the end, are reported missing", () => {
   const messages = parseTranscript(transcript);
   assert.deepEqual(resolveEvidence(messages, "never said", "errors go to Sentry").missing, [
-    "evidence_from was not found in your own messages or tool calls before evidence_to (it must be your words or code, never the user's)",
+    "evidenceFrom was not found in your own messages or tool calls before evidenceTo (it must be your words or code, never the user's)",
   ]);
   assert.deepEqual(resolveEvidence(messages, "errors go to Sentry", "add retry").missing, [
-    "evidence_from was not found in your own messages or tool calls before evidence_to (it must be your words or code, never the user's)",
+    "evidenceFrom was not found in your own messages or tool calls before evidenceTo (it must be your words or code, never the user's)",
   ]);
   assert.deepEqual(resolveEvidence(messages, "", "  ").missing, []);
   assert.deepEqual(resolveEvidence(messages, "", "never said").missing, [
-    "evidence_to was not found",
+    "evidenceTo was not found",
   ]);
 });
 
 test("fills id, timestamp, cwd and version, and swaps the snippets for message ids", () => {
-  const event = buildEvent({ ...valid, evidence_from: "x", evidence_to: "y" }, "abc", {
+  const event = buildEvent({ ...valid, evidenceFrom: "x", evidenceTo: "y" }, "abc", {
     now: new Date("2026-10-06T10:00:00Z"),
     cwd: "/r",
-    evidence: { evidence_from_message: "a2", evidence_to_message: "u2" },
+    evidence: { evidenceFromMessage: "a2", evidenceToMessage: "u2" },
     version: "yok@1.0.0",
   });
-  assert.equal(event.session_id, "abc");
+  assert.equal(event.sessionId, "abc");
   assert.equal(event.timestamp, "2026-10-06T10:00:00.000Z");
   assert.equal(event.cwd, "/r");
-  assert.equal(event.skill_version, "yok@1.0.0");
-  assert.deepEqual([event.evidence_from_message, event.evidence_to_message], ["a2", "u2"]);
-  assert.equal("evidence_from" in event, false);
-  assert.match(event.event_id, /^[0-9a-f-]{36}$/);
+  assert.equal(event.skillVersion, "yok@1.0.0");
+  assert.deepEqual([event.evidenceFromMessage, event.evidenceToMessage], ["a2", "u2"]);
+  assert.equal("evidenceFrom" in event, false);
+  assert.match(event.eventId, /^[0-9a-f-]{36}$/);
 });
 
-// biome-ignore lint/suspicious/noTemplateCurlyInString: the unsubstituted placeholder is the input under test
-const placeholder = "${CLAUDE_SESSION_ID}";
-
-test("the session id falls back to the environment, then to a dated name", () => {
-  assert.equal(usableSessionId("abc", {}), "abc");
-  assert.match(usableSessionId(placeholder, {}), /^unknown-\d{4}-\d{2}-\d{2}$/);
-  assert.match(usableSessionId("", {}), /^unknown-/);
-  assert.equal(usableSessionId("", { CLAUDE_CODE_SESSION_ID: "from-env" }), "from-env");
+test("the session id falls back to the agent's environment, then to a dated name", () => {
+  assert.equal(usableSessionId("abc", { CLAUDE_CODE_SESSION_ID: "from-env" }), "abc");
+  assert.equal(usableSessionId(undefined, { CLAUDE_CODE_SESSION_ID: "claude" }), "claude");
+  assert.equal(usableSessionId("", { CODEX_THREAD_ID: "codex" }), "codex");
+  assert.match(usableSessionId(undefined, {}), /^unknown-\d{4}-\d{2}-\d{2}$/);
 });
 
 test("generated fields win over the same keys in the input", () => {
   const input = {
     ...valid,
-    event_id: "dup",
-    session_id: "x",
+    eventId: "dup",
+    sessionId: "x",
     timestamp: "yesterday",
     cwd: "/x",
-    skill_version: "fake",
+    skillVersion: "fake",
   };
   const event = buildEvent(input, "real", {
     now: new Date("2026-10-06T10:00:00Z"),
     cwd: "/r",
     version: "yok@1.0.0",
   });
-  assert.notEqual(event.event_id, "dup");
-  assert.equal(event.session_id, "real");
+  assert.notEqual(event.eventId, "dup");
+  assert.equal(event.sessionId, "real");
   assert.equal(event.timestamp, "2026-10-06T10:00:00.000Z");
   assert.equal(event.cwd, "/r");
-  assert.equal(event.skill_version, "yok@1.0.0");
+  assert.equal(event.skillVersion, "yok@1.0.0");
 });
 
 test("the version is the plugin's name and version, or empty when the manifest is missing", () => {
@@ -302,7 +299,7 @@ test("outside a git repo, events go to .yok/learning-events in the current folde
 
 test("appends one JSON line per event to the session's file, with ids from its transcript", () => {
   const { env, cwd } = session("s1");
-  const withEvidence = { ...valid, evidence_from: "try/catch", evidence_to: "errors go to Sentry" };
+  const withEvidence = { ...valid, evidenceFrom: "try/catch", evidenceTo: "errors go to Sentry" };
   const file = logEvent(JSON.stringify(withEvidence), "s1", { env, cwd });
   logEvent(JSON.stringify({ ...valid, outcome: "rejected", status: "rejected" }), "s1", {
     env,
@@ -314,16 +311,16 @@ test("appends one JSON line per event to the session's file, with ids from its t
     events.map((entry) => entry.outcome),
     ["new", "rejected"],
   );
-  assert.deepEqual([events[0].evidence_from_message, events[0].evidence_to_message], ["a2", "u2"]);
-  assert.deepEqual([events[1].evidence_from_message, events[1].evidence_to_message], ["", ""]);
+  assert.deepEqual([events[0].evidenceFromMessage, events[0].evidenceToMessage], ["a2", "u2"]);
+  assert.deepEqual([events[1].evidenceFromMessage, events[1].evidenceToMessage], ["", ""]);
 });
 
 test("refuses a snippet that matches no message, and writes nothing", () => {
   const { env, cwd } = session("s4");
-  const input = { ...valid, evidence_from: "never said this", evidence_to: "errors go to Sentry" };
+  const input = { ...valid, evidenceFrom: "never said this", evidenceTo: "errors go to Sentry" };
   assert.throws(
     () => logEvent(JSON.stringify(input), "s4", { env, cwd }),
-    /evidence_from was not found/,
+    /evidenceFrom was not found/,
   );
   assert.throws(() => readFileSync(eventsFile(cwd, "s4")));
 });
@@ -331,23 +328,23 @@ test("refuses a snippet that matches no message, and writes nothing", () => {
 test("bad field types are refused with a message, before the transcript is read", () => {
   const { env, cwd } = session("s5");
   assert.throws(
-    () => logEvent(JSON.stringify({ ...valid, evidence_from: 1 }), "s5", { env, cwd }),
-    /evidence_from must be text/,
+    () => logEvent(JSON.stringify({ ...valid, evidenceFrom: 1 }), "s5", { env, cwd }),
+    /evidenceFrom must be text/,
   );
   assert.throws(() => logEvent("null", "s5", { env, cwd }), /must be a JSON object/);
 });
 
 test("without a transcript, logs with empty message ids", () => {
   const { env, cwd } = noTranscript();
-  const file = logEvent(JSON.stringify({ ...valid, evidence_to: "x" }), "s9", { env, cwd });
-  assert.equal(readEvents(file)[0].evidence_to_message, "");
+  const file = logEvent(JSON.stringify({ ...valid, evidenceTo: "x" }), "s9", { env, cwd });
+  assert.equal(readEvents(file)[0].evidenceToMessage, "");
 });
 
 test("keeps quotes and newlines in the text intact", () => {
   const { env, cwd } = noTranscript();
   const text = `Don't use "console.log"\nin jobs`;
-  const file = logEvent(JSON.stringify({ ...valid, proposed_learning: text }), "s2", { env, cwd });
-  assert.equal(readEvents(file)[0].proposed_learning, text);
+  const file = logEvent(JSON.stringify({ ...valid, proposedLearning: text }), "s2", { env, cwd });
+  assert.equal(readEvents(file)[0].proposedLearning, text);
 });
 
 test("refuses an invalid event and writes nothing", () => {
