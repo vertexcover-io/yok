@@ -4,9 +4,7 @@ import {
   type HookDeps,
   type PreToolUseHandler,
   readPolicies,
-  readState,
   registryPath,
-  runDirOf,
   spawn,
   type ToolCall,
   type ToolUse,
@@ -88,10 +86,10 @@ export const recordResumed: PreToolUseHandler = {
   run: async (use, deps) => {
     if (use.subagent) return ALLOW;
     try {
-      const run = await findSessionRun(use, deps);
-      if (run === undefined) return ALLOW;
-      const state = await readState(runDirOf(run.cwd, run.name));
-      if (state?.status !== "blocked" || state.blocker === undefined) return ALLOW;
+      const found = await findSessionState(use, deps);
+      if (found === undefined) return ALLOW;
+      const { run, state } = found;
+      if (state.status !== "blocked" || state.blocker === undefined) return ALLOW;
       const { reason } = state.blocker;
       const payload = { agent: use.agent, sessionId: use.sessionId, reason, tool: use.toolName };
       // Another call may have closed the blocker since the read above.
