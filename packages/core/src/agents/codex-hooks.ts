@@ -62,7 +62,11 @@ const toToolCalls = (
   toolInput: Readonly<Record<string, unknown>>,
 ): readonly ToolCall[] => {
   // read first: a question call has no command, so the parse below would drop it
-  if (toolName === QUESTION_TOOL) return [parseQuestionCall(toolInput)];
+  if (toolName === QUESTION_TOOL) {
+    const call = parseQuestionCall(toolInput);
+    // the tool's name makes it a question, whatever shape its input takes
+    return [call.kind === "question" ? call : { kind: "question", questions: [] }];
+  }
   const parsed = ToolCommandSchema.safeParse(toolInput);
   if (!parsed.success) return [];
   const command = parsed.data;

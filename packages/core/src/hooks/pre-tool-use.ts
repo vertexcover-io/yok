@@ -136,7 +136,8 @@ export const bashAntipatterns: PreToolUseHandler = {
 export const questionNotice: PreToolUseHandler = {
   name: "question-notice",
   run: async ({ agent, sessionId, toolUseId, call }, deps) => {
-    if (call.kind !== "question") return ALLOW;
+    // a question whose input could not be read has nothing to post
+    if (call.kind !== "question" || call.questions.length === 0) return ALLOW;
     // question-guard refuses it, so it is never asked and must not mark the run as waiting
     const found = await findSessionState({ agent, sessionId }, deps);
     if (found !== undefined && !readPolicies(found.state.policies).interaction) return ALLOW;

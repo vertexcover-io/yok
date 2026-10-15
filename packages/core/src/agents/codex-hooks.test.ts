@@ -226,6 +226,22 @@ describe("codexAdapter.preToolUse", () => {
     expect(allowed).toBe("");
   });
 
+  test("request_user_input is refused on a run with interaction off even when its input is not shaped like Claude's question", async () => {
+    const ask = JSON.stringify({
+      session_id: "s1",
+      tool_name: "request_user_input",
+      tool_input: { questions: [{ id: "db", question: "Which database?", options: null }] },
+      cwd: "/repo",
+    });
+    const off = await openAgentRun(INTERACTION_OFF);
+
+    const refused = (await codexAdapter.preToolUse?.(ask, off.deps, questionGuard)) ?? "";
+
+    expect(JSON.parse(refused || "{}")).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+  });
+
   test("SC10: other tools, harmless commands and unreadable input pass silently", async () => {
     const allowed = [
       stdin("Read", { command: TARGET }),
