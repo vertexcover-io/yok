@@ -274,7 +274,10 @@ const setUp = async (
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const config = { path: null, root: cwd };
-  await writeFile(join(runDir, "state.json"), JSON.stringify({ ...seed, ...overrides, nodeRuns, config }));
+  await writeFile(
+    join(runDir, "state.json"),
+    JSON.stringify({ ...seed, ...overrides, nodeRuns, config }),
+  );
   return { runDir, cwd, deps: { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger } };
 };
 
@@ -453,7 +456,10 @@ describe("runStopHook", () => {
     const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const worked = (commands: number): TranscriptEntry[] => [
       { kind: "prompt", text: "go" },
-      ...Array.from({ length: commands }, (_, i) => ({ kind: "command" as const, command: `t${i}` })),
+      ...Array.from({ length: commands }, (_, i) => ({
+        kind: "command" as const,
+        command: `t${i}`,
+      })),
     ];
 
     await runStopHook(input(worked(1)), deps);
@@ -465,11 +471,7 @@ describe("runStopHook", () => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
     });
-    expect(reasons).toEqual([
-      "node-not-done",
-      "node-not-done",
-      "unanswered-stop",
-    ]);
+    expect(reasons).toEqual(["node-not-done", "node-not-done", "unanswered-stop"]);
   });
 
   test("a block that cannot be logged lets the turn end, so an unsaved count can't trap the session", async () => {
