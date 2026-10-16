@@ -107,19 +107,18 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
    - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
      `input` as its data, then finish it with the reply's `done` command the same way as a stage.
    - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. Start a
-     background subagent (the reference names the tool) on the reply's `tier` when present.
-     Brief it to do the node as the `mode: inline` steps above say, with the reply's fields, and:
+     background subagent on the reply's `tier` when present. Brief it to do the node as the
+     `mode: inline` steps above say, with the reply's fields, and:
      - send you its questions and approval requests and wait, instead of asking the user or
        running `await-approval`;
      - end with a `YOK-RESULT` line and a JSON object of `output`, `summary` and `artifacts`, or
        a `YOK-ERROR` line and the reason, instead of running `done`;
      - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
 
-     Relay its questions to the user and send back the answers. For an approval, run
-     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn asking
-     the user to approve in the viewer or here, then send it each `[review]` message and the
-     approval. When it ends, run `done` with its result, or with `--error -` and its reason.
-     When `done` asks for a fix, send the issues back to it.
+     Relay its questions to the user and send back the answers. For an approval request, run
+     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn, then send
+     it each `[review]` message and the approval. When it ends, run `done` with its result, or
+     with `--error -` and its reason. When `done` asks for a fix, send the issues back to it.
    - `context`: tell the user `↻ NODE_ID: ACTION` (the reply's `nodeId` and `action`, e.g.
      `↻ fresh: new`), then end the turn at once, without running any other command. The work
      starts once the turn is over: for `new` the yok replaces this session with a fresh one,
