@@ -83,7 +83,7 @@ a complete plan.
 | `## Test Matrix` | requirements exist — one row per requirement |
 | `## Acceptance` | something is provable only after every phase lands |
 | `## Deferred` | work was deliberately excluded, or the design deferred it |
-| `## Assumptions` | the run has interaction off and the plan took a decision without asking |
+| `## Assumptions` | the plan took a decision without asking anyone |
 | `## Design System` | a project extension produced a component inventory — that extension owns the section's shape |
 
 No status fields — progress derives from git and the digraph. No file inventory, no patterns

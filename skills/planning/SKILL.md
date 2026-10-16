@@ -58,10 +58,6 @@ Standalone with no approved `design.md`, run the `design` skill first.
 what it already answers. When the code disproves it, that goes to the user (step 3), and only
 their answer changes `design.md`.
 
-When the reply's `policies.interaction` is false, no one answers: settle each decision by the
-orchestrate skill's policies reference, and list what you decided under `## Assumptions` in
-`plan.md`.
-
 **Never assume.** State a claim about the code only after you read the code, the user confirmed
 it, or you labeled it an assumption.
 

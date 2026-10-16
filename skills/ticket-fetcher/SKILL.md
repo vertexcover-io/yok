@@ -86,9 +86,7 @@ this skill and the provider's reference list.
    - the `ticket.json` format: `TicketSchema` in `scripts/ticket.ts`. Each downloaded asset's
      `path` is one flat filename in that folder.
 5. When the ticket is clear but has no ID and the provider's search returns several candidates,
-   ask the user to choose with `AskUserQuestion`. Do not pick one yourself. When the reply's
-   `policies.interaction` is false, never ask: pick only when one candidate matches the
-   ticket's text and state it in the summary, else fail with the candidates listed.
+   ask the user to choose with `AskUserQuestion`. Do not pick one yourself.
 6. Run the `validate` script with `validate .yok/RUN/artifacts/ticket`. On issues, fix
    `ticket.json` or the files and run it again. A partial bundle is fine: set `complete` to `false` and list each
    file that could not be fetched as an `unavailable` asset with its reason.

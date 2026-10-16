@@ -89,7 +89,7 @@ One line: what this locks in (a table, a public contract, a dependency), or "not
 - What you could not settle about the task itself, and what you assumed.
 
 ## Assumptions
-- With interaction off: each decision taken without asking, and the answer used.
+- Each decision taken without asking anyone, and the answer used.
 
 ## Open questions
 D3: … — blocked-by: D1 · open
@@ -118,8 +118,7 @@ D3: … — blocked-by: D1 · open
 - **Risks**: gaps in the task that bite, not a checklist. Each says what it costs if ignored.
 - **Hard to undo**: a changed contract every caller sees, a new table, a new runtime dependency.
 - **Unsure**: the agent's own gaps in reading the task, not risks in the system.
-- **Assumptions**: only in a run with interaction off; every decision the design took without
-  asking.
+- **Assumptions**: only when a decision was taken without asking; every such decision.
 - **Open questions**: working state, removed at approval.
 - No component table, contract sketches, failure tables, phases or test plans. Those belong to
   planning.
