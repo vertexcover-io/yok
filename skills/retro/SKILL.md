@@ -39,15 +39,6 @@ The retro writes one file, `.yok/RUN/artifacts/retro.md`, where RUN is the run's
 Standalone, with a transcript path and no run, it writes `retro.md` in the current directory. The
 reader builds yok and has never heard of the task, the repo, or the product.
 
-## Where it runs
-
-By default this stage runs in its own subagent, when the agent supports one. In a pipeline run,
-orchestrate starts that subagent; this skill does not.
-
-When nothing started a subagent for you, as in a standalone `/yok:retro` or an agent that runs
-every node inline, start one yourself with this page as its brief, if you can. Finish the stage
-from its report.
-
 Gather before Step 0:
 
 - RUN, the extraction folder `.yok/RUN/retro`, and the report path. Standalone, the transcript
