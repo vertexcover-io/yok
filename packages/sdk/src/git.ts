@@ -23,6 +23,7 @@ export interface IGit {
   ): Promise<Result<void>>;
   listWorktrees(cwd: string): Promise<Result<readonly WorktreeEntry[]>>;
   removeWorktree(cwd: string, path: string, options?: { force?: boolean }): Promise<Result<void>>;
+  clone(cwd: string, url: string, dest: string): Promise<Result<void>>;
 }
 
 const parseWorktreeBlock = (block: string): WorktreeEntry => {
@@ -139,6 +140,12 @@ export const createGit = (exec: Exec = execWithTimeout(GIT_TIMEOUT_MS)): IGit =>
     removeWorktree: async (cwd, path, options) => {
       const force = options?.force === true ? ["--force"] : [];
       const { code, stderr } = await run(cwd, ["worktree", "remove", ...force, path]);
+      return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
+    },
+
+    // "--" stops a URL that starts with "-" from being read as an option.
+    clone: async (cwd, url, dest) => {
+      const { code, stderr } = await run(cwd, ["clone", "--quiet", "--", url, dest]);
       return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
     },
   };

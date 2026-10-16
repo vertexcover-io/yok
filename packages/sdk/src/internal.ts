@@ -35,6 +35,7 @@ export {
   type ModuleError,
   runLockPath,
   runScriptFile,
+  stringifyYaml,
 } from "./files.ts";
 export { devPluginDir, isCompiled, prependPath, selfArgv, writeShim } from "./process.ts";
 export {
