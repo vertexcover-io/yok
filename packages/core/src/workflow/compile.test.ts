@@ -1205,6 +1205,21 @@ describe("the shipped task workflow", () => {
       "binary:gh",
     ]);
   });
+
+  test("runs learn after planning, before the compact, and a learn failure never stops the run", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+
+    expect(plan.nodes.find((node) => node.id === "learn")).toMatchObject({
+      stage: { ref: "learn" },
+      dependsOn: ["planning"],
+      allowFailure: true,
+    });
+    expect(plan.nodes.find((node) => node.id === "compact-after-planning")?.dependsOn).toEqual([
+      "learn",
+    ]);
+  });
 });
 
 describe("the shipped regression workflow", () => {

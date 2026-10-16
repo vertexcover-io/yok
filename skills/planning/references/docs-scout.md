@@ -21,11 +21,20 @@ Filter from cheapest to most expensive read; stop opening a file the moment it p
    apply after all.
 5. **Read the full file** of what remains.
 
+## Learnings
+
+Rules the team agreed on after correcting an agent, in `docs/learnings/`.
+
+1. **Read `docs/learnings/index.md`.** Each line is `[title](file) — signal`; the signal says when
+   the learning applies.
+2. **Pick from the index.** Keep a line when its signal matches something the task will do.
+3. **Read each kept file.** Drop it when its `paths` cannot match a file the task touches.
+
 ## Other docs
 
-Everything under `docs/` except `docs/adr/`. List the files; judge each by its path and headings
-first. Open only those that describe a part of the system the task touches, and read the sections
-that bind it — a contract, a constraint, a convention the code must follow.
+Everything under `docs/` except `docs/adr/` and `docs/learnings/`. List the files; judge each by
+its path and headings first. Open only those that describe a part of the system the task touches,
+and read the sections that bind it — a contract, a constraint, a convention the code must follow.
 
 ## Returns
 
@@ -34,6 +43,7 @@ One line per doc that binds the task, nothing for the rest:
 ```
 docs/adr/0003-postgres-only-datastore.md — embeddings must stay in Postgres
 docs/architecture/search.md#ranking — results are ranked server-side, never in the client
+docs/learnings/report-caught-errors-to-sentry.md — jobs send caught errors to Sentry, not console.log
 ```
 
 **Best-effort.** No `docs/`, no `docs/adr/INDEX.md`, or nothing relevant — return one line saying
