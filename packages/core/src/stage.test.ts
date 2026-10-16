@@ -557,3 +557,72 @@ describe("the shipped skills", () => {
     expect(result.value.frontmatter.outputs?.schema).toBe("qa.output.v1");
   });
 });
+
+describe("the real find-factors skill", () => {
+  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "find-factors");
+
+  test("SC1: loads as an inline stage with no output schema that consumes nothing and produces factors", async () => {
+    const result = await loadSkill(skillDir, projectScope(dir));
+    if (!result.ok) throw new Error(result.error);
+    const { frontmatter } = result.value;
+    expect(frontmatter.mode).toBe("inline");
+    expect(frontmatter.outputs).toBeUndefined();
+    expect(frontmatter.consumes).toBeUndefined();
+    expect(frontmatter.produces).toEqual([{ artifact: "factors", optional: false }]);
+  });
+});
+
+describe("the real write-scenarios skill", () => {
+  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "write-scenarios");
+
+  test("SC2: loads as an inline stage with no output schema that turns factors into a plan", async () => {
+    const result = await loadSkill(skillDir, projectScope(dir));
+    if (!result.ok) throw new Error(result.error);
+    const { frontmatter } = result.value;
+    expect(frontmatter.mode).toBe("inline");
+    expect(frontmatter.outputs).toBeUndefined();
+    expect(frontmatter.consumes).toEqual([{ artifact: "factors", optional: false }]);
+    expect(frontmatter.produces).toEqual([{ artifact: "plan", optional: false }]);
+  });
+});
+
+describe("the real write-regression-tests skill", () => {
+  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "write-regression-tests");
+
+  test("SC4: loads as an inline stage with no output schema or references that turns a plan into an implementation", async () => {
+    const result = await loadSkill(skillDir, projectScope(dir));
+    if (!result.ok) throw new Error(result.error);
+    const { frontmatter, references } = result.value;
+    expect(frontmatter.mode).toBe("inline");
+    expect(frontmatter.outputs).toBeUndefined();
+    expect(frontmatter.consumes).toEqual([{ artifact: "plan", optional: false }]);
+    expect(frontmatter.produces).toEqual([{ artifact: "implementation", optional: false }]);
+    expect(references).toEqual({});
+  });
+});
+
+describe("the real review-regression-tests skill", () => {
+  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "review-regression-tests");
+
+  test("SC7: loads as an inline stage that reviews the tests against the plan, with its verdict schema and review brief", async () => {
+    const result = await loadSkill(skillDir, projectScope(dir));
+    if (!result.ok) throw new Error(result.error);
+    const { frontmatter, references } = result.value;
+    expect(frontmatter.mode).toBe("inline");
+    expect(frontmatter.outputs).toMatchObject({
+      schema: "review-regression-tests.output.v1",
+      module: "scripts/review.ts",
+    });
+    expect(frontmatter.consumes).toEqual([{ artifact: "plan", optional: false }]);
+    expect(frontmatter.produces).toEqual([{ artifact: "test-review", optional: false }]);
+    expect(Object.keys(references)).toEqual(["review"]);
+    const review = join(skillDir, "references", "review.md");
+    expect(references.review).toMatchObject({ kind: "file", path: review });
+  });
+
+  test("SC7: the code-review testing persona its review borrows resolves to a file", async () => {
+    const codeReview = await loadSkill(join(skillDir, "..", "code-review"), projectScope(dir));
+    if (!codeReview.ok) throw new Error(codeReview.error);
+    expect(findReference(codeReview.value, "testing")).toMatchObject({ ok: true });
+  });
+});

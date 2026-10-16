@@ -14,6 +14,8 @@
       "skills/code-review/**",
       "!skills/code-review/references",
       "!skills/code-review/evals",
+      "skills/review-regression-tests/**",
+      "!skills/review-regression-tests/references",
       "skills/learn/**",
       "!skills/learn/evals",
       "*.json",

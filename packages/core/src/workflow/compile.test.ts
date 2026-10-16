@@ -1221,3 +1221,123 @@ describe("the shipped task workflow", () => {
     ]);
   });
 });
+
+describe("the shipped regression workflow", () => {
+  const REGRESSION_WORKFLOW = join(
+    import.meta.dir,
+    "..",
+    "..",
+    "..",
+    "..",
+    "workflows",
+    "regression.yaml",
+  );
+
+  test("SC3: runs find-factors then write-scenarios right after create-workspace, each fed the task and the workspace, with baseline after them", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+    const input = {
+      flow: "{{ nodes.ticket-fetcher.output.task }}",
+      workspace: "{{ nodes.create-workspace.output }}",
+    };
+
+    expect(plan.inputs.prompt).toMatchObject({ type: "string", required: true });
+    expect(plan.nodes.slice(0, 5)).toMatchObject([
+      { id: "ticket-fetcher" },
+      { id: "create-workspace" },
+      {
+        id: "find-factors",
+        stage: { ref: "find-factors" },
+        dependsOn: ["create-workspace"],
+        input,
+      },
+      {
+        id: "write-scenarios",
+        stage: { ref: "write-scenarios" },
+        dependsOn: ["find-factors"],
+        input,
+      },
+      { id: "baseline", dependsOn: ["write-scenarios"] },
+    ]);
+  });
+
+  test("SC5: writes the tests, reviews them in a loop, then commits, opens the PR and runs retro, with no implement or code-review node", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+    const workspace = "{{ nodes.create-workspace.output }}";
+
+    expect(plan.nodes.map((node) => node.id)).toEqual([
+      "ticket-fetcher",
+      "create-workspace",
+      "find-factors",
+      "write-scenarios",
+      "baseline",
+      "compact-after-scenarios",
+      "write-regression-tests",
+      "compact-after-tests",
+      "review-loop",
+      "compact-after-review",
+      "commit",
+      "pr",
+      "retro",
+    ]);
+    expect(plan.nodes.slice(-7)).toMatchObject([
+      {
+        id: "write-regression-tests",
+        stage: { ref: "write-regression-tests" },
+        input: { workspace },
+      },
+      { id: "compact-after-tests", type: "context", action: "compact" },
+      { id: "review-loop", dependsOn: ["compact-after-tests"] },
+      { id: "compact-after-review", type: "context", action: "compact" },
+      { id: "commit", stage: { ref: "git-commit" }, input: { workspace } },
+      {
+        id: "pr",
+        stage: { ref: "visual-pr" },
+        input: { workspace, task: "{{ nodes.ticket-fetcher.output.task }}" },
+      },
+      { id: "retro", stage: { ref: "retro" }, always: true, allowFailure: true },
+    ]);
+  });
+
+  test("SC6: the review loop reviews the tests, then has write-regression-tests fix the findings unless approved or on the last pass", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "review-loop")).toMatchObject({
+      type: "loop",
+      until:
+        "{{ iteration.nodes.review-regression-tests.output.verdict == 'APPROVED' or iteration.index == iteration.max }}",
+      maxIterations: 2,
+      input: { workspace: "{{ nodes.create-workspace.output }}" },
+      nodes: [
+        {
+          id: "review-regression-tests",
+          stage: {
+            ref: "review-regression-tests",
+            output: { name: "review-regression-tests.output.v1" },
+          },
+          input: {
+            workspace: "{{ inputs.workspace }}",
+            round: "{{ iteration.index }}",
+            rounds: "{{ iteration.max }}",
+          },
+        },
+        {
+          id: "compact-before-fix",
+          type: "context",
+          action: "compact",
+          dependsOn: ["review-regression-tests"],
+          when: "{{ nodes.review-regression-tests.output.verdict != 'APPROVED' and iteration.index < iteration.max }}",
+        },
+        {
+          id: "fix-tests",
+          stage: { ref: "write-regression-tests" },
+          dependsOn: ["compact-before-fix"],
+          input: {
+            workspace: "{{ inputs.workspace }}",
+            fixes: "{{ nodes.review-regression-tests.output.findings }}",
+            round: "{{ iteration.index }}",
+          },
+        },
+      ],
+    });
+  });
+});

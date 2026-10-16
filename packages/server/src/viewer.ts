@@ -194,6 +194,26 @@ markdown.core.ruler.push("source-lines", (state) => {
   }
   return true;
 });
+// A list item starting with [ ] or [x] shows a checkbox, which the page lets a person click only
+// while its file waits for approval.
+const TASK_MARK = /^\[([ xX])\] /;
+markdown.core.ruler.push("task-items", (state) => {
+  state.tokens.forEach((token, index) => {
+    const inline = state.tokens[index + 2];
+    const first = inline?.children?.[0];
+    if (token.type !== "list_item_open" || inline?.type !== "inline" || first?.type !== "text") {
+      return;
+    }
+    const mark = TASK_MARK.exec(first.content);
+    if (mark === null) return;
+    first.content = first.content.slice(mark[0].length);
+    token.attrJoin("class", "task");
+    const box = new state.Token("html_inline", "", 0);
+    box.content = `<input type="checkbox" class="task-box" disabled${mark[1] === " " ? "" : " checked"}>`;
+    inline.children = [box, ...(inline.children ?? [])];
+  });
+  return true;
+});
 
 export type RepoFiles = Readonly<{
   read: (path: string) => string | null;
