@@ -2,15 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Event, EventSchema, runDirOf } from "@yok/sdk";
-import {
-  citeLines,
-  extractMain,
-  extractRun,
-  findGateTime,
-  readRunSessions,
-  readStages,
-} from "./retro.ts";
+import { type Event, EventSchema, readRunSessions, runDirOf } from "@yok/sdk";
+import { citeLines, extractMain, extractRun, findGateTime, readStages } from "./retro.ts";
 
 const at = (minute: number): string => `2026-10-03T10:${String(minute).padStart(2, "0")}:00Z`;
 

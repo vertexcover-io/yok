@@ -306,6 +306,7 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [visual-pr](./skills/visual-pr/README.md) | Creates or updates a PR with a visual change outline and validation evidence |
 | [resolve-merge-conflict](./skills/resolve-merge-conflict/README.md) | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent |
 | [test-audit](./skills/test-audit/README.md) | Finds broken, flaky, slow and redundant tests, then proposes and applies a cleanup plan |
+| [learn](./skills/learn/README.md) | Turns a correction into a short learning in `docs/learnings/` after you pick between fixes, and logs every proposal |
 | [adr](./skills/adr/README.md) | Records one architecture decision in `docs/adr/` and adds it to the index |
 | [retro](./skills/retro/README.md) | Audits a finished run's transcripts and writes a ranked report of yok defects |
 | [ticket-fetcher](./skills/ticket-fetcher/README.md) | Fetches a Linear or Asana ticket into a bundle the other stages read |

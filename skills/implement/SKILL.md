@@ -45,6 +45,9 @@ A list of things to fix is the `fix` skill's job, not this one's.
 
 Run `yok orchestrate skill ref implement.working-instructions` and follow its Commands section.
 
+With no `plan.md`, read `docs/learnings/index.md` and open the learnings whose signal or `paths`
+match the files you will change; a plan already lists the ones that apply under `## Project Docs`.
+
 ### Reading the plan
 
 `plan.md` carries the overview, the `## Phases` digraph, `## Design References`, `## ADRs` and

@@ -14,6 +14,8 @@
       "skills/code-review/**",
       "!skills/code-review/references",
       "!skills/code-review/evals",
+      "skills/learn/**",
+      "!skills/learn/evals",
       "*.json",
       "!packages/cli/src/sdk-types.json",
       "!!.worktrees"
