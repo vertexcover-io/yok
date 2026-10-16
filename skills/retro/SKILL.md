@@ -39,17 +39,14 @@ The retro writes one file, `.yok/RUN/artifacts/retro.md`, where RUN is the run's
 Standalone, with a transcript path and no run, it writes `retro.md` in the current directory. The
 reader builds yok and has never heard of the task, the repo, or the product.
 
-## Runs in a subagent
+## Where it runs
 
-This stage's `mode` is `subagent`, so the orchestrate session hands it to a fresh subagent. Two
-reasons. **Fresh context is the point:** an auditor that carries the run's own reasoning
-inherits the run's blind spots, and agrees with the decisions it is meant to question. **The
-transcript is complete:** the retro reads the session transcript, and the parent's is complete
-through the moment it handed the stage off.
+By default this stage runs in its own subagent, when the agent supports one. In a pipeline run,
+orchestrate starts that subagent; this skill does not.
 
-When nothing handed this stage to a subagent, as in a standalone `/yok:retro` or a run whose agent
-runs every node inline, start one sub-agent with this page as its brief, if you can. Finish the
-stage from its report.
+When nothing started a subagent for you, as in a standalone `/yok:retro` or an agent that runs
+every node inline, start one yourself with this page as its brief, if you can. Finish the stage
+from its report.
 
 Gather before Step 0:
 
