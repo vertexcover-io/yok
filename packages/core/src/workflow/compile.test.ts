@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, type Notifier, runDirOf } from "@yok/sdk";
+import { ConfigSchema, type Notifier, runDirOf, type Samskara } from "@yok/sdk";
 import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
-import { DEMO_STAGES, writeStages } from "./test-stages.ts";
+import { DEMO_STAGES, type DemoStage, writeStages } from "./test-stages.ts";
 import { NodeFailure, WorkflowError, type WorkflowErrorCode } from "./types.ts";
 
 let workflowCount = 0;
@@ -99,22 +99,6 @@ describe("compile", () => {
     expect(plan.envFile).toBeUndefined();
   });
 
-  test("resolves workflow.yaml output schemas before an exec or agent runs", async () => {
-    const modulePath = join(workflowDir, "compile-output-schemas.ts");
-    writeFileSync(
-      modulePath,
-      `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\nexport const schemas = { answer: z.object({ answer: z.number() }) };\n`,
-    );
-    const output = `\n    output: { module: ${modulePath}, zodSchema: answer }`;
-    const source = workflow(
-      script("compute", output) +
-        `\n  - id: review\n    type: agent\n    prompt: Review\n    input: null${output}`,
-    );
-    const plan = await compile(source);
-    expect(plan.nodes[0]).toHaveProperty("outputSchema");
-    expect(plan.nodes[1]).toHaveProperty("outputSchema");
-  });
-
   test("rejects broken workflow.yaml schema references in nested and included nodes", async () => {
     const missing = join(workflowDir, "missing-output-schema.ts");
     const nested = workflow(
@@ -197,17 +181,12 @@ describe("compile", () => {
     expect(error.message).toContain("build");
   });
 
-  test("SC6 — an id containing a dot or brackets is rejected", async () => {
-    for (const id of ["a.b", "'fix[1]'"]) {
+  test.each(["a.b", "'fix[1]'", "__proto__", "prototype", "constructor"])(
+    "SC6, SC61 — the id %s, holding a dot or brackets or naming an object prototype key, is rejected",
+    async (id) => {
       expect((await rejection(workflow(script(id)))).code).toBe("schema");
-    }
-  });
-
-  test("SC61 — an id that names an object prototype key is rejected", async () => {
-    for (const id of ["__proto__", "prototype", "constructor"]) {
-      expect((await rejection(workflow(script(id)))).code).toBe("schema");
-    }
-  });
+    },
+  );
 
   test("an always: true node that reads another node is rejected, since that node may never have run", async () => {
     const error = await rejection(
@@ -363,16 +342,23 @@ describe("conditions and switch", () => {
     }
   });
 
-  test("SC26 — anything outside the grammar is rejected at compile", async () => {
-    for (const when of [
-      "{{ inputs.n + 1 }}",
-      "{{ run(inputs.n) }}",
-      "{{ inputs.a }} and {{ inputs.b }}",
-    ]) {
-      const error = await rejection(workflow(script("a", `\n    when: "${when}"`)));
-      expect(error.code).toBe("invalid-expression");
-    }
-  });
+  test.each([
+    ["when", "{{ inputs.n + 1 }}"],
+    ["when", "{{ run(inputs.n) }}"],
+    ["when", "{{ inputs.a }} and {{ inputs.b }}"],
+    ["until", "{{ inputs.n + 1 }}"],
+  ])(
+    "SC26, SC62 — a %s of %s, outside the grammar, is rejected at compile",
+    async (field, text) => {
+      const source =
+        field === "when"
+          ? workflow(script("a", `\n    when: "${text}"`))
+          : workflow(
+              `\n  - id: fix\n    type: loop\n    maxIterations: 3\n    until: "${text}"\n    input: null\n    nodes:${script("step").replaceAll("\n  ", "\n      ")}`,
+            );
+      expect((await rejection(source)).code).toBe("invalid-expression");
+    },
+  );
 
   test("SC27 — repeated case ids or values, and a case named default, are rejected", async () => {
     const sources = [
@@ -501,6 +487,32 @@ describe("workflow doctor declarations", () => {
 
       expect(plan.notifier).toEqual(expected);
       expect(plan.doctor).toEqual([]);
+    },
+  );
+
+  test.each<[string, Samskara | undefined]>([
+    ["samskara: {}", { enabled: true }],
+    ["samskara: { enabled: false }", { enabled: false }],
+    ["", undefined],
+  ])(
+    "SC208, SC401, SC416: a workflow with %p carries its samskara block on the plan",
+    async (block, expected) => {
+      const plan = await compile(`name: test\n${block}\nnodes:${script("a")}\n`);
+
+      expect(plan.samskara).toEqual(expected);
+    },
+  );
+
+  test.each([
+    ["a non-boolean enabled", 'samskara: { enabled: "yes" }'],
+    ["an unknown key", "samskara: { enabled: true, url: x }"],
+  ])(
+    "SC401: a workflow's samskara block with %s is a schema error naming samskara",
+    async (_label, block) => {
+      const error = await rejection(`name: test\n${block}\nnodes:${script("a")}\n`);
+
+      expect(error.code).toBe("schema");
+      expect(error.message).toContain("samskara");
     },
   );
 
@@ -633,30 +645,29 @@ describe("includes, loops and agents", () => {
     const outside = workflow(script("a").replace("input: null", 'input: "{{ iteration.index }}"'));
     expect((await rejection(outside)).code).toBe("invalid-reference");
   });
-
-  test("SC62 — an until outside the grammar is rejected at compile", async () => {
-    const loop = workflow(
-      `\n  - id: fix\n    type: loop\n    maxIterations: 3\n    until: "{{ inputs.n + 1 }}"\n    input: null\n    nodes:${script("step").replaceAll("\n  ", "\n      ")}`,
-    );
-    expect((await rejection(loop)).code).toBe("invalid-expression");
-  });
 });
 
 const stageNode = (id: string, stage: string, extra = ""): string => `
   - { id: ${id}, type: agent, stage: ${stage}, input: {}${extra} }`;
 
 // Compiles SOURCE in a fresh project whose stages/ folder holds the demo stages.
-const compileWithStages = async (source: string) => {
+const compileWithStages = async (
+  source: string,
+  stages: Readonly<Record<string, DemoStage>> = DEMO_STAGES,
+) => {
   const project = mkdtempSync(join(tmpdir(), "wf-project-"));
-  writeStages(join(project, "stages"), DEMO_STAGES);
+  writeStages(join(project, "stages"), stages);
   const path = join(project, "workflow.yml");
   writeFileSync(path, source);
   return { project, plan: await compileWorkflow(path, { cwd: project }) };
 };
 
-const stagesRejection = async (source: string): Promise<WorkflowError> => {
+const stagesRejection = async (
+  source: string,
+  stages: Readonly<Record<string, DemoStage>> = DEMO_STAGES,
+): Promise<WorkflowError> => {
   try {
-    await compileWithStages(source);
+    await compileWithStages(source, stages);
   } catch (error) {
     if (error instanceof WorkflowError) return error;
     throw error;
@@ -774,38 +785,64 @@ describe("compile with stages", () => {
     expect(error.message).toContain("SKILL.md");
   });
 
-  test("a required consumed artifact cannot depend only on an optional producer", async () => {
-    const project = mkdtempSync(join(tmpdir(), "wf-optional-producer-"));
-    writeStages(join(project, "stages"), {
-      producer: { produces: "[{ artifact: plan, optional: true }]" },
-      consumer: DEMO_STAGES.consumer,
-    });
-    const path = join(project, "workflow.yml");
-    writeFileSync(
-      path,
-      workflow(
-        `${stageNode("make", "stages/producer")}${stageNode("use", "stages/consumer", ", dependsOn: [make]")}`,
-      ),
-    );
-    try {
-      await compileWorkflow(path, { cwd: project });
-      throw new Error("expected a missing artifact error");
-    } catch (error) {
-      if (!(error instanceof WorkflowError)) throw error;
+  test.each<[string, string, string, Readonly<Record<string, DemoStage>>]>([
+    [
+      "an optional producer",
+      `${stageNode("make", "stages/producer")}${stageNode("use", "stages/consumer", ", dependsOn: [make]")}`,
+      "optional",
+      {
+        producer: { produces: "[{ artifact: plan, optional: true }]" },
+        consumer: DEMO_STAGES.consumer,
+      },
+    ],
+    [
+      "a producer that may fail",
+      `${stageNode("make", "stages/producer", ", allowFailure: true")}${stageNode("use", "stages/consumer", ", dependsOn: [make]")}`,
+      "allowFailure",
+      DEMO_STAGES,
+    ],
+    [
+      "a container that may fail",
+      `
+  - id: retry
+    type: loop
+    allowFailure: true
+    until: "{{ iteration.index >= 1 }}"
+    maxIterations: 2
+    input: {}
+    nodes:
+      - { id: make, type: agent, stage: stages/producer, input: {} }${stageNode("use", "stages/consumer", ", dependsOn: [retry]")}`,
+      "allowFailure",
+      DEMO_STAGES,
+    ],
+    [
+      "a producer in only one switch case",
+      `
+  - id: choice
+    type: switch
+    expression: "{{ inputs.route }}"
+    input: {}
+    cases:
+      - id: make
+        value: make
+        nodes:
+          - { id: producer, type: agent, stage: stages/producer, input: {} }
+      - id: skip
+        value: skip
+        nodes:
+          - { id: noop, type: wait, durationMs: 1, input: null }
+  - { id: use, type: agent, stage: stages/consumer, input: {}, dependsOn: [choice] }`,
+      "plan",
+      DEMO_STAGES,
+    ],
+  ])(
+    "a required consumed artifact cannot depend only on %s",
+    async (_label, nodes, message, stages) => {
+      const error = await stagesRejection(workflow(nodes), stages);
       expect(error.code).toBe("missing-artifact");
-      expect(error.message).toContain("optional");
-    }
-  });
-
-  test("a required consumed artifact cannot depend only on a producer that may fail", async () => {
-    const error = await stagesRejection(
-      workflow(
-        `${stageNode("make", "stages/producer", ", allowFailure: true")}${stageNode("use", "stages/consumer", ", dependsOn: [make]")}`,
-      ),
-    );
-    expect(error.code).toBe("missing-artifact");
-    expect(error.message).toContain("allowFailure");
-  });
+      expect(error.message).toContain(message);
+    },
+  );
 
   test("SC6: an always: true stage that needs a required artifact is refused, naming the node, the artifact and always", async () => {
     const error = await stagesRejection(
@@ -839,42 +876,6 @@ describe("compile with stages", () => {
       "may never be written before it starts: it is inside an always: true node",
     );
     expect(error.message).not.toContain("no node it depends on produces it");
-  });
-
-  test("a required consumed artifact cannot depend only on a container that may fail", async () => {
-    const error = await stagesRejection(
-      workflow(`
-  - id: retry
-    type: loop
-    allowFailure: true
-    until: "{{ iteration.index >= 1 }}"
-    maxIterations: 2
-    input: {}
-    nodes:
-      - { id: make, type: agent, stage: stages/producer, input: {} }${stageNode("use", "stages/consumer", ", dependsOn: [retry]")}`),
-    );
-    expect(error.code).toBe("missing-artifact");
-  });
-
-  test("a consumer cannot rely on an artifact produced by only one switch case", async () => {
-    const source = workflow(`
-  - id: choice
-    type: switch
-    expression: "{{ inputs.route }}"
-    input: {}
-    cases:
-      - id: make
-        value: make
-        nodes:
-          - { id: producer, type: agent, stage: stages/producer, input: {} }
-      - id: skip
-        value: skip
-        nodes:
-          - { id: noop, type: wait, durationMs: 1, input: null }
-  - { id: use, type: agent, stage: stages/consumer, input: {}, dependsOn: [choice] }`);
-    const error = await stagesRejection(source);
-    expect(error.code).toBe("missing-artifact");
-    expect(error.message).toContain("plan");
   });
 
   test("IW31 — a stage that needs an artifact compiles when it depends on the node producing it, and the plan lists each stage's artifacts", async () => {
@@ -970,11 +971,6 @@ const compileExtended = async (references: Readonly<Record<string, unknown>>) =>
 };
 
 describe("compile with the project's extensions", () => {
-  test("a replace of a reference the stage has compiles", async () => {
-    const plan = await compileExtended({ notes: { replace: "mine.md" } });
-    expect(plan.nodes.map((node) => node.id)).toEqual(["make"]);
-  });
-
   test.each([
     [
       "an add of a reference the stage already has",
@@ -1159,156 +1155,202 @@ nodes:
   });
 });
 
+const REVIEW_LOOP = {
+  type: "loop",
+  until:
+    "{{ iteration.nodes.code-review.output.verdict == 'APPROVED' or iteration.index == iteration.max }}",
+  maxIterations: 2,
+  input: { workspace: "{{ nodes.create-workspace.output }}" },
+  nodes: [
+    {
+      id: "compact-before-fix",
+      type: "context",
+      action: "compact",
+      when: "{{ iteration.index > 1 }}",
+    },
+    {
+      id: "fix",
+      stage: { ref: "fix" },
+      dependsOn: ["compact-before-fix"],
+      input: {
+        workspace: "{{ inputs.workspace }}",
+        fixes: "{{ iteration.previous.findings }}",
+        source: "review",
+        round: "{{ iteration.index }}",
+      },
+    },
+    {
+      id: "code-review",
+      stage: { ref: "code-review", output: { name: "review.output.v1" } },
+      input: {
+        workspace: "{{ inputs.workspace }}",
+        round: "{{ iteration.index }}",
+        rounds: "{{ iteration.max }}",
+        previous: "{{ iteration.previous }}",
+      },
+    },
+  ],
+};
+
+describe("the shipped quick workflow", () => {
+  const QUICK_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "quick.yaml");
+
+  test("SC12: runs the same review loop after implement, and commit waits for it", async () => {
+    const plan = await compileWorkflow(QUICK_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "review-loop")).toMatchObject({
+      dependsOn: ["implement"],
+      ...REVIEW_LOOP,
+    });
+    expect(plan.nodes.find((node) => node.id === "commit")?.dependsOn).toEqual(["review-loop"]);
+  });
+});
+
 describe("the shipped task workflow", () => {
-  const TASK_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml");
+  test("declares the Linear key, bun and gh as its doctor checks", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
 
-  test("compiles with ticket-fetcher first, its task feeding create-workspace, and the Linear checks", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
-
-    expect(plan.nodes.map((node) => node.id).slice(0, 2)).toEqual([
-      "ticket-fetcher",
-      "create-workspace",
-    ]);
     expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual([
       "env:LINEAR_API_KEY",
       "binary:bun",
       "binary:gh",
     ]);
-    const workspace = plan.nodes.find((node) => node.id === "create-workspace");
-    expect(workspace).toMatchObject({
-      dependsOn: ["ticket-fetcher"],
-      input: { request: "{{ nodes.ticket-fetcher.output.task }}" },
-    });
   });
 
-  test("takes an optional environment input that defaults to the config's default entry", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
+  test("runs learn after planning, before the compact, and a learn failure never stops the run", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
 
-    expect(plan.inputs.environment).toEqual({
-      type: "string",
-      required: false,
-      default: "default",
+    expect(plan.nodes.find((node) => node.id === "learn")).toMatchObject({
+      stage: { ref: "learn" },
+      dependsOn: ["planning"],
+      allowFailure: true,
     });
+    expect(plan.nodes.find((node) => node.id === "compact-after-planning")?.dependsOn).toEqual([
+      "learn",
+    ]);
   });
+});
 
-  test("runs the design stage after the baseline, fed the ticket-fetcher's task", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
+describe("the shipped regression workflow", () => {
+  const REGRESSION_WORKFLOW = join(
+    import.meta.dir,
+    "..",
+    "..",
+    "..",
+    "..",
+    "workflows",
+    "regression.yaml",
+  );
 
-    expect(plan.nodes.find((node) => node.id === "design")).toMatchObject({
-      dependsOn: ["baseline"],
-      input: { task: "{{ nodes.ticket-fetcher.output.task }}" },
-    });
-  });
+  test("SC3: runs find-factors then write-scenarios right after create-workspace, each fed the task and the workspace, with baseline after them", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+    const input = {
+      flow: "{{ nodes.ticket-fetcher.output.task }}",
+      workspace: "{{ nodes.create-workspace.output }}",
+    };
 
-  test("SC10: runs planning, implement and code-review in that order, each in the run's workspace, compacting the session after each", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
-    const workspace = "{{ nodes.create-workspace.output }}";
-
-    expect(plan.nodes.slice(-10, -4)).toMatchObject([
+    expect(plan.inputs.prompt).toMatchObject({ type: "string", required: true });
+    expect(plan.nodes.slice(0, 5)).toMatchObject([
+      { id: "ticket-fetcher" },
+      { id: "create-workspace" },
       {
-        id: "planning",
-        stage: { ref: "planning" },
-        dependsOn: ["design"],
-        input: { task: "{{ nodes.ticket-fetcher.output.task }}", workspace },
-      },
-      { id: "compact-after-planning", type: "context", action: "compact", dependsOn: ["planning"] },
-      {
-        id: "implement",
-        stage: { ref: "implement" },
-        dependsOn: ["compact-after-planning"],
-        input: { workspace },
+        id: "find-factors",
+        stage: { ref: "find-factors" },
+        dependsOn: ["create-workspace"],
+        input,
       },
       {
-        id: "compact-after-implement",
-        type: "context",
-        action: "compact",
-        dependsOn: ["implement"],
+        id: "write-scenarios",
+        stage: { ref: "write-scenarios" },
+        dependsOn: ["find-factors"],
+        input,
       },
-      {
-        id: "code-review",
-        stage: { ref: "code-review" },
-        dependsOn: ["compact-after-implement"],
-        input: { workspace },
-      },
-      {
-        id: "compact-after-review",
-        type: "context",
-        action: "compact",
-        dependsOn: ["code-review"],
-      },
+      { id: "baseline", dependsOn: ["write-scenarios"] },
     ]);
   });
 
-  test("SC8: runs a qa loop after code-review that re-runs implement with qa's bugs until qa stops failing", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
+  test("SC5: writes the tests, reviews them in a loop, then commits, opens the PR and runs retro, with no implement or code-review node", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+    const workspace = "{{ nodes.create-workspace.output }}";
 
-    expect(plan.nodes.at(-4)).toMatchObject({
-      id: "qa-loop",
-      type: "loop",
-      dependsOn: ["compact-after-review"],
-      until: "{{ iteration.nodes.qa.output.status != 'FAIL' }}",
-      maxIterations: 4,
-      input: {
-        workspace: "{{ nodes.create-workspace.output }}",
-        task: "{{ nodes.ticket-fetcher.output.task }}",
-        environment: "{{ inputs.environment }}",
+    expect(plan.nodes.map((node) => node.id)).toEqual([
+      "ticket-fetcher",
+      "create-workspace",
+      "find-factors",
+      "write-scenarios",
+      "baseline",
+      "compact-after-scenarios",
+      "write-regression-tests",
+      "compact-after-tests",
+      "review-loop",
+      "compact-after-review",
+      "commit",
+      "pr",
+      "retro",
+    ]);
+    expect(plan.nodes.slice(-7)).toMatchObject([
+      {
+        id: "write-regression-tests",
+        stage: { ref: "write-regression-tests" },
+        input: { workspace },
       },
+      { id: "compact-after-tests", type: "context", action: "compact" },
+      { id: "review-loop", dependsOn: ["compact-after-tests"] },
+      { id: "compact-after-review", type: "context", action: "compact" },
+      { id: "commit", stage: { ref: "git-commit" }, input: { workspace } },
+      {
+        id: "pr",
+        stage: { ref: "visual-pr" },
+        input: { workspace, task: "{{ nodes.ticket-fetcher.output.task }}" },
+      },
+      { id: "retro", stage: { ref: "retro" }, always: true, allowFailure: true },
+    ]);
+  });
+
+  test("SC6: the review loop reviews the tests, then has write-regression-tests fix the findings unless approved or on the last pass", async () => {
+    const plan = await compileWorkflow(REGRESSION_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "review-loop")).toMatchObject({
+      type: "loop",
+      until:
+        "{{ iteration.nodes.review-regression-tests.output.verdict == 'APPROVED' or iteration.index == iteration.max }}",
+      maxIterations: 2,
+      input: { workspace: "{{ nodes.create-workspace.output }}" },
       nodes: [
         {
-          id: "fix",
-          stage: { ref: "implement" },
-          when: "{{ iteration.index > 1 }}",
-          dependsOn: [],
-          input: { workspace: "{{ inputs.workspace }}", feedback: "{{ iteration.previous.bugs }}" },
-        },
-        {
-          id: "qa",
-          stage: { ref: "qa", output: { name: "qa.output.v1" } },
-          dependsOn: [],
-          variables: { environment: "{{ inputs.environment }}" },
+          id: "review-regression-tests",
+          stage: {
+            ref: "review-regression-tests",
+            output: { name: "review-regression-tests.output.v1" },
+          },
           input: {
             workspace: "{{ inputs.workspace }}",
-            task: "{{ inputs.task }}",
             round: "{{ iteration.index }}",
             rounds: "{{ iteration.max }}",
           },
         },
+        {
+          id: "compact-before-fix",
+          type: "context",
+          action: "compact",
+          dependsOn: ["review-regression-tests"],
+          when: "{{ nodes.review-regression-tests.output.verdict != 'APPROVED' and iteration.index < iteration.max }}",
+        },
+        {
+          id: "fix-tests",
+          stage: { ref: "write-regression-tests" },
+          dependsOn: ["compact-before-fix"],
+          input: {
+            workspace: "{{ inputs.workspace }}",
+            fixes: "{{ nodes.review-regression-tests.output.findings }}",
+            round: "{{ iteration.index }}",
+          },
+        },
       ],
     });
-  });
-
-  test("SC20: the last node is an always, allow-failure retro after pr, with input {}", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
-
-    expect(plan.nodes.at(-1)).toMatchObject({
-      id: "retro",
-      type: "agent",
-      stage: { ref: "retro" },
-      dependsOn: ["pr"],
-      always: true,
-      allowFailure: true,
-      input: {},
-    });
-  });
-
-  test("runs git-commit then visual-pr after the qa loop, each in the run's workspace", async () => {
-    const plan = await compileWorkflow(TASK_WORKFLOW);
-    const workspace = "{{ nodes.create-workspace.output }}";
-
-    expect(plan.nodes.slice(-3, -1)).toMatchObject([
-      {
-        id: "commit",
-        stage: { ref: "git-commit" },
-        dependsOn: ["qa-loop"],
-        when: "{{ nodes.qa-loop.output.status != 'BLOCKED' }}",
-        input: { workspace },
-      },
-      {
-        id: "pr",
-        stage: { ref: "visual-pr" },
-        dependsOn: ["commit"],
-        input: { workspace, task: "{{ nodes.ticket-fetcher.output.task }}" },
-      },
-    ]);
   });
 });

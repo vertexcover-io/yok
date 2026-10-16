@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { type JsonValue, NonEmptyStringSchema } from "./contracts.ts";
+import { type ArtifactRef, type JsonValue, NonEmptyStringSchema } from "./contracts.ts";
 
 // What a stage's verifier receives and returns, and how the engine records each run of one.
 export const FindingSchema = z.strictObject({
@@ -35,6 +35,9 @@ export type VerifierInput = Readonly<{
   run: string;
   nodeRunId: string;
   output: JsonValue;
-  artifacts: Readonly<Record<string, string>>;
+  // the artifacts passed to done, each file's path made absolute
+  artifacts: ArtifactRef[];
   args: JsonValue;
+  // the input the workflow resolved for this node run, null when it has none
+  nodeInput: JsonValue;
 }>;

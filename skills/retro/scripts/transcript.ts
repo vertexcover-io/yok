@@ -1,32 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { parseJson } from "@yok/sdk";
+import { bodyOf, type Call, loadRecords, parseJson, parseTime, type Rec } from "@yok/sdk";
 
-// A Claude Code transcript record: Claude writes it, so every field is read defensively.
-export type Rec = Readonly<{ line: number; data: Readonly<Record<string, unknown>> }>;
-
-export type Message = Readonly<{
-  line: number;
-  ts: string;
-  // TYPED = the agent was idle; QUEUED = typed while the agent worked
-  kind: "TYPED" | "QUEUED";
-  text: string;
-}>;
-
-// Text that lands where a human message would but nobody typed: client markers, machine
-// notifications and a sub-agent's hand-back. A slash command the person typed starts with
-// `<command-message>` and is a real message, so that prefix is not here.
-const WRAPPER_PREFIXES = [
-  "[Request interrupted",
-  "<task-notification",
-  "<agent-message",
-  "Another Claude session sent a message:",
-  "<command-name",
-  "<local-command",
-  "<system-reminder",
-  "Caveat:",
-  "Base directory for this skill",
-];
-
+// Claude Code writes the transcripts, so every field is read defensively.
 export type Data = Readonly<Record<string, unknown>>;
 
 export const isRecord = (value: unknown): value is Data =>
@@ -44,11 +19,6 @@ export const readJsonLines = (path: string): readonly JsonLine[] =>
       const parsed = parseJson(text);
       return parsed.ok ? [{ line: i + 1, value: parsed.value }] : [];
     });
-
-export const loadRecords = (path: string): readonly Rec[] =>
-  readJsonLines(path).flatMap(({ line, value }) =>
-    isRecord(value) ? [{ line, data: value }] : [],
-  );
 
 export const contentOf = (data: Data): unknown =>
   isRecord(data.message) ? data.message.content : undefined;
@@ -69,75 +39,8 @@ export const textOf = (content: unknown): string => {
     .join("\n");
 };
 
-export const bodyOf = (rec: Rec): string => textOf(contentOf(rec.data));
-
 export const timestampOf = (rec: Rec): string => stringOf(rec.data.timestamp);
 
-// True for text that only looks like a human message. `[Request interrupted by user]` is a marker
-// the client writes; interrupts are read from the incident flags instead.
-export const isWrapper = (text: string): boolean =>
-  WRAPPER_PREFIXES.some((prefix) => text.startsWith(prefix));
-
-const queuedText = (rec: Rec): string | undefined => {
-  const { data } = rec;
-  const attachment = data.attachment;
-  if (
-    data.type === "attachment" &&
-    isRecord(attachment) &&
-    attachment.type === "queued_command" &&
-    isRecord(attachment.origin) &&
-    attachment.origin.kind === "human"
-  ) {
-    return stringOf(attachment.prompt);
-  }
-  const queueOp = data.operation === "enqueue" || data.operation === "remove";
-  if (data.type === "queue-operation" && queueOp && typeof data.content === "string") {
-    return data.content;
-  }
-  return undefined;
-};
-
-const typedTexts = (rec: Rec): readonly string[] => {
-  const { data } = rec;
-  if (data.type !== "user" || data.isMeta || blocksOf(rec, "tool_result").length > 0) return [];
-  const content = contentOf(data);
-  if (typeof content === "string") return [content];
-  return blocksOf(rec, "text").map((b) => stringOf(b.text));
-};
-
-type Candidate = Readonly<{ line: number; ts: string; kind: Message["kind"]; raw: string }>;
-
-const compareMessages = (a: Message, b: Message): number =>
-  a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.line - b.line;
-
-// A message present in both places keeps the QUEUED label, since mid-action is the fact worth
-// keeping: corrections live there. The first 200 characters identify a message.
-const dedupe = (candidates: readonly Candidate[]): readonly Message[] => {
-  const seen = new Set<string>();
-  const kept: Message[] = [];
-  for (const { line, ts, kind, raw } of candidates) {
-    const text = raw.trim();
-    if (!text || isWrapper(text) || seen.has(text.slice(0, 200))) continue;
-    seen.add(text.slice(0, 200));
-    kept.push({ line, ts, kind, text });
-  }
-  return kept;
-};
-
-// Every message the human sent, from both places they land: a plain `user` record while the
-// agent was idle, an `attachment` or `queue-operation` record while it worked.
-export const humanMessages = (recs: readonly Rec[]): readonly Message[] => {
-  const queued = recs.flatMap((rec): readonly Candidate[] => {
-    const raw = queuedText(rec);
-    return raw === undefined ? [] : [{ line: rec.line, ts: timestampOf(rec), kind: "QUEUED", raw }];
-  });
-  const typed = recs.flatMap((rec): readonly Candidate[] =>
-    typedTexts(rec).map((raw) => ({ line: rec.line, ts: timestampOf(rec), kind: "TYPED", raw })),
-  );
-  return [...dedupe([...queued, ...typed])].sort(compareMessages);
-};
-
-export type Call = Readonly<{ line: number; ts: string; name: string; input: unknown }>;
 export type Failure = Readonly<{ line: number; ts: string; call: Call | undefined; text: string }>;
 
 const ERROR_TEXT =
@@ -196,23 +99,6 @@ export const failures = (recs: readonly Rec[], isFailure: IsFailure): readonly F
   );
 };
 
-export type Answer = Readonly<{ call: Call | undefined; line: number; text: string }>;
-
-// Each AskUserQuestion paired with the answer that came back.
-export const answers = (recs: readonly Rec[]): readonly Answer[] => {
-  const index = callIndex(recs);
-  const asked = (id: string): boolean => index.get(id)?.name === "AskUserQuestion";
-  return recs.flatMap((rec) =>
-    blocksOf(rec, "tool_result")
-      .filter((block) => asked(stringOf(block.tool_use_id)))
-      .map((block) => ({
-        call: index.get(stringOf(block.tool_use_id)),
-        line: rec.line,
-        text: textOf(block.content),
-      })),
-  );
-};
-
 export type Incident = Readonly<{ line: number; ts: string; flag: string; value: string }>;
 
 const INCIDENT_FLAGS = [
@@ -263,12 +149,6 @@ export type Gap = Readonly<{
   afterType: string;
   afterText: string;
 }>;
-
-export const parseTime = (ts: string | undefined): Date | undefined => {
-  if (!ts) return undefined;
-  const date = new Date(ts);
-  return Number.isNaN(date.getTime()) ? undefined : date;
-};
 
 type Stamped = Readonly<{ rec: Rec; at: number }>;
 

@@ -315,29 +315,52 @@ describe("installedBy", () => {
 });
 
 describe("managedUpdate", () => {
-  test("upgrades Homebrew's formula and runs the binary its opt link points at", () => {
-    expect(managedUpdate("homebrew", "/opt/homebrew/Cellar/yok/1.2.3/bin/yok", false)).toEqual({
-      ok: true,
-      value: { upgrade: ["brew", "upgrade", "yok"], binary: "/opt/homebrew/opt/yok/bin/yok" },
-    });
-  });
+  const brewed = "/opt/homebrew/Cellar/yok/1.2.3/bin/yok";
+  const npmBinary = "/usr/local/lib/node_modules/@vertexcover-io/yok-darwin-arm64/bin/yok";
 
-  test("installs npm's latest, or next for a pre-release, into the same path", () => {
-    const binary = "/usr/local/lib/node_modules/@vertexcover-io/yok-darwin-arm64/bin/yok";
-    expect(managedUpdate("npm", binary, false)).toEqual({
-      ok: true,
-      value: { upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@latest"], binary },
-    });
-    expect(managedUpdate("npm", binary, true)).toEqual({
-      ok: true,
-      value: { upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@next"], binary },
-    });
-  });
-
-  test("refuses a pre-release from Homebrew, which ships stable releases only", () => {
-    const update = managedUpdate("homebrew", "/opt/homebrew/Cellar/yok/1.2.3/bin/yok", true);
-    expect(update.ok).toBe(false);
-    expect(!update.ok && update.error).toContain("stable releases only");
+  test.each([
+    [
+      "Homebrew upgrades its formula and runs the binary its opt link points at",
+      "homebrew",
+      brewed,
+      false,
+      {
+        ok: true,
+        value: { upgrade: ["brew", "upgrade", "yok"], binary: "/opt/homebrew/opt/yok/bin/yok" },
+      },
+    ],
+    [
+      "npm installs latest into the same path",
+      "npm",
+      npmBinary,
+      false,
+      {
+        ok: true,
+        value: {
+          upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@latest"],
+          binary: npmBinary,
+        },
+      },
+    ],
+    [
+      "npm installs next for a pre-release into the same path",
+      "npm",
+      npmBinary,
+      true,
+      {
+        ok: true,
+        value: { upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@next"], binary: npmBinary },
+      },
+    ],
+    [
+      "Homebrew refuses a pre-release, since it ships stable releases only",
+      "homebrew",
+      brewed,
+      true,
+      { ok: false, error: expect.stringContaining("stable releases only") },
+    ],
+  ] as const)("%s", (_label, manager, binary, prerelease, expected) => {
+    expect(managedUpdate(manager, binary, prerelease)).toEqual(expected);
   });
 });
 

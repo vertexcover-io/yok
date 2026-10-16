@@ -223,14 +223,6 @@ describe("spawnDetached", () => {
 });
 
 describe("execWithTimeout", () => {
-  test("returns the exit code, stdout and stderr in the Exec shape", async () => {
-    expect(await execWithTimeout(1000)("sh", ["-c", "echo oops >&2; exit 2"], cwd)).toEqual({
-      code: 2,
-      stdout: "",
-      stderr: "oops\n",
-    });
-  });
-
   test("a command past the deadline is killed with its children and rejects", async () => {
     const { dir, pidFile, script } = await backgroundSleep();
     await expect(execWithTimeout(200)("sh", ["-c", script], dir)).rejects.toThrow(

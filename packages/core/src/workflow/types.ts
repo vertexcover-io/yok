@@ -9,6 +9,8 @@ import {
   NotifierSchema,
   type ProcessRecord,
   ProcessRecordSchema,
+  type Samskara,
+  SamskaraSchema,
   SubscribersSchema,
   type TiersConfig,
   TiersConfigSchema,
@@ -231,6 +233,7 @@ export const WorkflowSchema = z.strictObject({
   inputs: z.record(NodeIdSchema, InputDeclarationSchema).default({}),
   subscribers: SubscribersSchema,
   notifier: NotifierSchema.optional(),
+  samskara: SamskaraSchema.optional(),
   nodes: z.array(NodeSchema).min(1),
 });
 
@@ -375,6 +378,8 @@ export type WorkflowPlan = Readonly<{
   doctor: readonly DoctorDeclaration[];
   // the workflow's own block; pickNotifier weighs it against the config's
   notifier: Notifier | undefined;
+  // the workflow's own block; it replaces the config's whole
+  samskara: Samskara | undefined;
   nodes: readonly PlanNode[];
 }>;
 

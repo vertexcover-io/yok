@@ -30,7 +30,7 @@ AI coding tools are fast and careless: no design, no tests, no proof the change 
 Ticket → Workspace → Baseline → Design → Plan → Implement → Review → QA → Commit → PR → Retro
 ```
 
-You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships two, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
+You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships three, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
 
 Yok is a private repository. Installing it needs a GitHub account that can see `vertexcover-io/yok`.
 
@@ -180,11 +180,11 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships three, `task`, `quick` and `regression`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
 
 ### task: the full pipeline
 
-[workflows/task.yaml](./workflows/task.yaml) runs eleven stages. Each one is a skill under `skills/`.
+[workflows/task.yaml](./workflows/task.yaml) runs twelve stages. Each one is a skill under `skills/`.
 
 | Stage | What it does | What it needs |
 |---|---|---|
@@ -194,8 +194,9 @@ A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare na
 | `design` | Reads the code, asks you about the choices that change the shape of the build, writes a one-page `design.md` you approve. | you, at the terminal and in the browser |
 | `planning` | Turns the design into phases, each change written as a diff with its test scenarios, in `plan.md`. You approve it. | you |
 | `implement` | Builds each phase test-first and commits it. Independent phases run in parallel. | each package's commands in the config |
-| `code-review` | Eight reviewer personas read the diff in parallel, then the fixes are applied and recorded. | nothing extra |
-| `qa` | Drives the feature in a browser or a terminal, films the proof, and writes a proof report. A `FAIL` sends the bugs back to `implement`, up to 4 rounds. | `agent-browser`, `ffmpeg` |
+| `fix` | Fixes a list from qa or code-review test-first, one commit per item, and records what happened to each. Runs inside the qa and review loops. | each package's commands in the config |
+| `code-review` | Five reviewer personas read the diff in parallel. If they ask for changes, `fix` repairs them and the personas re-check only the fix commits, up to 2 passes. | nothing extra |
+| `qa` | Drives the feature in a browser or a terminal, films the proof, and writes a proof report. A `FAIL` sends the bugs to `fix`, up to 4 rounds. | `agent-browser`, `ffmpeg` |
 | `git-commit` | Squashes the branch, then regroups the changes into conventional commits. Skipped when QA ended `BLOCKED` (it could not verify the change). | git |
 | `visual-pr` | Pushes the branch and opens a pull request with a visual change outline and the proof. Skipped with `git-commit`. | `gh`, logged in |
 | `retro` | Audits the run's transcripts and writes a ranked report of yok's own defects. Runs after a failed stage too. | nothing extra |
@@ -204,13 +205,23 @@ A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare na
 
 ### quick: small tickets, fast execution
 
-[workflows/quick.yaml](./workflows/quick.yaml) runs `ticket-fetcher → create-workspace → implement → code-review → git-commit → visual-pr`. There is no baseline, design, planning or QA stage, so it asks you nothing up front and films no proof of the change.
+[workflows/quick.yaml](./workflows/quick.yaml) runs `ticket-fetcher → create-workspace → implement → review loop (code-review, fix) → git-commit → visual-pr`. There is no baseline, design, planning or QA stage, so it asks you nothing up front and films no proof of the change.
 
 ```bash
 yok run quick --prompt "Rename the Customer.fullName getter to displayName"
 ```
 
 Pick `quick` when you already know what the change is and could describe it to a colleague in two sentences: a rename, a copy change, a small bug with an obvious fix. Pick `task` when the change needs decisions, touches more than one part of the system, or must be verified in the running app.
+
+### regression: tests for a flow that already works
+
+[workflows/regression.yaml](./workflows/regression.yaml) runs `ticket-fetcher → create-workspace → find-factors → write-scenarios → baseline → write-regression-tests → review loop → git-commit → visual-pr → retro`. `find-factors` lists what changes the flow's behavior as a checklist, and in the run's page you untick the factors to leave out; `write-scenarios` writes scenarios for the rest as a checklist, and you untick the ones to leave out and approve; `write-regression-tests` writes and pushes the tests. The review loop runs `review-regression-tests` against the scenarios and the testing standard; while it finds problems, `write-regression-tests` fixes them and it reviews again, at most twice.
+
+```bash
+yok run regression --prompt "Signing up with an email invite"
+```
+
+Pick `regression` when the code already does the right thing and you want tests that keep it that way. It changes no product code.
 
 ### Write your own
 
@@ -294,15 +305,18 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 |---|---|
 | [design](./skills/design/README.md) | Reads the code, asks you the questions that shape the build, writes a one-page design you approve |
 | [planning](./skills/planning/README.md) | Turns an approved design into phases, each change as a diff with its test scenarios |
-| [implement](./skills/implement/README.md) | Builds a change, a plan or review feedback test-first and commits each phase |
+| [implement](./skills/implement/README.md) | Builds a change or a plan test-first and commits each phase |
+| [fix](./skills/fix/README.md) | Fixes a list another stage found, test-first, one commit per item |
 | [tdd](./skills/tdd/README.md) | The RED-GREEN-REFACTOR cycle `implement` follows |
-| [code-review](./skills/code-review/README.md) | Eight reviewer personas read a diff, then the fixes are applied and recorded |
+| [code-review](./skills/code-review/README.md) | Five reviewer personas read a diff; in a run a separate fix pass repairs and they re-check it |
 | [refactor](./skills/refactor/README.md) | Assesses code for extraction, simplification and naming, then applies the changes |
 | [code-quality](./skills/code-quality/README.md) | Strict types, immutability, pure functions, early returns; the rules every coding skill follows |
 | [qa](./skills/qa/README.md) | Drives the feature, films the proof, writes the proof report |
 | [git-commit](./skills/git-commit/README.md) | Groups a dirty tree into conventional commits with hunk-level staging |
 | [visual-pr](./skills/visual-pr/README.md) | Creates or updates a PR with a visual change outline and validation evidence |
 | [resolve-merge-conflict](./skills/resolve-merge-conflict/README.md) | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent |
+| [test-audit](./skills/test-audit/README.md) | Finds broken, flaky, slow and redundant tests, then proposes and applies a cleanup plan |
+| [learn](./skills/learn/README.md) | Turns a correction into a short learning in `docs/learnings/` after you pick between fixes, and logs every proposal |
 | [adr](./skills/adr/README.md) | Records one architecture decision in `docs/adr/` and adds it to the index |
 | [retro](./skills/retro/README.md) | Audits a finished run's transcripts and writes a ranked report of yok defects |
 | [ticket-fetcher](./skills/ticket-fetcher/README.md) | Fetches a Linear or Asana ticket into a bundle the other stages read |

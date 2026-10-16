@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { QaOutputSchema } from "./qa.ts";
 
-const bug = { scenario: "SC3", cause: "the total skips refunds", fix: "subtract refunds" };
+const bug = {
+  id: "03",
+  summary: "the total skips refunds",
+  trigger: "check out with a refund",
+  hint: "subtract refunds",
+};
 const report = "verification/proof-report.html";
 
 describe("QaOutputSchema", () => {
@@ -13,7 +18,7 @@ describe("QaOutputSchema", () => {
 
   test.each([
     { status: "PARTIAL", report, bugs: [] },
-    { status: "FAIL", report: null, bugs: [{ ...bug, needsDecision: false }] },
+    { status: "FAIL", report: null, bugs: [{ ...bug, askUser: false }] },
     { status: "BLOCKED", report: null, bugs: [] },
   ])("SC2: a $status verdict fails on reason without one and parses with one", (verdict) => {
     const missing = QaOutputSchema.safeParse({ ...verdict, gaps: [] });
@@ -27,55 +32,48 @@ describe("QaOutputSchema", () => {
     expect(given.success).toBe(true);
   });
 
-  test("SC3: status BLOCKED:no-infra is rejected even with a reason", () => {
+  test.each([
+    ["SC11: a PASS verdict with no report", "PASS", [], ["report"]],
+    ["SC11: a PARTIAL verdict with no report", "PARTIAL", [], ["report"]],
+    ["SC12: a FAIL verdict with no bugs", "FAIL", [], ["bugs"]],
+  ])("%s is rejected on that field", (_label, status, bugs, path) => {
     const result = QaOutputSchema.safeParse({
-      status: "BLOCKED:no-infra",
-      reason: "podman is down",
+      status,
+      reason: "why",
       report: null,
       gaps: [],
-      bugs: [],
+      bugs,
     });
 
-    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([path]);
   });
 
-  test("SC4: a FAIL bug without needsDecision is rejected, and with it parses unchanged", () => {
+  test("SC4 (review-loop SC2): a FAIL whose bug is a fix request parses unchanged, and one without askUser or in the old scenario/cause/fix shape is rejected", () => {
     const verdict = { status: "FAIL", reason: "one bug", report: null, gaps: [] };
+    const parse = (bugs: readonly object[]) => QaOutputSchema.safeParse({ ...verdict, bugs });
 
-    const missing = QaOutputSchema.safeParse({ ...verdict, bugs: [bug] });
-    const given = QaOutputSchema.safeParse({
-      ...verdict,
-      bugs: [{ ...bug, needsDecision: false }],
-    });
+    const given = parse([{ ...bug, askUser: false }]);
+    const old = { scenario: "03", cause: "skips refunds", fix: "subtract", needsDecision: false };
 
-    expect(missing.success).toBe(false);
-    expect(given.data?.bugs[0]).toEqual({ ...bug, needsDecision: false });
+    expect(given.data?.bugs[0]).toEqual({ ...bug, askUser: false });
+    expect(parse([bug]).success).toBe(false);
+    expect(parse([old]).success).toBe(false);
   });
 
-  test.each(["PASS", "PARTIAL"])(
-    "SC11: a %s verdict with no report is rejected on report",
-    (status) => {
-      const result = QaOutputSchema.safeParse({
-        status,
-        reason: "two gaps",
-        report: null,
-        gaps: [],
-        bugs: [],
-      });
-
-      expect(result.error?.issues.map((issue) => issue.path)).toEqual([["report"]]);
-    },
-  );
-
-  test("SC12: a FAIL verdict with no bugs is rejected on bugs", () => {
+  test("a FAIL with two bugs sharing id 03 is rejected on bugs", () => {
     const result = QaOutputSchema.safeParse({
       status: "FAIL",
-      reason: "SC3 failed",
+      reason: "SC3 failed twice",
       report: null,
       gaps: [],
-      bugs: [],
+      bugs: [
+        { ...bug, askUser: false },
+        { ...bug, summary: "refunds double count", askUser: false },
+      ],
     });
 
-    expect(result.error?.issues.map((issue) => issue.path)).toEqual([["bugs"]]);
+    expect(result.error?.issues.map((issue) => [issue.path, issue.message])).toEqual([
+      [["bugs"], "each bug id appears once"],
+    ]);
   });
 });

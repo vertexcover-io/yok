@@ -1,4 +1,4 @@
-import { NonEmptyStringSchema } from "@yok/sdk";
+import { FixRequestSchema, NonEmptyStringSchema } from "@yok/sdk";
 import * as z from "zod";
 
 export const QaOutputSchema = z
@@ -13,14 +13,12 @@ export const QaOutputSchema = z
         mechanism: NonEmptyStringSchema,
       }),
     ),
-    bugs: z.array(
-      z.strictObject({
-        scenario: NonEmptyStringSchema,
-        cause: NonEmptyStringSchema,
-        fix: NonEmptyStringSchema,
-        needsDecision: z.boolean(),
+    // the fix stage records one result per id, so two bugs sharing one could never both be closed
+    bugs: z
+      .array(FixRequestSchema.extend({ askUser: z.boolean() }))
+      .refine((bugs) => new Set(bugs.map((bug) => bug.id)).size === bugs.length, {
+        message: "each bug id appears once",
       }),
-    ),
   })
   .refine((output) => output.status === "PASS" || output.reason !== undefined, {
     path: ["reason"],

@@ -1,0 +1,117 @@
+{
+  "skill_name": "test-audit",
+  "evals": [
+    {
+      "id": 1,
+      "name": "audit-edits-nothing-until-the-user-picks",
+      "prompt": "we have way too many tests, just go delete the duplicate ones",
+      "expected_output": "A baseline run, then a report with a remove list where every entry names its keeper, and a ranked action list. The skill asks which actions to apply and leaves the repo unchanged.",
+      "files": [],
+      "expectations": [
+        "Runs the suite once and records the test count and wall time before judging anything",
+        "Writes a report whose remove list gives a keeper file:line for every test it proposes to delete",
+        "Ends with a ranked list of actions and asks the user which to apply",
+        "Leaves git status unchanged: no test file is edited or deleted"
+      ],
+      "anti_expectations": [
+        "Deletes or edits a test file before the user picks actions",
+        "Proposes removing a test without naming the test that keeps its coverage",
+        "Commits anything"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "a-look-alike-test-on-another-branch-stays",
+      "prompt": "audit evals/files/discount-tests.ts for redundant tests",
+      "expected_output": "'another code also takes five off' is flagged as a duplicate of 'any other code takes five off' and 'no code leaves a small total alone too' as a duplicate of 'no code leaves the total alone'; both pairs hit the same branch. 'a small total ignores a non-HALF code' is kept because it is the only test of the total < 10 branch.",
+      "files": ["evals/files/discount.ts", "evals/files/discount-tests.ts"],
+      "expectations": [
+        "Flags 'another code also takes five off' as duplicate or parameterizable, kept by 'any other code takes five off'",
+        "Flags 'no code leaves a small total alone too' as duplicate, kept by 'no code leaves the total alone'",
+        "Keeps 'a small total ignores a non-HALF code' and says it is the only test of the total < 10 branch"
+      ],
+      "anti_expectations": [
+        "Flags 'a small total ignores a non-HALF code' for removal",
+        "Edits discount-tests.ts"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "a-failing-test-gets-a-verdict-before-a-fix",
+      "prompt": "the checkout total test has been failing since yesterday, just make it pass so CI is green",
+      "expected_output": "Before touching the test, the skill compares the last change to the test with the last change to the source it imports, reads the commit or spec behind the newer one, and states a verdict (test outdated, code wrong, environment, or unknown) with the fix that follows from it.",
+      "files": [],
+      "expectations": [
+        "Compares git history of the failing test file against the source files it imports",
+        "Reads the commit message, spec, ADR or README behind the newer change",
+        "States one verdict from: test outdated, code wrong, environment, unknown",
+        "Asks the user when the record does not settle which side is wrong"
+      ],
+      "anti_expectations": [
+        "Changes the test's expected value to match the current output without a verdict",
+        "Marks the test as skipped to make CI green"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "flaky-hunt-works-on-a-runner-it-does-not-special-case",
+      "prompt": "this is a Go service and CI fails randomly. find the flaky tests",
+      "expected_output": "The skill reads references/runners.md, runs go test with -count=1 and -shuffle=on (recording the seed) at least three times, gets JUnit XML through gotestsum or falls back to per-package exit codes when gotestsum is missing, runs scripts/junit_summary.py over the runs, and names a cause for each flaky test.",
+      "files": [],
+      "expectations": [
+        "Uses -count=1 or -count=N so Go's test cache does not hide flakes",
+        "Shuffles the order and records the seed of each run",
+        "Runs the suite at least three times",
+        "Feeds the runs to scripts/junit_summary.py, or uses the per-package fallback and says so",
+        "Names a cause for each flaky test from the listed causes"
+      ],
+      "anti_expectations": [
+        "Installs gotestsum or another dependency without asking",
+        "Declares no flaky tests after a single run"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "runs-every-layer",
+      "prompt": "audit the tests in this repo",
+      "expected_output": "Both layers are found and run: the Vitest unit layer and the Playwright e2e layer, through the project's own e2e command. The baseline has one row per layer, and the report notes separately that CI runs only the unit layer.",
+      "files": [
+        "skills/test-audit/evals/files/make-two-layer-repo.sh"
+      ],
+      "expectations": [
+        "Lists every test layer, including the Playwright e2e layer, without being told it exists",
+        "Runs the e2e layer through npm run e2e or its runner config",
+        "Runs Playwright with --retries=0, overriding the config's retries: 2",
+        "Reports one baseline row per layer with its counts and wall time",
+        "Names .github/workflows/ci.yml as running only the unit layer, as a separate finding"
+      ],
+      "anti_expectations": [
+        "Skips the e2e layer because it is slow or needs a server, without trying to start it",
+        "Marks a layer not run without naming the command tried and its error",
+        "Leaves Playwright's configured retries on during an audit run"
+      ],
+      "setup": "skills/test-audit/evals/files/make-two-layer-repo.sh REPO_DIR, run npm install there, then run the prompt inside REPO_DIR"
+    },
+    {
+      "id": 6,
+      "name": "one-summary-per-layer-with-the-right-flake-method",
+      "prompt": "find the flaky and slow tests in this repo",
+      "setup": "skills/test-audit/evals/files/make-two-layer-repo.sh REPO_DIR, run npm install there, then run the prompt inside REPO_DIR",
+      "files": [
+        "skills/test-audit/evals/files/make-two-layer-repo.sh"
+      ],
+      "expected_output": "Runs are saved as audit/LAYER/runN/ folders. The Vitest layer gets two more seeded shuffled runs; the Playwright layer, which cannot shuffle, gets one more run with --repeat-each=3 and --retries=0. junit_summary.py is called once on the audit folder and reports each layer on its own, and each layer's result count is checked against the runner's printed count.",
+      "expectations": [
+        "Saves each run in its own audit/LAYER/runN/ folder",
+        "Runs the Vitest layer with a shuffled order and a different recorded seed each time",
+        "Runs the Playwright layer once more with --repeat-each=3 and --retries=0, not as separate plain runs",
+        "Calls junit_summary.py once on the audit folder, and the report shows each layer separately",
+        "Compares each layer's first-run result count with the count the runner printed"
+      ],
+      "anti_expectations": [
+        "Passes unit and e2e reports to one summary as runs of the same suite",
+        "Uses a repeat flag such as --rerun-each or --repeat-each on a runner that can shuffle"
+      ]
+    }
+  ]
+}

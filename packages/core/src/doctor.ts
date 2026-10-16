@@ -22,12 +22,14 @@ import {
   type Outcome,
   ok,
   type Result,
+  type Samskara,
   warn,
 } from "@yok/sdk";
 import * as z from "zod";
 import { findMissingNotifierKeys } from "./notifier.ts";
 import { pickNotifier } from "./notifier-subscriber.ts";
-import type { DoctorDeclaration } from "./workflow/types.ts";
+import { pickSamskara, UPLOAD_FLAG } from "./samskara.ts";
+import type { DoctorDeclaration, WorkflowPlan } from "./workflow/types.ts";
 
 export const DoctorRowSchema = z.object({
   name: NonEmptyStringSchema,
@@ -149,6 +151,45 @@ export const buildNotifierCheck = (workflowNotifier: Notifier | undefined, env: 
   ],
   run: (context) => checkNotifier(context, workflowNotifier, env),
 });
+
+const checkSamskaraUpload = async (
+  context: CheckContext,
+  workflowSamskara: Samskara | undefined,
+): Promise<Outcome> => {
+  const config = await readConfig(context);
+  const configSamskara = config.ok ? config.value.config.samskara : undefined;
+  if (pickSamskara(workflowSamskara, configSamskara)?.enabled !== true) return ok("off");
+  const [ready, help] = await Promise.all([
+    checkSamskara(context),
+    context.exec("samskara", ["artifacts", "upload", "--help"], context.root),
+  ]);
+  if (ready.status !== "ok") return fail(`on, but ${ready.detail}`);
+  if (help.code !== 0) return fail(`on, but ${ready.detail} has no artifacts upload command`);
+  if (!help.stdout.includes(UPLOAD_FLAG))
+    return fail(`on, but ${ready.detail} upload has no ${UPLOAD_FLAG}`);
+  return ok(`on, ${ready.detail}`);
+};
+
+// The samskara upload a run would use: the workflow's block, else the config's.
+export const buildSamskaraCheck = (workflowSamskara: Samskara | undefined): Check => ({
+  name: "samskara-upload",
+  fix: [
+    "npm i -g samskara",
+    "samskara init (pairs the CLI, installs the hook, starts the watcher)",
+    "or turn it off in the workflow or the config: samskara: { enabled: false }",
+  ],
+  run: (context) => checkSamskaraUpload(context, workflowSamskara),
+});
+
+// The rows for yok's built-in subscribers, from a workflow's blocks when there is one; yok run and
+// yok doctor both add them, so the two agree on what blocks a run.
+export const builtInChecks = (
+  plan: Pick<WorkflowPlan, "notifier" | "samskara"> | undefined,
+  env: RunEnv,
+): readonly Check[] => [
+  buildNotifierCheck(plan?.notifier, env),
+  buildSamskaraCheck(plan?.samskara),
+];
 
 export const CHECKS: readonly Check[] = [
   { name: "git", fix: ["brew install git", "apt install git"], run: checkBinary("git") },

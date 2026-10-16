@@ -53,41 +53,32 @@ const verify = (file: string, content: string | null) => {
 };
 
 describe("yok verify", () => {
-  test("a valid workflow prints its name and node count and exits 0", () => {
-    const { code, stdout } = verify("ok.yaml", OK_WORKFLOW);
+  test.each([
+    ["a valid workflow file", "ok.yaml", OK_WORKFLOW, "ok: workflow ok compiles (1 node)"],
+    [
+      "a bare name, as the shipped workflow of that name",
+      "task",
+      null,
+      "ok: workflow task compiles",
+    ],
+  ])("%s compiles, printing its name, and exits 0", (_label, file, content, printed) => {
+    const { code, stdout } = verify(file, content);
     expect(code).toBe(0);
-    expect(stdout).toContain("ok: workflow ok compiles (1 node)");
+    expect(stdout).toContain(printed);
   });
 
-  test("a cyclic workflow prints the compile error code and message and exits 1", () => {
-    const { code, stderr } = verify("bad.yaml", CYCLE_WORKFLOW);
-    expect(code).toBe(1);
-    expect(stderr).toContain("cycle:");
-    expect(stderr).toContain("dependency cycle");
-    expect(stderr).not.toContain("    at ");
-  });
-
-  test("a yaml syntax error is reported as a yaml error", () => {
-    const { code, stderr } = verify("broken.yaml", "name: [unclosed\n");
-    expect(code).toBe(1);
-    expect(stderr).toContain("yaml:");
-  });
-
-  test("a bare name compiles the shipped workflow of that name", () => {
-    const { code, stdout } = verify("task", null);
-    expect(code).toBe(0);
-    expect(stdout).toContain("ok: workflow task compiles");
-  });
-
-  test("an unknown bare name is reported as a missing workflow", () => {
-    const { code, stderr } = verify("nope", null);
-    expect(code).toBe(1);
-    expect(stderr).toContain("missing-workflow:");
-  });
-
-  test("a missing file is reported and exits 1", () => {
-    const { code, stderr } = verify("nope.yaml", null);
-    expect(code).toBe(1);
-    expect(stderr).toContain("missing-workflow:");
-  });
+  test.each([
+    ["a cyclic workflow", "bad.yaml", CYCLE_WORKFLOW, "cycle: dependency cycle"],
+    ["a yaml syntax error", "broken.yaml", "name: [unclosed\n", "yaml:"],
+    ["an unknown bare name", "nope", null, "missing-workflow:"],
+    ["a missing file", "nope.yaml", null, "missing-workflow:"],
+  ])(
+    "%s prints its error code and message, without a stack, and exits 1",
+    (_label, file, content, error) => {
+      const { code, stderr } = verify(file, content);
+      expect(code).toBe(1);
+      expect(stderr).toContain(error);
+      expect(stderr).not.toContain("    at ");
+    },
+  );
 });

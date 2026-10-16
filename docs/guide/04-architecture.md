@@ -10,7 +10,7 @@ flowchart TD
     server["@yok/server<br/>packages/server · ~1,400 lines<br/>HTTP on a Unix socket, viewer, comment delivery"]
     core["@yok/core<br/>packages/core · ~9,500 lines<br/>workflow engine, orchestrate commands, agents, hooks"]
     sdk["@yok/sdk<br/>packages/sdk · ~4,000 lines<br/>schemas, events, state, registry, config, subscribers"]
-    skills["skills/<br/>18 skill folders<br/>what the agent reads"]
+    skills["skills/<br/>one folder per skill<br/>what the agent reads"]
     workflows["workflows/<br/>task.yaml"]
 
     cli --> server
@@ -74,7 +74,7 @@ A Hono app on a Unix socket in the yok home. Two routes matter: `GET /health` an
 
 ### `skills/`: what the agent reads
 
-Eighteen folders. Each has a `SKILL.md`. The ones with a stage contract in their frontmatter can run as workflow nodes: ticket-fetcher, create-workspace, baseline, design, planning, implement, code-review, qa, git-commit, visual-pr, retro. The rest are helpers the stages load or people call directly: code-quality, tdd, refactor, writing-style, adr, resolve-merge-conflict, and orchestrate itself.
+One folder per skill, each with a `SKILL.md`. A skill whose frontmatter carries a stage contract can run as a workflow node. The rest are helpers that the stages load, or that people call directly, and `orchestrate` is the one that drives a run.
 
 A skill's scripts live beside it, declared as references, and run through `yok orchestrate skill run STAGE.REF`. That indirection is what lets a project replace a script without touching the skill.
 

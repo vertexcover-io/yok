@@ -225,31 +225,45 @@ describe("summarizeRun on a blocked run", () => {
 
 describe("summarizeRun with a dead terminal", () => {
   test.each([
-    { given: "running", state: stateOf({ nodeRuns: planningRunning }), status: "gone" },
+    {
+      given: "running",
+      terminal: "dead",
+      alive: false,
+      state: stateOf({ nodeRuns: planningRunning }),
+      status: "gone",
+    },
     {
       given: "blocked",
+      terminal: "dead",
+      alive: false,
       state: stateOf({ status: "blocked", blocker: question, nodeRuns: planningRunning }),
       status: "gone",
     },
-    { given: "completed", state: stateOf({ status: "completed" }), status: "completed" },
+    {
+      given: "completed",
+      terminal: "dead",
+      alive: false,
+      state: stateOf({ status: "completed" }),
+      status: "completed",
+    },
+    {
+      given: "running",
+      terminal: "not asked about",
+      alive: null,
+      state: stateOf({ nodeRuns: planningRunning }),
+      status: "running",
+    },
   ])(
-    "SC112: a $given state whose terminal is dead reads $status with no blocker",
-    ({ state, status }) => {
+    "SC112: a $given state whose terminal is $terminal reads $status with no blocker",
+    ({ state, alive, status }) => {
       expect(
-        summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, false),
+        summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, alive),
       ).toMatchObject({
         status,
         blocker: null,
       });
     },
   );
-
-  test("SC112: a running state whose agent was not asked about (null) reads running, not gone", () => {
-    const state = stateOf({ nodeRuns: planningRunning });
-    expect(summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, null).status).toBe(
-      "running",
-    );
-  });
 });
 
 const exec = (id: string, dependsOn: readonly string[] = []) => ({

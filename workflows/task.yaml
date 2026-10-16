@@ -55,11 +55,20 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
       workspace: "{{ nodes.create-workspace.output }}"
 
+  # The user is still here after approving the plan: turn their corrections into learnings now,
+  # before the run goes on unattended. allowFailure: a learn problem never stops the run.
+  - id: learn
+    type: agent
+    stage: learn
+    dependsOn: [planning]
+    allowFailure: true
+    input: {}
+
   - id: compact-after-planning
     type: context
     action: compact
     prompt: "Keep the approved plan, the workspace path, and the run name."
-    dependsOn: [planning]
+    dependsOn: [learn]
 
   - id: implement
     type: agent
@@ -74,18 +83,47 @@ nodes:
     prompt: "Keep what was implemented, the files touched, and the workspace path."
     dependsOn: [implement]
 
-  - id: code-review
-    type: agent
-    stage: code-review
+  # Pass 1 reviews; a later pass runs the fix stage on the previous pass's findings, then reviews only the fix
+  # commits. It stops on APPROVED, or after its last pass with the rest left in the report.
+  - id: review-loop
+    type: loop
     dependsOn: [compact-after-implement]
+    until: "{{ iteration.nodes.code-review.output.verdict == 'APPROVED' or iteration.index == iteration.max }}"
+    maxIterations: 2
     input:
       workspace: "{{ nodes.create-workspace.output }}"
+    nodes:
+      # A later pass starts the fix stage without pass 1's review in the session.
+      - id: compact-before-fix
+        type: context
+        action: compact
+        when: "{{ iteration.index > 1 }}"
+        prompt: "Keep the workspace path and the run name."
+
+      - id: fix
+        type: agent
+        stage: fix
+        dependsOn: [compact-before-fix]
+        input:
+          workspace: "{{ inputs.workspace }}"
+          fixes: "{{ iteration.previous.findings }}"
+          source: review
+          round: "{{ iteration.index }}"
+
+      - id: code-review
+        type: agent
+        stage: code-review
+        input:
+          workspace: "{{ inputs.workspace }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+          previous: "{{ iteration.previous }}"
 
   - id: compact-after-review
     type: context
     action: compact
     prompt: "Keep the review findings and the workspace path."
-    dependsOn: [code-review]
+    dependsOn: [review-loop]
 
   - id: qa-loop
     type: loop
@@ -99,11 +137,13 @@ nodes:
     nodes:
       - id: fix
         type: agent
-        stage: implement
+        stage: fix
         when: "{{ iteration.index > 1 }}"
         input:
           workspace: "{{ inputs.workspace }}"
-          feedback: "{{ iteration.previous.bugs }}"
+          fixes: "{{ iteration.previous.bugs }}"
+          source: qa
+          round: "{{ iteration.index }}"
 
       - id: qa
         type: agent

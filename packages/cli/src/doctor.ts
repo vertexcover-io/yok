@@ -1,6 +1,6 @@
 import { Command } from "@commander-js/extra-typings";
 import {
-  buildNotifierCheck,
+  builtInChecks,
   type DoctorJson,
   type DoctorReport,
   type DoctorRow,
@@ -81,12 +81,12 @@ const declaredChecks = async (workflow: string | undefined) => {
   const cwd = process.cwd();
   if (workflow === undefined) {
     const env = await loadStartEnv(null, cwd, { env: {}, agent: "claude" });
-    return [buildNotifierCheck(undefined, env)];
+    return builtInChecks(undefined, env);
   }
   const plan = await compileOrFail(findWorkflowPath(workflow, cwd), cwd);
   if (plan === null) return null;
   const env = await loadStartEnv(null, cwd, plan);
-  return [...workflowChecks(plan.doctor, env), buildNotifierCheck(plan.notifier, env)];
+  return [...workflowChecks(plan.doctor, env), ...builtInChecks(plan, env)];
 };
 
 export const doctorCommand = () =>

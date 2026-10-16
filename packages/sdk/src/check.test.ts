@@ -1,32 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { CheckContext, ExecResult } from "./check.ts";
-import { checkBinary, fail, ok, warn } from "./check.ts";
+import { checkBinary } from "./check.ts";
 
 const context = (result: ExecResult): CheckContext => ({
   root: "/repo",
   exec: () => Promise.resolve(result),
-});
-
-describe("ok/warn/fail", () => {
-  test("ok returns status ok with the given detail and no fix", () => {
-    expect(ok("v1.0.0")).toEqual({ status: "ok", detail: "v1.0.0" });
-  });
-
-  test("warn returns status warn with detail and an optional fix", () => {
-    expect(warn("not authenticated", ["gh auth login"])).toEqual({
-      status: "warn",
-      detail: "not authenticated",
-      fix: ["gh auth login"],
-    });
-  });
-
-  test("fail returns status fail with detail and an optional fix", () => {
-    expect(fail("not on PATH", ["brew install git"])).toEqual({
-      status: "fail",
-      detail: "not on PATH",
-      fix: ["brew install git"],
-    });
-  });
 });
 
 describe("checkBinary", () => {

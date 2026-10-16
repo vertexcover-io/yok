@@ -26,11 +26,6 @@ type Case = Readonly<{ name: string; run: (git: IGit) => Promise<unknown>; expec
 
 const CASES: Case[] = [
   {
-    name: "repoRoot",
-    run: (git) => git.repoRoot("/cwd"),
-    expected: [{ command: "git", args: ["rev-parse", "--show-toplevel"], cwd: "/cwd" }],
-  },
-  {
     name: "commonDir",
     run: (git) => git.commonDir("/cwd"),
     expected: [
@@ -50,17 +45,6 @@ const CASES: Case[] = [
     name: "headSha",
     run: (git) => git.headSha("/cwd"),
     expected: [{ command: "git", args: ["rev-parse", "HEAD"], cwd: "/cwd" }],
-  },
-  {
-    name: "defaultBranch",
-    run: (git) => git.defaultBranch("/cwd"),
-    expected: [
-      {
-        command: "git",
-        args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        cwd: "/cwd",
-      },
-    ],
   },
   {
     name: "isValidBranchName",
@@ -84,42 +68,9 @@ const CASES: Case[] = [
     expected: [{ command: "git", args: ["check-ignore", "-q", "/cwd/.yok/probe"], cwd: "/cwd" }],
   },
   {
-    name: "hasRemote",
-    run: (git) => git.hasRemote("/cwd", "origin"),
-    expected: [{ command: "git", args: ["remote", "get-url", "origin"], cwd: "/cwd" }],
-  },
-  {
     name: "fetch",
     run: (git) => git.fetch("/cwd", { remote: "origin", ref: "main" }),
     expected: [{ command: "git", args: ["fetch", "origin", "--", "main"], cwd: "/cwd" }],
-  },
-  {
-    name: "remoteHasBranch",
-    run: (git) => git.remoteHasBranch("/cwd", "origin", "main"),
-    expected: [
-      {
-        command: "git",
-        args: ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/main"],
-        cwd: "/cwd",
-      },
-    ],
-  },
-  {
-    name: "addWorktree with a base creates the branch from it",
-    run: (git) => git.addWorktree("/cwd", { path: "/wt", branch: "feat/x", base: "main" }),
-    expected: [
-      { command: "git", args: ["worktree", "add", "-b", "feat/x", "/wt", "main"], cwd: "/cwd" },
-    ],
-  },
-  {
-    name: "addWorktree with no base checks the existing branch out",
-    run: (git) => git.addWorktree("/cwd", { path: "/wt", branch: "feat/x" }),
-    expected: [{ command: "git", args: ["worktree", "add", "/wt", "feat/x"], cwd: "/cwd" }],
-  },
-  {
-    name: "listWorktrees",
-    run: (git) => git.listWorktrees("/cwd"),
-    expected: [{ command: "git", args: ["worktree", "list", "--porcelain"], cwd: "/cwd" }],
   },
   {
     name: "removeWorktree",

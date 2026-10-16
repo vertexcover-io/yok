@@ -14,7 +14,7 @@ import type {
 } from "@yok/sdk";
 import { builtInHandlers, foldModelSwitch, projectEvents } from "@yok/sdk/internal";
 import { compileWorkflow } from "./compile.ts";
-import { type Decision, decideNext } from "./next.ts";
+import { type Decision, decideNext, type Leaf } from "./next.ts";
 import { DEMO_STAGES, writeStages } from "./test-stages.ts";
 import type { WorkflowPlan } from "./types.ts";
 
@@ -723,30 +723,29 @@ nodes:${exec("a", "\n    input: {}")}
     expect(await walk(start(), [])).toEqual(["a", "fresh"]);
   });
 
-  test("a node tier: deep on a tier: fast stage beats the stage's, so a session on haiku-x gets a model step for opus-x", async () => {
-    const plan = await compilePlan(`name: t
-nodes:${stage("make", "quick", "\n    tier: deep\n    input: {}")}
-`);
-    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, HAIKU);
-    expect(stop).toEqual({ kind: "model", nodeId: "make", model: "opus-x", effort: "high" });
-  });
-
-  test("a prompt agent node with tier: fast on a session on opus-x gets a model step for haiku-x", async () => {
-    const plan = await compilePlan(`name: t
-nodes:
-  - { id: ask, type: agent, prompt: summarise, input: {}, tier: fast }
-`);
-    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, OPUS_HIGH);
-    expect(stop).toEqual({ kind: "model", nodeId: "ask", model: "haiku-x" });
-  });
-
-  test("a prompt agent node with no tier, on a session on no model, gets a model step for the default deep tier's opus-x", async () => {
-    const plan = await compilePlan(`name: t
-nodes:
-  - { id: ask, type: agent, prompt: summarise, input: {} }
-`);
-    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP);
-    expect(stop).toEqual({ kind: "model", nodeId: "ask", model: "opus-x", effort: "high" });
+  test.each<[string, string, TierModel | null, Decision]>([
+    [
+      "a node tier: deep on a tier: fast stage beats the stage's, so a session on haiku-x",
+      stage("make", "quick", "\n    tier: deep\n    input: {}"),
+      HAIKU,
+      { kind: "model", nodeId: "make", model: "opus-x", effort: "high" },
+    ],
+    [
+      "a prompt agent node with tier: fast on a session on opus-x",
+      "\n  - { id: ask, type: agent, prompt: summarise, input: {}, tier: fast }",
+      OPUS_HIGH,
+      { kind: "model", nodeId: "ask", model: "haiku-x" },
+    ],
+    [
+      "a prompt agent node with no tier, on a session on no model, takes the default deep tier, so it",
+      "\n  - { id: ask, type: agent, prompt: summarise, input: {} }",
+      null,
+      { kind: "model", nodeId: "ask", model: "opus-x", effort: "high" },
+    ],
+  ])("%s gets a model step for the tier's model", async (_label, nodes, launch, expected) => {
+    const plan = await compilePlan(`name: t\nnodes:${nodes}\n`);
+    const { stop } = await advanceTiered(plan, fresh(), FAST_AND_DEEP, launch);
+    expect(stop).toEqual(expected);
   });
 
   test("a stage with no tier after a fast stage switches the session back from haiku-x to the default deep tier's opus-x", async () => {
@@ -1050,33 +1049,6 @@ nodes:
     expect(retried.input).toBe("out 2");
     expect(findRun(again.state, "fix")).toMatchObject({ status: "running", iteration: 2 });
     expect(findRun(again.state, "fix", "test")).toEqual(testRun);
-  });
-
-  test("a qa loop that ends BLOCKED skips the commit gated on its verdict, and the pr after it", async () => {
-    const plan = await compilePlan(`name: t
-nodes:
-  - id: qa-loop
-    type: loop
-    until: "{{ iteration.nodes.qa.output.status != 'FAIL' }}"
-    maxIterations: 4
-    input: {}
-    nodes:
-      - { id: qa, type: exec, runtime: sh, script: "true", input: {} }${exec("commit", `\n    dependsOn: [qa-loop]\n    when: "{{ nodes.qa-loop.output.status != 'BLOCKED' }}"\n    input: {}`)}${exec("pr", "\n    dependsOn: [commit]\n    input: {}")}
-`);
-    const qa = await advance(plan, start());
-    const blocked = end(qa.state, expectLeaf(qa.stop).nodeRunId, "completed", {
-      output: { status: "BLOCKED" },
-    });
-    const done = await advance(plan, blocked);
-    expect(done.stop).toEqual({ kind: "finished", status: "completed" });
-    expect(findRun(done.state, "commit")).toMatchObject({
-      status: "skipped",
-      output: { reason: "when-false" },
-    });
-    expect(findRun(done.state, "pr")).toMatchObject({
-      status: "skipped",
-      output: { reason: "dependency-skipped", proof: { dependencies: ["commit"] } },
-    });
   });
 
   test("IW45 — a loop whose last body node did not complete hands null to its next pass", async () => {
@@ -1418,9 +1390,14 @@ nodes:
   });
 });
 
-describe("the shipped task workflow's qa loop", () => {
+describe("the shipped task workflow's qa and review loops", () => {
   const TASK_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml");
-  const bug = { scenario: "SC1", cause: "the total skips refunds", fix: "subtract refunds" };
+  const bug = {
+    id: "SC1",
+    summary: "the total skips refunds",
+    trigger: "check out with a refund",
+    hint: "subtract refunds",
+  };
   const report = "artifacts/verification/proof-report.html";
   const VERDICTS: Readonly<Record<string, JsonObject>> = {
     PASS: { status: "PASS", report, gaps: [], bugs: [] },
@@ -1430,10 +1407,21 @@ describe("the shipped task workflow's qa loop", () => {
       reason: "SC1 failed",
       report: null,
       gaps: [],
-      bugs: [{ ...bug, needsDecision: false }],
+      bugs: [{ ...bug, askUser: false }],
     },
+    BLOCKED: { status: "BLOCKED", reason: "no environment", report: null, gaps: [], bugs: [] },
   };
-  const OUTPUTS: Readonly<Record<string, JsonObject>> = { "ticket-fetcher": { task: "do X" } };
+  const workspace = { path: "/work/ws" };
+  const OUTPUTS: Readonly<Record<string, JsonObject>> = {
+    "ticket-fetcher": { task: "do X" },
+    "create-workspace": workspace,
+  };
+  const APPROVED: JsonObject = {
+    verdict: "APPROVED",
+    report: "artifacts/review.md",
+    reviewed: { yok: "b2" },
+    findings: [],
+  };
   // Every artifact a stage in task.yaml consumes, listed on each finished node so none is blocked.
   const artifacts = ["design", "plan", "implementation"].map((name) => ({
     type: name,
@@ -1441,120 +1429,240 @@ describe("the shipped task workflow's qa loop", () => {
     path: `artifacts/${name}.md`,
   }));
 
-  type Handed = Readonly<{ id: string; input: JsonValue }>;
+  type Handed = Readonly<{
+    id: string;
+    node: Leaf;
+    input: JsonValue;
+    variables: Readonly<Record<string, string>>;
+  }>;
   type Walked = Readonly<{ state: State; stop: Stop; handed: readonly Handed[] }>;
 
-  // Walks task.yaml as the session would, answering each qa pass with the next verdict, and keeps
-  // the fix, qa and retro leaves it was handed. Nodes named in `failing` end failed.
+  type Answers = Readonly<{ qa?: readonly string[]; review?: readonly JsonObject[] }>;
+
+  // Walks task.yaml as the session would, answering each qa pass with the next verdict and each
+  // code-review pass with the next review (PASS and APPROVED once they run out), and keeps every
+  // leaf it was handed. Nodes named in `failing` end failed.
   const walkTask = async (
     plan: WorkflowPlan,
     state: State,
-    verdicts: readonly string[],
-    handed: readonly Handed[] = [],
+    answers: Answers,
     failing: readonly string[] = [],
+    handed: readonly Handed[] = [],
   ): Promise<Walked> => {
     const next = await advance(plan, state);
     if (next.stop.kind !== "leaf") return { state: next.state, stop: next.stop, handed };
-    const { node, nodeRunId, input } = next.stop;
-    const isQa = node.id === "qa";
-    const output = isQa ? (VERDICTS[verdicts[0] ?? ""] ?? null) : (OUTPUTS[node.id] ?? {});
+    const { node, nodeRunId, input, variables } = next.stop;
+    const { qa = [], review = [] } = answers;
+    const output =
+      node.id === "qa"
+        ? (VERDICTS[qa[0] ?? "PASS"] ?? null)
+        : node.id === "code-review"
+          ? (review[0] ?? APPROVED)
+          : (OUTPUTS[node.id] ?? {});
     const ended = failing.includes(node.id)
       ? end(next.state, nodeRunId, "failed", {
           nodeType: "agent",
           error: { kind: "exit", message: "the retro sub-agent failed" },
         })
       : end(next.state, nodeRunId, "completed", { nodeType: "agent", output, artifacts });
-    const kept = isQa || node.id === "fix" || node.id === "retro";
-    return walkTask(
-      plan,
-      ended,
-      isQa ? verdicts.slice(1) : verdicts,
-      kept ? [...handed, { id: node.id, input }] : handed,
-      failing,
-    );
+    const rest = {
+      qa: node.id === "qa" ? qa.slice(1) : qa,
+      review: node.id === "code-review" ? review.slice(1) : review,
+    };
+    return walkTask(plan, ended, rest, failing, [
+      ...handed,
+      { id: node.id, node, input, variables },
+    ]);
   };
 
-  test("SC13: a first PASS runs qa once, as round 1 of 4, and its verdict is the loop's output", async () => {
+  const loopIds = (handed: readonly Handed[]): readonly string[] =>
+    handed.map(({ id }) => id).filter((id) => ["qa", "fix", "retro"].includes(id));
+
+  // The review loop's leaves: its code-review and fix, all handed out before the qa loop starts.
+  const reviewLeaves = (handed: readonly Handed[]): readonly Handed[] => {
+    const qaStart = handed.findIndex(({ id }) => id === "qa");
+    const beforeQa = qaStart === -1 ? handed : handed.slice(0, qaStart);
+    return beforeQa.filter(({ id }) => id === "code-review" || id === "fix");
+  };
+
+  test("SC13: a first PASS hands out every stage in order in the run's workspace, runs qa once as round 1 of 4, and its verdict is the loop's output", async () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["PASS"],
+      { qa: ["PASS"] },
     );
 
+    const task = "do X";
     expect(handed).toMatchObject([
-      { id: "qa", input: { task: "do X", round: 1, rounds: 4 } },
-      { id: "retro" },
+      { id: "ticket-fetcher", input: { request: "p" }, variables: { provider: "auto" } },
+      { id: "create-workspace", input: { request: task } },
+      { id: "baseline", input: {} },
+      { id: "design", input: { task } },
+      { id: "planning", input: { task, workspace } },
+      { id: "learn" },
+      { id: "compact-after-planning", node: { type: "context", action: "compact" } },
+      { id: "implement", input: { workspace } },
+      { id: "compact-after-implement", node: { type: "context", action: "compact" } },
+      { id: "code-review", input: { workspace } },
+      { id: "compact-after-review", node: { type: "context", action: "compact" } },
+      {
+        id: "qa",
+        input: { workspace, task, round: 1, rounds: 4 },
+        variables: { environment: "default" },
+      },
+      { id: "commit", input: { workspace } },
+      { id: "pr", input: { workspace, task } },
+      { id: "retro", input: {} },
     ]);
     expect(findRun(state, "qa-loop")).toMatchObject({ status: "completed", output: VERDICTS.PASS });
     expect(stop).toEqual({ kind: "finished", status: "completed" });
   });
 
-  test("SC14: a FAIL hands its bugs to fix as feedback, then qa runs again as round 2", async () => {
+  test("SC14 (review-loop SC5): a FAIL hands fix its bugs as fixes for qa round 2, then qa runs again as round 2", async () => {
     const { state, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["FAIL", "PARTIAL"],
+      { qa: ["FAIL", "PARTIAL"] },
     );
 
-    expect(handed.map((leaf) => leaf.id)).toEqual(["qa", "fix", "qa", "retro"]);
-    expect(handed[1]?.input).toMatchObject({ feedback: [{ ...bug, needsDecision: false }] });
-    expect(handed[2]?.input).toMatchObject({ round: 2, rounds: 4 });
+    expect(loopIds(handed)).toEqual(["qa", "fix", "qa", "retro"]);
+    expect(handed.find(({ id }) => id === "fix")?.input).toEqual({
+      workspace,
+      fixes: [{ ...bug, askUser: false }],
+      source: "qa",
+      round: 2,
+    });
+    expect(handed.filter(({ id }) => id === "qa")[1]?.input).toMatchObject({ round: 2, rounds: 4 });
+    expect(handed.find(({ id }) => id === "fix")?.node).toMatchObject({ stage: { ref: "fix" } });
     expect(findRun(state, "qa-loop")).toMatchObject({
       status: "completed",
       output: VERDICTS.PARTIAL,
     });
   });
 
-  test("SC15: four FAILs fail the loop on its fourth pass, after three fix rounds, and the run fails", async () => {
+  test("SC15, SC18: four FAILs fail the loop on its fourth pass after three fix rounds; retro still runs with input {}, commit and pr never start, and the run fails", async () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["FAIL", "FAIL", "FAIL", "FAIL"],
+      { qa: ["FAIL", "FAIL", "FAIL", "FAIL"] },
     );
 
-    expect(handed.map((leaf) => leaf.id)).toEqual([
-      "qa",
-      "fix",
-      "qa",
-      "fix",
-      "qa",
-      "fix",
-      "qa",
-      "retro",
-    ]);
+    expect(loopIds(handed)).toEqual(["qa", "fix", "qa", "fix", "qa", "fix", "qa", "retro"]);
     expect(findRun(state, "qa-loop")).toMatchObject({
       status: "failed",
       iteration: 4,
     });
-    expect(stop).toEqual({ kind: "finished", status: "failed" });
-  });
-
-  test("SC18: after the qa loop fails, retro is handed out with input {}, commit and pr never start, and the run still ends failed", async () => {
-    const { state, stop, handed } = await walkTask(
-      await compileWorkflow(TASK_WORKFLOW),
-      start({ prompt: "p" }),
-      ["FAIL", "FAIL", "FAIL", "FAIL"],
-    );
-
-    expect(handed.at(-1)).toEqual({ id: "retro", input: {} });
+    expect(handed.at(-1)).toMatchObject({ id: "retro", input: {} });
     expect(findRun(state, "retro")?.status).toBe("completed");
     expect(findRun(state, "commit")).toBeUndefined();
     expect(findRun(state, "pr")).toBeUndefined();
     expect(stop).toEqual({ kind: "finished", status: "failed" });
   });
 
+  test("a qa loop that ends BLOCKED skips the commit gated on its verdict and the pr after it, while retro still runs", async () => {
+    const { state, stop, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { qa: ["BLOCKED"] },
+    );
+
+    expect(loopIds(handed)).toEqual(["qa", "retro"]);
+    expect(findRun(state, "commit")).toMatchObject({
+      status: "skipped",
+      output: { reason: "when-false" },
+    });
+    expect(findRun(state, "pr")).toMatchObject({
+      status: "skipped",
+      output: { reason: "dependency-skipped", proof: { dependencies: ["commit"] } },
+    });
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
   test("SC19: on a passing run retro is the last node handed out, and its failure leaves the run completed", async () => {
     const { state, stop, handed } = await walkTask(
       await compileWorkflow(TASK_WORKFLOW),
       start({ prompt: "p" }),
-      ["PASS"],
-      [],
+      { qa: ["PASS"] },
       ["retro"],
     );
 
-    expect(handed.map((leaf) => leaf.id)).toEqual(["qa", "retro"]);
+    expect(loopIds(handed)).toEqual(["qa", "retro"]);
     expect(findRun(state, "pr")?.status).toBe("completed");
     expect(findRun(state, "retro")?.status).toBe("failed");
     expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+  const finding = {
+    id: "defects-1",
+    axis: "defects",
+    severity: "High",
+    size: "small",
+    file: "src/run.ts",
+    summary: "runTask does not await the save",
+    trigger: "a task finishes while the save is pending",
+    hint: "await the save",
+  };
+  const CHANGES_REQUESTED: JsonObject = {
+    verdict: "CHANGES_REQUESTED",
+    report: "artifacts/review.md",
+    reviewed: { yok: "a1" },
+    findings: [finding],
+  };
+
+  test("SC13 (review-loop): a first CHANGES_REQUESTED hands fix its findings, then code-review runs as round 2, and APPROVED ends the loop", async () => {
+    const { state, stop, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [CHANGES_REQUESTED, APPROVED] },
+    );
+
+    const review = reviewLeaves(handed);
+    expect(review.map(({ id }) => id)).toEqual(["code-review", "fix", "code-review"]);
+    expect(review[1]?.node).toMatchObject({ stage: { ref: "fix" } });
+    expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("completed");
+    expect(review[1]?.input).toEqual({
+      workspace,
+      fixes: [finding],
+      source: "review",
+      round: 2,
+    });
+    expect(review[2]?.input).toEqual({
+      workspace,
+      round: 2,
+      rounds: 2,
+      previous: CHANGES_REQUESTED,
+    });
+    expect(findRun(state, "review-loop")).toMatchObject({ status: "completed", output: APPROVED });
+    expect(findRun(state, "qa-loop")?.status).toBe("completed");
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC14 (review-loop): two CHANGES_REQUESTED end the loop completed on its last pass, and the run goes on to qa", async () => {
+    const { state, stop } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [CHANGES_REQUESTED, CHANGES_REQUESTED] },
+    );
+
+    expect(findRun(state, "review-loop")).toMatchObject({
+      status: "completed",
+      iteration: 2,
+      output: CHANGES_REQUESTED,
+    });
+    expect(findRun(state, "qa-loop")?.status).toBe("completed");
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC15 (review-loop): a first APPROVED runs code-review once, as round 1, and never hands out fix", async () => {
+    const { state, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [APPROVED] },
+    );
+
+    const review = reviewLeaves(handed);
+    expect(review.map(({ id }) => id)).toEqual(["code-review"]);
+    expect(review[0]?.input).toEqual({ workspace, round: 1, rounds: 2, previous: null });
+    expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("skipped");
+    expect(findRun(state, "review-loop", "fix")?.status).toBe("skipped");
   });
 });

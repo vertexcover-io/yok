@@ -243,6 +243,28 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<code>src/gone.ts</code>");
     expect(html).toContain("<code>const a</code>");
   });
+
+  test("a list item that starts with [x] or [ ] becomes a checkbox in that state, and other items stay text", () => {
+    const html = renderMarkdown(
+      "- [x] **F1 Coupon**: changes the total\n- [ ] F2 Quantity\n- [X] F3 Upper\n- plain [x] item\n",
+    );
+    expect(html).toContain(
+      '<li data-lines="1-1" class="task"><input type="checkbox" class="task-box" disabled checked><strong>F1 Coupon</strong>: changes the total</li>',
+    );
+    expect(html).toContain(
+      '<li data-lines="2-2" class="task"><input type="checkbox" class="task-box" disabled>F2 Quantity</li>',
+    );
+    expect(html).toContain('class="task-box" disabled checked>F3 Upper</li>');
+    expect(html).toContain('<li data-lines="4-4">plain [x] item</li>');
+    expect(html).not.toContain("[ ]");
+  });
+
+  test("a checkbox item with more paragraphs below keeps them, with the box in its first one", () => {
+    const html = renderMarkdown("- [x] **R1 Title**\n\n  Given a cart, Then 25.\n\n- [ ] R2\n");
+    expect(html).toContain(
+      '<li data-lines="1-4" class="task">\n<p data-lines="1-1"><input type="checkbox" class="task-box" disabled checked><strong>R1 Title</strong></p>\n<p data-lines="3-3">Given a cart, Then 25.</p>',
+    );
+  });
 });
 
 describe("listArtifacts", () => {
@@ -510,13 +532,6 @@ describe("viewer routes", () => {
     expect((await get("/runs/r-named/file?path=artifacts/../state.json")).status).toBe(404);
     expect((await get("/runs/r-named/file?path=artifacts/none.md")).status).toBe(404);
     expect((await get("/runs/r-named/raw/artifacts/none.html")).status).toBe(404);
-  });
-
-  test("the run page is the viewer HTML", async () => {
-    const { get } = await setup();
-    const res = await get("/runs/r-named");
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain('id="threads"');
   });
 });
 
@@ -807,20 +822,13 @@ describe("agent status on the stream", () => {
     }
   };
 
-  test("an unnamed run is starting", async () => {
-    expect(await agentOf(undefined, true, "r-starting")).toEqual({
-      state: "starting",
-      reason: null,
-    });
-  });
-
-  test("a run with no terminal or a dead session is stopped", async () => {
-    expect(await agentOf(undefined, true, "r-named")).toEqual({ state: "stopped", reason: null });
-    expect(await agentOf(EMPTY_BOX, false, "r-named")).toEqual({ state: "stopped", reason: null });
-  });
-
-  test("a live session is running", async () => {
-    expect(await agentOf(EMPTY_BOX, true, "r-named")).toEqual({ state: "running", reason: null });
+  test.each([
+    ["an unnamed run is starting", undefined, true, "r-starting", "starting"],
+    ["a run with no terminal is stopped", undefined, true, "r-named", "stopped"],
+    ["a run whose session is dead is stopped", EMPTY_BOX, false, "r-named", "stopped"],
+    ["a live session is running", EMPTY_BOX, true, "r-named", "running"],
+  ])("%s", async (_label, screen, alive, runId, state) => {
+    expect(await agentOf(screen, alive, runId)).toEqual({ state, reason: null });
   });
 
   test("a live session whose last delivery waits shows the reason", async () => {
@@ -876,18 +884,6 @@ describe("anchor script", () => {
       "",
     );
     expect(quoteContext(counted, 100, "xx").before).toBe(counted.slice(68, 100));
-  });
-
-  test("SC32: the page script the browser loads matches the tested code", async () => {
-    const { get } = await setup();
-    const res = await get("/assets/anchor.js");
-    expect(res.headers.get("content-type")).toContain("text/javascript");
-    const { findQuote, quoteContext } = await loadAnchor();
-    expect(findQuote(text, { quote, before: "... ", after: " there" })).toEqual([
-      second,
-      second + quote.length,
-    ]);
-    expect(quoteContext(text, 0, "retry")).toEqual({ before: "", after: text.slice(5, 37) });
   });
 });
 

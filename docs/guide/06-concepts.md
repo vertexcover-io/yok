@@ -22,7 +22,7 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 ```
 
-Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
+Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
 
 `yok verify workflows/task.yaml` compiles a workflow and prints the first error, so you can check a change without starting a run.
 
@@ -109,9 +109,9 @@ OUT
 
 ## Verifier
 
-A check a stage declares that `done` runs before accepting. It receives the run name, the node run id, the output, the artifacts by name, and its `args`. It returns `{ pass: boolean, findings: [{ message, path?, line?, hint? }] }`. A failing result needs at least one finding. The contract is [verifier.ts](../../packages/sdk/src/verifier.ts).
+A check a stage declares, which `done` runs before it accepts the stage's work. The check sees what the stage was asked to do, what it produced (its output and the files it handed over), and any settings the stage gives the check. It either passes, or fails with findings, each saying what is wrong and where, so the agent knows what to fix. A failure always names at least one problem.
 
-A finding sends the agent back to fix the work with the same node run id. A verifier that throws, times out, exits non-zero, or returns a bad shape is a `verifier-error`, also retryable. Every run of a verifier is recorded as an `orchestrate.verifier` event with its duration.
+A failed check sends the agent back to fix the work and call `done` again on the same step. A check that cannot run to an answer counts as a failure too, so a broken check never lets work through. Every run of a check is recorded in the run's history. The exact shape is in [verifier.ts](../../packages/sdk/src/verifier.ts).
 
 ## Extension
 
@@ -149,6 +149,7 @@ extensions:
 | `eventHandlers` | project functions that fold an event into `state.custom` |
 | `env`, `envFile` | variables every session starts with |
 | `notifier` | `{ enabled, type: slack }` |
+| `samskara` | `{ enabled }`: upload each completed node's artifact files, or the subfolder of `artifacts/` they sit in, to the run's Claude session in samskara |
 
 Init freezes which config file a run uses into `state.json`, so a run keeps its settings even if you edit the file mid-run.
 
@@ -217,7 +218,7 @@ The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has
 
 ## Doctor
 
-`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L153).
+`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
 
 ## Not built yet
 

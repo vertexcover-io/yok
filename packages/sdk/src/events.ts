@@ -5,7 +5,6 @@ import {
   AbsolutePathSchema,
   AgentStateSchema,
   ArtifactRefSchema,
-  FileArtifactSchema,
   AskedQuestionSchema,
   type Blocker,
   BlockerSchema,
@@ -14,6 +13,7 @@ import {
   type Event,
   EventSchema,
   EventTypeSchema,
+  FileArtifactSchema,
   isRunLive,
   JsonObjectSchema,
   type JsonValue,
@@ -85,6 +85,8 @@ const nodeEndedEvents = {
       summary: NonEmptyStringSchema.optional(),
       process: ProcessRecordSchema.optional(),
       artifacts: z.array(ArtifactRefSchema).optional(),
+      // the session the node ran in, which a detached subscriber cannot read off the later state
+      session: SessionRefSchema.optional(),
     }),
   ),
   failed: nodeEvent(

@@ -1,0 +1,28 @@
+diff --git a/README.md b/README.md
+index 4c1e9a2..7b3d0f5 100644
+--- a/README.md
++++ b/README.md
+@@ -12,6 +12,6 @@ Install the binary, then start your first run:
+
+ ```sh
+-yok start task --prompt "Add rate limiting to the API"
++yok run task --prompt "Add rate limiting to the API"
+ ```
+
+ The command starts the yok server, opens an agent session in tmux, and hands it the task.
+diff --git a/docs/guide/setup.md b/docs/guide/setup.md
+index 9e2a7c1..1f4b8d6 100644
+--- a/docs/guide/setup.md
++++ b/docs/guide/setup.md
+@@ -21,8 +21,8 @@ Check the install before your first run:
+
+ ```sh
+ yok doctor
+-yok start quick --prompt "Rename the Customer.fullName getter to displayName"
++yok launch quick --prompt "Rename the Customer.fullName getter to displayName"
+ ```
+
+-`yok start` prints the run id and an attach command, then puts your terminal inside the
+-agent's session.
++`yok launch` prints the run id and an attach command, then puts your terminal inside the
++agent's session.

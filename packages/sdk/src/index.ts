@@ -43,6 +43,9 @@ export {
   NOTIFIER_SUBSCRIBER,
   type Notifier,
   NotifierSchema,
+  SAMSKARA_SUBSCRIBER,
+  type Samskara,
+  SamskaraSchema,
   SUBSCRIBER_TIMEOUT_S,
   type SubscriberEntry,
   SubscriberEntrySchema,
@@ -73,6 +76,8 @@ export {
   EventTypeSchema,
   type FileArtifact,
   FileArtifactSchema,
+  type FixRequest,
+  FixRequestSchema,
   type GitState,
   GitStateSchema,
   isNormalizedRelativePath,
@@ -245,6 +250,20 @@ export {
 // Reading state.json is open to every caller; writing it stays behind the internal entry.
 export { type EventHandler, emitRunEvent, readState, toRepoId } from "./state.ts";
 export type { Subscriber, SubscriberInput } from "./subscribers.ts";
+export {
+  type Answer,
+  answers,
+  bodyOf,
+  type Call,
+  findTranscript,
+  humanMessages,
+  loadRecords,
+  type Message,
+  parseTime,
+  type Rec,
+  readEvents,
+  readRunSessions,
+} from "./transcript.ts";
 export {
   type Finding,
   FindingSchema,

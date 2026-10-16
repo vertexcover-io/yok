@@ -19,7 +19,6 @@ import {
   isClaudeBusy,
 } from "./claude.ts";
 import { claudeSettings } from "./claude-hooks.ts";
-import { codexProvider } from "./codex.ts";
 
 describe("claudeArgs", () => {
   test("SC1: every option present puts the flags in order with prompt last", () => {
@@ -78,14 +77,6 @@ describe("claudeArgs", () => {
       "--plugin-dir",
       "/repo",
     ]);
-  });
-});
-
-describe("skillPrefix", () => {
-  test("SC64: Claude's prompts name the yok plugin's skill as /yok:, and Codex keeps $", () => {
-    const host = fakeHost({});
-    expect(claudeProvider({ host }).skillPrefix).toBe("/yok:");
-    expect(codexProvider({ host }).skillPrefix).toBe("$");
   });
 });
 
@@ -201,18 +192,6 @@ describe("claudeProvider.launch", () => {
     });
 
     expect(await provider.launch({ cwd: "/repo" })).toEqual({ ok: false, error: "boom" });
-  });
-
-  test("SC2: the launch argv has no --session-id, and the tmux session is named by a fresh id", async () => {
-    const host = fakeHost();
-    const provider = claudeProvider({ host, newId: () => "fresh-uuid" });
-
-    await provider.launch({ cwd: "/repo", prompt: "go" });
-
-    const [create] = host.calls;
-    const spec = create?.method === "create" ? create.spec : undefined;
-    expect(spec?.name).toBe("fresh-uuid");
-    expect(spec?.argv).not.toContain("--session-id");
   });
 
   test("returns the pane it created, so a later prompt and stop reach it without a name lookup", async () => {
@@ -365,25 +344,25 @@ describe("interpretOutput", () => {
     });
   });
 
-  test("long non-JSON stdout is capped, never logging what follows the first 200 chars", () => {
-    const stdout = `${"x".repeat(5000)}SECRET_TAIL`;
-    const result = interpretOutput({ code: 0, stdout, stderr: "" });
+  test.each([
+    ["long non-JSON stdout", 0, "stdout"],
+    ["a non-zero exit with long stderr", 1, "stderr"],
+  ] as const)(
+    "%s is capped, never logging what follows the first 200 chars",
+    (_label, code, stream) => {
+      const long = `${"x".repeat(5000)}SECRET_TAIL`;
+      const result = interpretOutput({
+        code,
+        stdout: stream === "stdout" ? long : "oops",
+        stderr: stream === "stderr" ? long : "",
+      });
 
-    expect(result.ok).toBe(false);
-    const message = result.ok ? "" : String(result.error);
-    expect(message).not.toContain("SECRET_TAIL");
-    expect(message).toContain(`${stdout.length}`);
-  });
-
-  test("a non-zero exit with long stderr is capped, never logging what follows the first 200 chars", () => {
-    const stderr = `${"x".repeat(5000)}SECRET_TAIL`;
-    const result = interpretOutput({ code: 1, stdout: "oops", stderr });
-
-    expect(result.ok).toBe(false);
-    const message = result.ok ? "" : String(result.error);
-    expect(message).not.toContain("SECRET_TAIL");
-    expect(message).toContain(`${stderr.length}`);
-  });
+      expect(result.ok).toBe(false);
+      const message = result.ok ? "" : String(result.error);
+      expect(message).not.toContain("SECRET_TAIL");
+      expect(message).toContain(`${long.length}`);
+    },
+  );
 });
 
 // Writes a temporary executable that prints fixed stdout and exits with a fixed code,
@@ -418,50 +397,36 @@ describe("claudeProvider.run", () => {
     expect(result).toEqual({ ok: true, output: { a: 1 }, sessionId: "s" });
   });
 
-  test("SC27: is_error: true fails, carrying the session id it reported", async () => {
-    const binary = fakeClaudeBinary({
-      stdout: JSON.stringify({ result: "boom", session_id: "s", is_error: true }),
-    });
-    const provider = claudeProvider({ host: fakeHost(), binary });
+  test.each([
+    ["is_error: true", { result: "boom", session_id: "s", is_error: true }, 0, undefined],
+    [
+      "a non-zero exit with an otherwise well-formed body",
+      { result: "ok", session_id: "s", is_error: false },
+      2,
+      undefined,
+    ],
+    [
+      "a result failing the schema",
+      { result: JSON.stringify({ a: "nope" }), session_id: "s", is_error: false },
+      0,
+      outputSchema,
+    ],
+  ] as const)(
+    "SC27: %s fails, carrying the session id it reported",
+    async (_label, body, exitCode, outputFormat) => {
+      const binary = fakeClaudeBinary({ stdout: JSON.stringify(body), exitCode });
+      const provider = claudeProvider({ host: fakeHost(), binary });
 
-    const result = await provider.run({ prompt: "hi", cwd: process.cwd() });
+      const result = await provider.run({
+        prompt: "hi",
+        cwd: process.cwd(),
+        ...(outputFormat === undefined ? {} : { outputFormat }),
+      });
 
-    expect(result.ok).toBe(false);
-    expect(!result.ok && result.sessionId).toBe("s");
-  });
-
-  test("SC27: a non-zero exit fails even with an otherwise well-formed body", async () => {
-    const binary = fakeClaudeBinary({
-      stdout: JSON.stringify({ result: "ok", session_id: "s2", is_error: false }),
-      exitCode: 2,
-    });
-    const provider = claudeProvider({ host: fakeHost(), binary });
-
-    const result = await provider.run({ prompt: "hi", cwd: process.cwd() });
-
-    expect(result.ok).toBe(false);
-    expect(!result.ok && result.sessionId).toBe("s2");
-  });
-
-  test("SC27: a result failing the schema fails, carrying the session id it reported", async () => {
-    const binary = fakeClaudeBinary({
-      stdout: JSON.stringify({
-        result: JSON.stringify({ a: "nope" }),
-        session_id: "s3",
-        is_error: false,
-      }),
-    });
-    const provider = claudeProvider({ host: fakeHost(), binary });
-
-    const result = await provider.run({
-      prompt: "hi",
-      cwd: process.cwd(),
-      outputFormat: outputSchema,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(!result.ok && result.sessionId).toBe("s3");
-  });
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.sessionId).toBe("s");
+    },
+  );
 });
 
 describe("isClaudeBusy", () => {

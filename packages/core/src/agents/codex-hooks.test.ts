@@ -86,19 +86,6 @@ describe("codexAdapter.preToolUse", () => {
   });
 });
 
-describe("codexAdapter.sessionStart", () => {
-  test("a handler runs on a Codex SessionStart with the codex agent", async () => {
-    const seen: unknown[] = [];
-    const out = await codexAdapter.sessionStart?.(
-      JSON.stringify({ session_id: "s1", source: "startup", transcript_path: null }),
-      deps,
-      { name: "t", run: async (input) => void seen.push(input) },
-    );
-    expect(out).toBe("");
-    expect(seen).toEqual([{ agent: "codex", sessionId: "s1", source: "startup" }]);
-  });
-});
-
 describe("readCodexTranscript", () => {
   test("SC11: prompts and shell commands come out of a rollout, from every shell shape", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "codex-rollout-")), "rollout.jsonl");

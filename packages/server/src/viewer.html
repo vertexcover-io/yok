@@ -163,6 +163,9 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
 .doc li:has(> p) + li { margin-top: 14px; }
 .doc li > ul, .doc li > ol { margin-bottom: 0; }
 .doc li > p { margin: 0 0 8px; }
+.doc li.task { list-style: none; }
+.doc .task-box { margin: 0 .5em 0 -1.4em; vertical-align: middle; }
+.doc .task-box:enabled { cursor: pointer; }
 .doc strong { font-weight: 600; }
 .doc a { color: var(--accent); }
 .doc img { max-width: 100%; }
@@ -1131,7 +1134,9 @@ function renderThreads() {
 }
 
 function refresh() {
+  applyTasks();
   applyHighlights();
+  $("#approveBtn").textContent = drafts.length ? `Send ${drafts.length} and approve` : "Approve";
   renderFiles();
   renderThreads();
 }
@@ -1260,6 +1265,58 @@ function captureSelection() {
 }
 
 let pending = null;
+/* ---------- checklists ---------- */
+
+// A checkbox item's comment quotes the item's own text: its first block, after the box.
+function taskAnchor(root, box) {
+  const block = box.parentElement;
+  const range = root.ownerDocument.createRange();
+  range.setStartAfter(box);
+  const nested = block.querySelector(":scope > ul, :scope > ol");
+  if (nested) range.setEndBefore(nested);
+  else range.setEndAfter(block.lastChild);
+  const raw = range.toString();
+  const quote = raw.trim();
+  if (!quote) return null;
+  const start = textOffset(root, range.startContainer, range.startOffset) + (raw.length - raw.trimStart().length);
+  const anchor = { quote, ...quoteContext(root.textContent, start, quote) };
+  const lines = linesOf(box.closest("li"));
+  if (lines) anchor.lines = lines;
+  const heading = headingFor(root, box);
+  if (heading) anchor.heading = heading;
+  return anchor;
+}
+
+const taskDraft = (anchor) => drafts.find((d) => d.task !== undefined && d.file === current && d.anchor.quote === anchor.quote);
+
+// The file holds each box's state; a draft flips it until sent, and is dropped once the file agrees.
+function applyTasks() {
+  const root = $("#docRoot");
+  if (!root) return;
+  const open = Boolean(currentFile()?.awaitingApproval);
+  for (const box of root.querySelectorAll(".task-box")) {
+    const anchor = taskAnchor(root, box);
+    const draft = anchor && taskDraft(anchor);
+    if (draft && draft.task === box.defaultChecked) drafts = drafts.filter((d) => d !== draft);
+    box.disabled = !open || !anchor;
+    box.checked = draft && draft.task !== box.defaultChecked ? draft.task : box.defaultChecked;
+  }
+}
+
+$("#docHost").addEventListener("change", (e) => {
+  const box = e.target.closest?.(".task-box");
+  const root = $("#docRoot");
+  const anchor = box && root ? taskAnchor(root, box) : null;
+  if (!anchor) return;
+  const draft = taskDraft(anchor);
+  if (draft) drafts = drafts.filter((d) => d !== draft);
+  else {
+    const text = box.checked ? "Tick this" : "Untick this";
+    drafts.push({ id: `d${nextDraft++}`, draft: true, task: box.checked, file: current, kind: "comment", text, anchor, thread: [] });
+  }
+  refresh();
+});
+
 const hideSelbar = () => { $("#selbar").hidden = true; };
 
 function showSelbar() {
@@ -1361,11 +1418,16 @@ $("#composer").addEventListener("submit", async (e) => {
 
 $("#globalBtn").addEventListener("click", (e) => openComposer("global", null, e.currentTarget.getBoundingClientRect()));
 $("#editBtn").addEventListener("click", () => current && openInEditor(current, null));
+// Approve sends the drafts not sent yet with it; the agent reads the approval last.
 $("#approveBtn").addEventListener("click", async () => {
   $("#approveBtn").hidden = true;
-  const error = await postComments([{ file: current, kind: "approve", text: "Approved" }]);
+  const sending = drafts;
+  const error = await postComments([...sending, { file: current, kind: "approve", text: "Approved" }]);
   // Files first: the approval clears the file's wait, and the comments render reads it.
-  if (!error) return refreshFiles().then(refreshComments);
+  if (!error) {
+    drafts = drafts.filter((d) => !sending.includes(d));
+    return refreshFiles().then(refreshComments);
+  }
   toast(error);
   renderHead();
 });
@@ -1408,6 +1470,7 @@ async function applyFiles(body) {
   files = body.files;
   renderFiles();
   renderHead();
+  applyTasks();
   if (body.state === "starting" || files.length === 0) {
     if (!current) $("#docHost").replaceChildren(emptyState(body.state === "starting"));
     return;

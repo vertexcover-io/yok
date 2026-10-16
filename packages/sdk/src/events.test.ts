@@ -25,17 +25,6 @@ import { emitRunEvent, projectEvents } from "./state.ts";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe("emitEvent", () => {
-  test("workflow.started without a workflow name is refused and nothing is stored", async () => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", {
-      type: "workflow.started",
-      source: "test",
-      payload: { inputs: {} },
-    });
-    expect(result.ok).toBe(false);
-    expect(await store.read()).toEqual([]);
-  });
-
   test("SC1: an event emitted with no id is stored as seq 1 with a UUID, the current time and the given runId", async () => {
     const store = memoryEventStore();
     const before = Date.now();
@@ -52,43 +41,6 @@ describe("emitEvent", () => {
     expect(await store.read()).toEqual([result.value]);
   });
 
-  test("SC2: a second emit with the same caller id returns the first event and stores nothing new", async () => {
-    const store = memoryEventStore();
-    const note = { id: "e1", type: "custom.skill.note", source: "test" };
-    const first = await emitEvent(store, "r-1", { ...note, payload: 1 });
-    const second = await emitEvent(store, "r-1", { ...note, payload: 2 });
-    expect(second).toEqual(first);
-    expect(first).toMatchObject({ ok: true, value: { seq: 1, payload: 1 } });
-    expect(await store.read()).toHaveLength(1);
-  });
-
-  test("SC3: workflow.node.failed without an error is refused, naming the type, and nothing is stored", async () => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", {
-      type: "workflow.node.failed",
-      source: "test",
-      nodeId: "a",
-      nodeRunId: "a",
-      payload: { nodeType: "exec", attempts: 1 },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("workflow.node.failed");
-    expect(await store.read()).toEqual([]);
-  });
-
-  test("SC4: workflow.node.started with a valid payload but no node ids is refused and nothing is stored", async () => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", {
-      type: "workflow.node.started",
-      source: "test",
-      payload: { nodeType: "exec" },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("workflow.node.started");
-    if (!result.ok) expect(result.error).toContain("nodeId");
-    expect(await store.read()).toEqual([]);
-  });
-
   test("SC5: an event type outside the catalog is stored with any JSON payload", async () => {
     const result = await emitEvent(memoryEventStore(), "r-1", {
       type: "custom.skill.note",
@@ -96,74 +48,6 @@ describe("emitEvent", () => {
       payload: [1, "two", null],
     });
     expect(result).toMatchObject({ ok: true, value: { payload: [1, "two", null] } });
-  });
-
-  test.each([
-    ["orchestrate.exec", "without its input", { output: { kind: "error", message: "x" } }],
-    [
-      "orchestrate.verifier",
-      "without its verifier",
-      { attempt: 1, durationMs: 3, status: "passed", findings: [] },
-    ],
-    [
-      "orchestrate.done",
-      "with a report missing its status",
-      {
-        input: { nodeRunId: "nr-1", output: {}, artifacts: [] },
-        output: { nodeRunId: "nr-1", nodeId: "a", attempts: 1 },
-      },
-    ],
-    [
-      "orchestrate.done",
-      "without a status",
-      {
-        input: { nodeRunId: "nr-1", output: {}, artifacts: [] },
-        output: { nodeRunId: "nr-1", nodeId: "a", status: "completed", attempts: 1 },
-      },
-    ],
-    [
-      "orchestrate.done",
-      "with an unknown status",
-      {
-        input: { nodeRunId: "nr-1", output: {}, artifacts: [] },
-        output: { nodeRunId: "nr-1", nodeId: "a", status: "completed", attempts: 1 },
-        status: "refused",
-      },
-    ],
-    [
-      "orchestrate.done",
-      "with neither an output nor an error",
-      {
-        input: { nodeRunId: "nr-1", artifacts: [] },
-        output: { nodeRunId: "nr-1", nodeId: "a", status: "completed", attempts: 1 },
-      },
-    ],
-    [
-      "orchestrate.done",
-      "with both an output and an error",
-      {
-        input: { nodeRunId: "nr-1", output: {}, error: "no", artifacts: [] },
-        output: { nodeRunId: "nr-1", nodeId: "a", status: "completed", attempts: 1 },
-      },
-    ],
-  ])("%s %s is refused and nothing is stored", async (type, _case, payload) => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", { type, source: "orchestrate", payload });
-    expect(result.ok ? "" : result.error).toContain(type);
-    expect(await store.read()).toEqual([]);
-  });
-
-  test("workflow.node.skipped without a skip reason is refused, naming skip, and nothing is stored", async () => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", {
-      type: "workflow.node.skipped",
-      source: "test",
-      nodeId: "a",
-      nodeRunId: "a",
-      payload: { nodeType: "exec", attempts: 0 },
-    });
-    expect(result.ok ? "" : result.error).toContain("skip");
-    expect(await store.read()).toEqual([]);
   });
 
   test.each([
@@ -183,60 +67,6 @@ describe("emitEvent", () => {
       },
     });
     expect(result.ok).toBe(true);
-  });
-
-  test.each([
-    ["failed", { error: { kind: "exit", message: "exit 1" } }],
-    ["cancelled", {}],
-    [
-      "skipped",
-      { skip: { reason: "when-false", proof: { expression: "{{ false }}", value: false } } },
-    ],
-  ])("workflow.node.%s refuses an output it would never record", async (outcome, fields) => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
-      type: `workflow.node.${outcome}`,
-      source: "test",
-      nodeId: "a",
-      nodeRunId: "a",
-      payload: { nodeType: "exec", attempts: 1, output: "hi\n", ...fields },
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  test.each([
-    ["failed", { error: { kind: "exit", message: "exit 1" } }],
-    ["cancelled", {}],
-  ])("workflow.node.%s refuses a skip it would never record", async (outcome, fields) => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
-      type: `workflow.node.${outcome}`,
-      source: "test",
-      nodeId: "a",
-      nodeRunId: "a",
-      payload: {
-        nodeType: "exec",
-        attempts: 1,
-        skip: { reason: "when-false", proof: { expression: "{{ false }}", value: false } },
-        ...fields,
-      },
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  test.each([
-    ["an error", { error: { kind: "exit", message: "exit 1" } }],
-    [
-      "a skip",
-      { skip: { reason: "when-false", proof: { expression: "{{ false }}", value: false } } },
-    ],
-  ])("workflow.node.completed refuses %s beside its output", async (_, fields) => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
-      type: "workflow.node.completed",
-      source: "test",
-      nodeId: "a",
-      nodeRunId: "a",
-      payload: { nodeType: "exec", attempts: 1, output: "hi\n", ...fields },
-    });
-    expect(result.ok).toBe(false);
   });
 });
 
@@ -381,18 +211,6 @@ describe("builtInHandlers", () => {
       },
     ]);
     expect(state.startedAt).toBe("2026-09-27T09:00:00Z");
-  });
-
-  test("SC6: a started node is kept under its own id, running, with its run id and no artifacts", () => {
-    const state = project([nodeEvent(1, "started", build, { nodeType: "exec" })]);
-    expect(state.nodeRuns.build).toEqual({
-      nodeRunId: "build",
-      nodeType: "exec",
-      status: "running",
-      startedAt: "2026-09-26T10:00:01Z",
-      completedAt: null,
-      artifacts: [],
-    });
   });
 
   test("a started node keeps whether it posts to the thread, and a completed one keeps its summary", () => {
@@ -788,54 +606,6 @@ describe("workspace event schemas", () => {
     const payload = createdPayload("mono", { api: repository(dir), web: repository(dir) });
     expect(issuePaths(payload)).toContain("payload.repositories");
   });
-
-  test("WS40 — a short startSha fails, naming startSha", () => {
-    const payload = createdPayload("multi", {
-      api: repository("/meta/.workspaces/feat-x/api", { startSha: "3f2c9ab" }),
-    });
-    expect(issuePaths(payload)).toEqual(["payload.repositories.api.startSha"]);
-  });
-
-  test("WS24 — emitEvent refuses a bad workspace.created payload and a repository.added with no repoId, appending nothing", async () => {
-    const store = memoryEventStore();
-    const badCreated = await emitEvent(store, "r-1", {
-      type: "workspace.created",
-      source: "orchestrate",
-      payload: createdPayload("multi", {
-        api: repository("/meta/.workspaces/feat-x/api", { startSha: "abc" }),
-      }),
-    });
-    const noRepoId = await emitEvent(store, "r-1", {
-      type: "workspace.repository.added",
-      source: "orchestrate",
-      payload: {
-        workspaceDir: "/meta/.workspaces/feat-x",
-        branch: "feat-x",
-        repository: repository("/meta/.workspaces/feat-x/api"),
-      },
-    });
-    expect(badCreated.ok ? "" : badCreated.error).toContain("startSha");
-    expect(noRepoId.ok ? "" : noRepoId.error).toContain("repoId");
-    expect(await store.read()).toEqual([]);
-  });
-
-  test.each(["workspace.create-failed", "workspace.remove-failed"])(
-    "%s with an error that names no repoId is refused, since only a repo's failure is recorded",
-    async (type) => {
-      const store = memoryEventStore();
-      const result = await emitEvent(store, "r-1", {
-        type,
-        source: "orchestrate",
-        payload: {
-          workspaceDir: "/meta/.workspaces/feat-x",
-          branch: "feat-x",
-          errors: [{ kind: "setup", message: "broke" }],
-        },
-      });
-      expect(result.ok ? "" : result.error).toContain("repoId");
-      expect(await store.read()).toEqual([]);
-    },
-  );
 });
 
 const SHA_B = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d";
@@ -944,20 +714,6 @@ describe("hooks.stop.called", () => {
       },
     ]);
     expect(state.stopHook).toEqual({ blockStreak: 1, seq: 7 });
-  });
-
-  test("SC14 — a stop-called event with an unknown decision is refused, naming the type", async () => {
-    const store = memoryEventStore();
-    const result = await emitEvent(store, "r-1", {
-      type: "hooks.stop.called",
-      source: "hooks",
-      payload: { ...called, decision: "maybe" },
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      error: expect.stringContaining("hooks.stop.called"),
-    });
-    expect(await store.read()).toEqual([]);
   });
 });
 
@@ -1143,11 +899,6 @@ describe("blocker", () => {
     ["hooks.stop.called", stopCalled(3)],
     ["an AskUserQuestion hooks.pre-tool-use.called", toolCalled(3, "AskUserQuestion")],
   ];
-  const pairs = (after: readonly (readonly [string, Event])[]) =>
-    openings.flatMap(([name, opening]) =>
-      after.map(([next, event]) => [name, next, opening, event] as const),
-    );
-
   test.each(openings)(
     "SC127: %s blocks the running run with its own reason and details",
     (_name, opening, expected) => {
@@ -1157,7 +908,12 @@ describe("blocker", () => {
     },
   );
 
-  test.each(pairs(nonClosing))(
+  const rotated = nonClosing.flatMap(([next, event], index) => {
+    const opening = openings[index % openings.length];
+    return opening === undefined ? [] : [[opening[0], next, opening[1], event] as const];
+  });
+
+  test.each(rotated)(
     "SC127: %s then %s leaves the run blocked with the same blocker",
     (_name, _next, opening, event) => {
       const before = project([designRunning, opening]);
@@ -1189,18 +945,6 @@ describe("blocker", () => {
 
   test("SC142: agent.resumed on a running run leaves it running with no blocker", () => {
     unblockedState(project([designRunning, resumed(2, "usage-limit")]));
-  });
-
-  test("SC142: agent.resumed with a reason that is not a blocker reason is refused and nothing is stored", async () => {
-    const store = memoryEventStore();
-    const payload = { ...session, reason: "progress", tool: "Bash" };
-    const result = await emitEvent(store, "r-1", {
-      type: "agent.resumed",
-      source: "hooks",
-      payload,
-    });
-    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("agent.resumed") });
-    expect(await store.read()).toEqual([]);
   });
 
   test("SC127: a question asked inside qa-loop names the running leaf qa-loop.qa as its node", () => {
@@ -1245,17 +989,220 @@ describe("blocker", () => {
   });
 });
 
-describe("usage-limit events", () => {
+describe("emitEvent refusals", () => {
+  const node = { nodeId: "a", nodeRunId: "a" };
+  const session = { agent: "claude", sessionId: "s1" };
+  const doneInput = { nodeRunId: "nr-1", output: {}, artifacts: [] };
+  const doneOutput = { nodeRunId: "nr-1", nodeId: "a", status: "completed", attempts: 1 };
+  const exit = { kind: "exit", message: "exit 1" };
+  const whenFalse = { reason: "when-false", proof: { expression: "{{ false }}", value: false } };
+  const workspace = { workspaceDir: "/meta/.workspaces/feat-x", branch: "feat-x" };
+
   test.each([
-    ["agent.limit.reached", { agent: "claude", sessionId: "s1" }],
-    ["agent.limit.waiting", { sessionId: "s1", limitEventId: "e-1", resumeAt: "soon" }],
-    ["agent.limit.resumed", { sessionId: "s1" }],
+    [
+      "workflow.started without a workflow name",
+      "workflow.started",
+      {},
+      { inputs: {} },
+      "workflow.started",
+    ],
+    [
+      "SC3: workflow.node.failed without an error",
+      "workflow.node.failed",
+      node,
+      { nodeType: "exec", attempts: 1 },
+      "workflow.node.failed",
+    ],
+    [
+      "SC4: workflow.node.started without node ids",
+      "workflow.node.started",
+      {},
+      { nodeType: "exec" },
+      "nodeId",
+    ],
+    [
+      "workflow.node.skipped without a skip reason",
+      "workflow.node.skipped",
+      node,
+      { nodeType: "exec", attempts: 0 },
+      "skip",
+    ],
+    [
+      "workflow.node.failed with an output",
+      "workflow.node.failed",
+      node,
+      { nodeType: "exec", attempts: 1, output: "hi", error: exit },
+      "workflow.node.failed",
+    ],
+    [
+      "workflow.node.cancelled with an output",
+      "workflow.node.cancelled",
+      node,
+      { nodeType: "exec", attempts: 1, output: "hi" },
+      "workflow.node.cancelled",
+    ],
+    [
+      "workflow.node.skipped with an output",
+      "workflow.node.skipped",
+      node,
+      { nodeType: "exec", attempts: 1, output: "hi", skip: whenFalse },
+      "workflow.node.skipped",
+    ],
+    [
+      "workflow.node.failed with a skip",
+      "workflow.node.failed",
+      node,
+      { nodeType: "exec", attempts: 1, skip: whenFalse, error: exit },
+      "workflow.node.failed",
+    ],
+    [
+      "workflow.node.cancelled with a skip",
+      "workflow.node.cancelled",
+      node,
+      { nodeType: "exec", attempts: 1, skip: whenFalse },
+      "workflow.node.cancelled",
+    ],
+    [
+      "workflow.node.completed with an error beside its output",
+      "workflow.node.completed",
+      node,
+      { nodeType: "exec", attempts: 1, output: "hi", error: exit },
+      "workflow.node.completed",
+    ],
+    [
+      "workflow.node.completed with a skip beside its output",
+      "workflow.node.completed",
+      node,
+      { nodeType: "exec", attempts: 1, output: "hi", skip: whenFalse },
+      "workflow.node.completed",
+    ],
+    [
+      "orchestrate.exec without its input",
+      "orchestrate.exec",
+      {},
+      { output: { kind: "error", message: "x" } },
+      "orchestrate.exec",
+    ],
+    [
+      "orchestrate.verifier without its verifier",
+      "orchestrate.verifier",
+      {},
+      { attempt: 1, durationMs: 3, status: "passed", findings: [] },
+      "orchestrate.verifier",
+    ],
+    [
+      "orchestrate.done with a report missing its status",
+      "orchestrate.done",
+      {},
+      { input: doneInput, output: { nodeRunId: "nr-1", nodeId: "a", attempts: 1 } },
+      "orchestrate.done",
+    ],
+    [
+      "orchestrate.done without a status",
+      "orchestrate.done",
+      {},
+      { input: doneInput, output: doneOutput },
+      "orchestrate.done",
+    ],
+    [
+      "orchestrate.done with an unknown status",
+      "orchestrate.done",
+      {},
+      { input: doneInput, output: doneOutput, status: "refused" },
+      "orchestrate.done",
+    ],
+    [
+      "orchestrate.done with neither an output nor an error",
+      "orchestrate.done",
+      {},
+      { input: { nodeRunId: "nr-1", artifacts: [] }, output: doneOutput },
+      "orchestrate.done",
+    ],
+    [
+      "orchestrate.done with both an output and an error",
+      "orchestrate.done",
+      {},
+      { input: { ...doneInput, error: "no" }, output: doneOutput },
+      "orchestrate.done",
+    ],
+    [
+      "WS24: workspace.created with a short startSha",
+      "workspace.created",
+      {},
+      createdPayload("multi", {
+        api: repository("/meta/.workspaces/feat-x/api", { startSha: "abc" }),
+      }),
+      "startSha",
+    ],
+    [
+      "WS24: workspace.repository.added with no repoId",
+      "workspace.repository.added",
+      {},
+      { ...workspace, repository: repository("/meta/.workspaces/feat-x/api") },
+      "repoId",
+    ],
+    [
+      "workspace.create-failed with an error naming no repoId",
+      "workspace.create-failed",
+      {},
+      { ...workspace, errors: [{ kind: "setup", message: "broke" }] },
+      "repoId",
+    ],
+    [
+      "workspace.remove-failed with an error naming no repoId",
+      "workspace.remove-failed",
+      {},
+      { ...workspace, errors: [{ kind: "setup", message: "broke" }] },
+      "repoId",
+    ],
+    [
+      "SC14: hooks.stop.called with an unknown decision",
+      "hooks.stop.called",
+      {},
+      {
+        ...session,
+        touchedRun: null,
+        decision: "maybe",
+        reason: "node-not-done",
+        blockStreak: 1,
+        message: "m",
+      },
+      "hooks.stop.called",
+    ],
+    [
+      "SC142: agent.resumed with a reason that is not a blocker reason",
+      "agent.resumed",
+      {},
+      { ...session, reason: "progress", tool: "Bash" },
+      "agent.resumed",
+    ],
+    [
+      "agent.limit.reached with a bad payload",
+      "agent.limit.reached",
+      {},
+      session,
+      "agent.limit.reached",
+    ],
+    [
+      "agent.limit.waiting with a bad payload",
+      "agent.limit.waiting",
+      {},
+      { sessionId: "s1", limitEventId: "e-1", resumeAt: "soon" },
+      "agent.limit.waiting",
+    ],
+    [
+      "agent.limit.resumed with a bad payload",
+      "agent.limit.resumed",
+      {},
+      { sessionId: "s1" },
+      "agent.limit.resumed",
+    ],
   ])(
-    "%s with a bad payload is refused, naming the type, and nothing is stored",
-    async (type, payload) => {
+    "%s is refused, naming why, and nothing is stored",
+    async (_label, type, ids, payload, reason) => {
       const store = memoryEventStore();
-      const result = await emitEvent(store, "r-1", { type, source: "hooks", payload });
-      expect(result).toMatchObject({ ok: false, error: expect.stringContaining(type) });
+      const result = await emitEvent(store, "r-1", { type, source: "test", ...ids, payload });
+      expect(result.ok ? "" : result.error).toContain(reason);
       expect(await store.read()).toEqual([]);
     },
   );

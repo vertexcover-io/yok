@@ -454,6 +454,43 @@ describe("the notifier at init", () => {
     expect(result.value.state.subscribers).toEqual(expected(cwd));
   });
 
+  const SAMSKARA_REF = {
+    name: "samskara",
+    blocking: false,
+    timeoutSeconds: 300,
+    module: "yok:samskara",
+    handler: "upload",
+  };
+  const samskaraOnly = { "workflow.node.completed": [SAMSKARA_REF] };
+
+  test.each([
+    ["a config samskara block freezes the upload", { samskara: {} }, "", samskaraOnly],
+    [
+      "a workflow's enabled: false turns the config's samskara off",
+      { samskara: {} },
+      "samskara: { enabled: false }\n",
+      {},
+    ],
+    ["a workflow samskara block alone turns it on", {}, "samskara: {}\n", samskaraOnly],
+    ["no samskara block freezes nothing", {}, "", {}],
+    [
+      "with the notifier on too, the notifier comes first on workflow.node.completed",
+      { notifier: {}, samskara: {} },
+      "",
+      {
+        ...notifierOnly,
+        "workflow.node.completed": [NOTIFIER_REF, SAMSKARA_REF],
+      },
+    ],
+  ])("SC409: %s", async (_label, config, workflowSamskara, expected) => {
+    const { init } = await notifierRun(config, workflowSamskara);
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.subscribers).toEqual(expected);
+  });
+
   test("SC85: a frozen notifier subscriber names yok:notifier and slack, and SubscriberRefSchema takes only yok: names as built-ins", async () => {
     const { init } = await notifierRun({ notifier: {} }, "");
 
@@ -559,15 +596,11 @@ describe("resolveRun", () => {
 });
 
 describe("linkRunSession", () => {
-  test("SC22: links a new agent session once and refuses an unknown agent without changing the run", async () => {
+  test("SC22: links a new agent session and refuses an unknown agent without changing the run", async () => {
     const { cwd, registry, run } = await initializedRun();
     const link = (agent: string, sessionId: string) =>
       linkRunSession({ registry, run: { id: run.id, cwd, name: "fix-login" }, agent, sessionId });
 
-    expect(await link("codex", "s2")).toEqual({
-      ok: true,
-      value: [{ agent: "codex", sessionId: "s2" }],
-    });
     expect(await link("codex", "s2")).toEqual({
       ok: true,
       value: [{ agent: "codex", sessionId: "s2" }],
@@ -628,43 +661,28 @@ describe("terminal naming", () => {
     }
   });
 
-  test("SC4: init outside tmux leaves the terminal alone and succeeds", async () => {
-    const { registry, run, init } = await savedRun({ terminal: "old" });
+  test.each<[string, ITerminal | undefined]>([
+    ["SC4: init outside tmux", undefined],
+    [
+      "SC5: a rename that fails",
+      { ...({} as ITerminal), rename: () => Promise.resolve({ ok: false, error: "no such pane" }) },
+    ],
+    [
+      "SC5: a rename that throws",
+      { ...({} as ITerminal), rename: () => Promise.reject(new Error("timed out after 10s")) },
+    ],
+  ])(
+    "%s leaves the terminal name alone, and init succeeds with its run folder",
+    async (_label, terminal) => {
+      const { registry, run, init } = await savedRun({ terminal: "old" });
 
-    const result = await init("fix-login", run.id, {});
+      const result = await init("fix-login", run.id, terminal === undefined ? {} : { terminal });
 
-    expect(result.ok).toBe(true);
-    expect((await registry.findRun(run.id))?.terminal).toBe("old");
-  });
-
-  test("SC5: a rename that fails does not fail init", async () => {
-    const failing: ITerminal = {
-      ...({} as ITerminal),
-      rename: () => Promise.resolve({ ok: false, error: "no such pane" }),
-    };
-    const { registry, run, init } = await savedRun({ terminal: "old" });
-
-    const result = await init("fix-login", run.id, {
-      terminal: failing,
-    });
-
-    expect(result.ok).toBe(true);
-    expect((await registry.findRun(run.id))?.terminal).toBe("old");
-  });
-
-  test("SC5: a rename that throws does not fail init or delete the run folder", async () => {
-    const throwing: ITerminal = {
-      ...({} as ITerminal),
-      rename: () => Promise.reject(new Error("timed out after 10s")),
-    };
-    const { registry, run, init } = await savedRun({ terminal: "old" });
-
-    const result = await init("fix-login", run.id, { terminal: throwing });
-
-    expect(result.ok).toBe(true);
-    expect(existsSync(result.ok ? result.value.dir : "")).toBe(true);
-    expect((await registry.findRun(run.id))?.terminal).toBe("old");
-  });
+      expect(result.ok).toBe(true);
+      expect(existsSync(result.ok ? result.value.dir : "")).toBe(true);
+      expect((await registry.findRun(run.id))?.terminal).toBe("old");
+    },
+  );
 });
 
 const CLAUDE_TIERS: ResolvedTiers = {
@@ -710,29 +728,28 @@ describe("initializeRun with tiers", () => {
     expect(stored.tiers).toEqual(CLAUDE_TIERS);
   });
 
-  test("a claude run whose stages declare tiers balanced and, inside a loop, turbo fails against its registered tiers, though the config maps both, and leaves no run folder", async () => {
-    const nodes = `${stageNode("a", "odd")}  - id: fix
+  test.each<[string, string, StagedRunOptions, string]>([
+    [
+      "stages that declare tiers balanced and, inside a loop, turbo, though the config maps both,",
+      `${stageNode("a", "odd")}  - id: fix
     type: loop
     until: "{{ true }}"
     maxIterations: 2
     input: {}
     nodes:
-  ${stageNode("b", "other")}`;
-    const models = { balanced: { model: "b-x" }, turbo: { model: "t-x" } };
-    const { cwd, result } = await stagedRun(nodes, {
-      config: { agents: { claude: { tiers: { models } } } },
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error:
-        'stages/odd has tier "balanced", stages/other has tier "turbo"; the claude tiers are fast, deep',
-    });
-    expect(existsSync(join(cwd, ".yok", "tiered"))).toBe(false);
-  });
-
-  test("a claude run whose prompt agent node in a switch case declares tier: turbo fails naming the node, and leaves no run folder", async () => {
-    const nodes = `  - id: pick
+  ${stageNode("b", "other")}`,
+      {
+        config: {
+          agents: {
+            claude: { tiers: { models: { balanced: { model: "b-x" }, turbo: { model: "t-x" } } } },
+          },
+        },
+      },
+      'stages/odd has tier "balanced", stages/other has tier "turbo"; the claude tiers are fast, deep',
+    ],
+    [
+      "a prompt agent node in a switch case that declares tier: turbo",
+      `  - id: pick
     type: switch
     expression: "{{ true }}"
     input: {}
@@ -741,50 +758,48 @@ describe("initializeRun with tiers", () => {
         value: true
         nodes:
           - { id: ask, type: agent, prompt: hi, input: {}, tier: turbo }
-`;
-    const { cwd, result } = await stagedRun(nodes);
+`,
+      {},
+      'ask has tier "turbo"; the claude tiers are fast, deep',
+    ],
+  ])(
+    "a claude run with %s fails against its registered tiers, naming them, and leaves no run folder",
+    async (_label, nodes, options, error) => {
+      const { cwd, result } = await stagedRun(nodes, options);
 
-    expect(result).toEqual({
-      ok: false,
-      error: 'ask has tier "turbo"; the claude tiers are fast, deep',
-    });
-    expect(existsSync(join(cwd, ".yok", "tiered"))).toBe(false);
-  });
+      expect(result).toEqual({ ok: false, error });
+      expect(existsSync(join(cwd, ".yok", "tiered"))).toBe(false);
+    },
+  );
 
-  test("a node tier: deep over a stage tier balanced nothing maps inits, since the node's tier wins", async () => {
-    const { result } = await stagedRun(
+  test.each<[string, string, StagedRunOptions, ResolvedTiers | null]>([
+    [
+      "a node tier: deep over a stage tier balanced nothing maps inits, since the node's tier wins",
       "  - { id: a, type: agent, stage: stages/odd, input: {}, tier: deep }\n",
-    );
-
-    expect(result.ok).toBe(true);
-  });
-
-  test("a claude run registered with no tiers inits with a stage tier nothing maps, and state.json holds no tiers", async () => {
-    const { result } = await stagedRun(stageNode("a", "odd"), { tiers: null });
+      {},
+      CLAUDE_TIERS,
+    ],
+    [
+      "a claude run registered with no tiers inits with a stage tier nothing maps, and state.json holds no tiers",
+      stageNode("a", "odd"),
+      { tiers: null },
+      null,
+    ],
+    [
+      "a codex run, which never switches models, inits with a stage tier it has no model for",
+      stageNode("a", "odd"),
+      { header: "agent: codex\n" },
+      CLAUDE_TIERS,
+    ],
+  ])("%s", async (_label, nodes, options, tiers) => {
+    const { result } = await stagedRun(nodes, options);
 
     if (!result.ok) throw new Error(result.error);
-    expect(result.value.state.tiers).toBeNull();
-  });
-
-  test("a codex run, which never switches models, inits with a stage tier it has no model for", async () => {
-    const { result } = await stagedRun(stageNode("a", "odd"), { header: "agent: codex\n" });
-
-    expect(result.ok).toBe(true);
+    expect(result.value.state.tiers).toEqual(tiers);
   });
 });
 
 describe("nextStep with stage tiers", () => {
-  test("SC16: next on a Claude run before a fast stage replies with a model step for the built-in fast model, and logs it as orchestrate.next", async () => {
-    const { ref, cwd } = await stagedRun(stageNode("make", "quick"));
-
-    const reply = await nextStep(ref, agentAdapters);
-
-    const step = { kind: "model", nodeId: "make", model: "claude-sonnet-5-5" } as const;
-    expect(reply).toEqual({ ok: true, value: step });
-    const events = await jsonlEventStore(join(cwd, ".yok", "tiered")).read();
-    expect(events.at(-1)).toMatchObject({ type: "orchestrate.next", payload: { output: step } });
-  });
-
   test("SC17: next on a Codex run with a fast model mapped for codex hands out the stage, never a model step", async () => {
     const tiers = {
       default: "deep",
@@ -816,7 +831,7 @@ describe("nextStep with stage tiers", () => {
     expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "make" } });
   });
 
-  test("SC22: a fast stage on a run whose tiers map fast to sonnet-y gets a model step for sonnet-y, and once applied the stage", async () => {
+  test("SC16, SC22: a fast stage on a run whose tiers map fast to sonnet-y gets a model step for sonnet-y, logged as orchestrate.next, and once applied the stage", async () => {
     const tiers = {
       ...CLAUDE_TIERS,
       models: { ...CLAUDE_TIERS.models, fast: { model: "sonnet-y" } },
@@ -829,6 +844,10 @@ describe("nextStep with stage tiers", () => {
       value: { kind: "model", nodeId: "make", model: "sonnet-y" },
     });
     const events = await jsonlEventStore(join(ref.cwd, ".yok", "tiered")).read();
+    expect(events.at(-1)).toMatchObject({
+      type: "orchestrate.next",
+      payload: { output: { kind: "model", nodeId: "make", model: "sonnet-y" } },
+    });
     const requestSeq = events.find((event) => event.type === "workflow.model.requested")?.seq;
     const applied = await appendRunEvent(ref, {
       type: "workflow.model.applied",

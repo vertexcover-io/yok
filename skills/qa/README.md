@@ -4,7 +4,7 @@ Proves a feature works by driving it: a real browser for anything with a screen,
 
 ## When it runs
 
-The `task` workflow runs it as the `qa` stage inside a loop after code-review, up to four rounds: on FAIL, `implement` fixes the reported bugs and qa runs again. A BLOCKED verdict skips commit and PR. `quick` has no qa stage.
+The `task` workflow runs it as the `qa` stage inside a loop after the review loop, up to four rounds: on FAIL, `fix` repairs the reported bugs and qa runs again. A BLOCKED verdict skips commit and PR. `quick` has no qa stage.
 
 Standalone, invoke it with `/yok:qa` in Claude Code or `$qa` in Codex, or say "verify this" or "ready to ship".
 
@@ -20,7 +20,7 @@ Standalone, invoke it with `/yok:qa` in Claude Code or `$qa` in Codex, or say "v
 
 Reads `workspace`, `task`, `round` and `rounds`, and whatever artifacts exist: `design.md`, `plan.md`, the phase files, `implementation.md` and the coder's `phase-N-e2e.json` reports. Every requirement the docs list must appear in the report's coverage table.
 
-Produces the `proof-report` artifact, `.yok/RUN_NAME/artifacts/verification/proof-report.html`, with videos and screenshots beside it. The stage output is JSON checked against `qa.output.v1` in `scripts/qa.ts`: `status` (PASS, PARTIAL, FAIL or BLOCKED), `reason`, `report`, `gaps[]` and `bugs[]`. The fix round hands each bug's `scenario`, `cause` and `fix` to implement; `needsDecision: true` marks a product question for the user.
+Produces the `proof-report` artifact, `.yok/RUN_NAME/artifacts/verification/proof-report.html`, with videos and screenshots beside it. The stage output is JSON checked against `qa.output.v1` in `scripts/qa.ts`: `status` (PASS, PARTIAL, FAIL or BLOCKED), `reason`, `report`, `gaps[]` and `bugs[]`. Each bug is a fix request (`id`, `summary`, `trigger`, `hint`, and `file` when traced), and the fix round hands the list to the `fix` stage as `fixes`; `askUser: true` marks a product question for the user.
 
 ## Files
 

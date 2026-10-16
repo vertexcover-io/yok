@@ -4,7 +4,7 @@ Turns a dirty working tree into a few commits a reviewer can read: one logical c
 
 ## When it runs
 
-Both shipped workflows run it as the `commit` stage: `task` after the qa loop (skipped when qa was BLOCKED), `quick` after code-review. `visual-pr` runs next and does the push.
+Both shipped workflows run it as the `commit` stage: `task` after the qa loop (skipped when qa was BLOCKED), `quick` after the review loop. `visual-pr` runs next and does the push.
 
 Standalone, invoke it with `/yok:git-commit` in Claude Code or `$git-commit` in Codex, or ask to commit, split, squash or tidy your changes. It never pauses for approval: commits are local and easy to undo.
 

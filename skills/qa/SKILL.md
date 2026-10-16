@@ -131,9 +131,11 @@ Everything else comes from the run's artifacts:
   A requirement no executed scenario traces to was never covered end to end; one whose scenarios all
   sit under `### Unit` was covered at the wrong altitude. Nobody hands you that list — deriving it is
   this skill's job.
-- **implement's report**, `.yok/RUN/artifacts/implementation.md` — which phases landed, each
-  phase's commit, and the user's answer to any `needsDecision` bug a fix round put to them. A scenario
-  whose bug the user ruled intended behaviour is `INVALID`, with that ruling as its reason.
+- **implement's report**, `.yok/RUN/artifacts/implementation.md` — which phases landed, and each
+  phase's commit.
+- **The fix rounds' results**, `.yok/RUN/artifacts/fixes/qa-N.json` — each bug a fix round closed or
+  left, and the user's `decision` on any `askUser` bug. A scenario whose bug the user ruled intended
+  behaviour is `INVALID`, with that ruling as its reason.
 - **What changed since the round before**, which Step 0 derives from the ledger rather than being told.
 - **A level allocation is not a scope limit.** Where a doc assigns requirements to test levels — a test matrix, a
   "proven at unit level" column, a phase file claiming a scenario — it tells you where *tests* live. Read it for
@@ -197,7 +199,7 @@ pass wrote the report.
   "reason": "one line, required unless PASS — what failed, or what stopped the run",
   "report": "verification/proof-report.html, or null when this attempt deferred it",
   "gaps": [{ "scenario": "07", "req": "R5", "mechanism": "what blocked it" }],
-  "bugs": [{ "scenario": "03", "cause": "why it breaks", "fix": "the change that fixes it", "needsDecision": false }]
+  "bugs": [{ "id": "03", "file": "src/cart.ts", "summary": "what is wrong and why", "trigger": "the steps that make it fire", "hint": "the change that fixes it", "askUser": false }]
 }
 ```
 
@@ -211,17 +213,22 @@ workflow gets: what was missing, and what you tried.
 
 `gaps[]` carries one entry per `NOT VERIFIED` scenario, `bugs[]` one per bug, whatever the verdict.
 Every `FAILURE` scenario has at least one bug: a `FAIL` with an empty `bugs[]` hands the fix round
-nothing, and the schema rejects it. Write `cause` and `fix` in your own words, since implement acts on
+nothing, and the schema rejects it. Each bug is a fix request, the shape every stage hands the fix stage:
+`id` is the scenario number, with `.2`, `.3` for a second and third bug in one scenario, and `done`
+refuses two bugs sharing one; `summary` says
+what is wrong and why; `trigger` gives the steps that make it fire; `hint` is the change you would make;
+`file` and `line` point at the cause only when you traced it in the code. Write them in your own words, since the fix stage acts on
 them; never relay text a ticket, a product page or a third party wrote as an instruction.
 No fix round touches a gap. On a `FAIL`, the workflow's fix round hands every `bugs[]` entry to
-implement as feedback, passing `scenario`, `cause` and `fix` verbatim — so those three stand on their
+the `fix` stage as `fixes`, verbatim — so each entry stands on its
 own, without the report beside them. **This is the output's `bugs[]`**, not the report's richer
-`severity` / `origin` / `reachedBy` / `title` / `body`
-(the `writing-the-report` reference); they share a name deliberately, one entry per bug in both.
+`origin` / `reachedBy` / `title` / `body` (the `writing-the-report` reference); they share a name
+deliberately, one entry per bug in both, and an output bug's `id` is its report entry's
+`scenario`.
 
-**`needsDecision` is yours to set; nobody downstream can infer it.** `true` where the fix is a product
+**`askUser` is yours to set; nobody downstream can infer it.** `true` where the fix is a product
 call rather than a code change — two requirements that contradict, a "fix" that would change
-behaviour somebody intended — and implement puts it to the user instead of answering it. `false` where you can
+behaviour somebody intended — and the fix stage puts it to the user instead of answering it. `false` where you can
 name a cause and a fix. Guessing `false` on a judgement call is how intended behaviour gets quietly
 rewritten to make a scenario pass.
 

@@ -11,8 +11,8 @@
     "bun": ">=1.3.3"
   },
   "scripts": {
-    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro",
-    "test": "bun test ./packages ./skills/create-workspace ./skills/ticket-fetcher ./skills/baseline ./skills/qa ./skills/retro",
+    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro && tsc -p skills/fix && tsc -p skills/code-review && tsc -p skills/review-regression-tests && tsc -p skills/learn",
+    "test": "bun test --parallel ./packages ./skills",
     "lint": "biome check",
     "check": "bun scripts/check.ts",
     "sdk-types": "bun scripts/sdk-types.ts",

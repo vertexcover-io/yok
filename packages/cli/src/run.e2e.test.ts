@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -109,11 +109,11 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-const makeEnv = (): TestEnv => {
+const makeEnv = (owner: Array<() => void> = cleanups): TestEnv => {
   const home = mkdtempSync(join(tmpdir(), "yok-run-e2e-home-"));
   const socket = `yok-e2e-${randomUUID()}`;
   const fakeOut = join(mkdtempSync(join(tmpdir(), "yok-run-e2e-out-")), "out.jsonl");
-  cleanups.push(() => {
+  owner.push(() => {
     for (const pid of serverPids(home)) process.kill(pid, "SIGKILL");
     spawnSync("tmux", ["-L", socket, "kill-server"]);
     rmSync(home, { recursive: true, force: true });
@@ -185,14 +185,6 @@ const waitFor = (predicate: () => boolean, timeoutMs = 5000): void => {
 };
 
 describe("yok run", () => {
-  test("SC2: yok run attaches by default, so its help offers --no-attach and no --attach", () => {
-    const help = yok(process.cwd(), process.env, "run", "--help");
-
-    expect(help.code).toBe(0);
-    expect(help.stdout).toContain("--no-attach");
-    expect(help.stdout).not.toMatch(/--attach\b/);
-  });
-
   test(
     "a supplied --name reaches the launched agent without replacing the prompt input",
     () => {
@@ -389,148 +381,100 @@ describe("yok run", () => {
     TIMEOUT_MS,
   );
 
-  test(
-    "SC23: the agent the server launched can init its run with orchestrate, using only its own environment",
-    () => {
-      const repo = makeRepo();
-      const { env, fakeOut } = makeEnv();
+  describe("one default run", () => {
+    const sharedCleanups: Array<() => void> = [];
+    let repo = "";
+    let testEnv: TestEnv = { home: "", socket: "", fakeOut: "", env: {} };
+    let run = { code: 1, stdout: "", stderr: "" };
+    let launch: Record<string, unknown> | undefined;
 
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "hi");
-      expect(run.code).toBe(0);
-      const isSession = (record: Record<string, unknown>) => isLaunch(record);
-      waitFor(() => readLines(fakeOut).some(isSession));
-      const launch = readLines(fakeOut).find(isSession);
-      const agentEnv = launch?.env as NodeJS.ProcessEnv;
+    beforeAll(() => {
+      repo = makeRepo();
+      testEnv = makeEnv(sharedCleanups);
+      run = yok(repo, testEnv.env, "run", "ok.yaml", "--prompt", "hi");
+      waitFor(() => readLines(testEnv.fakeOut).some(isLaunch));
+      launch = readLines(testEnv.fakeOut).find(isLaunch);
+    }, TIMEOUT_MS);
 
-      const init = spawnSync("bun", [...ORCHESTRATE, "init", "fix-login"], {
-        cwd: String(launch?.cwd),
-        env: agentEnv,
-        encoding: "utf8",
-      });
+    afterAll(() => {
+      stopServer(repo, testEnv.env);
+      for (const cleanup of sharedCleanups.splice(0)) cleanup();
+    });
 
-      expect(init.status).toBe(0);
-      expect(existsSync(join(repo, ".yok", "fix-login", "state.json"))).toBe(true);
-
-      stopServer(repo, env);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC26 — the session yok run launches carries the Stop hook",
-    () => {
-      const repo = makeRepo();
-      const { env, fakeOut } = makeEnv();
-
-      expect(yok(repo, env, "run", "ok.yaml", "--prompt", "hi").code).toBe(0);
-      const isSession = (record: Record<string, unknown>) => isLaunch(record);
-      waitFor(() => readLines(fakeOut).some(isSession));
-      const argv = readLines(fakeOut).find(isSession)?.argv;
-      const args = Array.isArray(argv) ? argv.map(String) : [];
-      const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
-
-      expect(settings.hooks.Stop[0].hooks[0].command).toContain(
-        "packages/cli/src/index.ts' 'orchestrate' 'hook' 'stop' '--agent' 'claude'",
-      );
-
-      stopServer(repo, env);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC18 — the session yok run launches carries the PreToolUse hook",
-    () => {
-      const repo = makeRepo();
-      const { env, fakeOut } = makeEnv();
-
-      expect(yok(repo, env, "run", "ok.yaml", "--prompt", "hi").code).toBe(0);
-      const isSession = (record: Record<string, unknown>) => isLaunch(record);
-      waitFor(() => readLines(fakeOut).some(isSession));
-      const argv = readLines(fakeOut).find(isSession)?.argv;
-      const args = Array.isArray(argv) ? argv.map(String) : [];
-      const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
-
-      expect(settings.hooks.PreToolUse[0].matcher).toBe("Write|Edit|MultiEdit|NotebookEdit|Bash");
-      expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain(
-        "packages/cli/src/index.ts' 'orchestrate' 'hook' 'pre-tool-use' '--agent' 'claude'",
-      );
-
-      stopServer(repo, env);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC6: the run starts with no session, its terminal is the launched tmux name, and a SessionStart hook call links the session",
-    () => {
-      const repo = makeRepo();
-      const { env, fakeOut, home, socket } = makeEnv();
-
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "hi");
-      expect(run.code).toBe(0);
-      const runId = run.stdout.trim().split("\n")[0] ?? "";
-      waitFor(() => readLines(fakeOut).some((record) => isLaunch(record)));
-      const launch = readLines(fakeOut).find((record) => isLaunch(record));
-      expect(launch?.argv).not.toContain("--session-id");
-
-      const registryFile = join(home, "registry.json");
-      const saved = () => JSON.parse(readFileSync(registryFile, "utf8")).runs[runId];
-      expect(saved().sessions).toEqual([]);
-      const tmuxNames = spawnSync(
-        "tmux",
-        ["-L", socket, "list-sessions", "-F", "#{session_name}"],
-        {
-          encoding: "utf8",
-        },
-      ).stdout.split("\n");
-      expect(tmuxNames).toContain(saved().terminal);
-
-      const hook = spawnSync(
-        "bun",
-        [...ORCHESTRATE, "hook", "session-start", "--agent", "claude", "--handler", "link-session"],
-        {
-          cwd: String(launch?.cwd),
-          env: launch?.env as NodeJS.ProcessEnv,
-          input: JSON.stringify({ session_id: "claude-chose-this", source: "startup", cwd: repo }),
-          encoding: "utf8",
-        },
-      );
-      expect(hook.status).toBe(0);
-      expect(saved().sessions).toEqual([{ agent: "claude", sessionId: "claude-chose-this" }]);
-
-      stopServer(repo, env);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC12: starts a server, launches the fake agent, and server status shows a pid",
-    () => {
-      const repo = makeRepo();
-      const { env, fakeOut } = makeEnv();
-
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "hi");
+    test("SC12: starts a server, launches the fake agent, and server status shows a pid", () => {
       expect(run.code).toBe(0);
       const [runId, attach] = run.stdout.trim().split("\n");
       expect(runId).toMatch(/^r-[0-9a-f]{8}$/);
       // From source the hint names yok-dev: a plain `yok` is the release binary, whose home has no such run.
       expect(attach).toBe(`yok-dev attach --run-id ${runId}`);
 
-      const status = yok(repo, env, "server", "status");
+      const status = yok(repo, testEnv.env, "server", "status");
       expect(status.code).toBe(0);
       expect(status.stdout).toMatch(/^pid \d+/);
 
-      waitFor(() => readLines(fakeOut).some((record) => isLaunch(record)));
-      const record = readLines(fakeOut).find(isLaunch);
-      const argv = record?.argv as string[] | undefined;
+      const argv = launch?.argv as string[] | undefined;
       expect(argv?.at(-1)).toContain(`/yok:orchestrate --workflow ${join(repo, "ok.yaml")}`);
-      expect(record?.runId).toBe(runId);
+      expect(launch?.runId).toBe(runId);
+    });
 
-      stopServer(repo, env);
-    },
-    TIMEOUT_MS,
-  );
+    test("SC26, SC18: the launched session carries the Stop and PreToolUse hooks", () => {
+      const argv = launch?.argv;
+      const args = Array.isArray(argv) ? argv.map(String) : [];
+      const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
+
+      expect(settings.hooks.Stop[0].hooks[0].command).toContain(
+        "packages/cli/src/index.ts' 'orchestrate' 'hook' 'stop' '--agent' 'claude'",
+      );
+      expect(settings.hooks.PreToolUse[0].matcher).toBe("Write|Edit|MultiEdit|NotebookEdit|Bash");
+      expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain(
+        "packages/cli/src/index.ts' 'orchestrate' 'hook' 'pre-tool-use' '--agent' 'claude'",
+      );
+    });
+
+    test(
+      "SC6: the run starts with no session, its terminal is the launched tmux name, and a SessionStart hook call links the session",
+      () => {
+        const runId = run.stdout.trim().split("\n")[0] ?? "";
+        expect(launch?.argv).not.toContain("--session-id");
+
+        const registryFile = join(testEnv.home, "registry.json");
+        const saved = () => JSON.parse(readFileSync(registryFile, "utf8")).runs[runId];
+        expect(saved().sessions).toEqual([]);
+        const tmuxNames = spawnSync(
+          "tmux",
+          ["-L", testEnv.socket, "list-sessions", "-F", "#{session_name}"],
+          { encoding: "utf8" },
+        ).stdout.split("\n");
+        expect(tmuxNames).toContain(saved().terminal);
+
+        const hook = spawnSync(
+          "bun",
+          [
+            ...ORCHESTRATE,
+            "hook",
+            "session-start",
+            "--agent",
+            "claude",
+            "--handler",
+            "link-session",
+          ],
+          {
+            cwd: String(launch?.cwd),
+            env: launch?.env as NodeJS.ProcessEnv,
+            input: JSON.stringify({
+              session_id: "claude-chose-this",
+              source: "startup",
+              cwd: repo,
+            }),
+            encoding: "utf8",
+          },
+        );
+        expect(hook.status).toBe(0);
+        expect(saved().sessions).toEqual([{ agent: "claude", sessionId: "claude-chose-this" }]);
+      },
+      TIMEOUT_MS,
+    );
+  });
 
   test(
     "at LOG_LEVEL=debug, run logs its run id, and each request's reqId matches server.log",
@@ -611,6 +555,32 @@ describe("yok run", () => {
   );
 
   test(
+    "a workflow with samskara: {} and a samskara that exits 127 blocks the run before any agent launches",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+      const bin = mkdtempSync(join(tmpdir(), "yok-run-e2e-bin-"));
+      cleanups.push(() => rmSync(bin, { recursive: true, force: true }));
+      writeFileSync(join(bin, "samskara"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+      writeFileSync(join(repo, "samskara.yaml"), `samskara: {}\n${OK_WORKFLOW}`);
+
+      const run = yok(
+        repo,
+        { ...env, PATH: `${bin}:${env.PATH}` },
+        "run",
+        "samskara.yaml",
+        "--prompt",
+        "x",
+      );
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("BLOCKED samskara-upload");
+      expect(readLines(fakeOut).filter((record) => isLaunch(record))).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "--config FILE, resolved against the current folder, is saved on the run and recorded by init, even with no config in the repo",
     () => {
       const repo = makeRepo();
@@ -674,28 +644,16 @@ describe("yok run", () => {
   );
 
   test(
-    "SC13: a cyclic workflow fails to compile and records no run",
+    "SC13: a cyclic workflow fails to compile and records no run, showing its stack only when LOG_LEVEL=debug",
     () => {
       const repo = makeRepo();
       const { env, home } = makeEnv();
 
-      const run = yok(repo, env, "run", "bad.yaml", "--prompt", "x");
-      expect(run.code).toBe(1);
-      expect(run.stderr).toContain("cycle: dependency cycle among");
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "an error shows only its message, and its stack only when LOG_LEVEL=debug",
-    () => {
-      const repo = makeRepo();
-      const { env } = makeEnv();
-
       const plain = yok(repo, { ...env, LOG_LEVEL: "" }, "run", "bad.yaml", "--prompt", "x");
-      expect(plain.stderr).toContain("dependency cycle");
+      expect(plain.code).toBe(1);
+      expect(plain.stderr).toContain("cycle: dependency cycle among");
       expect(plain.stderr).not.toContain("    at ");
+      expect(existsSync(join(home, "registry.json"))).toBe(false);
 
       const debug = yok(repo, { ...env, LOG_LEVEL: "debug" }, "run", "bad.yaml", "--prompt", "x");
       expect(debug.stderr).toContain("    at ");

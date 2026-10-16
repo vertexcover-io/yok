@@ -1,5 +1,5 @@
-import { readFile, realpath, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import {
   AgentStoppedEvent,
   type ArtifactRef,
@@ -19,7 +19,7 @@ import {
   WorkflowBlockedEvent,
 } from "@yok/sdk";
 import * as z from "zod";
-import { isInsideDir } from "./workflow/done.ts";
+import { realPathsInArtifacts } from "./workflow/done.ts";
 
 export type Notice = Readonly<{
   title: string;
@@ -367,18 +367,6 @@ export type OpenNotifier = typeof openNotifier;
 // it loads in a compiled binary, where this file has no path on disk.
 export const NOTIFIER_MODULE = "yok:notifier";
 
-// The files, as real paths, that still sit inside the run's artifacts/. Checked where each points
-// now, not when done accepted it, so one swapped for a symlink to .env, say, is never sent.
-const keepArtifactFiles = async (
-  runDir: string,
-  files: readonly string[],
-): Promise<readonly string[]> => {
-  if (files.length === 0) return [];
-  const artifacts = await realpath(join(runDir, "artifacts"));
-  const actual = await Promise.all(files.map((file) => realpath(join(runDir, file))));
-  return actual.filter((path) => isInsideDir(artifacts, path));
-};
-
 // A file larger than this is named in the message instead of uploaded, so a 4 MB proof report
 // does not land in the channel.
 export const UPLOAD_LIMIT_BYTES = 1_000_000;
@@ -416,7 +404,7 @@ export const notify = async (
   if (described === undefined) return undefined;
   const opened = open(type);
   if (!opened.ok) throw new Error(opened.error);
-  const files = await keepArtifactFiles(state.runDir, described.files);
+  const files = await realPathsInArtifacts(state.runDir, described.files);
   const { small, large } = await splitBySize(files);
   const notice = withLargeFiles(described, large);
   const known = state.notification?.threadId;
