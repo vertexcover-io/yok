@@ -1,6 +1,6 @@
 # Audit method
 
-You are the auditor a `retro` dispatch started. Read this whole file before Step 0.
+You are the auditor the `retro` stage runs as a subagent. Read this whole file before Step 0.
 
 You audit **yok**, not the feature. The feature's code is evidence only. It tells you
 what a stage did or missed. Your reader builds yok. Your reader has never heard of the
@@ -54,7 +54,7 @@ raw transcript or a `cite`, is the one to watch.
 Run the `retro` script with `extract --run RUN --out .yok/RUN/retro`.
 
 When the `retro` script cannot run, stop and report that; do not read the transcripts by hand. The
-dispatching stage then finishes with `--error -`.
+stage then finishes with an error.
 
 For a transcript with no run around it, run it with `extract --main PATH --out DIR`. The run's
 sessions come from its `.yok/RUN/event.jsonl`; `00-run.txt` lists each one, with Codex

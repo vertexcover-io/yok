@@ -16,7 +16,7 @@ import {
   TiersConfigSchema,
 } from "@yok/sdk";
 import { z } from "zod";
-import type { ArtifactDeclaration, Stage } from "../stage.ts";
+import { AgentModeSchema, type ArtifactDeclaration, type Stage } from "../stage.ts";
 
 export const NodeIdSchema = z
   .string()
@@ -146,6 +146,8 @@ export const AgentNodeSchema = z
   .strictObject({
     ...leafFields,
     type: NodeTypeSchema.extract(["agent"]),
+    // over the stage's SKILL.md mode; with neither, the node runs inline
+    mode: AgentModeSchema.optional(),
     stage: NonEmptyStringSchema.optional(),
     prompt: NonEmptyStringSchema.optional(),
     output: OutputSchemaRefSchema.optional(),
@@ -317,6 +319,8 @@ export type PlanStage = Readonly<{
   skill: string;
   // the SKILL.md tier, which the node's own tier overrides; see pickNodeTier
   tier?: string | undefined;
+  // the SKILL.md mode, which the node's own mode overrides; see pickNodeMode
+  mode: Stage["mode"];
   consumes: readonly ArtifactDeclaration[];
   produces: readonly ArtifactDeclaration[];
   variables: Stage["variables"];

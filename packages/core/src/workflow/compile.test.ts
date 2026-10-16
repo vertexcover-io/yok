@@ -162,6 +162,19 @@ describe("compile", () => {
     expect(error.code).toBe("schema");
   });
 
+  test("SC6: an agent node accepts mode: inline or subagent and rejects any other", async () => {
+    const agent = (extra = ""): string =>
+      workflow(`\n  - id: ask\n    type: agent\n    prompt: p\n    input: null${extra}`);
+    const [plain, subagent] = await Promise.all([
+      compile(agent()),
+      compile(agent("\n    mode: subagent")),
+    ]);
+    expect(plain.nodes[0]).not.toHaveProperty("mode");
+    expect(subagent.nodes[0]).toMatchObject({ mode: "subagent" });
+    const error = await rejection(agent("\n    mode: background"));
+    expect(error.code).toBe("schema");
+  });
+
   test("SC5 — two nodes with the same id are rejected", async () => {
     const error = await rejection(workflow(script("build") + script("build")));
     expect(error.code).toBe("duplicate-id");

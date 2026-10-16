@@ -282,11 +282,13 @@ const loadPlanStage = async (ref: string, at: Compiling): Promise<PlanStage> => 
             `stage ${ref}`,
           ),
         };
+  const skillPath = join(dir, "SKILL.md");
   return {
     ref,
     name: skill.value.name,
-    skill: join(dir, "SKILL.md"),
+    skill: skillPath,
     tier: frontmatter.tier,
+    mode: frontmatter.mode,
     consumes: frontmatter.consumes ?? [],
     produces: frontmatter.produces ?? [],
     variables: frontmatter.variables,

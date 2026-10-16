@@ -14,6 +14,7 @@ Nobody types it. `yok run WORKFLOW --prompt "…"` starts a Claude Code or Codex
   - `exec`: runs the printed command, in the foreground with a 10-minute timeout, or as a background task when the card says so.
   - `stage`: reads the stage's SKILL.md (and the project's extension, which wins on conflict), follows it with the card's `input`, then closes the node with `yok orchestrate done NODE_RUN_ID --run RUN_NAME --output -` and a one-line `--summary`, plus one `--artifact` JSON object per file the skill wrote, such as `--artifact '{"type":"plan","name":"plan","path":"artifacts/plan.md"}'`. A failure goes through `--error -`.
   - `agent`: does what the card's `prompt` asks, then the same `done`.
+  - `stage` or `agent` with `mode: subagent`: hands the node to a background subagent with a fixed brief, relays its questions and approval requests to the user, and closes the node with `done` from the subagent's report. The subagent runs on the reply's `tier`.
   - `context` and `model`: ends the turn so yok can compact, replace or restart the session; the session comes back with `--resume`.
   - `blocked`, `waiting`, `finished`: reports and waits or stops.
 - Retries `done` when the engine rejects the output as fixable (a schema or verifier issue); the third rejection fails the node for good.

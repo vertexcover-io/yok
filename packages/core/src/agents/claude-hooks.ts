@@ -359,6 +359,7 @@ const claudePostToolUse = (
 // What Claude answers; every event is supported.
 export const claudeAdapter: AgentAdapter = {
   contextSteps: true,
+  subagents: true,
   stop: claudeStop,
   preToolUse: claudePreToolUse,
   postToolUse: claudePostToolUse,

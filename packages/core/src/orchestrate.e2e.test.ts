@@ -1084,7 +1084,7 @@ describe("SC26: orchestrate next and done with stages", () => {
     return { ...run, skills, step };
   };
 
-  test("IW17, SC23 — next replies with the stage's skill path, the project's extension path, its input and a done command", () => {
+  test("SC9: IW17, SC23 — next replies with the stage's skill path, the project's extension path, its input, a done command and mode inline only", () => {
     const { repo, skills, step } = stageRun(
       undefined,
       { extensions: { producer: { skill: "docs/producer-ext.md" } } },
@@ -1097,6 +1097,7 @@ describe("SC26: orchestrate next and done with stages", () => {
       kind: "stage",
       nodeRunId: expect.stringMatching(/^nr-[0-9a-f]{16}$/),
       nodeId: "make",
+      mode: "inline",
       stage: "producer",
       skill: join(skills, "producer/SKILL.md"),
       extension: join(repo, "docs/producer-ext.md"),
@@ -1267,6 +1268,23 @@ nodes:
     expect(
       (await eventsOf(repo)).filter((event) => event.type === "workflow.node.completed"),
     ).toHaveLength(1);
+  });
+
+  test("SC10: yok orchestrate next prints a subagent prompt node with its mode", () => {
+    const run = startedRun(`name: delegated
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: ask, type: agent, prompt: check it, mode: subagent, input: {} }
+`);
+    const next = orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]);
+    expect(next.code, next.stderr).toBe(0);
+    expect(JSON.parse(next.stdout)).toMatchObject({
+      kind: "agent",
+      mode: "subagent",
+      prompt: "check it",
+      input: {},
+    });
   });
 
   test("IW30 — done reads --output - and --error - from stdin, keeping quotes and $(…) as plain text", () => {

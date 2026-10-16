@@ -222,7 +222,7 @@ const nextCommand = () =>
       runWorkflowCommand(async () => {
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        printResult(await nextStep(run.value, MODEL_SWITCH_AGENTS));
+        printResult(await nextStep(run.value, agentAdapters));
       }),
     );
 

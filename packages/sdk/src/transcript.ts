@@ -26,6 +26,7 @@ const WRAPPER_PREFIXES = [
   "[Request interrupted",
   "<task-notification",
   "<agent-message",
+  "Another Claude session sent a message:",
   "<command-name",
   "<local-command",
   "<system-reminder",

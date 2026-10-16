@@ -1,6 +1,7 @@
 import { access, copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
+  type AgentAdapter,
   type AgentType,
   AgentTypeSchema,
   type ArtifactRef,
@@ -58,7 +59,7 @@ import {
 import * as z from "zod";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
-import { extensionPath } from "./stage.ts";
+import { type AgentMode, extensionPath } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
 import {
   type CompletionIssue,
@@ -87,6 +88,7 @@ import {
   type PlanAgentNode,
   type PlanContextNode,
   type PlanNode,
+  type WorkflowAgent,
   WorkflowError,
   type WorkflowPlan,
 } from "./workflow/types.ts";
@@ -362,6 +364,9 @@ export type StepReply =
       kind: "stage";
       nodeRunId: string;
       nodeId: string;
+      mode: AgentMode;
+      // the tier a subagent runs on, when the run has tiers
+      tier?: string;
       stage: string;
       skill: string;
       extension: string | null;
@@ -376,6 +381,8 @@ export type StepReply =
       kind: "agent";
       nodeRunId: string;
       nodeId: string;
+      mode: AgentMode;
+      tier?: string;
       prompt: string;
       input: JsonValue;
       done: string;
@@ -502,7 +509,7 @@ const buildLeafReply = (
   run: RunRef,
   options: CheckoutConfig,
 ): StepReply => {
-  const { node, nodeRunId, input, variables } = decision;
+  const { node, nodeRunId, input, variables, runsOn } = decision;
   if (node.type === "context") {
     return { kind: "context", nodeRunId, nodeId: node.id, action: node.action };
   }
@@ -517,14 +524,20 @@ const buildLeafReply = (
     };
   }
   const done = orchestrateLine({ verb: "done", run, nodeRunId });
+  const launch =
+    runsOn?.mode !== "subagent"
+      ? { mode: "inline" as const }
+      : { mode: runsOn.mode, ...(runsOn.tier === null ? {} : { tier: runsOn.tier }) };
   if (node.stage === undefined) {
-    return { kind: "agent", nodeRunId, nodeId: node.id, prompt: node.prompt ?? "", input, done };
+    const prompt = node.prompt ?? "";
+    return { kind: "agent", nodeRunId, nodeId: node.id, ...launch, prompt, input, done };
   }
   const extension = extensionPath(options.config, node.stage.name);
   return {
     kind: "stage",
     nodeRunId,
     nodeId: node.id,
+    ...launch,
     stage: node.stage.ref,
     skill: node.stage.skill,
     extension: extension === undefined ? null : join(options.root, extension),
@@ -536,9 +549,14 @@ const buildLeafReply = (
   };
 };
 
+// What `next` needs to know about each agent: whether it can switch models, and start subagents.
+export type AgentAbilities = Readonly<
+  Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents">>
+>;
+
 const walkToNextStep = async (
   run: RunRef,
-  modelSwitchAgents: ReadonlySet<AgentType>,
+  abilities: AgentAbilities,
 ): Promise<Result<StepReply>> => {
   const runDir = runDirOf(run.cwd, run.name);
   const [state, events] = await Promise.all([readRunState(runDir), jsonlEventStore(runDir).read()]);
@@ -551,18 +569,16 @@ const walkToNextStep = async (
     if (appended.value.state === null) throw new Error(`${runDir}/state.json is missing`);
     return appended.value.state;
   };
-  const tiers = pickSwitchTiers(plan.agent, state.tiers, modelSwitchAgents);
+  const { contextSteps, subagents } = abilities[plan.agent];
+  const tiers = contextSteps ? state.tiers : null;
   const switching = foldModelSwitch(events, state.tiers);
-  const { decision } = await decideNext(plan, state, emit, { tiers, switching });
+  const { decision } = await decideNext(plan, state, emit, { tiers, switching, subagents });
   const reply = decision.kind === "leaf" ? buildLeafReply(decision, run, config.value) : decision;
   return { ok: true, value: reply };
 };
 
-export const nextStep = (
-  run: RunRef,
-  modelSwitchAgents: ReadonlySet<AgentType>,
-): Promise<Result<StepReply>> =>
-  logCall(run, { command: "next", input: {} }, walkToNextStep(run, modelSwitchAgents));
+export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
+  logCall(run, { command: "next", input: {} }, walkToNextStep(run, abilities));
 
 export type ResumeReport = Readonly<{
   interrupted: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];

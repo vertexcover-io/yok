@@ -17,6 +17,7 @@ import {
   StageSchema,
   yokSkillsDir,
 } from "./stage.ts";
+import { compileWorkflow } from "./workflow/compile.ts";
 
 const validStage = {
   name: "planning",
@@ -624,5 +625,21 @@ describe("the real review-regression-tests skill", () => {
     const codeReview = await loadSkill(join(skillDir, "..", "code-review"), projectScope(dir));
     if (!codeReview.ok) throw new Error(codeReview.error);
     expect(findReference(codeReview.value, "testing")).toMatchObject({ ok: true });
+  });
+});
+
+describe("the real retro skill", () => {
+  test("SC12: a retro node with no mode of its own runs in a subagent", async () => {
+    const wfDir = await mkdtemp(join(tmpdir(), "retro-wf-"));
+    const path = join(wfDir, "wf.yaml");
+    await writeFile(
+      path,
+      "name: t\nnodes:\n  - id: retro\n    type: agent\n    stage: retro\n    input: {}\n",
+    );
+    const plan = await compileWorkflow(path, { cwd: wfDir });
+    const [retro] = plan.nodes;
+    if (retro?.type !== "agent") throw new Error("retro is not an agent node");
+    expect(retro.mode).toBeUndefined();
+    expect(retro.stage?.mode).toBe("subagent");
   });
 });
