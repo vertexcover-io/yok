@@ -1,17 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import {
-  compileWorkflow,
-  createLogger,
-  loadProjectConfig,
-  resolveLevel,
-  WorkflowError,
-  type WorkflowPlan,
-} from "@yok/core";
-import { type ILogger, spawnDetached, withLock, yokHome } from "@yok/sdk";
+import { parseEnv } from "node:util";
+import { compilePlan, createLogger, resolveLevel, type WorkflowPlan } from "@yok/core";
+import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { type ApiError, logPath, socketPath } from "@yok/server";
+import { type ApiError, logPath, pidPath, readApiKey, readPort } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
 const HEALTH_TIMEOUT_MS = 5_000;
@@ -54,62 +48,142 @@ export const fail = (problem: string | Error): void => {
   process.exitCode = 1;
 };
 
-// The original error stays as the cause, so LOG_LEVEL=debug still shows its stack.
-const errorText = (error: unknown): string | Error => {
-  if (error instanceof WorkflowError) {
-    return new Error(`${error.code}: ${error.message}`, { cause: error });
-  }
-  return error instanceof Error ? error : String(error);
-};
-
 // null means the error is already printed and the exit code set.
 export const compileOrFail = async (
   path: string,
   cwd: string,
   configFile: string | null = null,
 ): Promise<WorkflowPlan | null> => {
-  const config = await loadProjectConfig(configFile, cwd);
-  if (!config.ok && configFile !== null) {
-    fail(config.error);
-    return null;
-  }
-  // A broken checkout config is the doctor's to report, so compile goes on without it.
-  const options = config.ok ? { cwd, config: config.value } : { cwd };
-  return compileWorkflow(path, options).catch((error: unknown) => {
-    fail(errorText(error));
-    return null;
-  });
+  const plan = await compilePlan(path, cwd, configFile);
+  if (plan.ok) return plan.value;
+  fail(plan.error);
+  return null;
 };
 
 export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;
 
-export const yokClient = (home: string = yokHome()): YokClient =>
-  createYokClient({ home, log: cliLog() });
+// Before any server has started there is no port file; port 1 answers nothing, so the client
+// reports the server as unreachable.
+export const localUrl = (home: string): string => `http://127.0.0.1:${readPort(home) ?? 1}`;
+
+export const clientEnvPath = (home: string): string => join(home, "client.env");
+
+export type Target =
+  | Readonly<{ kind: "local" }>
+  | Readonly<{ kind: "remote"; url: string; apiKey: string }>;
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+// https anywhere; plain http only on this machine, so the key never crosses the network in clear.
+export const checkServerUrl = (url: string): Result<string> => {
+  if (!URL.canParse(url)) return { ok: false, error: `not a URL: ${url}` };
+  const { protocol, hostname } = new URL(url);
+  if (protocol === "https:") return { ok: true, value: url };
+  if (protocol === "http:" && LOOPBACK_HOSTS.has(hostname)) return { ok: true, value: url };
+  return { ok: false, error: `${url} must use https:// unless the server is on this machine` };
+};
+
+const readClientEnv = (home: string): Record<string, string | undefined> => {
+  try {
+    return parseEnv(readFileSync(clientEnvPath(home), "utf8"));
+  } catch {
+    return {};
+  }
+};
+
+// A URL in the environment wins over the home's client.env; neither set means the local server.
+// The key comes from wherever the URL did, so one server's key is never sent to another.
+export const resolveTarget = (
+  home: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Result<Target> => {
+  const source = env.YOK_SERVER_URL ? env : readClientEnv(home);
+  const url = source.YOK_SERVER_URL;
+  if (!url) return { ok: true, value: { kind: "local" } };
+  const apiKey = source.YOK_API_KEY;
+  if (!apiKey) return { ok: false, error: `YOK_SERVER_URL is ${url}, but YOK_API_KEY is not set` };
+  const checked = checkServerUrl(url);
+  if (!checked.ok) return checked;
+  return { ok: true, value: { kind: "remote", url: url.replace(/\/+$/, ""), apiKey } };
+};
+
+// index.ts prints the thrown error, as it does any command's.
+const targetOrThrow = (home: string): Target => {
+  const target = resolveTarget(home);
+  if (!target.ok) throw new Error(target.error);
+  return target.value;
+};
+
+// The remote server's URL, or null for the local one.
+export const remoteUrl = (home: string = yokHome()): string | null => {
+  const target = targetOrThrow(home);
+  return target.kind === "remote" ? target.url : null;
+};
+
+// Read on every call: the first server start writes the port and the key.
+export const yokClient = (home: string = yokHome()): YokClient => {
+  const target = targetOrThrow(home);
+  if (target.kind === "remote") {
+    return createYokClient({ url: target.url, apiKey: target.apiKey, log: cliLog() });
+  }
+  return createYokClient({ url: localUrl(home), apiKey: readApiKey(home) ?? "", log: cliLog() });
+};
 
 const tailOf = (path: string, lines = 20): string =>
   existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").slice(-lines).join("\n") : "";
 
-const waitForHealth = async (client: YokClient, deadline: number): Promise<boolean> => {
-  while (Date.now() < deadline) {
-    if ((await client.health()).ok) return true;
-    await sleep(POLL_INTERVAL_MS);
+// Signal 0 checks that the process exists and that this user may signal it, without touching it.
+const isAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
-  return (await client.health()).ok;
 };
 
-// Bun.file().exists() reports false for a socket file, so this uses existsSync.
-const socketGone = (home: string): boolean => !existsSync(socketPath(home));
+const readServerPid = (home: string): number | null => {
+  try {
+    const pid = Number.parseInt(readFileSync(pidPath(home), "utf8"), 10);
+    return Number.isInteger(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+};
 
-// Signal the pid the live server reports, never a pid file a crash may have left behind.
+type Running = Readonly<{ pid: number; version: string; startedAt: number }>;
+
+// This home's local server, or null; a remote server is another machine's process, never one to
+// stop or restart. A reply on the port counts only when its pid is the one in server.pid and this
+// user may signal it: while the server is down, another local user can take the port, and must
+// get neither the key nor a signal.
+export const runningServer = async (home: string = yokHome()): Promise<Running | null> => {
+  if (remoteUrl(home) !== null) return null;
+  const health = await yokClient(home).health();
+  if (!health.ok) return null;
+  const { pid } = health.value;
+  return pid === readServerPid(home) && isAlive(pid) ? health.value : null;
+};
+
+// Asked afresh each time: the starting server writes its port only once it listens.
+const waitForHealth = async (home: string, deadline: number): Promise<boolean> => {
+  while (Date.now() < deadline) {
+    if ((await runningServer(home)) !== null) return true;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return (await runningServer(home)) !== null;
+};
+
+// Signal only a pid runningServer vouched for, never one a reply on the port alone names.
 // Its tmux sessions keep running.
-export const stopServer = async (home: string, pid: number): Promise<void> => {
+export const stopServer = async (pid: number): Promise<void> => {
   const log = cliLog().child({ component: "cli" });
   const startedAt = Date.now();
   process.kill(pid, "SIGTERM");
-  while (!socketGone(home) && Date.now() < startedAt + STOP_TIMEOUT_MS) {
+  while (isAlive(pid) && Date.now() < startedAt + STOP_TIMEOUT_MS) {
     await sleep(POLL_INTERVAL_MS);
   }
-  if (socketGone(home)) {
+  if (!isAlive(pid)) {
     log.info({ pid, durationMs: Date.now() - startedAt }, "server stopped");
     return;
   }
@@ -117,11 +191,20 @@ export const stopServer = async (home: string, pid: number): Promise<void> => {
   throw new Error(`server (pid ${pid}) is still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
 };
 
-type Running = Readonly<{ pid: number; version: string; startedAt: number }>;
-
-const runningServer = async (client: YokClient): Promise<Running | null> => {
-  const health = await client.health();
-  return health.ok ? health.value : null;
+// A server from before the HTTP API listens only on yok.sock, where no command looks any more; its
+// shutdown would delete the new server's server.pid, so it must be gone before that one starts.
+const stopSocketServer = async (home: string): Promise<void> => {
+  const socket = join(home, "yok.sock");
+  if (!existsSync(socket)) return;
+  const pid = await fetch("http://localhost/health", {
+    unix: socket,
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  })
+    .then((res) => res.json())
+    .then((body: { pid?: unknown }) => (typeof body.pid === "number" ? body.pid : null))
+    .catch(() => null);
+  if (pid !== null && pid === readServerPid(home) && isAlive(pid)) await stopServer(pid);
+  rmSync(socket, { force: true });
 };
 
 // From source, a server holds the code as it was when it started. Replacing only servers older
@@ -136,38 +219,46 @@ export const isCurrentServer = (
   version: string,
 ): boolean => server !== null && server.startedAt >= replaceBefore && server.version === version;
 
-// The lock stops two CLIs from starting two servers. A crashed server can leave a stale socket
-// file, so it is removed first. A server started before replaceBefore (epoch ms) is replaced.
+// The lock stops two CLIs from starting two servers. A server started before replaceBefore
+// (epoch ms) is replaced.
 export const ensureServer = async (
   home: string = yokHome(),
   replaceBefore: number = defaultReplaceBefore(),
 ): Promise<void> => {
-  const client = yokClient(home);
+  // A remote server is only checked: replacing it would signal a pid on another machine.
+  const remote = remoteUrl(home);
+  if (remote !== null) {
+    if ((await yokClient(home).health()).ok) return;
+    throw new Error(`the yok server at ${remote} is not answering`);
+  }
   const isFresh = (server: Running | null): boolean =>
     isCurrentServer(server, replaceBefore, VERSION);
-  // Checked again inside the lock: another command may have started the server meanwhile.
-  if (isFresh(await runningServer(client))) return;
+  // Checked again inside the lock, with a new client: another command may have started the
+  // server meanwhile, on a port this one has not read yet.
+  if (isFresh(await runningServer(home))) return;
+  // Before the lock: withLock would create a missing home with the umask's mode.
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   await withLock(join(home, ".start.lock"), async () => {
-    const running = await runningServer(client);
+    await stopSocketServer(home);
+    const running = await runningServer(home);
     if (isFresh(running)) return;
     const log = cliLog().child({ component: "cli" });
     if (running !== null) {
       log.info({ pid: running.pid, startedAt: running.startedAt }, "replacing an older server");
-      await stopServer(home, running.pid);
+      await stopServer(running.pid);
     }
-    mkdirSync(home, { recursive: true });
-    rmSync(socketPath(home), { force: true });
 
     const [command, ...args] = [...selfArgv(), "server", "start"];
     const startedAt = Date.now();
     const pid = spawnDetached(command, args, {
       cwd: home,
-      env: { YOK_HOME: home },
+      // The server's env reaches every run's session, where no API key may go.
+      env: { YOK_HOME: home, YOK_API_KEY: undefined, YOK_SERVER_URL: undefined },
       output: logPath(home),
     });
     log.info({ pid, command: [command, ...args], log: logPath(home) }, "server process started");
 
-    const started = await waitForHealth(client, Date.now() + HEALTH_TIMEOUT_MS);
+    const started = await waitForHealth(home, Date.now() + HEALTH_TIMEOUT_MS);
     if (started) {
       log.info({ pid, durationMs: Date.now() - startedAt }, "server answering /health");
       return;
@@ -180,7 +271,7 @@ export const ensureServer = async (
 
 // A stopped server stays down: the next command that needs one starts it.
 export const restartServer = async (home: string = yokHome()): Promise<boolean> => {
-  if ((await runningServer(yokClient(home))) === null) return false;
+  if ((await runningServer(home)) === null) return false;
   await ensureServer(home, Date.now());
   return true;
 };

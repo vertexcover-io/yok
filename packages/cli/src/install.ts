@@ -14,7 +14,7 @@ import {
 import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
-import { fail, restartServer, stopServer, yokClient } from "./client.ts";
+import { fail, restartServer, runningServer, stopServer } from "./client.ts";
 import { agentOption } from "./plugin.ts";
 
 const PLATFORMS: Readonly<Record<string, string>> = { darwin: "darwin", linux: "linux" };
@@ -351,12 +351,10 @@ const removePlugins = async (): Promise<boolean> => {
 
 const uninstall = async (plugin: boolean | undefined): Promise<void> => {
   const home = yokHome();
-  const running = await yokClient(home).health();
-  if (running.ok) {
-    await stopServer(home, running.value.pid);
-    console.log(
-      `stopped the yok server (pid ${running.value.pid}); its tmux sessions keep running`,
-    );
+  const running = await runningServer(home);
+  if (running !== null) {
+    await stopServer(running.pid);
+    console.log(`stopped the yok server (pid ${running.pid}); its tmux sessions keep running`);
   }
   const withPlugin =
     plugin ?? (await askYes("Also remove the yok plugin from claude and codex? [y/N] "));

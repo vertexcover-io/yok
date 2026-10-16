@@ -1,6 +1,6 @@
 import { Command } from "@commander-js/extra-typings";
 import { createRegistryReader, pickRun, registryPath } from "@yok/sdk";
-import { apiErrorText, ensureServer, fail, openForPerson, yokClient } from "./client.ts";
+import { apiErrorText, ensureServer, fail, openForPerson, remoteUrl, yokClient } from "./client.ts";
 
 export const viewCommand = () =>
   new Command("view")
@@ -9,6 +9,10 @@ export const viewCommand = () =>
     .option("--run-id <id>", "view by run id instead of name")
     .option("--print", "print the page URL without opening it")
     .action(async (name, opts) => {
+      // pickRun reads this machine's registry, which a remote server's runs are not in.
+      if (remoteUrl() !== null) {
+        return fail("yok view works with the local server only; open the view URL yok run printed");
+      }
       const run = await pickRun({
         registry: createRegistryReader(registryPath()),
         name,
