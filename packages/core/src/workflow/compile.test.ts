@@ -1298,7 +1298,7 @@ describe("the shipped regression workflow", () => {
     ]);
   });
 
-  test("SC6: the review loop reviews the tests, and on a later pass write-regression-tests fixes the last pass's findings first", async () => {
+  test("SC6: the review loop reviews the tests, then has write-regression-tests fix the findings unless approved or on the last pass", async () => {
     const plan = await compileWorkflow(REGRESSION_WORKFLOW);
 
     expect(plan.nodes.find((node) => node.id === "review-loop")).toMatchObject({
@@ -1309,22 +1309,6 @@ describe("the shipped regression workflow", () => {
       input: { workspace: "{{ nodes.create-workspace.output }}" },
       nodes: [
         {
-          id: "compact-before-fix",
-          type: "context",
-          action: "compact",
-          when: "{{ iteration.index > 1 }}",
-        },
-        {
-          id: "fix-tests",
-          stage: { ref: "write-regression-tests" },
-          dependsOn: ["compact-before-fix"],
-          input: {
-            workspace: "{{ inputs.workspace }}",
-            fixes: "{{ iteration.previous.findings }}",
-            round: "{{ iteration.index }}",
-          },
-        },
-        {
           id: "review-regression-tests",
           stage: {
             ref: "review-regression-tests",
@@ -1334,6 +1318,23 @@ describe("the shipped regression workflow", () => {
             workspace: "{{ inputs.workspace }}",
             round: "{{ iteration.index }}",
             rounds: "{{ iteration.max }}",
+          },
+        },
+        {
+          id: "compact-before-fix",
+          type: "context",
+          action: "compact",
+          dependsOn: ["review-regression-tests"],
+          when: "{{ nodes.review-regression-tests.output.verdict != 'APPROVED' and iteration.index < iteration.max }}",
+        },
+        {
+          id: "fix-tests",
+          stage: { ref: "write-regression-tests" },
+          dependsOn: ["compact-before-fix"],
+          input: {
+            workspace: "{{ inputs.workspace }}",
+            fixes: "{{ nodes.review-regression-tests.output.findings }}",
+            round: "{{ iteration.index }}",
           },
         },
       ],

@@ -68,8 +68,8 @@ nodes:
     prompt: "Keep which test covers each scenario, the workspace path, and the run name."
     dependsOn: [write-regression-tests]
 
-  # Pass 1 reviews; a later pass has write-regression-tests fix the previous pass's findings, then
-  # reviews again. It stops on APPROVED, or after its last pass with the rest left in the report.
+  # Each pass reviews, then has write-regression-tests fix the findings. It stops on APPROVED,
+  # or after its last pass with the rest left in the report.
   - id: review-loop
     type: loop
     dependsOn: [compact-after-tests]
@@ -78,11 +78,21 @@ nodes:
     input:
       workspace: "{{ nodes.create-workspace.output }}"
     nodes:
-      # A later pass starts the fix without pass 1's review in the session.
+      - id: review-regression-tests
+        type: agent
+        stage: review-regression-tests
+        input:
+          workspace: "{{ inputs.workspace }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+
+      # No fix once approved, and none on the last pass, where nothing would review it. The fix
+      # starts without the review in the session.
       - id: compact-before-fix
         type: context
         action: compact
-        when: "{{ iteration.index > 1 }}"
+        dependsOn: [review-regression-tests]
+        when: "{{ nodes.review-regression-tests.output.verdict != 'APPROVED' and iteration.index < iteration.max }}"
         prompt: "Keep the workspace path and the run name."
 
       - id: fix-tests
@@ -91,16 +101,8 @@ nodes:
         dependsOn: [compact-before-fix]
         input:
           workspace: "{{ inputs.workspace }}"
-          fixes: "{{ iteration.previous.findings }}"
+          fixes: "{{ nodes.review-regression-tests.output.findings }}"
           round: "{{ iteration.index }}"
-
-      - id: review-regression-tests
-        type: agent
-        stage: review-regression-tests
-        input:
-          workspace: "{{ inputs.workspace }}"
-          round: "{{ iteration.index }}"
-          rounds: "{{ iteration.max }}"
 
   - id: compact-after-review
     type: context
