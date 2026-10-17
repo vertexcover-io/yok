@@ -542,6 +542,14 @@ const fileReply = async (c: Context, page: ReadyRun, entry: ArtifactEntry) => {
   return c.json(entry);
 };
 
+// The registry keeps the policies the run launched with, so a missing or unreadable state.json
+// cannot open an unattended run to comments; state.json covers runs saved before policies.
+const takesComments = (page: ReadyRun, state: State | null): boolean =>
+  readPolicies(page.run.policies ?? state?.policies).interaction;
+
+const refuseUnattended = (c: Context): Response =>
+  c.text("this run takes no comments: its interaction policy is off", 409);
+
 const requireReadyRun = async (c: Context, deps: ViewerDeps): Promise<ReadyRun | Response> => {
   const page = await findViewedRun(deps.registry, c.req.param("id") ?? "");
   if (page.kind === "missing") return notFound(c);
@@ -779,9 +787,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       }
       return inRunQueue(id, async () => {
         const state = await readStateOrNull(page.runDir);
-        if (!readPolicies(state?.policies).interaction) {
-          return c.text("this run takes no comments: its interaction policy is off", 409);
-        }
+        if (!takesComments(page, state)) return refuseUnattended(c);
         const awaited = new Set(findAwaitedFiles(state));
         const unawaited = approved.find((file) => !awaited.has(file));
         if (unawaited !== undefined) {
@@ -818,6 +824,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       if (page instanceof Response) return page;
       const body = FollowUpSchema.safeParse(await c.req.json().catch(() => null));
       if (!body.success) return c.text("invalid reply", 400);
+      if (!takesComments(page, await readStateOrNull(page.runDir))) return refuseUnattended(c);
       const replied = await addUserReply(
         page.runDir,
         c.req.param("cid"),

@@ -668,6 +668,39 @@ describe("comment routes", () => {
     expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
   });
 
+  const offPolicies = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
+
+  test("SC530: a run the registry saved with interaction off refuses comments though its state.json is missing", async () => {
+    const { post, registry, cwd } = await setup();
+    await registry.addRun({ ...runRecord("r-off", cwd, "off"), policies: offPolicies });
+    const runDir = join(cwd, ".yok", "off");
+    put(runDir, "artifacts/design.md", "# d");
+
+    const refused = await post("/runs/r-off/comments", { comments: [draft] });
+
+    expect(refused.status).toBe(409);
+    expect(existsSync(join(runDir, "comments.json"))).toBe(false);
+  });
+
+  test("SC530: a reply on a run whose interaction policy is off is refused with 409, and the thread is left as it was", async () => {
+    const { post, registry, cwd } = await setup();
+    await registry.addRun({ ...runRecord("r-off", cwd, "off"), policies: offPolicies });
+    const runDir = join(cwd, ".yok", "off");
+    put(runDir, "artifacts/design.md", "# d");
+    await addComments(
+      runDir,
+      [{ file: "artifacts/design.md", kind: "global", text: "Why one file?" }],
+      new Date(),
+    );
+    const before = readFileSync(join(runDir, "comments.json"), "utf8");
+
+    const refused = await post("/runs/r-off/comments/c1/reply", { text: "one more thing" });
+
+    expect(refused.status).toBe(409);
+    expect(readFileSync(join(runDir, "comments.json"), "utf8")).toBe(before);
+    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
+  });
+
   const seedWaitingDesign = async () => {
     const ctx = await setup();
     put(ctx.runDir, "artifacts/design.md", "# d");
