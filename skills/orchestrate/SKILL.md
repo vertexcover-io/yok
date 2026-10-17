@@ -36,9 +36,11 @@ without extension). Then run:
 yok orchestrate init NAME
 ```
 
+Add `--derived` when you derived the name; if that name is taken, `init` adds a short suffix.
 `init` reads `YOK_RUN_ID` from this session's environment, so no `--run-id` flag is needed.
-Every later action on the run names it by `NAME` (`--run NAME`), not by its id. On a non-zero
-exit, show the command's error output and stop — do not retry with a different name.
+From here on NAME is the `name` that `init` printed, and every later action on the run names it
+by `NAME` (`--run NAME`), not by its id. On a non-zero exit, show the command's error output and
+stop — do not retry with a different name.
 
 ## Step 2: run the workflow one step at a time
 
@@ -120,8 +122,9 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
 
      Relay its questions to the user and send back the answers. For an approval request, run
-     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn, then send
-     it each `[review]` message and the approval. When it ends, run `done` with its result, or
+     `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`. When it prints
+     `autoApproved: true`, send the approval to the subagent at once. Otherwise end the turn,
+     then send it each `[review]` message and the approval. When it ends, run `done` with its result, or
      with `--error -` and its reason. When `done` asks for a fix, send the issues back to it.
    - `context`: tell the user `↻ NODE_ID: ACTION` (the reply's `nodeId` and `action`, e.g.
      `↻ fresh: new`), then end the turn at once, without running any other command. The work

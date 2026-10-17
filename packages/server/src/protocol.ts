@@ -10,6 +10,7 @@ import {
   NonEmptyStringSchema,
   PolicyLayerSchema,
   SlugSchema,
+  SourceSchema,
   yokHome,
 } from "@yok/sdk";
 import * as z from "zod";
@@ -79,23 +80,18 @@ export const StartRunBodySchema = z.strictObject({
   config: NonEmptyStringSchema.optional(),
   // the caller's own policy values; the server merges them over the workflow's and the config's
   policies: PolicyLayerSchema.optional(),
+  // who asked for the run, recorded on it: metadata, never an authentication fact
+  source: SourceSchema.optional(),
 });
 export type StartRunBody = z.infer<typeof StartRunBodySchema>;
 export type StartRunRequest = StartRunBody;
 
 export type ApiError = ErrorBody["error"];
 
-// Who asked for a project or a run: metadata, never an authentication fact.
-export const AddedBySchema = z.strictObject({
-  channel: NonEmptyStringSchema,
-  id: z.string().optional(),
-  name: z.string().optional(),
-});
-
 export const ProjectSchema = z.strictObject({
   path: AbsolutePathSchema,
   git: z.string().optional(),
-  addedBy: AddedBySchema,
+  addedBy: SourceSchema,
   addedAt: z.iso.datetime(),
   // the doctor's verdict at the last add or run start
   verdict: z.string(),
@@ -119,7 +115,7 @@ export const AddProjectBodySchema = z
     git: GitUrlSchema.optional(),
     // with git: where to clone to, default <home>/projects/NAME
     path: AbsolutePathSchema.optional(),
-    addedBy: AddedBySchema.default({ channel: "api" }),
+    addedBy: SourceSchema.default({ channel: "api" }),
   })
   .refine((body) => body.git !== undefined || body.path !== undefined, "give git, path, or both");
 export type AddProjectBody = z.infer<typeof AddProjectBodySchema>;

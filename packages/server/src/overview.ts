@@ -150,7 +150,10 @@ export const readRunFiles = async (run: WorkflowRun): Promise<RunFiles> => {
 };
 
 // Only a live run asks tmux, so a long history costs no terminal calls.
-const summarizeLive = async (run: WorkflowRun, host: ITerminalHost): Promise<RunSummary> => {
+export const summarizeLiveRun = async (
+  run: WorkflowRun,
+  host: ITerminalHost,
+): Promise<RunSummary> => {
   const files = await readRunFiles(run);
   const live = files.state !== null && isRunLive(files.state.status);
   return summarizeRun(run, files, live ? await isAgentAlive(run, host) : null);
@@ -163,7 +166,7 @@ export const listRunSummaries = async (
   const runs = [...(await registry.listRuns())].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
-  return Promise.all(runs.map((run) => summarizeLive(run, host)));
+  return Promise.all(runs.map((run) => summarizeLiveRun(run, host)));
 };
 
 export type Step = Readonly<{

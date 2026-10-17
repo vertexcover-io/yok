@@ -11,9 +11,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@commander-js/extra-typings": "^15.0.0",
     "@yok/core": "workspace:*",
     "@yok/sdk": "workspace:*",
     "@hono/zod-validator": "^0.9.1",
+    "commander": "^15.0.0",
     "highlight.js": "^11.12.0",
     "hono": "^4.13.9",
     "markdown-it": "^14.1.0",

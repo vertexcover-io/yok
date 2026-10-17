@@ -58,6 +58,8 @@ export type ViewerDeps = Readonly<{
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   now: () => Date;
+  // Fired on shutdown: a stream ends, since the server's stop waits for every open request.
+  closing: AbortSignal;
 }>;
 export type FileType = "md" | "html" | "image" | "text" | "binary";
 export type ArtifactEntry = Readonly<{
@@ -526,11 +528,26 @@ const isFile = (path: string): Promise<boolean> =>
 const contentType = (path: string): string =>
   fileType(path) === "html" ? "text/html; charset=utf-8" : Bun.file(path).type;
 
-type ReadyRun = Extract<ViewedRun, { kind: "ready" }>;
+export type ReadyRun = Extract<ViewedRun, { kind: "ready" }>;
 
-const fileReply = async (c: Context, page: ReadyRun, entry: ArtifactEntry) => {
+// The one gate for serving a file's contents: it must be a listed artifact that is a real file
+// inside the run's folder.
+const findArtifact = async (
+  page: ReadyRun,
+  relPath: string,
+): Promise<Readonly<{ entry: ArtifactEntry; abs: string }> | null> => {
+  const files = await listArtifacts(page.runDir, await readStateOrNull(page.runDir));
+  const entry = files.find((file) => file.path === relPath);
+  if (entry === undefined) return null;
   const abs = resolveArtifactPath(page.runDir, entry.path);
-  if (abs === null || !(await isFile(abs))) return notFound(c);
+  if (abs === null || !(await isFile(abs))) return null;
+  return { entry, abs };
+};
+
+const fileReply = async (c: Context, page: ReadyRun, relPath: string) => {
+  const found = await findArtifact(page, relPath);
+  if (found === null) return notFound(c);
+  const { entry, abs } = found;
   if (entry.type === "md") {
     const html = renderMarkdown(await readFile(abs, "utf8"), repoFiles(page.run.cwd));
     return c.json({ ...entry, html });
@@ -540,6 +557,21 @@ const fileReply = async (c: Context, page: ReadyRun, entry: ArtifactEntry) => {
     return c.json({ ...entry, raw: `/runs/${page.run.id}/raw/${entry.path}` });
   }
   return c.json(entry);
+};
+
+export type ArtifactRead = ArtifactEntry & Readonly<{ text?: string }>;
+
+// A listed artifact with its source text, or null when the path is not one of the run's artifacts.
+// Images and binaries come back as the entry alone.
+export const readArtifact = async (
+  page: ReadyRun,
+  relPath: string,
+): Promise<ArtifactRead | null> => {
+  const found = await findArtifact(page, relPath);
+  if (found === null) return null;
+  const { entry, abs } = found;
+  if (entry.type === "image" || entry.type === "binary") return entry;
+  return { ...entry, text: await readFile(abs, "utf8") };
 };
 
 // The registry keeps the policies the run launched with, so a missing or unreadable state.json
@@ -589,14 +621,14 @@ const inRunQueue = <T>(runId: string, work: () => Promise<T>): Promise<T> => {
 
 const POLL_MS = 1000;
 
-type FilesBody = Readonly<{
+export type FilesBody = Readonly<{
   state: "starting" | "ready";
   run: Readonly<{ id: string; name: string | null }>;
   files: readonly ArtifactEntry[];
 }>;
 type CommentsBody = Readonly<{ comments: readonly unknown[]; delivery: unknown }>;
 
-const filesBody = async (
+export const filesBody = async (
   page: Exclude<ViewedRun, { kind: "missing" }>,
   state: State | null,
 ): Promise<FilesBody> => {
@@ -651,6 +683,12 @@ const fileStamps = async (
 const sameStamp = (a: Stamp | undefined, b: Stamp): boolean =>
   a !== undefined && a.mtimeMs === b.mtimeMs && a.size === b.size;
 
+// A comment line on every poll keeps a quiet stream inside the server's idle limit.
+const nextPoll = async (stream: SSEStreamingApi): Promise<void> => {
+  await stream.write(": ping\n\n");
+  await stream.sleep(POLL_MS);
+};
+
 const sendEvent = (stream: SSEStreamingApi, event: string, data: unknown) =>
   stream.writeSSE({ event, data: JSON.stringify(data) });
 
@@ -667,14 +705,18 @@ const sendChanged = async (
   await stream.writeSSE({ event, data: json });
 };
 
-const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string): Promise<void> => {
+export const streamRun = async (
+  stream: SSEStreamingApi,
+  deps: Pick<ViewerDeps, "registry" | "host" | "closing">,
+  id: string,
+): Promise<void> => {
   const sent = new Map<string, string>();
   // null until the first look at the folder: files already there on connect are not "changed".
   let stamps: ReadonlyMap<string, Stamp> | null = null;
-  while (!stream.aborted) {
+  while (!stream.aborted && !deps.closing.aborted) {
     const page = await findViewedRun(deps.registry, id);
     if (page.kind === "missing") {
-      await stream.sleep(POLL_MS);
+      await nextPoll(stream);
       continue;
     }
     const runFiles = await readRunFiles(page.run);
@@ -695,19 +737,19 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
     await sendChanged(stream, sent, "agent", agentStatus(page.run.id, agentAlive));
     const comments = await commentsBody(page);
     if (comments !== null) await sendChanged(stream, sent, "comments", comments);
-    await stream.sleep(POLL_MS);
+    await nextPoll(stream);
   }
 };
 
 const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<void> => {
   let sent = "";
-  while (!stream.aborted) {
+  while (!stream.aborted && !deps.closing.aborted) {
     const json = JSON.stringify({ runs: await listRunSummaries(deps.registry, deps.host) });
     if (json !== sent) {
       sent = json;
       await stream.writeSSE({ event: "runs", data: json });
     }
-    await stream.sleep(POLL_MS);
+    await nextPoll(stream);
   }
 };
 
@@ -738,10 +780,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       const id = c.req.param("id");
       const page = await findViewedRun(deps.registry, id);
       if (page.kind !== "ready") return notFound(c);
-      const relPath = c.req.query("path") ?? "";
-      const files = await listArtifacts(page.runDir, await readStateOrNull(page.runDir));
-      const entry = files.find((file) => file.path === relPath);
-      return entry === undefined ? notFound(c) : fileReply(c, page, entry);
+      return fileReply(c, page, c.req.query("path") ?? "");
     })
     .get("/runs/:id/source", async (c) => {
       const page = await findViewedRun(deps.registry, c.req.param("id"));
@@ -874,6 +913,7 @@ export const startViewer = async (
   const port = server.port as number;
   const { registry, providerFor, host, log } = deps;
   const opener = deps.openInEditor ?? ((target) => openInEditor({ ...target, env: process.env }));
+  const closing = new AbortController();
   server.reload({
     fetch: viewerRoutes({
       registry,
@@ -883,9 +923,14 @@ export const startViewer = async (
       port,
       now: () => new Date(),
       openInEditor: opener,
+      closing: closing.signal,
     }).fetch,
   });
   await Bun.write(viewerPortPath(deps.home), String(port));
   deps.log.info({ port }, "viewer listening");
-  return { origin: `http://localhost:${port}`, port, stop: () => server.stop() };
+  const stop = (): Promise<void> => {
+    closing.abort();
+    return server.stop();
+  };
+  return { origin: `http://localhost:${port}`, port, stop };
 };

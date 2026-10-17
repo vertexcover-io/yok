@@ -127,7 +127,7 @@ const INPUT_TYPES: Record<InputDeclarations[string]["type"], z.ZodType<JsonValue
 };
 
 // The workflow's inputs with their defaults filled in; an input that breaks its declaration throws.
-const resolveWorkflowInputs = (
+export const resolveWorkflowInputs = (
   declarations: InputDeclarations,
   given: Readonly<Record<string, JsonValue>>,
 ): Record<string, JsonValue> => {

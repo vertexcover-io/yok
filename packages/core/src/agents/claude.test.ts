@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type ITerminal,
   type ITerminalHost,
@@ -137,6 +137,10 @@ const fakePane = (
   };
 };
 
+// A Claude config path in a fresh folder, so no test reads or writes the real ~/.claude.json.
+const tempConfig = (): string =>
+  join(mkdtempSync(join(tmpdir(), "yok-claude-config-")), ".claude.json");
+
 const fakeHost = (
   options: { alive?: boolean; createOk?: boolean } = {},
 ): ITerminalHost & { calls: Call[] } => {
@@ -161,7 +165,7 @@ const fakeHost = (
 describe("claudeProvider.prompt", () => {
   test("SC6: a session whose isAlive is false returns ok:false and sends nothing", async () => {
     const host = fakeHost({ alive: false });
-    const provider = claudeProvider({ host, newId: () => "s1" });
+    const provider = claudeProvider({ configPath: tempConfig(), host, newId: () => "s1" });
 
     const result = await provider.prompt(host.find("s1"), "hello");
 
@@ -171,7 +175,7 @@ describe("claudeProvider.prompt", () => {
 
   test("SC7: a live session sends the text into its own pane, then Enter at least 150ms later", async () => {
     const host = fakeHost({ alive: true });
-    const provider = claudeProvider({ host, newId: () => "s1" });
+    const provider = claudeProvider({ configPath: tempConfig(), host, newId: () => "s1" });
 
     const result = await provider.prompt(host.find("s1"), "hello");
 
@@ -187,6 +191,7 @@ describe("claudeProvider.prompt", () => {
 describe("claudeProvider.launch", () => {
   test("a terminal that fails to create the session returns ok:false", async () => {
     const provider = claudeProvider({
+      configPath: tempConfig(),
       host: fakeHost({ createOk: false }),
       newId: () => "s1",
     });
@@ -196,7 +201,7 @@ describe("claudeProvider.launch", () => {
 
   test("returns the pane it created, so a later prompt and stop reach it without a name lookup", async () => {
     const host = fakeHost();
-    const provider = claudeProvider({ host, newId: () => "s1" });
+    const provider = claudeProvider({ configPath: tempConfig(), host, newId: () => "s1" });
 
     const launched = await provider.launch({ cwd: "/repo" });
     if (!launched.ok) throw new Error(launched.error);
@@ -213,10 +218,107 @@ describe("claudeProvider.launch", () => {
   });
 });
 
+describe("claudeProvider.launch trusts the project folder", () => {
+  test("SC64: launch marks the folder trusted in Claude's config, keeping every other key and the file's mode", async () => {
+    const configPath = tempConfig();
+    const before = {
+      numStartups: 7,
+      projects: {
+        "/repo": { allowedTools: ["Bash"], hasTrustDialogAccepted: false },
+        "/other": { hasTrustDialogAccepted: true },
+      },
+    };
+    writeFileSync(configPath, JSON.stringify(before), { mode: 0o600 });
+    const host = fakeHost();
+    const provider = claudeProvider({ configPath, host, newId: () => "s1" });
+
+    const launched = await provider.launch({ cwd: "/repo" });
+
+    expect(launched.ok).toBe(true);
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+      numStartups: 7,
+      projects: {
+        "/repo": { allowedTools: ["Bash"], hasTrustDialogAccepted: true },
+        "/other": { hasTrustDialogAccepted: true },
+      },
+    });
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("SC65: a missing config file is created holding only the folder's trust", async () => {
+    const configPath = tempConfig();
+    const provider = claudeProvider({ configPath, host: fakeHost(), newId: () => "s1" });
+
+    await provider.launch({ cwd: "/repo" });
+
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+      projects: { "/repo": { hasTrustDialogAccepted: true } },
+    });
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("SC66: a config that is not JSON fails the launch, names the file, and starts no session", async () => {
+    const configPath = tempConfig();
+    writeFileSync(configPath, "{ not json");
+    const host = fakeHost();
+    const provider = claudeProvider({ configPath, host, newId: () => "s1" });
+
+    const launched = await provider.launch({ cwd: "/repo" });
+
+    expect(launched.ok).toBe(false);
+    expect(launched.ok ? "" : String(launched.error)).toContain(configPath);
+    expect(host.calls).toHaveLength(0);
+    expect(readFileSync(configPath, "utf8")).toBe("{ not json");
+  });
+
+  test("SC68: a run whose env sets CLAUDE_CONFIG_DIR is trusted in that folder's config, the one its claude reads", async () => {
+    const configPath = tempConfig();
+    const runConfigDir = dirname(tempConfig());
+    const provider = claudeProvider({ configPath, host: fakeHost(), newId: () => "s1" });
+
+    await provider.launch({ cwd: "/repo", env: { CLAUDE_CONFIG_DIR: runConfigDir } });
+
+    expect(JSON.parse(readFileSync(join(runConfigDir, ".claude.json"), "utf8"))).toEqual({
+      projects: { "/repo": { hasTrustDialogAccepted: true } },
+    });
+    expect(existsSync(configPath)).toBe(false);
+  });
+
+  test("SC69: launches started at once each keep their folder's trust", async () => {
+    const configPath = tempConfig();
+    writeFileSync(configPath, JSON.stringify({ projects: {} }));
+    const provider = claudeProvider({ configPath, host: fakeHost(), newId: () => "s1" });
+    const folders = ["/a", "/b", "/c", "/d", "/e"];
+
+    const launched = await Promise.all(folders.map((cwd) => provider.launch({ cwd })));
+
+    expect(launched.every((result) => result.ok)).toBe(true);
+    const { projects } = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(Object.keys(projects).toSorted()).toEqual(folders);
+  });
+
+  test("SC67: a folder already trusted leaves the config file as it was", async () => {
+    const configPath = tempConfig();
+    const text = '{"projects":{"/repo":{"hasTrustDialogAccepted":true}},"x":1}';
+    writeFileSync(configPath, text);
+    const provider = claudeProvider({ configPath, host: fakeHost(), newId: () => "s1" });
+
+    await provider.launch({ cwd: "/repo" });
+
+    expect(readFileSync(configPath, "utf8")).toBe(text);
+    expect(existsSync(`${configPath}.tmp`)).toBe(false);
+  });
+});
+
 describe("claudeProvider.relaunch", () => {
   test("replaces the program in the pane with claude on the given session id and first prompt", async () => {
     const host = fakeHost();
-    const provider = claudeProvider({ host, binary: "/bin/claude", newId: () => "unused" });
+    const provider = claudeProvider({
+      configPath: tempConfig(),
+      host,
+      binary: "/bin/claude",
+      newId: () => "unused",
+    });
 
     const result = await provider.relaunch(host.find("%3"), "s-new", {
       cwd: "/repo",
@@ -239,7 +341,12 @@ describe("claudeProvider.relaunch", () => {
   test("SC28: with resume it respawns claude --resume s-1 --model opus-x, without it claude --session-id s-1", async () => {
     const argvOf = async (resume?: boolean) => {
       const host = fakeHost();
-      const provider = claudeProvider({ host, binary: "claude", newId: () => "unused" });
+      const provider = claudeProvider({
+        configPath: tempConfig(),
+        host,
+        binary: "claude",
+        newId: () => "unused",
+      });
       await provider.relaunch(host.find("%3"), "s-1", {
         cwd: "/repo",
         model: "opus-x",
@@ -264,7 +371,12 @@ describe("claudeProvider.launch logging", () => {
   test("SC37: no log line contains the prompt or system-prompt text", async () => {
     const lines: string[] = [];
     const log = jsonLogger({ level: "debug", write: (line) => lines.push(line) });
-    const provider = claudeProvider({ host: fakeHost(), log, newId: () => "s1" });
+    const provider = claudeProvider({
+      configPath: tempConfig(),
+      host: fakeHost(),
+      log,
+      newId: () => "s1",
+    });
 
     await provider.launch({
       cwd: "/repo",
@@ -386,7 +498,7 @@ describe("claudeProvider.run", () => {
         is_error: false,
       }),
     });
-    const provider = claudeProvider({ host: fakeHost(), binary });
+    const provider = claudeProvider({ configPath: tempConfig(), host: fakeHost(), binary });
 
     const result = await provider.run({
       prompt: "hi",
@@ -415,7 +527,7 @@ describe("claudeProvider.run", () => {
     "SC27: %s fails, carrying the session id it reported",
     async (_label, body, exitCode, outputFormat) => {
       const binary = fakeClaudeBinary({ stdout: JSON.stringify(body), exitCode });
-      const provider = claudeProvider({ host: fakeHost(), binary });
+      const provider = claudeProvider({ configPath: tempConfig(), host: fakeHost(), binary });
 
       const result = await provider.run({
         prompt: "hi",
@@ -454,7 +566,7 @@ const LIMIT_MENU = [
 describe("claudeProvider.limitResetWait", () => {
   test("reads the reset from the error message, else from the limit banner on the pane's screen", async () => {
     const now = new Date("2026-10-01T13:00:00Z");
-    const provider = claudeProvider({ host: fakeHost() });
+    const provider = claudeProvider({ configPath: tempConfig(), host: fakeHost() });
     const pane = fakePane("p", [], true, [`● You've hit your limit · resets 4pm (UTC)\n${PROMPT}`]);
     const hour = 3_600_000;
     expect(await provider.limitResetWait(pane, "resets 3pm (UTC)", now)).toEqual({
@@ -471,7 +583,7 @@ describe("claudeProvider.limitResetWait", () => {
 describe("claudeProvider.promptWhenReady", () => {
   const typedInto = async (...screens: readonly string[]) => {
     const calls: Call[] = [];
-    const provider = claudeProvider({ host: fakeHost() });
+    const provider = claudeProvider({ configPath: tempConfig(), host: fakeHost() });
     const result = await provider.promptWhenReady(fakePane("p", calls, true, screens), "continue");
     const typed = calls.map((c) =>
       c.method === "sendText" ? c.text : c.method === "sendKeys" ? c.keys : c.method,

@@ -117,6 +117,7 @@ export const startServer = async ({
   const viewerLog = log.child({ component: "viewer" });
   const viewer = await startViewer({ home, registry, providerFor, host, log: viewerLog });
   void resumeDeliveries({ registry, providerFor, host, log: viewerLog, now: () => new Date() });
+  const closing = new AbortController();
   const app = createApp({
     registry,
     providerFor,
@@ -130,6 +131,7 @@ export const startServer = async ({
     host,
     git: createGit(execWithTimeout(CLONE_TIMEOUT_MS)),
     checkCheckout,
+    closing: closing.signal,
   });
 
   // The viewer is already listening; a named port that is taken must not leave it running.
@@ -148,6 +150,7 @@ export const startServer = async ({
 
   const stop = async (): Promise<void> => {
     stopDeliveries();
+    closing.abort();
     // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
     await server.stop();
     await Promise.all([viewer.stop(), removeOwnPid(home)]);

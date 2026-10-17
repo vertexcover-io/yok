@@ -10,7 +10,15 @@ import {
   type StartRunRequest,
 } from "./protocol.ts";
 
-export type YokClientOptions = Readonly<{ url: string; apiKey: string; log?: ILogger }>;
+// What the client sends requests through; a caller inside the server passes its app's request.
+export type Transport = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export type YokClientOptions = Readonly<{
+  url: string;
+  apiKey: string;
+  log?: ILogger;
+  transport?: Transport;
+}>;
 
 // The body a response carries on its 2xx statuses, as the server's routes declare it.
 type SuccessBody<R> =
@@ -48,12 +56,12 @@ const unwrap = async <R extends ClientResponse<unknown, number, "json">>(
     : { ok: false, error: replyError(res.status, text, json) };
 };
 
-const loggedFetch = (log: ILogger) =>
+const loggedFetch = (log: ILogger, transport: Transport) =>
   (async (input: string | URL | Request, init?: RequestInit) => {
     const start = Date.now();
     const url = input instanceof Request ? input.url : input.toString();
     const fields = { method: init?.method ?? "GET", path: new URL(url).pathname };
-    const res = await fetch(input, init).catch((error: unknown) => {
+    const res = await transport(input, init).catch((error: unknown) => {
       log.debug({ ...fields, err: error }, "server not reachable");
       throw error;
     });
@@ -68,12 +76,17 @@ const loggedFetch = (log: ILogger) =>
 
 // One method per API call, named like the CLI command that makes it. Inputs and outputs are
 // typed from the server's routes, so neither side restates the other's schemas.
-export const createYokClient = ({ url, apiKey, log = noopLogger }: YokClientOptions) => {
-  const fetch = loggedFetch(log.child({ component: "client" }));
+export const createYokClient = ({
+  url,
+  apiKey,
+  log = noopLogger,
+  transport = (input, init) => fetch(input, init),
+}: YokClientOptions) => {
+  const send = loggedFetch(log.child({ component: "client" }), transport);
   // /health goes without the key: the CLI asks it to learn whether the port is still its own
   // server's, and another local user may have taken the port while the server was down.
-  const open = hc<AppType>(url, { fetch });
-  const api = hc<AppType>(url, { fetch, headers: { authorization: `Bearer ${apiKey}` } });
+  const open = hc<AppType>(url, { fetch: send });
+  const api = hc<AppType>(url, { fetch: send, headers: { authorization: `Bearer ${apiKey}` } });
   return {
     health: () => unwrap(open.health.$get()),
     run: (body: StartRunRequest) => unwrap(api.runs.$post({ json: body })),
@@ -88,6 +101,10 @@ export const createYokClient = ({ url, apiKey, log = noopLogger }: YokClientOpti
       ),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
+    showRun: (runId: string) => unwrap(api.runs[":id"].$get({ param: { id: runId } })),
+    runFiles: (runId: string) => unwrap(api.runs[":id"].files.$get({ param: { id: runId } })),
+    runFile: (runId: string, path: string) =>
+      unwrap(api.runs[":id"].file.$get({ param: { id: runId }, query: { path } })),
   };
 };
 

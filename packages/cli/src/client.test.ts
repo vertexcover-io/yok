@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Result } from "@yok/sdk";
 import {
   checkServerUrl,
+  followUpRun,
   isCurrentServer,
   resolveTarget,
   runningServer,
@@ -37,6 +38,20 @@ describe("shouldOpenBrowser", () => {
     for (const [label, input, expected] of cases) {
       expect([label, shouldOpenBrowser(input)]).toEqual([label, expected]);
     }
+  });
+});
+
+describe("followUpRun", () => {
+  const attended = { interaction: true, open: true, attach: true, hasTerminal: true };
+
+  test.each([
+    ["an attended run at a terminal", attended, { noOpen: false, attach: true }],
+    ["--no-open", { ...attended, open: false }, { noOpen: true, attach: true }],
+    ["--no-attach", { ...attended, attach: false }, { noOpen: false, attach: false }],
+    ["no terminal", { ...attended, hasTerminal: false }, { noOpen: false, attach: false }],
+    ["an unattended run", { ...attended, interaction: false }, { noOpen: true, attach: false }],
+  ])("%s: yok run gives %j", (_label, input, expected) => {
+    expect(followUpRun(input)).toEqual(expected);
   });
 });
 

@@ -22,6 +22,7 @@ import {
   isRunLive,
   jsonlEventStore,
   type ModelSwitch,
+  PolicyAppliedEvent,
 } from "@yok/sdk/internal";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
@@ -61,7 +62,7 @@ export type StopDecision =
   | Readonly<{
       reason: Extract<
         StopReason,
-        "run-finished" | "user-chat" | "max-blocks-reached" | "background-task"
+        "run-finished" | "user-chat" | "max-blocks-reached" | "background-task" | "unanswered-stop"
       >;
       blockStreak: number;
     }>
@@ -124,12 +125,14 @@ const priorBlocks = (state: State, progressSinceCheck: boolean): number =>
   state.stopHook === undefined || progressSinceCheck ? 0 : state.stopHook.blockStreak;
 
 // Progress is any event after the last check except the hooks' own logs, which only observe the
-// run, and agent.stuck, which this hook records as it gives up.
+// run, agent.stuck, which this hook records as it gives up, and a question the guard refused.
+const isProgress = (event: Event): boolean =>
+  !event.type.startsWith("hooks.") &&
+  event.type !== "agent.stuck" &&
+  PolicyAppliedEvent.safeParse(event).data?.payload.effect !== "question-refused";
+
 const progressSince = (events: readonly Event[], seq: number | undefined): boolean =>
-  seq !== undefined &&
-  events.some(
-    (event) => event.seq > seq && !event.type.startsWith("hooks.") && event.type !== "agent.stuck",
-  );
+  seq !== undefined && events.some((event) => event.seq > seq && isProgress(event));
 
 const nextMessage = (run: RunRef): string =>
   `Yok run ${run.name} is not finished. Run \`${orchestrateLine({ verb: "next", run })}\` ` +
@@ -194,10 +197,10 @@ export const decideStop = ({
   }
   // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck.
   if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
-  if (position.kind === "between-nodes" && touchedRun === false)
+  const { interaction } = readPolicies(state.policies);
+  if (interaction && position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
-  const { interaction } = readPolicies(state.policies);
   if (!interaction && position.kind === "open-node" && position.leaf.nodeType === "agent") {
     const { leaf } = position;
     const { nodeRunId } = leaf;
@@ -211,6 +214,10 @@ export const decideStop = ({
     }
     const message = unansweredStopMessage(run, leaf);
     return { reason: "node-not-done", blockStreak: prior + 1, message, nodeRunId };
+  }
+  // With no node open to fail, the run fails instead, since no one will tell the agent to go on.
+  if (!interaction && position.kind === "between-nodes" && prior >= maxBlocks) {
+    return { reason: "unanswered-stop", blockStreak: prior };
   }
   if (prior >= maxBlocks) return { reason: "max-blocks-reached", blockStreak: prior };
   if (position.kind === "between-nodes") {
@@ -333,6 +340,12 @@ const failUnansweredNode = async (
   await recordRunEvent(run, { type: "policy.applied", payload }, deps);
 };
 
+const failUnansweredRun = async (run: RunRef, deps: HookDeps): Promise<void> => {
+  const payload = { policy: "interaction", effect: "unanswered-stop" };
+  await recordRunEvent(run, { type: "policy.applied", payload }, deps);
+  await recordRunEvent(run, { type: "workflow.failed", payload: {} }, deps);
+};
+
 // Decides whether the agent may end its turn and logs the call as hooks.stop.called. It never
 // throws: a hook that fails must let the turn end, or it could trap the session.
 export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
@@ -373,7 +386,9 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       await startModelStep(run, input.sessionId, decision.seq);
     }
     if (decision.reason === "unanswered-stop") {
-      await failUnansweredNode(run, decision.nodeRunId, input.lastMessage, deps);
+      await ("nodeRunId" in decision
+        ? failUnansweredNode(run, decision.nodeRunId, input.lastMessage, deps)
+        : failUnansweredRun(run, deps));
     }
     if (decision.reason === "max-blocks-reached") {
       const payload = { agent: input.agent, sessionId: input.sessionId };

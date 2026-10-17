@@ -8,7 +8,7 @@ Nobody types it. `yok run WORKFLOW --prompt "…"` starts a Claude Code or Codex
 
 ## What it does
 
-- Names the run (`--name`, else derived from the prompt) and runs `yok orchestrate init RUN_NAME`, which creates `.yok/RUN_NAME/`.
+- Names the run (`--name`, else derived from the prompt) and runs `yok orchestrate init RUN_NAME`, which creates `.yok/RUN_NAME/`. A derived name that is taken gets a suffix from the run id.
 - Loops on `yok orchestrate next --run RUN_NAME`, which prints one JSON card. The agent never sees the whole workflow.
 - Acts on the card's `kind`:
   - `exec`: runs the printed command, in the foreground with a 10-minute timeout, or as a background task when the card says so.

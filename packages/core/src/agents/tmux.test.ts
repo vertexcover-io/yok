@@ -114,7 +114,12 @@ describe("tmuxTerminal.sendText logging", () => {
       exec: failingExec,
       log,
     });
-    const provider = claudeProvider({ host, log, newId: () => "s1" });
+    const provider = claudeProvider({
+      host,
+      configPath: join(mkdtempSync(join(tmpdir(), "yok-claude-config-")), ".claude.json"),
+      log,
+      newId: () => "s1",
+    });
 
     await provider.launch({
       cwd: "/repo",

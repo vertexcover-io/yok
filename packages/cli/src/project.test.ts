@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { basename } from "node:path";
-import { folderSlug } from "./project.ts";
+import { folderSlug } from "@yok/server";
 
 test.each([
   ["Refrens_Main", "refrens-main"],

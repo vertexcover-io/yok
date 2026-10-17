@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { chmod, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AgentResult,
   checkBinary,
@@ -161,10 +164,86 @@ const redactRunArgs = (args: readonly string[]): string[] =>
 
 export type ClaudeProviderOptions = Readonly<{
   host: ITerminalHost;
+  // Claude Code's own config file, where it records which folders the person trusts
+  configPath: string;
   log?: ILogger;
   binary?: string;
   newId?: () => string;
 }>;
+
+// YOK_CLAUDE_CONFIG points tests at a temp file, as YOK_CLAUDE_BIN points them at a fake claude.
+export const claudeConfigPath = (env: Readonly<Record<string, string | undefined>>): string =>
+  env.YOK_CLAUDE_CONFIG ?? join(env.CLAUDE_CONFIG_DIR ?? env.HOME ?? homedir(), ".claude.json");
+
+// Only the keys trust needs; every other key Claude keeps in the file is written back as read.
+const ClaudeConfigSchema = z.looseObject({
+  projects: z
+    .record(z.string(), z.looseObject({ hasTrustDialogAccepted: z.boolean().optional() }))
+    .optional(),
+});
+
+const readClaudeConfig = async (
+  configPath: string,
+): Promise<Result<{ config: z.infer<typeof ClaudeConfigSchema>; mode: number }>> => {
+  const text = await readFile(configPath, "utf8").catch((error: NodeJS.ErrnoException) =>
+    error.code === "ENOENT" ? "{}" : error,
+  );
+  if (text instanceof Error) return { ok: false, error: text.message };
+  const json = parseJson(text);
+  if (!json.ok) return json;
+  const parsed = ClaudeConfigSchema.safeParse(json.value);
+  if (!parsed.success) return { ok: false, error: "not a JSON object" };
+  const mode = await stat(configPath).then(
+    (stats) => stats.mode & 0o777,
+    () => 0o600,
+  );
+  return { ok: true, value: { config: parsed.data, mode } };
+};
+
+// Claude Code asks whether to trust a folder the first time it opens it, and an unattended run has
+// nobody to answer. Whoever starts a run already passed the API key or a channel's sign-in, and
+// the run executes the checkout's own commands anyway, so the launch answers yes on their behalf.
+// The write goes through a temp file and a rename, since Claude rewrites this file too.
+const writeTrust = async (configPath: string, folder: string): Promise<Result<void>> => {
+  const read = await readClaudeConfig(configPath);
+  if (!read.ok) return { ok: false, error: `cannot read ${configPath}: ${read.error}` };
+  const { config, mode } = read.value;
+  const project = config.projects?.[folder];
+  if (project?.hasTrustDialogAccepted === true) return { ok: true, value: undefined };
+  const trusted = {
+    ...config,
+    projects: { ...config.projects, [folder]: { ...project, hasTrustDialogAccepted: true } },
+  };
+  const temp = `${configPath}.${process.pid}.${randomUUID()}.tmp`;
+  return writeFile(temp, JSON.stringify(trusted, null, 2), { mode })
+    .then(() => chmod(temp, mode))
+    .then(() => rename(temp, configPath))
+    .then(
+      () => ({ ok: true as const, value: undefined }),
+      (error: Error) => ({
+        ok: false as const,
+        error: `cannot write ${configPath}: ${error.message}`,
+      }),
+    );
+};
+
+// One write at a time per file in this process, each reading what the last one wrote, so launches
+// started together keep every folder's trust.
+const trustWrites = new Map<string, Promise<unknown>>();
+
+const trustFolder = (configPath: string, folder: string): Promise<Result<void>> => {
+  const queued = (trustWrites.get(configPath) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => writeTrust(configPath, folder));
+  trustWrites.set(configPath, queued);
+  return queued;
+};
+
+// The launched claude reads the config its own env names, which a run's env can change.
+const launchConfigPath = (env: LaunchOptions["env"], fallback: string): string =>
+  env?.YOK_CLAUDE_CONFIG !== undefined || env?.CLAUDE_CONFIG_DIR !== undefined
+    ? claudeConfigPath(env)
+    : fallback;
 
 // Turns `claude -p --output-format json` stdout and its exit code into an AgentResult.
 export const interpretOutput = <T>(
@@ -207,6 +286,7 @@ export const interpretOutput = <T>(
 
 export const claudeProvider = ({
   host,
+  configPath,
   log: parentLog = noopLogger,
   binary = "claude",
   newId = randomUUID,
@@ -218,6 +298,14 @@ export const claudeProvider = ({
   ): Promise<Result<{ terminalName: string; terminal: ITerminal }>> => {
     const terminalName = newId();
     const sessionLog = log.child({ terminalName });
+    const trusted = await trustFolder(launchConfigPath(options.env, configPath), options.cwd);
+    if (!trusted.ok) {
+      sessionLog.error(
+        { err: trusted.error },
+        "claude not started: its folder could not be trusted",
+      );
+      return trusted;
+    }
     const settings = {
       cwd: options.cwd,
       model: options.model,

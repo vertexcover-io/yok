@@ -87,6 +87,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "SkillNameSchema",
   "SkipOutputSchema",
   "SlugSchema",
+  "SourceSchema",
   "StateSchema",
   "StopCalledEvent",
   "StopReasonSchema",
