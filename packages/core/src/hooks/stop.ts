@@ -4,6 +4,7 @@ import {
   type HookDeps,
   type HookReply,
   type NodeRun,
+  PreToolUseCalledEvent,
   type RunRef,
   readPolicies,
   readState,
@@ -270,7 +271,18 @@ const readTranscriptFacts = async (
   };
 };
 
-// Whether the transcript holds more tool calls than it did at the last check.
+// A transcript lists a tool call before the guards decide on it, so a call yok denied is not
+// work. A refused question is no tool call in the transcript, so its denial is not taken off.
+const isDeniedCall = (event: Event): boolean => {
+  const called = PreToolUseCalledEvent.safeParse(event);
+  return (
+    called.success &&
+    called.data.payload.decision === "deny" &&
+    called.data.payload.handler !== "question-guard"
+  );
+};
+
+// Whether the transcript holds more tool calls than it did at the last check, less those denied.
 const workedSince = (
   events: readonly Event[],
   seq: number | undefined,
@@ -278,7 +290,9 @@ const workedSince = (
 ): boolean => {
   const last = StopCalledEvent.safeParse(events.find((event) => event.seq === seq));
   const before = last.success ? last.data.payload.toolCalls : undefined;
-  return toolCalls !== undefined && before !== undefined && toolCalls > before;
+  if (toolCalls === undefined || before === undefined || seq === undefined) return false;
+  const denied = events.filter((event) => event.seq > seq && isDeniedCall(event)).length;
+  return toolCalls - before > denied;
 };
 
 // An agent without context steps: the node ends as not applied and the session goes on to `next`.
