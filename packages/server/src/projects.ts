@@ -107,6 +107,19 @@ export const pickProject = async (
   return { ok: true, value: { name: picked, path: project.path } };
 };
 
+// Under the lock a removal takes, so the removal either sees the pending run or has already
+// happened, and then nothing is saved.
+export const addRunIfProjectKept = (
+  home: string,
+  project: Readonly<{ name: string; path: string }>,
+  add: () => Promise<void>,
+): Promise<boolean> =>
+  withLock(projectsLockPath(home), async () => {
+    if ((await readProjects(home))[project.name]?.path !== project.path) return false;
+    await add();
+    return true;
+  });
+
 // A project removed while its run was starting is left removed.
 export const saveVerdict = (home: string, name: string, line: string): Promise<void> =>
   withLock(projectsLockPath(home), async () => {
@@ -216,9 +229,13 @@ const addProject = async (
   return c.json({ project: viewProject(name, project), findings: report }, 201);
 };
 
-// A run with no state yet is still starting. A finished run's session may stay open, holding
-// nothing.
+// Long past any launch: a run still without a terminal by then was left by a server that died.
+const STARTING_MS = 10 * 60_000;
+
+// A run with no terminal yet is still launching, so it holds its checkout too. A run with no
+// state yet is still starting. A finished run's session may stay open, holding nothing.
 const holdsCheckout = async (run: WorkflowRun, host: ITerminalHost): Promise<boolean> => {
+  if (run.terminal === null) return Date.now() - Date.parse(run.createdAt) < STARTING_MS;
   const state = run.name === null ? null : await readStateOrNull(runDirOf(run.cwd, run.name));
   if (state !== null && !isRunLive(state.status)) return false;
   return isAgentAlive(run, host);

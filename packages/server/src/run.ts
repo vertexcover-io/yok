@@ -31,7 +31,7 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
-import { pickProject, saveVerdict } from "./projects.ts";
+import { addRunIfProjectKept, pickProject, saveVerdict } from "./projects.ts";
 import { type StartRunBody, StartRunBodySchema } from "./protocol.ts";
 // A type import only: server.ts imports app.ts, which imports this file.
 import type { CheckCheckout } from "./server.ts";
@@ -124,7 +124,13 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     policies,
     createdAt: new Date().toISOString(),
   };
-  await deps.registry.addRun(pending);
+  const added = await addRunIfProjectKept(deps.home, project.value, () =>
+    deps.registry.addRun(pending),
+  );
+  if (!added) {
+    runLog.info({ project: project.value.name }, "run not started: its project was removed");
+    return errorResponse(c, 409, "conflict", `project ${project.value.name} was removed`);
+  }
 
   // A run whose agent never started is removed, so a failed start records nothing.
   const nameArg = name === undefined ? "" : ` --name ${name}`;

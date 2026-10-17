@@ -1081,6 +1081,56 @@ describe("/projects", () => {
     expect(await listProjects(gone)).toEqual([]);
   });
 
+  test.each([
+    ["started a moment ago holds it", new Date().toISOString(), 409],
+    ["left starting for over ten minutes does not", "2026-01-01T00:00:00.000Z", 200],
+  ])("SC207: a run still starting with no terminal yet, %s", async (_case, createdAt, status) => {
+    const root = gitRepo();
+    const { deps } = await projectDeps();
+    const app = createApp(deps);
+    expect((await post(app, { name: "demo", path: root })).status).toBe(201);
+    await deps.registry.addRun({
+      id: "r-starting",
+      workflow: "ok",
+      workflowPath: join(root, "ok.yaml"),
+      inputs: {},
+      cwd: root,
+      sessions: [],
+      name: null,
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt,
+    });
+
+    const res = await app.request("/projects/demo", { method: "DELETE", headers: authed() });
+
+    expect(res.status).toBe(status);
+  });
+
+  test("SC207: a project removed while its run is being checked stops the start, recording and launching nothing", async () => {
+    let launched = false;
+    const base = await buildDeps(() => {
+      launched = true;
+      return launchesOk();
+    });
+    const deps = {
+      ...base,
+      checkCheckout: (async (input) => {
+        await createApp(base).request("/projects/demo", { method: "DELETE", headers: authed() });
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    tempWorkspace(deps.home);
+
+    const res = await postRun(createApp(deps));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toContain("demo");
+    expect(launched).toBe(false);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
   test("SC207: a run that has finished does not hold its project, though its session is still open", async () => {
     const root = gitRepo();
     const { deps } = await projectDeps();
