@@ -252,6 +252,8 @@ export const readCodexTranscript = async (
 export const codexAdapter: AgentAdapter = {
   // Codex's pane is not driven for /compact or a restart yet.
   contextSteps: false,
+  // Codex starts subagents only on its own, from its agent definitions.
+  subagents: false,
   stop: codexStop,
   preToolUse: codexPreToolUse,
   sessionStart: codexSessionStart,

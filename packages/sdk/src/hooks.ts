@@ -15,6 +15,8 @@ export type HookDeps = Readonly<{
 export type AgentAdapter = Readonly<{
   // whether yok can restart or compact the agent in its pane: context nodes, model switches
   contextSteps: boolean;
+  // whether the agent can start a subagent on demand and message it while it runs: subagent nodes
+  subagents: boolean;
   stop?: (stdin: string, deps: HookDeps, handler: StopHandler) => Promise<string>;
   sessionStart?: (stdin: string, deps: HookDeps, handler: SessionStartHandler) => Promise<string>;
   preToolUse?: (stdin: string, deps: HookDeps, handler: PreToolUseHandler) => Promise<string>;

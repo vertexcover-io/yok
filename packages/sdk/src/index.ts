@@ -262,6 +262,20 @@ export {
 export { type EventHandler, emitRunEvent, readState, toRepoId } from "./state.ts";
 export type { Subscriber, SubscriberInput } from "./subscribers.ts";
 export {
+  type Answer,
+  answers,
+  bodyOf,
+  type Call,
+  findTranscript,
+  humanMessages,
+  loadRecords,
+  type Message,
+  parseTime,
+  type Rec,
+  readEvents,
+  readRunSessions,
+} from "./transcript.ts";
+export {
   type Finding,
   FindingSchema,
   VerifierErrorReasonSchema,

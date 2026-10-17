@@ -22,6 +22,7 @@ import {
   type WorkflowRun,
 } from "@yok/sdk";
 import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { agentAdapters } from "../agents/index.ts";
 import { finishStep, initializeRun, interruptOpenSteps, nextStep } from "../runs.ts";
 import { VerifierSchema } from "../stage.ts";
 import { compileWorkflow } from "./compile.ts";
@@ -420,7 +421,7 @@ const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoSta
 };
 
 const nextNodeRunId = async (run: RunRef): Promise<string> => {
-  const reply = await nextStep(run, new Set());
+  const reply = await nextStep(run, agentAdapters);
   if (!reply.ok || !("nodeRunId" in reply.value)) throw new Error(JSON.stringify(reply));
   return reply.value.nodeRunId;
 };

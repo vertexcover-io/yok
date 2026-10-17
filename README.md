@@ -30,7 +30,7 @@ AI coding tools are fast and careless: no design, no tests, no proof the change 
 Ticket → Workspace → Baseline → Design → Plan → Implement → Review → QA → Commit → PR → Retro
 ```
 
-You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships two, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
+You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships three, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
 
 Yok is a private repository. Installing it needs a GitHub account that can see `vertexcover-io/yok`.
 
@@ -180,7 +180,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships two, `task` and `quick`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships three, `task`, `quick` and `regression`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
 
 ### task: the full pipeline
 
@@ -212,6 +212,16 @@ yok run quick --prompt "Rename the Customer.fullName getter to displayName"
 ```
 
 Pick `quick` when you already know what the change is and could describe it to a colleague in two sentences: a rename, a copy change, a small bug with an obvious fix. Pick `task` when the change needs decisions, touches more than one part of the system, or must be verified in the running app.
+
+### regression: tests for a flow that already works
+
+[workflows/regression.yaml](./workflows/regression.yaml) runs `ticket-fetcher → create-workspace → find-factors → write-scenarios → baseline → write-regression-tests → review loop → git-commit → visual-pr → retro`. `find-factors` lists what changes the flow's behavior as a checklist, and in the run's page you untick the factors to leave out; `write-scenarios` writes scenarios for the rest as a checklist, and you untick the ones to leave out and approve; `write-regression-tests` writes and pushes the tests. The review loop runs `review-regression-tests` against the scenarios and the testing standard; while it finds problems, `write-regression-tests` fixes them and it reviews again, at most twice.
+
+```bash
+yok run regression --prompt "Signing up with an email invite"
+```
+
+Pick `regression` when the code already does the right thing and you want tests that keep it that way. It changes no product code.
 
 ### Write your own
 
@@ -251,7 +261,7 @@ yok run ./my-flow.yaml --prompt "…"
 
 Every node has an `id`, an `input`, and optionally `dependsOn`, `when` (an expression that skips the node when false), `allowFailure` and `always`. The node types:
 
-- `agent`: the agent runs a `stage` (a shipped or project skill) or a free `prompt`. `tier` picks the model.
+- `agent`: the agent runs a `stage` (a shipped or project skill) or a free `prompt`. `tier` picks the model. `mode: subagent` hands it to a subagent on that tier, so its work stays out of the session's context. A stage that starts its own subagents (implement, code-review, design, planning) runs inline.
 - `exec`: runs a `script` with `runtime: sh` or `bun`, or calls `functionName` from a TypeScript `module`. `mode: background` lets it run alongside later nodes.
 - `loop`: repeats its `nodes` `until` an expression is true, at most `maxIterations` times.
 - `switch`: evaluates an `expression` and runs the `nodes` of the matching case, else `default`.
@@ -306,6 +316,7 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [visual-pr](./skills/visual-pr/README.md) | Creates or updates a PR with a visual change outline and validation evidence |
 | [resolve-merge-conflict](./skills/resolve-merge-conflict/README.md) | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent |
 | [test-audit](./skills/test-audit/README.md) | Finds broken, flaky, slow and redundant tests, then proposes and applies a cleanup plan |
+| [learn](./skills/learn/README.md) | Turns a correction into a short learning in `docs/learnings/` after you pick between fixes, and logs every proposal |
 | [adr](./skills/adr/README.md) | Records one architecture decision in `docs/adr/` and adds it to the index |
 | [retro](./skills/retro/README.md) | Audits a finished run's transcripts and writes a ranked report of yok defects |
 | [ticket-fetcher](./skills/ticket-fetcher/README.md) | Fetches a Linear or Asana ticket into a bundle the other stages read |

@@ -32,7 +32,7 @@ One step in the graph. Seven types. The schemas are in [workflow/types.ts](../..
 
 | Type | What it does | Its own fields |
 |---|---|---|
-| `agent` | the agent does it: a `stage`, or a plain `prompt` | `stage`, `prompt`, `variables`, `output`, `tier` |
+| `agent` | the agent does it: a `stage`, or a plain `prompt` | `stage`, `prompt`, `variables`, `output`, `tier`; `mode: inline\|subagent` |
 | `exec` | runs a script or a function, no agent | `runtime: sh\|bun` + `script`, or `module` + `functionName`; `mode: inline\|background`; `output` |
 | `wait` | pauses the run | `durationMs` |
 | `context` | gives the agent a fresh context | `action: new\|compact`, `prompt` for compact |
@@ -93,7 +93,7 @@ variables:
 - `verifiers` run inside `done`. Each is a function (`module` + `functionName`) or a script (`runtime` + `script`) and must return `{ pass, findings }`.
 - `variables` are named values the workflow's node can set, handed to the skill with the card.
 - `tier` names the model class the stage wants.
-- `mode`, `scopes`, and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
+- `mode` is the default for a node that sets none: `subagent` hands the whole stage to a subagent on its tier. A stage that starts its own subagents (implement, code-review, design, planning) stays `inline`, since a subagent cannot start subagents. `scopes` and `protocols` are parsed and checked but nothing reads them yet. See "Not built yet" at the end of this page.
 
 ## Artifact
 
@@ -214,11 +214,11 @@ Where a run writes code. `layout: mono` means one repo: a worktree at `.worktree
 
 `registry.json` in the yok home lists every run on the machine: id, workflow, inputs, cwd, name, tmux session, Claude session ids, tiers. The server adds a run; init names it; the SessionStart hook links sessions. It is read and written under a file lock by both the server and orchestrate.
 
-The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, socket, and registry, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
+The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, API key, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
 
 ## Doctor
 
-`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
+`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. The server runs the same checks when a run starts, and refuses the run on any failure; it runs them too when a project is added, and `yok project add` reports a failing row without refusing the project. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
 
 ## Not built yet
 
@@ -227,7 +227,7 @@ These show up in schemas or in conversation but have no behaviour behind them to
 | Thing | Where you see it | What it will mean |
 |---|---|---|
 | parallel nodes | two nodes with no `dependsOn` between them | they still run one at a time; `next` replies `waiting` while any step is open |
-| `mode: subagent` | a stage's frontmatter | the stage would run in a sub-agent so another could run beside it; a detached mode as a separate headless session is also planned |
+| detached stages | conversation | a stage running as its own headless session |
 | `scopes` | a stage's frontmatter | a named level of rigour for a run, such as experiment or enterprise, that stages would read to decide how much to do |
 | `protocols` | a stage's frontmatter | shared rules, such as a writing style, loaded into a stage without the skill naming them |
 | `pi`, `opencode` | the agent type enum | more agents; only Claude and Codex have providers |

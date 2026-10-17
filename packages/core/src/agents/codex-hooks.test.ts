@@ -17,6 +17,7 @@ import { continueWorkflow } from "../hooks/stop.ts";
 import { initializeRun, nextStep } from "../runs.ts";
 import { claudeAdapter } from "./claude-hooks.ts";
 import { codexAdapter, readCodexTranscript } from "./codex-hooks.ts";
+import { agentAdapters } from "./index.ts";
 
 const NO_RUNS: RegistryReader = {
   findRun: async () => undefined,
@@ -73,7 +74,7 @@ const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" 
   });
   if (!init.ok) throw new Error(init.error);
   const run = { id: "r-1", cwd, name: "feat-x" };
-  const opened = await nextStep(run, NO_SWITCHES);
+  const opened = await nextStep(run, agentAdapters);
   if (!opened.ok) throw new Error(opened.error);
   const runDir = runDirOf(cwd, "feat-x");
   const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
@@ -157,7 +158,7 @@ describe("an agent that keeps stopping with its node open", () => {
         { policy: "interaction", effect: "unanswered-stop", nodeId: "ask" },
       ]);
       expect(stored.map((event) => event.type)).not.toContain("agent.stuck");
-      expect(await nextStep(run, NO_SWITCHES)).toEqual({
+      expect(await nextStep(run, agentAdapters)).toEqual({
         ok: true,
         value: { kind: "finished", status: "failed" },
       });

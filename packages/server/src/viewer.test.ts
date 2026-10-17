@@ -243,6 +243,28 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<code>src/gone.ts</code>");
     expect(html).toContain("<code>const a</code>");
   });
+
+  test("a list item that starts with [x] or [ ] becomes a checkbox in that state, and other items stay text", () => {
+    const html = renderMarkdown(
+      "- [x] **F1 Coupon**: changes the total\n- [ ] F2 Quantity\n- [X] F3 Upper\n- plain [x] item\n",
+    );
+    expect(html).toContain(
+      '<li data-lines="1-1" class="task"><input type="checkbox" class="task-box" disabled checked><strong>F1 Coupon</strong>: changes the total</li>',
+    );
+    expect(html).toContain(
+      '<li data-lines="2-2" class="task"><input type="checkbox" class="task-box" disabled>F2 Quantity</li>',
+    );
+    expect(html).toContain('class="task-box" disabled checked>F3 Upper</li>');
+    expect(html).toContain('<li data-lines="4-4">plain [x] item</li>');
+    expect(html).not.toContain("[ ]");
+  });
+
+  test("a checkbox item with more paragraphs below keeps them, with the box in its first one", () => {
+    const html = renderMarkdown("- [x] **R1 Title**\n\n  Given a cart, Then 25.\n\n- [ ] R2\n");
+    expect(html).toContain(
+      '<li data-lines="1-4" class="task">\n<p data-lines="1-1"><input type="checkbox" class="task-box" disabled checked><strong>R1 Title</strong></p>\n<p data-lines="3-3">Given a cart, Then 25.</p>',
+    );
+  });
 });
 
 describe("listArtifacts", () => {

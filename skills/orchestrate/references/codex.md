@@ -21,3 +21,4 @@ marked unverified come from Codex's documentation and were not run against a liv
   the same turn step as a command you run anyway.
 - **Context steps:** not supported. A `context` node is completed as not applied for you.
 - **Model steps:** never sent. A Codex run keeps the model it launched with for every stage.
+- **Subagent steps:** never sent. Every `stage` and `agent` reply says `mode: inline`.

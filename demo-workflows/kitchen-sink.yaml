@@ -27,6 +27,7 @@ nodes:
   - id: intro
     type: agent
     stage: demo-workflows/stages/demo-brief
+    mode: subagent
     dependsOn: [setup]
     input:
       topic: "{{ inputs.prompt }}"

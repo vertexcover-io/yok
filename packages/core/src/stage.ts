@@ -72,12 +72,16 @@ const VariableSchema = z.strictObject({
   default: z.string().optional(),
 });
 
+// How the session runs an agent node: itself, or by handing it whole to a subagent.
+export const AgentModeSchema = z.enum(["inline", "subagent"]);
+export type AgentMode = z.infer<typeof AgentModeSchema>;
+
 export const StageSchema = z.strictObject({
   name: SlugSchema,
   description: NonEmptyStringSchema,
   // what the one-line summary at done must cover; without it, the orchestrate skill's rule applies
   summary: NonEmptyStringSchema.optional(),
-  mode: z.enum(["inline", "subagent"]),
+  mode: AgentModeSchema,
   tags: UniqueSlugsSchema.optional(),
   "allowed-tools": z.array(NonEmptyStringSchema),
   tier: NameSchema.optional(),
@@ -162,9 +166,12 @@ export const extensionPath = (config: Config, skill: string): string | undefined
 
 // A bare name is one of yok's own workflows; a name with a "/" or a .yaml/.yml extension
 // is a file in the project at `cwd`.
+export const isWorkflowFile = (workflow: string): boolean =>
+  workflow.includes("/") || /\.ya?ml$/.test(workflow);
+
 // A project file never needs the plugin, so the shipped folder is looked up only for a bare name.
 export const findWorkflowPath = (workflow: string, cwd: string, workflowsDir?: string): string => {
-  if (workflow.includes("/") || /\.ya?ml$/.test(workflow)) return resolve(cwd, workflow);
+  if (isWorkflowFile(workflow)) return resolve(cwd, workflow);
   return join(workflowsDir ?? yokWorkflowsDir(), `${workflow}.yaml`);
 };
 

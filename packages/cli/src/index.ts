@@ -8,6 +8,7 @@ import { fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { pluginCommand } from "./plugin.ts";
+import { projectCommand } from "./project.ts";
 import { runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
@@ -34,6 +35,7 @@ await new Command()
   .addCommand(doctorCommand())
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())
+  .addCommand(projectCommand())
   .addCommand(runCommand())
   .addCommand(serverCommand())
   .addCommand(typesCommand())

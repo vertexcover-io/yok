@@ -2,15 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Rec } from "@yok/sdk";
 import {
   diedOnLimit,
   failures,
   familyOf,
   formatTime,
   gaps,
-  humanMessages,
   maskSecrets,
-  type Rec,
   readAgent,
   readsLikeError,
 } from "./transcript.ts";
@@ -25,44 +24,6 @@ const user = (ts: string, content: unknown, extra: Record<string, unknown> = {})
   timestamp: ts,
   message: { role: "user", content },
   ...extra,
-});
-
-const queued = (ts: string, prompt: string) => ({
-  type: "attachment",
-  timestamp: ts,
-  attachment: { type: "queued_command", origin: { kind: "human" }, prompt },
-});
-
-const enqueue = (ts: string, content: string) => ({
-  type: "queue-operation",
-  timestamp: ts,
-  operation: "enqueue",
-  content,
-});
-
-describe("humanMessages", () => {
-  test("SC8: the user text, the queued attachment and a typed slash command are the messages in time order, a text found in both places is kept once as QUEUED, and notifications, sub-agent hand-backs and meta records are not messages", () => {
-    const slashCommand =
-      "<command-message>retro</command-message>\n<command-name>/retro</command-name>\n<command-args>--run demo</command-args>";
-    const rows = humanMessages(
-      recs([
-        user(at(1), "fix the header"),
-        enqueue(at(0), "fix the header"),
-        queued(at(3), "use the blue token"),
-        enqueue(at(2), "<task-notification>agent-1 finished</task-notification>"),
-        enqueue(at(5), '<agent-message from="a1">phase 1 COMPLETED</agent-message>'),
-        user(at(6), slashCommand),
-        user(at(4), "injected context", { isMeta: true }),
-      ]),
-    );
-
-    expect(rows.map((m) => [m.kind, m.text])).toEqual([
-      ["QUEUED", "fix the header"],
-      ["QUEUED", "use the blue token"],
-      ["TYPED", slashCommand],
-    ]);
-    expect(rows.map((m) => m.line)).toEqual([2, 3, 6]);
-  });
 });
 
 const bashCall = (ts: string, id: string, command: string) => ({

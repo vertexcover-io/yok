@@ -57,6 +57,7 @@ yok-dev run task --prompt "Describe the change, or paste a Linear ticket URL"
 
 - **`task`** runs the full pipeline: design, plan, implement, review, QA with proof, commit and PR. Use it for features and anything that needs thought first.
 - **`quick`** skips baseline, design, planning and QA. Use it for small, well-understood changes such as a bug fix with a clear cause or a docs edit.
+- **`regression`** writes regression tests for a flow that already works: you pick the factors, approve the scenarios, and get a PR with the tests.
 
 ```bash
 yok-dev run quick --prompt "Fix the typo in the doctor's tmux message"
@@ -100,7 +101,7 @@ packages/core         config, workflows, run events and state, the orchestrate c
 packages/server       the local server and the run viewer
 packages/sdk          shared primitives and the public @yok/sdk
 skills/               one folder per stage or slash command, each with a README.md and SKILL.md
-workflows/            shipped workflows: task.yaml and quick.yaml
+workflows/            shipped workflows: task.yaml, quick.yaml and regression.yaml
 demo-workflows/       small workflows that exercise each node type
 scripts/              repo scripts: the check summary, SDK types, release versioning and smoke tests
 references/           Codex config snippet and tool-name mapping

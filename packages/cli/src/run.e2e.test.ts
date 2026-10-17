@@ -8,12 +8,14 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
 import { VERSION } from "@yok/sdk/internal";
+import { readApiKey, readPort } from "@yok/server";
 import { restartServer, yokClient } from "./client.ts";
 
 const TIMEOUT_MS = 40_000;
@@ -122,8 +124,11 @@ const makeEnv = (owner: Array<() => void> = cleanups): TestEnv => {
     home,
     socket,
     fakeOut,
+    // A developer's own remote server must not receive the suite's projects and runs.
     env: {
       ...process.env,
+      YOK_SERVER_URL: undefined,
+      YOK_API_KEY: undefined,
       YOK_HOME: home,
       YOK_TMUX_SOCKET: socket,
       YOK_CLAUDE_BIN: FAKE_AGENT,
@@ -341,7 +346,7 @@ describe("yok run", () => {
   );
 
   test(
-    "a run the doctor blocks prints why each failing check failed",
+    "SC308: a run in a checkout whose config is invalid is refused with the config's error and adds no project",
     () => {
       const repo = makeRepo();
       const { env, fakeOut } = makeEnv();
@@ -353,10 +358,64 @@ describe("yok run", () => {
       const result = yok(repo, env, "run", "ok.yaml", "--prompt", "hi", "--no-open");
 
       expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("BLOCKED orchestrate-config");
-      expect(result.stderr).toContain("orchestrate-config: ");
       expect(result.stderr).toContain('Unrecognized key: "tiers"');
       expect(readLines(fakeOut).some(isLaunch)).toBe(false);
+      const listed = JSON.parse(yok(repo, env, "project", "list", "--json").stdout);
+      expect(listed.projects).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC306: yok run in an unregistered checkout adds it under its folder's name and starts the run; a second run adds nothing",
+    () => {
+      const repo = makeRepo();
+      const { env } = makeEnv();
+      const start = () =>
+        yok(repo, env, "run", "ok.yaml", "--prompt", "x", "--no-attach", "--no-open");
+
+      const first = start();
+      const second = start();
+
+      expect(first.code).toBe(0);
+      expect(first.stdout.split("\n")[0]).toMatch(/^r-[0-9a-f]+$/);
+      expect(second.code).toBe(0);
+      const listed = JSON.parse(yok(repo, env, "project", "list", "--json").stdout);
+      expect(listed.projects).toEqual([
+        expect.objectContaining({ name: basename(repo).toLowerCase(), path: repo }),
+      ]);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC307: a folder name another checkout already holds is refused with the way out, and no run starts",
+    () => {
+      const inFolder = (): string => {
+        const parent = realpathSync(mkdtempSync(join(tmpdir(), "yok-run-e2e-clash-")));
+        const dir = join(parent, "repo");
+        mkdirSync(dir);
+        execFileSync("git", ["init", "-q"], { cwd: dir });
+        writeFileSync(join(dir, "ok.yaml"), OK_WORKFLOW);
+        return dir;
+      };
+      const [held, clashing] = [inFolder(), inFolder()];
+      const { env, home, fakeOut } = makeEnv();
+      expect(yok(held, env, "project", "add").stdout).toContain("added repo");
+
+      const run = yok(clashing, env, "run", "ok.yaml", "--prompt", "x", "--no-open");
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("conflict: a project named repo already exists");
+      expect(run.stderr).toContain(
+        "add this checkout under another name with yok project add NAME, then pass --project NAME",
+      );
+      expect(readLines(fakeOut).some(isLaunch)).toBe(false);
+      expect(existsSync(join(home, "registry.json"))).toBe(false);
+
+      stopServer(held, env);
     },
     TIMEOUT_MS,
   );
@@ -505,7 +564,7 @@ describe("yok run", () => {
   );
 
   test(
-    "a workflow's env check for an unset key blocks the run before any agent launches",
+    "SC309: a workflow's env check for an unset key blocks the run before any agent launches",
     () => {
       const repo = makeRepo();
       const { env, home, fakeOut } = makeEnv();
@@ -621,22 +680,6 @@ describe("yok run", () => {
     TIMEOUT_MS,
   );
 
-  test(
-    "SC509: --interaction maybe fails before any run starts, naming the flag, its text and the allowed values",
-    () => {
-      const repo = makeRepo();
-      const { env, home, fakeOut } = makeEnv();
-
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x", "--interaction", "maybe");
-
-      expect(run.code).not.toBe(0);
-      expect(run.stderr).toContain("--interaction maybe: must be true or false");
-      expect(readLines(fakeOut)).toEqual([]);
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
-    },
-    TIMEOUT_MS,
-  );
-
   test.each([
     ["--interaction false", ["ok.yaml", "--interaction", "false"], "cli"],
     ["a workflow file with interaction: false", ["unattended.yaml"], "workflow"],
@@ -682,43 +725,53 @@ describe("yok run", () => {
 
       expect(run.code).toBe(1);
       expect(run.stderr).toContain(file);
-      expect(readLines(fakeOut)).toEqual([]);
+      expect(readLines(fakeOut).some(isLaunch)).toBe(false);
       expect(existsSync(join(home, "registry.json"))).toBe(false);
     },
     TIMEOUT_MS,
   );
 
   test(
-    "SC13: a cyclic workflow fails to compile and records no run, showing its stack only when LOG_LEVEL=debug",
+    "SC13: a cyclic workflow fails to compile on the server and records no run",
     () => {
       const repo = makeRepo();
       const { env, home } = makeEnv();
 
-      const plain = yok(repo, { ...env, LOG_LEVEL: "" }, "run", "bad.yaml", "--prompt", "x");
-      expect(plain.code).toBe(1);
-      expect(plain.stderr).toContain("cycle: dependency cycle among");
-      expect(plain.stderr).not.toContain("    at ");
+      const run = yok(repo, { ...env, LOG_LEVEL: "" }, "run", "bad.yaml", "--prompt", "x");
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("cycle: dependency cycle among");
+      expect(run.stderr).not.toContain("    at ");
       expect(existsSync(join(home, "registry.json"))).toBe(false);
-
-      const debug = yok(repo, { ...env, LOG_LEVEL: "debug" }, "run", "bad.yaml", "--prompt", "x");
-      expect(debug.stderr).toContain("    at ");
-      expect(debug.stderr).toContain("compile.ts");
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC14: a stale socket file with no server behind it still lets run succeed",
-    () => {
-      const repo = makeRepo();
-      const { env, home } = makeEnv();
-      mkdirSync(home, { recursive: true });
-      writeFileSync(join(home, "yok.sock"), "");
-
-      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x");
-      expect(run.code).toBe(0);
 
       stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC105: the first command in an empty home starts a server it can use, a request without the key is 401, and stop stops it",
+    async () => {
+      const repo = makeRepo();
+      const { env, home, fakeOut } = makeEnv();
+      const unused = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+      const stalePort = unused.port;
+      await unused.stop(true);
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "server.port"), String(stalePort));
+
+      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x", "--no-attach", "--no-open");
+      expect(run.code).toBe(0);
+      waitFor(() => readLines(fakeOut).some(isLaunch));
+      expect(readApiKey(home)).toMatch(/^[\w-]{40,}$/);
+      const port = readPort(home);
+      const pid = Number(readFileSync(join(home, "server.pid"), "utf8"));
+
+      const anonymous = await fetch(`http://127.0.0.1:${port}/runs/view`);
+      expect(anonymous.status).toBe(401);
+
+      expect(yok(repo, env, "server", "stop").code).toBe(0);
+      expect(existsSync(join(home, "server.pid"))).toBe(false);
+      expect(() => process.kill(pid, 0)).toThrow();
     },
     TIMEOUT_MS,
   );
@@ -785,15 +838,16 @@ describe("yok run", () => {
         if (self === undefined) delete process.env.YOK_SELF;
         else process.env.YOK_SELF = self;
       });
-      const client = yokClient(home);
+      // A client is bound to the port the server had when it was made.
+      const health = () => yokClient(home).health();
 
       await restartServer(home);
-      expect((await client.health()).ok).toBe(false);
+      expect((await health()).ok).toBe(false);
 
       expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
-      const before = await client.health();
+      const before = await health();
       await restartServer(home);
-      const after = await client.health();
+      const after = await health();
 
       expect(before.ok && after.ok).toBe(true);
       expect(after.ok && after.value.pid).not.toBe(before.ok && before.value.pid);
@@ -805,7 +859,7 @@ describe("yok run", () => {
   );
 
   test(
-    "SC16: server stop removes the socket and pid file but the run's tmux session stays alive",
+    "SC16: server stop removes the pid file but the run's tmux session stays alive",
     () => {
       const repo = makeRepo();
       const { env, home, socket } = makeEnv();
@@ -815,7 +869,6 @@ describe("yok run", () => {
 
       const stop = yok(repo, env, "server", "stop");
       expect(stop.code).toBe(0);
-      expect(existsSync(join(home, "yok.sock"))).toBe(false);
       expect(existsSync(join(home, "server.pid"))).toBe(false);
 
       const sessions = spawnSync("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], {
@@ -842,7 +895,7 @@ describe("yok run", () => {
   );
 
   test(
-    "SC72: a dev server in HOME/.yok-dev and a release-home server in YOK_HOME answer on their own sockets, list only their own run, and shim it under their own home",
+    "SC72, SC108: a dev server in HOME/.yok-dev and a release-home server in YOK_HOME answer on their own ports with their own keys, list only their own run, and shim it under their own home",
     async () => {
       const repo = makeRepo();
       const base = makeEnv();
@@ -868,8 +921,10 @@ describe("yok run", () => {
           for (const pid of serverPids(home)) process.kill(pid, "SIGKILL");
         spawnSync("tmux", ["-L", `${base.socket}-release`, "kill-server"]);
       });
-      const ask = (home: string, path: string) =>
-        fetch(`http://localhost${path}`, { unix: join(home, "yok.sock") });
+      const ask = (home: string, path: string, keyHome: string = home) =>
+        fetch(`http://127.0.0.1:${readPort(home)}${path}`, {
+          headers: { authorization: `Bearer ${readApiKey(keyHome)}` },
+        });
 
       const runIds = sides.map(({ env }) => {
         const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x");
@@ -885,14 +940,373 @@ describe("yok run", () => {
         };
         expect(Object.keys(registry.runs)).toEqual([runIds[index] ?? ""]);
         expect((await ask(other, `/runs/${runIds[index]}/view`)).status).toBe(404);
+        expect((await ask(other, "/runs/view", side.home)).status).toBe(401);
         waitFor(() => readLines(side.fakeOut).some(isLaunch));
         const launched = readLines(side.fakeOut).find(isLaunch)?.env as Record<string, string>;
         const [shimDir = ""] = (launched.PATH ?? "").split(":");
         expect(dirname(shimDir)).toBe(join(side.home, "shims"));
       }
-      expect(join(devHome, "yok.sock")).not.toBe(join(releaseHome, "yok.sock"));
+      expect(readPort(devHome)).not.toBe(readPort(releaseHome));
+      expect(readApiKey(devHome)).not.toBe(readApiKey(releaseHome));
 
       for (const { env } of sides) stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("server ownership", () => {
+  // Stands in for another local user's process on the port in server.port, while this home's
+  // server is down. It claims to be a current yok server with the given pid.
+  const squat = (home: string, pid: number) => {
+    const seen: Array<string | null> = [];
+    const squatter = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        seen.push(request.headers.get("authorization"));
+        return Response.json({ pid, version: VERSION, startedAt: Date.now() + 3_600_000 });
+      },
+    });
+    cleanups.push(() => void squatter.stop(true));
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "server.port"), String(squatter.port));
+    return { seen, port: squatter.port };
+  };
+
+  test(
+    "a process on the saved port whose pid is not this home's server.pid gets no key, and this home starts its own server on another port",
+    async () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const { seen, port } = squat(home, 1);
+
+      const listed = await spawnHarness(repo, env, ["project", "list"]);
+
+      expect(listed.code).toBe(0);
+      expect(listed.stdout).toBe("no projects; add one with yok project add\n");
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.filter((authorization) => authorization !== null)).toEqual([]);
+      expect(readPort(home)).not.toBe(port);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "a server from before the HTTP API, still on HOME/yok.sock and named in server.pid, is stopped and its socket removed when a command starts the new one",
+    async () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      mkdirSync(home, { recursive: true });
+      const socket = join(home, "yok.sock");
+      const serve = `Bun.serve({ unix: ${JSON.stringify(socket)}, fetch: () => Response.json({ pid: process.pid, version: "0.0.0", startedAt: 0 }) })`;
+      const old = spawn("bun", ["-e", serve]);
+      cleanups.push(() => old.kill("SIGKILL"));
+      writeFileSync(join(home, "server.pid"), String(old.pid));
+      waitFor(() => existsSync(socket));
+
+      const listed = await spawnHarness(repo, env, ["project", "list"]);
+
+      expect(listed.code).toBe(0);
+      for (let i = 0; i < 50 && old.signalCode === null && old.exitCode === null; i++) {
+        await Bun.sleep(100);
+      }
+      expect(old.signalCode).toBe("SIGTERM");
+      expect(existsSync(socket)).toBe(false);
+      expect(readFileSync(join(home, "server.pid"), "utf8")).not.toBe(String(old.pid));
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "a server the CLI starts gets neither YOK_API_KEY nor YOK_SERVER_URL from the CLI's environment",
+    () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const exported = { ...env, YOK_API_KEY: "remote-key-leak", YOK_SERVER_URL: "" };
+
+      expect(yok(repo, exported, "project", "list").code).toBe(0);
+
+      const pid = readFileSync(join(home, "server.pid"), "utf8");
+      const environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+      expect(environ.filter((entry) => entry.startsWith("YOK_API_KEY="))).toEqual([]);
+      expect(environ.filter((entry) => entry.startsWith("YOK_SERVER_URL="))).toEqual([]);
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "a process on the saved port that replays a server.pid naming a dead process gets no key, and this home starts its own server",
+    async () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const dead = spawnSync("true").pid;
+      const { seen, port } = squat(home, dead);
+      writeFileSync(join(home, "server.pid"), String(dead));
+
+      const listed = await spawnHarness(repo, env, ["project", "list"]);
+
+      expect(listed.code).toBe(0);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.filter((authorization) => authorization !== null)).toEqual([]);
+      expect(readPort(home)).not.toBe(port);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "server stop signals no pid that only a reply on the port vouches for",
+    async () => {
+      const repo = makeRepo();
+      const { env, home } = makeEnv();
+      const bystander = spawn("sleep", ["30"]);
+      cleanups.push(() => bystander.kill("SIGKILL"));
+      squat(home, bystander.pid ?? 0);
+
+      const stop = await spawnHarness(repo, env, ["server", "stop"]);
+
+      expect(stop.code).toBe(1);
+      expect(stop.stderr).toContain("not running");
+      expect(bystander.signalCode).toBeNull();
+      expect(bystander.exitCode).toBeNull();
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("yok project", () => {
+  test(
+    "SC209: yok project add in a checkout, list and remove round-trip from the CLI",
+    () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "yok-project-e2e-")));
+      const checkout = join(parent, "Demo_Repo");
+      mkdirSync(checkout);
+      execFileSync("git", ["init", "-q"], { cwd: checkout });
+      const { env } = makeEnv();
+
+      const added = yok(checkout, env, "project", "add");
+      expect(added.stdout).toContain(`added demo-repo  ${checkout}`);
+      expect(added.stdout).toContain("ENVIRONMENT");
+      expect(added.stdout).toContain("VERDICT");
+
+      const listed = yok(checkout, env, "project", "list");
+      expect(listed.code).toBe(0);
+      expect(listed.stdout).toMatch(new RegExp(`^demo-repo +\\w+ +${checkout} +cli$`, "m"));
+
+      const removed = yok(checkout, env, "project", "remove", "demo-repo");
+      expect(removed.code).toBe(0);
+      expect(removed.stdout).toBe("removed demo-repo\n");
+      expect(yok(checkout, env, "project", "list").stdout).toBe(
+        "no projects; add one with yok project add\n",
+      );
+
+      stopServer(checkout, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "yok project list under umask 002 creates a missing YOK_HOME as 700, not the 775 the start lock left",
+    () => {
+      const { env } = makeEnv();
+      const home = join(env.YOK_HOME ?? "", "fresh");
+      const freshEnv = { ...env, YOK_HOME: home };
+
+      const listed = spawnSync(
+        "sh",
+        ["-c", 'umask 002; exec bun "$@"', "sh", NO_DOTENV, CLI, "project", "list"],
+        {
+          cwd: tmpdir(),
+          env: freshEnv,
+          encoding: "utf8",
+        },
+      );
+
+      expect(listed.status).toBe(0);
+      expect(statSync(home).mode & 0o777).toBe(0o700);
+      stopServer(tmpdir(), freshEnv);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    [["Bad_Name"], '"Bad_Name" is not a valid project name'],
+    [[], 'cannot name the project from "1checkout"; pass a NAME'],
+  ])("yok project add %p in the checkout 1checkout refuses with %p", (args, message) => {
+    const checkout = join(
+      realpathSync(mkdtempSync(join(tmpdir(), "yok-project-e2e-"))),
+      "1checkout",
+    );
+    mkdirSync(checkout);
+    execFileSync("git", ["init", "-q"], { cwd: checkout });
+
+    const added = yok(checkout, makeEnv().env, "project", "add", ...args);
+
+    expect(added.code).toBe(1);
+    expect(added.stderr).toContain(message);
+  });
+});
+
+describe("yok run against a fake server", () => {
+  // A server that records every request body and starts run r-1 with interaction off.
+  const fakeServer = () => {
+    const bodies: unknown[] = [];
+    const run = {
+      id: "r-1",
+      policies: { values: { interaction: false }, sources: { interaction: "cli" } },
+    };
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        if (new URL(req.url).pathname === "/health") return Response.json({ pid: 1 });
+        bodies.push(await req.json());
+        return Response.json({ run, attach: ["tmux"], view: "http://x/runs/r-1" }, { status: 201 });
+      },
+    });
+    cleanups.push(() => server.stop(true));
+    const { env } = makeEnv();
+    const laptop = { ...env, YOK_SERVER_URL: server.url.origin, YOK_API_KEY: "k" };
+    return { bodies, laptop, cwd: makeRepo() };
+  };
+
+  test(
+    "SC605: yok run --interaction false sends the flag as the request's policies, and neither opens nor attaches",
+    async () => {
+      const { bodies, laptop, cwd } = fakeServer();
+      const args = ["run", "task", "--project", "demo", "--prompt", "x", "--interaction", "false"];
+
+      const run = await spawnHarness(cwd, laptop, args);
+
+      expect(run.code).toBe(0);
+      expect(bodies).toEqual([
+        {
+          project: "demo",
+          workflow: "task",
+          inputs: { prompt: "x" },
+          policies: { interaction: false },
+        },
+      ]);
+      expect(run.stdout).toBe("r-1\nview: http://x/runs/r-1\n");
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC509, SC606: yok run --interaction maybe exits 1 naming the flag and the allowed values, and sends no request",
+    async () => {
+      const { bodies, laptop, cwd } = fakeServer();
+      const args = ["run", "task", "--project", "demo", "--prompt", "x", "--interaction", "maybe"];
+
+      const run = await spawnHarness(cwd, laptop, args);
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("--interaction maybe: must be true or false");
+      expect(bodies).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("remote server", () => {
+  // Server A in its own home with project demo, and the env of a CLI in an empty home B that
+  // points at it, as a laptop would.
+  const remoteSetup = () => {
+    const repo = makeRepo();
+    const a = makeEnv();
+    const b = makeEnv();
+    expect(yok(repo, a.env, "project", "add", "demo").code).toBe(0);
+    const url = `http://127.0.0.1:${readPort(a.home)}`;
+    const key = readApiKey(a.home) ?? "";
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "yok-laptop-")));
+    cleanups.push(() => stopServer(repo, a.env));
+    return { repo, a, b, url, key, elsewhere };
+  };
+
+  test(
+    "SC403: a CLI pointed at another home's server lists its projects and starts a run there, without attaching or starting a server of its own",
+    () => {
+      const { a, b, url, key, elsewhere } = remoteSetup();
+      const laptop = { ...b.env, YOK_SERVER_URL: url, YOK_API_KEY: key };
+
+      const listed = yok(elsewhere, laptop, "project", "list");
+      const run = yok(elsewhere, laptop, "run", "ok.yaml", "--project", "demo", "--prompt", "x");
+
+      expect(listed.code).toBe(0);
+      expect(listed.stdout).toMatch(/^demo /m);
+      expect(run.code).toBe(0);
+      const [runId = "", view = "", ...rest] = run.stdout.trim().split("\n");
+      expect(view).toStartWith("view: ");
+      expect(rest).toEqual([]);
+      expect(run.stdout).not.toContain("attach");
+      const registry = JSON.parse(readFileSync(join(a.home, "registry.json"), "utf8"));
+      expect(Object.keys(registry.runs)).toEqual([runId]);
+      for (const file of ["server.pid", "server.port", ".env"]) {
+        expect(existsSync(join(b.home, file))).toBe(false);
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC405: yok server use saves the URL and key, start is refused while it is set, and use local clears it",
+    () => {
+      const { b, url, key, elsewhere } = remoteSetup();
+      const clientEnv = join(b.home, "client.env");
+
+      const used = yok(elsewhere, b.env, "server", "use", url, "--key", key);
+      expect(used.code).toBe(0);
+      expect(used.stdout).toBe(`using ${url}, 1 projects\n`);
+      expect(readFileSync(clientEnv, "utf8")).toBe(`YOK_SERVER_URL=${url}\nYOK_API_KEY=${key}\n`);
+      expect(statSync(clientEnv).mode & 0o777).toBe(0o600);
+
+      expect(yok(elsewhere, b.env, "project", "list").stdout).toMatch(/^demo /m);
+      const start = yok(elsewhere, b.env, "server", "start");
+      expect(start.code).toBe(1);
+      expect(start.stderr).toContain("run yok server use local first");
+
+      expect(yok(elsewhere, b.env, "server", "use", "local").code).toBe(0);
+      expect(existsSync(clientEnv)).toBe(false);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC406: yok server use refuses plain http to another machine and a wrong key, and writes nothing",
+    () => {
+      const { b, url, elsewhere } = remoteSetup();
+
+      const plain = yok(elsewhere, b.env, "server", "use", "http://example.com", "--key", "K");
+      const wrong = yok(elsewhere, b.env, "server", "use", url, "--key", "wrong");
+
+      expect(plain.code).toBe(1);
+      expect(plain.stderr).toContain("must use https:// unless the server is on this machine");
+      expect(wrong.code).toBe(1);
+      expect(wrong.stderr).toContain("unauthorized");
+      expect(existsSync(join(b.home, "client.env"))).toBe(false);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC407: a remote server that does not answer is reported, and nothing local starts",
+    () => {
+      const b = makeEnv();
+      const laptop = { ...b.env, YOK_SERVER_URL: "http://127.0.0.1:1", YOK_API_KEY: "k" };
+      const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "yok-laptop-")));
+
+      const listed = yok(elsewhere, laptop, "project", "list");
+
+      expect(listed.code).toBe(1);
+      expect(listed.stderr).toContain("the yok server at http://127.0.0.1:1 is not answering");
+      expect(existsSync(join(b.home, "server.pid"))).toBe(false);
     },
     TIMEOUT_MS,
   );
