@@ -24,6 +24,16 @@ export const yokHome = (
 
 export const registryPath = (home: string = yokHome()): string => join(home, "registry.json");
 
+// Who asked for a run or a project: metadata the caller supplies, never an authentication fact.
+export const SourceSchema = z.strictObject({
+  channel: NonEmptyStringSchema,
+  id: z.string().optional(),
+  name: z.string().optional(),
+  // where in the channel the request came from, such as a Slack channel id
+  place: z.string().optional(),
+});
+export type Source = z.infer<typeof SourceSchema>;
+
 export const WorkflowRunSchema = z.strictObject({
   id: NonEmptyStringSchema,
   workflow: SlugSchema,
@@ -42,6 +52,8 @@ export const WorkflowRunSchema = z.strictObject({
   tiers: ResolvedTiersSchema.nullable(),
   // the run's merged policies, resolved once by the server at launch; init copies them into state
   policies: SavedPoliciesSchema.optional(),
+  // who asked for the run; absent when the caller named nobody
+  source: SourceSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;

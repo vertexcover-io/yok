@@ -5,7 +5,7 @@ import { parseEnv } from "node:util";
 import { compilePlan, createLogger, resolveLevel, type WorkflowPlan } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { type ApiError, logPath, pidPath, readApiKey, readPort } from "@yok/server";
+import { logPath, pidPath, readApiKey, readPort } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
 const HEALTH_TIMEOUT_MS = 5_000;
@@ -60,7 +60,7 @@ export const compileOrFail = async (
   return null;
 };
 
-export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;
+export { apiErrorText } from "@yok/server";
 
 // Before any server has started there is no port file; port 1 answers nothing, so the client
 // reports the server as unreachable.
@@ -292,6 +292,17 @@ export const openInBrowser = (url: string): void => {
     cliLog().debug({ err: error, command }, "could not open the browser");
   }
 };
+
+// An unattended run has no one to watch or answer it, so yok run neither opens nor attaches.
+export const followUpRun = ({
+  interaction,
+  open,
+  attach,
+  hasTerminal,
+}: Readonly<{ interaction: boolean; open: boolean; attach: boolean; hasTerminal: boolean }>) => ({
+  noOpen: !open || !interaction,
+  attach: attach && hasTerminal && interaction,
+});
 
 export const openForPerson = (url: string, noOpen: boolean): void => {
   const isTTY = process.stdout.isTTY === true;

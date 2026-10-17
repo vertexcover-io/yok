@@ -146,6 +146,10 @@ const initCommand = () =>
     .description("Give the run started by yok run its name and folder, .yok/NAME")
     .argument("<name>", "spec name of the run, used for its folder")
     .option("--run-id <id>", "run id (default: $YOK_RUN_ID)")
+    .option(
+      "--derived",
+      "the name was derived, not given: when taken, add a suffix from the run id",
+    )
     .action(async (name, opts) => {
       const runId = opts.runId ?? process.env.YOK_RUN_ID;
       if (!runId) return fail("no run: pass --run-id or run inside a yok session");
@@ -158,8 +162,13 @@ const initCommand = () =>
           log,
           terminal: currentTerminal(),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
+          derived: opts.derived,
         });
-        printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
+        printResult(
+          result.ok
+            ? { ok: true, value: { runId, name: result.value.name, dir: result.value.dir } }
+            : result,
+        );
       });
     });
 

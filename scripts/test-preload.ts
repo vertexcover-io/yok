@@ -11,6 +11,10 @@ const testTmp = realpathSync(mkdtempSync(join(tmpdir(), "yok-test-")));
 process.env.TMPDIR = testTmp;
 afterAll(() => rmSync(testTmp, { recursive: true, force: true }));
 
+// A launch marks its folder trusted in Claude's config; tests and the servers they start write a
+// temp copy, never the person's ~/.claude.json.
+process.env.YOK_CLAUDE_CONFIG = join(testTmp, ".claude.json");
+
 // Tests run outside the yok CLI, so they set what its entry sets when run from source.
 process.env.YOK_SELF ??= JSON.stringify([
   process.execPath,

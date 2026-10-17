@@ -11,11 +11,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
-import { VERSION } from "@yok/sdk/internal";
-import { readApiKey, readPort } from "@yok/server";
+import { createRegistry, VERSION } from "@yok/sdk/internal";
+import { createYokClient, readApiKey, readPort } from "@yok/server";
+import { sseReader } from "../../server/src/fake-host.ts";
 import { restartServer, yokClient } from "./client.ts";
 
 const TIMEOUT_MS = 40_000;
@@ -37,6 +38,9 @@ const ORCHESTRATE = [CLI, "orchestrate"] as const;
 
 const OK_WORKFLOW = [
   "name: ok",
+  "inputs:",
+  "  prompt:",
+  "    type: string",
   "nodes:",
   "  - id: a",
   "    type: exec",
@@ -190,6 +194,25 @@ const waitFor = (predicate: () => boolean, timeoutMs = 5000): void => {
 };
 
 describe("yok run", () => {
+  test(
+    "SC625: yok run task fix the bug takes the prompt from the words after the workflow",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+
+      const result = yok(repo, env, "run", "task", "fix", "the", "bug", "--no-open");
+
+      expect(result.code).toBe(0);
+      waitFor(() => readLines(fakeOut).some(isLaunch));
+      const argv = readLines(fakeOut).find(isLaunch)?.argv;
+      const prompt = Array.isArray(argv) ? argv.at(-1) : undefined;
+      expect(prompt).toContain('--inputs {"prompt":"fix the bug"}');
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
   test(
     "a supplied --name reaches the launched agent without replacing the prompt input",
     () => {
@@ -953,6 +976,58 @@ describe("yok run", () => {
     },
     TIMEOUT_MS,
   );
+
+  test(
+    "SC608, SC611, SC612, SC614: a key holder reads a started run, its files and its stream over HTTP, and a stream quiet past 10 seconds stays open",
+    async () => {
+      const repo = makeRepo();
+      const { home, env } = makeEnv();
+      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "hi");
+      expect(run.code).toBe(0);
+      const runId = run.stdout.trim().split("\n")[0] ?? "";
+      const url = `http://127.0.0.1:${readPort(home)}`;
+      const apiKey = readApiKey(home) ?? "";
+      const client = createYokClient({ url, apiKey });
+
+      const shown = await client.showRun(runId);
+      expect(shown.ok && shown.value.run.id).toBe(runId);
+      expect(shown.ok && shown.value.summary.id).toBe(runId);
+      expect(await client.runFiles(runId)).toMatchObject({
+        ok: true,
+        value: { state: "starting", files: [] },
+      });
+
+      const res = await fetch(`${url}/runs/${runId}/stream`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      const sse = sseReader(res);
+      try {
+        await sse.waitFor((e) => e.event === "files");
+        // Bun checks idle sockets on a coarse timer, so a 10-second limit can fire as late as ~12s.
+        await Bun.sleep(15_000);
+        // Bun's fetch re-sends a GET whose socket was cut, and the new stream repeats every event.
+        expect(sse.seen.filter((e) => e.event === "files")).toHaveLength(1);
+
+        await createRegistry(join(home, "registry.json")).initRun(runId, "late");
+        const artifacts = join(repo, ".yok", "late", "artifacts");
+        mkdirSync(artifacts, { recursive: true });
+        writeFileSync(join(artifacts, "design.md"), "# Design\n");
+
+        await sse.waitFor(
+          (e) => e.event === "files" && JSON.stringify(e.data).includes("artifacts/design.md"),
+        );
+      } finally {
+        await sse.close();
+      }
+      expect(await client.runFile(runId, "artifacts/design.md")).toMatchObject({
+        ok: true,
+        value: { path: "artifacts/design.md", text: "# Design\n" },
+      });
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
 });
 
 describe("server ownership", () => {
@@ -1069,7 +1144,9 @@ describe("yok project", () => {
 
       const listed = yok(checkout, env, "project", "list");
       expect(listed.code).toBe(0);
-      expect(listed.stdout).toMatch(new RegExp(`^demo-repo +\\w+ +${checkout} +cli$`, "m"));
+      expect(listed.stdout).toMatch(
+        new RegExp(`^demo-repo +\\w+ +${checkout} +${userInfo().username}$`, "m"),
+      );
 
       const removed = yok(checkout, env, "project", "remove", "demo-repo");
       expect(removed.code).toBe(0);
@@ -1149,7 +1226,7 @@ describe("yok run against a fake server", () => {
   };
 
   test(
-    "SC605: yok run --interaction false sends the flag as the request's policies, and neither opens nor attaches",
+    "SC605: yok run --interaction false sends the flag as the request's policies and the OS user as its source, and a remote run prints only its id and page",
     async () => {
       const { bodies, laptop, cwd } = fakeServer();
       const args = ["run", "task", "--project", "demo", "--prompt", "x", "--interaction", "false"];
@@ -1163,6 +1240,7 @@ describe("yok run against a fake server", () => {
           workflow: "task",
           inputs: { prompt: "x" },
           policies: { interaction: false },
+          source: { channel: "cli", name: userInfo().username },
         },
       ]);
       expect(run.stdout).toBe("r-1\nview: http://x/runs/r-1\n");

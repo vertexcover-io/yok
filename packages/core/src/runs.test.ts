@@ -161,6 +161,44 @@ describe("initializeRun", () => {
     });
   });
 
+  test("a taken name derived from the prompt becomes NAME plus the run id's last 4 characters; a taken --name is still refused", async () => {
+    const { cwd, init, registry } = await savedRun({ id: "r-0a1b2c3d" });
+    mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
+
+    expect(await init("dupe")).toEqual({ ok: false, error: ".yok/dupe already exists" });
+
+    const derived = await init("dupe", "r-0a1b2c3d", { derived: true });
+
+    if (!derived.ok) throw new Error(derived.error);
+    expect(derived.value.name).toBe("dupe-2c3d");
+    expect(derived.value.dir).toBe(join(cwd, ".yok", "dupe-2c3d"));
+    expect(derived.value.state.runName).toBe("dupe-2c3d");
+    expect((await registry.findRun("r-0a1b2c3d"))?.name).toBe("dupe-2c3d");
+  });
+
+  test("two runs initialized at once from the same prompt each claim their own folder", async () => {
+    const { cwd, init, registry, workflowPath } = await savedRun({ id: "r-0a1b2c3d" });
+    await registry.addRun(makeRun({ id: "r-9e8f7a6b", cwd, workflowPath }));
+
+    const results = await Promise.all([
+      init("dupe", "r-0a1b2c3d", { derived: true }),
+      init("dupe", "r-9e8f7a6b", { derived: true }),
+    ]);
+
+    const names = results.map((result) => (result.ok ? result.value.name : result.error));
+    expect(names.toSorted()).toEqual(
+      names.includes("dupe-2c3d") ? ["dupe", "dupe-2c3d"] : ["dupe", "dupe-7a6b"],
+    );
+  });
+
+  test("a derived name that is free is used as it is", async () => {
+    const { init } = await savedRun({ id: "r-0a1b2c3d" });
+
+    const result = await init("fix-login", "r-0a1b2c3d", { derived: true });
+
+    expect(result.ok && result.value.name).toBe("fix-login");
+  });
+
   test("SC20: a run whose repo has an invalid config is refused, leaving no run folder and no name", async () => {
     const { cwd, init, registry, run } = await savedRun();
     writeFileSync(join(cwd, "orchestrate.config.json"), JSON.stringify({ packages: {} }));

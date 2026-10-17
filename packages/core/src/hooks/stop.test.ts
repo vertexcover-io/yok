@@ -26,7 +26,7 @@ import {
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
-import { recordGuard, runPreToolUse } from "./pre-tool-use.ts";
+import { questionGuard, recordGuard, runPreToolUse } from "./pre-tool-use.ts";
 import { decideStop, runStopHook, type StopCheck } from "./stop.ts";
 
 const seed: State = {
@@ -179,6 +179,18 @@ describe("decideStop", () => {
       message: expect.stringContaining("No one will answer in this run."),
     });
     expect(atMax).toMatchObject({ reason: "unanswered-stop", blockStreak: 2, nodeRunId: "plan" });
+  });
+
+  test("with interaction off and no node open, a chat turn is sent to next, not let end as user-chat, and a stop at maxBlocks is unanswered-stop that lets the turn end", () => {
+    const chat = decide({ policies: UNATTENDED }, { touchedRun: false });
+    const atMax = decide({
+      policies: UNATTENDED,
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
+
+    expect(chat).toMatchObject({ reason: "next-not-run", blockStreak: 1 });
+    expect(atMax).toEqual({ reason: "unanswered-stop", blockStreak: 1 });
   });
 
   test("SC6 — a chat turn with a node open still blocks", () => {
@@ -476,14 +488,23 @@ describe("runStopHook", () => {
     expect(reasons).toEqual(["node-not-done", "node-not-done", "unanswered-stop"]);
   });
 
-  test("with interaction off, a question tried between stops is not work, so the stop after it still fails the node", async () => {
-    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+  test("with interaction off, a question the guard refuses between stops is not work, so the stop after it still fails the node", async () => {
+    const { deps, runDir, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
       { kind: "command", command: "ls" },
     ];
+    const ask = {
+      agent: "claude" as const,
+      sessionId: "s1",
+      toolName: "AskUserQuestion",
+      subagent: false,
+      cwd,
+      call: { kind: "question" as const, questions: [{ question: "Which?", options: ["a"] }] },
+    };
 
     await runStopHook(input(ran), deps);
+    expect(await runPreToolUse(ask, questionGuard, deps)).toMatchObject({ kind: "deny" });
     await runStopHook(input([...ran, { kind: "question" }]), deps);
 
     const events = await jsonlEventStore(runDir).read();
@@ -492,6 +513,25 @@ describe("runStopHook", () => {
       return stop.success ? [stop.data.payload.reason] : [];
     });
     expect(reasons).toEqual(["node-not-done", "unanswered-stop"]);
+  });
+
+  test("with interaction off, two stops between nodes fail the run, record the unanswered stop and no agent.stuck", async () => {
+    const { deps, runDir } = await setUp({}, "claude", { policies: UNATTENDED });
+
+    const kinds = [
+      (await runStopHook(input(orchestrateAfterPrompt), deps)).kind,
+      (await runStopHook(input(orchestrateAfterPrompt), deps)).kind,
+    ];
+
+    expect(kinds).toEqual(["continue", "allow"]);
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.map((event) => [event.type, event.payload])).toEqual([
+      ["hooks.stop.called", expect.objectContaining({ reason: "next-not-run" })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "unanswered-stop" })],
+      ["policy.applied", { policy: "interaction", effect: "unanswered-stop" }],
+      ["workflow.failed", {}],
+    ]);
+    expect((await readState(runDir))?.status).toBe("failed");
   });
 
   const denied = (handler: string, tool: string) => ({

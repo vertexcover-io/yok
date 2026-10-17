@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   type AgentAdapter,
@@ -106,6 +106,8 @@ export type InitOptions = Readonly<{
   terminal?: ITerminal | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
+  // the agent derived the name from the prompt, so a taken one may get a suffix
+  derived?: boolean | undefined;
 }>;
 
 export const terminalName = (agent: string, runName: string, runId: string): string =>
@@ -130,6 +132,7 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
 
 type CheckedInit = Readonly<{
   run: WorkflowRun;
+  name: string;
   eventHandlers: EventHandlerRefs;
   subscribers: SubscriberRefs;
   config: NonNullable<State["config"]>;
@@ -284,6 +287,27 @@ const checkNodeTiers = async (
   return { ok: false, error: `${[...unmapped].join(", ")}; the ${plan.agent} tiers are ${names}` };
 };
 
+// mkdir without recursive fails on a folder that exists, so two runs never claim the same one.
+const claimDir = (dir: string): Promise<boolean> =>
+  mkdir(dir).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "EEXIST") return false;
+      throw error;
+    },
+  );
+
+// A derived name that is taken gets the run id's last 4 characters, as the tmux session name does.
+const claimRunName = async (cwd: string, options: InitOptions): Promise<Result<string>> => {
+  const { name, runId, derived } = options;
+  await mkdir(dirname(runDirOf(cwd, name)), { recursive: true });
+  const candidates = derived ? [name, `${name}-${runId.slice(-4)}`] : [name];
+  for (const candidate of candidates) {
+    if (await claimDir(runDirOf(cwd, candidate))) return { ok: true, value: candidate };
+  }
+  return { ok: false, error: `.yok/${name} already exists` };
+};
+
 const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => {
   const { registry, runId, name, git } = options;
   const parsed = SlugSchema.safeParse(name);
@@ -294,13 +318,6 @@ const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => 
   if (run === undefined) return { ok: false, error: `run ${runId} not found` };
   if (run.name !== null) {
     return { ok: false, error: `run ${runId} is already initialized as ${run.name}` };
-  }
-  const taken = await access(runDirOf(run.cwd, name)).then(
-    () => true,
-    () => false,
-  );
-  if (taken) {
-    return { ok: false, error: `.yok/${name} already exists` };
   }
   if ((await git.repoRoot(run.cwd)) === null) {
     return { ok: false, error: `${run.cwd} is not inside a git repository` };
@@ -316,6 +333,7 @@ const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => 
     ok: true,
     value: {
       run,
+      name,
       eventHandlers: frozenHandlers(config, root),
       subscribers: subscribers.value,
       config: { path, root },
@@ -325,18 +343,21 @@ const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => 
 
 export const initializeRun = async (
   options: InitOptions,
-): Promise<Result<{ dir: string; state: State }>> => {
+): Promise<Result<{ dir: string; name: string; state: State }>> => {
   const checked = await checkInit(options);
   if (!checked.ok) return checked;
   const { run } = checked.value;
-  const dir = runDirOf(run.cwd, options.name);
-  await mkdir(dir, { recursive: true });
+  const claimed = await claimRunName(run.cwd, options);
+  if (!claimed.ok) return claimed;
+  const name = claimed.value;
+  const named = { ...options, name };
+  const dir = runDirOf(run.cwd, name);
   try {
-    const state = await fillRunDir(checked.value, options);
-    await options.registry.initRun(run.id, options.name);
-    await renameTerminal(run, options);
-    options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
-    return { ok: true, value: { dir, state } };
+    const state = await fillRunDir({ ...checked.value, name }, named);
+    await options.registry.initRun(run.id, name);
+    await renameTerminal(run, named);
+    options.log.info({ runId: run.id, name, dir }, "run initialized");
+    return { ok: true, value: { dir, name, state } };
   } catch (error) {
     // A half-built folder would make every retry answer "already exists".
     await rm(dir, { recursive: true, force: true });

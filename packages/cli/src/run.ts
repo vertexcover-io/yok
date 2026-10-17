@@ -1,46 +1,21 @@
+import { userInfo } from "node:os";
 import { basename, resolve } from "node:path";
-import { Command } from "@commander-js/extra-typings";
-import { type DoctorReport, isWorkflowFile } from "@yok/core";
-import {
-  createGit,
-  type JsonObject,
-  POLICY_NAMES,
-  PoliciesSchema,
-  type Result,
-  readPolicies,
-  spawnInteractive,
-} from "@yok/sdk";
+import { isWorkflowFile } from "@yok/core";
+import { createGit, type JsonObject, type Result, readPolicies, spawnInteractive } from "@yok/sdk";
 import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import type { ApiError } from "@yok/server";
+import { folderSlug, promptFrom, runDefinition, startErrorText } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
   commandLog,
   ensureServer,
   fail,
+  followUpRun,
   openForPerson,
   remoteUrl,
   yokClient,
 } from "./client.ts";
-import { folderSlug } from "./project.ts";
 import { writeProjectTypes } from "./types.ts";
-
-const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
-  const index = pair.indexOf("=");
-  if (index === -1) throw new Error(`--input must be KEY=VALUE, got "${pair}"`);
-  return { ...acc, [pair.slice(0, index)]: pair.slice(index + 1) };
-};
-
-const blockedText = (message: string, report: DoctorReport): string =>
-  [
-    message,
-    ...report.results
-      .filter((row) => row.status === "fail")
-      .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
-  ].join("\n");
-
-const startError = (error: ApiError): string =>
-  error.findings === undefined ? apiErrorText(error) : blockedText(error.message, error.findings);
 
 const projectAt = async (client: YokClient, root: string): Promise<Result<string | null>> => {
   const listed = await client.projects();
@@ -64,7 +39,7 @@ const checkoutProject = async (client: YokClient, root: string): Promise<Result<
   const added = await client.addProject({
     name,
     path: root,
-    addedBy: { channel: "cli" },
+    addedBy: { channel: "cli", name: userInfo().username },
   });
   if (added.ok) return { ok: true, value: name };
   // Two runs started together in a new checkout both add it; the one that loses uses the other's.
@@ -91,7 +66,6 @@ const pickProjectName = async (
 };
 
 type RunOptions = Readonly<{
-  prompt: string;
   name?: string;
   project?: string;
   input: Record<string, string>;
@@ -128,67 +102,58 @@ const remoteTarget = (workflow: string, opts: RunOptions): RunTarget => ({
   ...(opts.config === undefined ? {} : { config: opts.config }),
 });
 
-export const runCommand = () => {
-  const command = new Command("run")
-    .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
-    .requiredOption("--prompt <text>", "first message sent to the agent")
-    .option("--name <name>", "run name (default: derived from the prompt)")
-    .option("--project <name>", "project to run on (default: this checkout, added if new)")
-    .option("--input <key=value>", "extra input, repeatable", collectInput, {})
-    .option("--no-attach", "do not attach to the session's terminal once it starts")
-    .option("--config <file>", "orchestrate config file the run reads (default: the checkout's)")
-    .option("--no-open", "do not open the run's page in the browser")
-    .action(async (workflowArg, opts) => {
-      const log = commandLog("run");
-      const cwd = process.cwd();
-      // the flags are read as YAML and checked, so a bad value fails before anything starts
-      const cliPolicies = parsePolicyFlags(opts);
-      if (!cliPolicies.ok) return fail(cliPolicies.error);
-      // Before the project lookup, which calls the server.
-      await ensureServer();
-      const client = yokClient();
-      const remote = remoteUrl() !== null;
-      const target = remote
-        ? { ok: true as const, value: remoteTarget(workflowArg, opts) }
-        : await localTarget(client, { workflow: workflowArg, opts, cwd });
-      if (!target.ok) return fail(target.error);
+export const runCommand = () =>
+  runDefinition().action(async (workflowArg, words, opts) => {
+    const log = commandLog("run");
+    const cwd = process.cwd();
+    // the flags are read as YAML and checked, so a bad value fails before anything starts
+    const cliPolicies = parsePolicyFlags(opts);
+    if (!cliPolicies.ok) return fail(cliPolicies.error);
+    const prompt = promptFrom(opts.prompt, words);
+    if (!prompt.ok) return fail(prompt.error);
+    // Before the project lookup, which calls the server.
+    await ensureServer();
+    const client = yokClient();
+    const remote = remoteUrl() !== null;
+    const target = remote
+      ? { ok: true as const, value: remoteTarget(workflowArg, opts) }
+      : await localTarget(client, { workflow: workflowArg, opts, cwd });
+    if (!target.ok) return fail(target.error);
 
-      const result = await client.run({
-        ...target.value,
-        inputs: { prompt: opts.prompt, ...opts.input } satisfies JsonObject,
-        policies: cliPolicies.value,
-        ...(opts.name === undefined ? {} : { name: opts.name }),
-      });
-      if (!result.ok) return fail(startError(result.error));
-      const { run } = result.value;
-      console.log(run.id);
-      // Attach and the browser need the server's machine, so a remote run prints its page only.
-      if (remote) return console.log(`view: ${result.value.view}`);
-      const { terminal } = run;
-      log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
-
-      console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
-      console.log(`view: ${result.value.view}`);
-      // the run's saved value decides, so a workflow that turns interaction off never opens one either
-      const unattended = !readPolicies(run.policies).interaction;
-      openForPerson(result.value.view, opts.open === false || unattended);
-
-      // A script, CI job or test has no terminal for tmux to attach to.
-      const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal && !unattended) {
-        const [command, ...args] = result.value.attach;
-        // Without TMUX, the attach also works from inside the user's own tmux.
-        const exitCode = await spawnInteractive(command as string, args, {
-          cwd,
-          env: { TMUX: undefined },
-        });
-        log.info({ runId: run.id, terminal, exitCode }, "detached from the session");
-        process.exitCode = exitCode;
-      }
+    const result = await client.run({
+      ...target.value,
+      inputs: { prompt: prompt.value, ...opts.input } satisfies JsonObject,
+      policies: cliPolicies.value,
+      source: { channel: "cli", name: userInfo().username },
+      ...(opts.name === undefined ? {} : { name: opts.name }),
     });
-  // one `--NAME <value>` option per policy, with the policy's help text
-  for (const name of POLICY_NAMES) {
-    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
-  }
-  return command;
-};
+    if (!result.ok) return fail(startErrorText(result.error));
+    const { run } = result.value;
+    console.log(run.id);
+    // Attach and the browser need the server's machine, so a remote run prints its page only.
+    if (remote) return console.log(`view: ${result.value.view}`);
+    const { terminal } = run;
+    log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
+
+    console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
+    console.log(`view: ${result.value.view}`);
+    const followUp = followUpRun({
+      // the run's saved value decides, so a workflow that turns interaction off never opens one either
+      interaction: readPolicies(run.policies).interaction,
+      open: opts.open,
+      attach: opts.attach,
+      // A script, CI job or test has no terminal for tmux to attach to.
+      hasTerminal: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    });
+    openForPerson(result.value.view, followUp.noOpen);
+    if (followUp.attach) {
+      const [command, ...args] = result.value.attach;
+      // Without TMUX, the attach also works from inside the user's own tmux.
+      const exitCode = await spawnInteractive(command as string, args, {
+        cwd,
+        env: { TMUX: undefined },
+      });
+      log.info({ runId: run.id, terminal, exitCode }, "detached from the session");
+      process.exitCode = exitCode;
+    }
+  });
