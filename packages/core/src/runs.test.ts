@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AgentType,
   createGit,
@@ -28,8 +28,21 @@ import { appendRunEvent, createRegistry, jsonlEventStore, type Registry } from "
 import corePackage from "../package.json";
 import { agentAdapters } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
-import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
-import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
+import {
+  createSlackNotifier,
+  NOTIFIER_EVENTS,
+  NOTIFIER_MODULE,
+  notify,
+  type OpenNotifier,
+} from "./notifier.ts";
+import {
+  type InitOptions,
+  initializeRun,
+  linkRunSession,
+  loadSessionEnv,
+  nextStep,
+  terminalName,
+} from "./runs.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
@@ -455,13 +468,39 @@ describe("the notifier at init", () => {
   const notifierOnly = Object.fromEntries(NOTIFIER_EVENTS.map((type) => [type, [NOTIFIER_REF]]));
   const subscriberA = { name: "a", command: "true" };
 
-  const notifierRun = async (config: object, workflowNotifier: string) => {
+  const notifierRun = async (
+    config: object,
+    workflowNotifier: string,
+    overrides: Partial<WorkflowRun> = {},
+  ) => {
     const cwd = makeRepo();
     writeFileSync(join(cwd, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));
     const workflowPath = join(cwd, "flow.yaml");
     writeFileSync(workflowPath, `${WORKFLOW}${workflowNotifier}`);
-    return savedRun({ cwd, workflowPath });
+    return savedRun({ cwd, workflowPath, ...overrides });
   };
+
+  test.each([
+    ["no notifier block", {}],
+    ["notifier: { enabled: false }", { notifier: { enabled: false } }],
+  ])(
+    "SC630: a thread run with %s in its config seeds the thread into state and turns the notifier on",
+    async (_label, config) => {
+      const { init } = await notifierRun(config, "", {
+        thread: { place: "C9", threadId: "17.1" },
+      });
+
+      const result = await init("fix-login");
+
+      if (!result.ok) throw new Error(result.error);
+      expect(result.value.state.notification).toEqual({
+        provider: "slack",
+        place: "C9",
+        threadId: "17.1",
+      });
+      expect(result.value.state.subscribers?.["workflow.started"]).toEqual([NOTIFIER_REF]);
+    },
+  );
 
   test.each([
     [
@@ -490,6 +529,109 @@ describe("the notifier at init", () => {
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.subscribers).toEqual(expected(cwd));
+  });
+
+  test("SC634: a run with no thread seeds no notification and keeps the config's notifier off", async () => {
+    const { init } = await notifierRun({ notifier: { enabled: false } }, "");
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state).not.toHaveProperty("notification");
+    expect(result.value.state.subscribers).toEqual({});
+  });
+
+  test("SC631: a thread run's first notice replies in its thread on channel C9 and records no new thread", async () => {
+    const { init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    const result = await init("fix-login");
+    if (!result.ok) throw new Error(result.error);
+    const { dir, state } = result.value;
+    const sent: string[] = [];
+    const fetch = async (url: string, request: RequestInit): Promise<Response> => {
+      sent.push(`${url.split("/").pop()} ${String(request.body)}`);
+      return Response.json({ ok: true, ts: "99.9" });
+    };
+    const open: OpenNotifier = () => ({
+      ok: true,
+      value: createSlackNotifier({ token: "xoxb-fake", channel: "C9", memberId: undefined, fetch }),
+    });
+    const [started] = await jsonlEventStore(dir).read();
+    if (started === undefined) throw new Error("no workflow.started event");
+    const run = { id: state.runId, cwd: dirname(dirname(dir)), name: state.runName };
+
+    await notify("slack", { event: started, state, run }, open, emitRunEvent);
+
+    const [post] = sent;
+    expect(sent).toHaveLength(1);
+    expect(Object.fromEntries(new URLSearchParams(post?.split(" ")[1]))).toMatchObject({
+      channel: "C9",
+      thread_ts: "17.1",
+    });
+    const types = (await jsonlEventStore(dir).read()).map((event) => event.type);
+    expect(types).not.toContain("notification.thread.started");
+  });
+
+  test("SC632: a restarted session of a thread run gets the home's bot token and the thread's channel over the project's", async () => {
+    const { cwd, init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    writeFileSync(join(cwd, ".env"), "SLACK_BOT_TOKEN=xoxb-project\nSLACK_CHANNEL_ID=C-project\n");
+    const home = tempDir();
+    writeFileSync(join(home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+    const result = await init("fix-login");
+    if (!result.ok) throw new Error(result.error);
+
+    const env = await loadSessionEnv(
+      { id: result.value.state.runId, cwd, name: "fix-login" },
+      "claude",
+      home,
+    );
+
+    if (!env.ok) throw new Error(env.error);
+    expect(env.value).toMatchObject({ SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9" });
+  });
+
+  test("an ordinary notifier run whose notifier opened a thread restarts with the project's Slack keys, none from an empty home", async () => {
+    const { cwd, init } = await notifierRun({ notifier: {} }, "");
+    writeFileSync(join(cwd, ".env"), "SLACK_BOT_TOKEN=xoxb-project\nSLACK_CHANNEL_ID=C-project\n");
+    const home = tempDir();
+    writeFileSync(join(home, ".env"), "");
+    const result = await init("fix-login");
+    if (!result.ok) throw new Error(result.error);
+    const run = { id: result.value.state.runId, cwd, name: "fix-login" };
+    const appended = await appendRunEvent(run, {
+      type: "notification.thread.started",
+      source: "notifier",
+      payload: { provider: "slack", threadId: "171.1" },
+    });
+    if (!appended.ok) throw new Error(appended.error);
+
+    const env = await loadSessionEnv(run, "claude", home);
+
+    if (!env.ok) throw new Error(env.error);
+    expect(env.value).toMatchObject({
+      SLACK_BOT_TOKEN: "xoxb-project",
+      SLACK_CHANNEL_ID: "C-project",
+    });
+    expect(env.value).not.toHaveProperty("SLACK_MEMBER_ID");
+  });
+
+  test("a thread run restarted after the home's bot token was removed gets no env, an error instead", async () => {
+    const { cwd, init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    const home = tempDir();
+    writeFileSync(join(home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+    const result = await init("fix-login");
+    if (!result.ok) throw new Error(result.error);
+    writeFileSync(join(home, ".env"), "OTHER=1\n");
+
+    const env = await loadSessionEnv(
+      { id: result.value.state.runId, cwd, name: "fix-login" },
+      "claude",
+      home,
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error: `a thread run needs SLACK_BOT_TOKEN in ${join(home, ".env")}`,
+    });
   });
 
   const SAMSKARA_REF = {

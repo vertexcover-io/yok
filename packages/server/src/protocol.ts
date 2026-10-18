@@ -11,6 +11,7 @@ import {
   PolicyLayerSchema,
   SlugSchema,
   SourceSchema,
+  ThreadSchema,
   yokHome,
 } from "@yok/sdk";
 import * as z from "zod";
@@ -35,6 +36,27 @@ export const readPort = (home: string): number | null => {
 
 export const readApiKey = (home: string): string | undefined =>
   parseEnv(readHomeFile(homeEnvPath(home))).YOK_API_KEY || undefined;
+
+export type SlackKeys = Readonly<{
+  appToken: string;
+  botToken: string;
+  allowedChannels: readonly string[];
+}>;
+
+// Both or neither: the app token receives commands and the bot token answers them.
+export const readSlackKeys = (home: string): SlackKeys | undefined => {
+  const {
+    SLACK_APP_TOKEN: appToken,
+    SLACK_BOT_TOKEN: botToken,
+    SLACK_ALLOWED_CHANNELS: allowed = "",
+  } = parseEnv(readHomeFile(homeEnvPath(home)));
+  if (!appToken || !botToken) return undefined;
+  const allowedChannels = allowed
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+  return { appToken, botToken, allowedChannels };
+};
 
 // Never put in process.env: the server hands its env to every run's agent session.
 // base64url stays inside the bearer-token alphabet, so the key needs no quoting anywhere.
@@ -82,6 +104,8 @@ export const StartRunBodySchema = z.strictObject({
   policies: PolicyLayerSchema.optional(),
   // who asked for the run, recorded on it: metadata, never an authentication fact
   source: SourceSchema.optional(),
+  // the chat thread the run reports into; the server supplies the bot token
+  thread: ThreadSchema.optional(),
 });
 export type StartRunBody = z.infer<typeof StartRunBodySchema>;
 export type StartRunRequest = StartRunBody;

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -10,12 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addComments, agentBinary, readComments, summarize } from "@yok/core";
+import { addComments, agentBinary, type DoctorReport, readComments, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { ensureApiKey, readPort } from "./protocol.ts";
-import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
+import { ensureApiKey, readPort, readSlackKeys } from "./protocol.ts";
+import { type CheckCheckout, defaultRuntime, runtimeChecks, startServer } from "./server.ts";
 import { viewerPortPath } from "./viewer.ts";
 
 const readyCheckout: CheckCheckout = () =>
@@ -90,6 +91,36 @@ test("SC128: each agent's runtime checks carry its plugin check, run against the
   expect(agentBinary("claude", { YOK_CLAUDE_BIN: "/x/claude" })).toBe("/x/claude");
   expect(agentBinary("codex", { YOK_CODEX_BIN: "/x/codex" })).toBe("/x/codex");
   expect([agentBinary("claude", {}), agentBinary("codex", {})]).toEqual(["claude", "codex"]);
+});
+
+test("SC629: the doctor sees a thread run's Slack keys laid over a checkout whose config turns the notifier on and whose .env has none", async () => {
+  const keys = ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"] as const;
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  for (const key of keys) delete process.env[key];
+  try {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-doctor-")));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeFileSync(
+      join(cwd, "orchestrate.config.json"),
+      JSON.stringify({ version: 2, notifier: { type: "slack" } }),
+    );
+    const { checkCheckout } = defaultRuntime();
+    const notifierRow = (report: DoctorReport) =>
+      report.results.find((row) => row.name === "notifier")?.status;
+    const slack = { SLACK_BOT_TOKEN: "x", SLACK_CHANNEL_ID: "C9" };
+
+    const withKeys = await checkCheckout({ cwd, env: slack });
+    const without = await checkCheckout({ cwd });
+
+    expect(notifierRow(withKeys.report)).toBe("ok");
+    expect(withKeys.env).toEqual({ ok: true, value: expect.objectContaining(slack) });
+    expect(notifierRow(without.report)).toBe("fail");
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("SC106: a named port is bound or the start fails, and an unnamed start falls back from a taken saved port", async () => {
@@ -224,3 +255,19 @@ test("a run stream held open on the API and on the viewer does not keep stop() f
   expect(streams.map((res) => res.status)).toEqual([200, 200]);
   expect(outcome).toBe("stopped");
 }, 10_000);
+
+test("SC642: with SLACK_BOT_TOKEN but no SLACK_APP_TOKEN the server starts, serves /health and stops as before", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
+  writeFileSync(join(home, ".env"), "SLACK_BOT_TOKEN=xoxb-fake\n");
+  const { host } = fakeHost(EMPTY_BOX);
+
+  const server = await startServer({
+    home,
+    runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+  });
+  const health = await fetch(`http://127.0.0.1:${readPort(home)}/health`);
+  await server.stop();
+
+  expect(health.status).toBe(200);
+  expect(readSlackKeys(home)).toBeUndefined();
+});

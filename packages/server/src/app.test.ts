@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   accessSync,
@@ -24,8 +24,9 @@ import { createApp } from "./app.ts";
 import { createYokClient, type YokClient } from "./client.ts";
 import { renderProjects, runChannelCommand, startErrorText } from "./commands.ts";
 import { EMPTY_BOX, fakeHost, type SseEvent, seedState, sseReader } from "./fake-host.ts";
-import { AddProjectBodySchema } from "./protocol.ts";
+import { AddProjectBodySchema, readSlackKeys } from "./protocol.ts";
 import type { CheckCheckout } from "./server.ts";
+import { readCommandText, startSlackAdapter } from "./slack.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
 
@@ -84,10 +85,13 @@ const fakeProvider = (
 const READY_REPORT: DoctorReport = summarize([]);
 
 // READY, with the env the real loadStartEnv layers from the checkout, so env tests stay real.
-const readyCheckout: CheckCheckout = async ({ cwd, config, plan }) => ({
-  env: await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent: "claude" }),
-  report: READY_REPORT,
-});
+const readyCheckout: CheckCheckout = async ({ cwd, config, plan, env: over = {} }) => {
+  const loaded = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent: "claude" });
+  return {
+    env: loaded.ok ? { ok: true, value: { ...loaded.value, ...over } } : loaded,
+    report: READY_REPORT,
+  };
+};
 
 const buildDeps = async (
   launch: (
@@ -550,6 +554,78 @@ describe("POST /runs", () => {
     expect(res.status).toBe(400);
     expect((await errorOf(res)).code).toBe("bad-request");
     expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC627: a run started with a thread records it and launches with the home's bot token and the thread's channel", async () => {
+    const seen: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      seen.push(options);
+      return launchesOk();
+    });
+    const { cwd } = tempWorkspace(deps.home);
+    writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+    writeFileSync(join(cwd, ".env"), "SLACK_CHANNEL_ID=C-project\n");
+    const thread = { place: "C9", threadId: "17.1" };
+
+    const res = await postRun(createApp(deps), { thread });
+
+    expect(res.status).toBe(201);
+    const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
+    expect((await deps.registry.findRun(run.id))?.thread).toEqual(thread);
+    expect(seen[0]?.env).toMatchObject({ SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9" });
+  });
+
+  test.each([
+    [
+      "memberId that is not a Slack user id",
+      { place: "C9", threadId: "17.1", memberId: "U1> <!channel" },
+    ],
+    ["place that is not a Slack channel id", { place: "#general", threadId: "17.1" }],
+  ])("a thread whose %s is 400 bad-request and saves nothing", async (_label, thread) => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+    writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+
+    const res = await postRun(createApp(deps), { thread });
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("bad-request");
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC628: a thread run is refused with 400 naming the home's .env when the home has no bot token, and nothing is saved or launched", async () => {
+    let launched = false;
+    const deps = await buildDeps(() => {
+      launched = true;
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
+    writeFileSync(join(deps.home, ".env"), "OTHER=1\n");
+
+    const res = await postRun(createApp(deps), { thread: { place: "C9", threadId: "17.1" } });
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).message).toContain(join(deps.home, ".env"));
+    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(launched).toBe(false);
+  });
+
+  test("SC634: a run started with no thread records none and launches with no Slack keys from the home", async () => {
+    const seen: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      seen.push(options);
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
+    writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+
+    const res = await postRun(createApp(deps));
+
+    expect(res.status).toBe(201);
+    const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
+    expect(await deps.registry.findRun(run.id)).not.toHaveProperty("thread");
+    expect(seen[0]?.env).not.toHaveProperty("SLACK_BOT_TOKEN");
+    expect(seen[0]?.env).not.toHaveProperty("SLACK_CHANNEL_ID");
   });
 
   test("SC305: the session starts with the checkout's .env, under yok's own variables", async () => {
@@ -1440,16 +1516,17 @@ describe("/projects", () => {
   });
 });
 
+// The typed client over the app in memory, as an inbox inside the server builds it.
+const channelClient = (deps: Awaited<ReturnType<typeof buildDeps>>) => {
+  const app = createApp(deps);
+  return createYokClient({
+    url: "http://yok.test",
+    apiKey: "test-key",
+    transport: (input, init) => Promise.resolve(app.request(input, init)),
+  });
+};
+
 describe("runChannelCommand", () => {
-  // The typed client over the app in memory, as an inbox inside the server builds it.
-  const channelClient = (deps: Awaited<ReturnType<typeof buildDeps>>) => {
-    const app = createApp(deps);
-    return createYokClient({
-      url: "http://yok.test",
-      apiKey: "test-key",
-      transport: (input, init) => Promise.resolve(app.request(input, init)),
-    });
-  };
   const slack = { channel: "slack", id: "U1", name: "aman", place: "C9" };
 
   test("SC618: typed text starts a run with interaction off, its inputs from the words and --input, recorded under the typing person", async () => {
@@ -1472,6 +1549,27 @@ describe("runChannelCommand", () => {
       sources: { interaction: "cli" },
     });
     expect(run?.source).toEqual(slack);
+  });
+
+  test("SC633: a chat run command given a thread records that thread on the run it starts", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(
+      deps.home,
+      okWorkflow({ inputs: { prompt: { type: "string", required: true } } }),
+    );
+    writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
+    const thread = { place: "C9", threadId: "17.1" };
+
+    const reply = await runChannelCommand(
+      "run ok.yaml do it --project demo",
+      slack,
+      channelClient(deps),
+      thread,
+    );
+
+    expect(reply.ok).toBe(true);
+    const [runId] = reply.text.split("\n");
+    expect((await deps.registry.findRun(runId ?? ""))?.thread).toEqual(thread);
   });
 
   test("SC616: a prompt with apostrophes inside words starts a run with the prompt as typed", async () => {
@@ -1729,5 +1827,434 @@ describe("runChannelCommand", () => {
       "BLOCKED orchestrate-config",
       "orchestrate-config: no orchestrate.config.yaml",
     ]);
+  });
+});
+
+type SlackCall = Readonly<{ url: string; body: Record<string, unknown> }>;
+
+const eventually = async (check: () => boolean, ms = 3000): Promise<void> => {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting");
+    await Bun.sleep(5);
+  }
+};
+
+// A server that completes the WebSocket handshake and then never answers: a half-open socket.
+const silentSocket = () => {
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data: (socket, data) => {
+        const key = /Sec-WebSocket-Key: (.+)\r\n/i.exec(String(data))?.[1];
+        if (key === undefined) return;
+        const accept = new Bun.CryptoHasher("sha1")
+          .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+          .digest("base64");
+        socket.write(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+      },
+    },
+  });
+  return { url: `ws://127.0.0.1:${listener.port}`, stop: () => listener.stop(true) };
+};
+
+// Slack's Socket Mode server and Web API, on loopback: every call and every frame is recorded.
+// chat.postMessage answers POST_REPLY (or what it returns for the body) once `release` has been
+// called; it starts released.
+// apps.connections.open answers OPENS in turn, then this server's socket.
+type PostReply = object | ((body: Record<string, unknown>) => object);
+const fakeSlack = (
+  postReply: PostReply = { ok: true, ts: "17.1" },
+  opens: readonly object[] = [],
+) => {
+  const calls: SlackCall[] = [];
+  const frames: unknown[] = [];
+  const sockets: Array<Bun.ServerWebSocket<unknown>> = [];
+  const state = { closed: 0, answered: 0 };
+  let held = Promise.withResolvers<void>();
+  held.resolve();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request, srv) =>
+      srv.upgrade(request) ? undefined : new Response("upgrade only", { status: 400 }),
+    websocket: {
+      open: (ws) => {
+        sockets.push(ws);
+        ws.send(JSON.stringify({ type: "hello" }));
+      },
+      message: (_ws, data) => void frames.push(JSON.parse(String(data))),
+      close: () => void state.closed++,
+    },
+  });
+  const fetch = async (url: string, init: RequestInit): Promise<Response> => {
+    calls.push({ url, body: JSON.parse(String(init.body)) });
+    if (url.endsWith("/apps.connections.open"))
+      return Response.json(
+        opens[callsTo("apps.connections.open").length - 1] ?? {
+          ok: true,
+          url: `ws://127.0.0.1:${server.port}`,
+        },
+      );
+    if (!url.endsWith("/chat.postMessage")) return new Response("ok");
+    await held.promise;
+    state.answered++;
+    const body: Record<string, unknown> = JSON.parse(String(init.body));
+    return Response.json(typeof postReply === "function" ? postReply(body) : postReply);
+  };
+  const callsTo = (method: string) => calls.filter((call) => call.url.endsWith(`/${method}`));
+  return {
+    fetch,
+    frames,
+    sockets,
+    state,
+    callsTo,
+    hold: () => {
+      held = Promise.withResolvers<void>();
+    },
+    release: () => held.resolve(),
+    command: (socket: number, envelopeId: string, text: string) =>
+      sockets[socket]?.send(
+        JSON.stringify({
+          type: "slash_commands",
+          envelope_id: envelopeId,
+          payload: {
+            text,
+            user_id: "U1",
+            user_name: "aman",
+            channel_id: "C9",
+            response_url: "https://hooks.slack.test/commands/1",
+          },
+        }),
+      ),
+    stop: () => server.stop(true),
+  };
+};
+
+describe("Slack adapter", () => {
+  const stops: Array<() => unknown> = [];
+  afterEach(async () => {
+    await Promise.all(stops.splice(0).map((stop) => stop()));
+  });
+
+  // A started adapter on its first socket, with its keys read from the fake home's .env.
+  // REPLY is what chat.postMessage answers; ALLOWED is the .env's channel line.
+  const connect = async ({
+    reply,
+    allowed = "SLACK_ALLOWED_CHANNELS=C9",
+    reconnectMs = 10,
+    pingMs = 60_000,
+    opens,
+  }: {
+    reply?: PostReply;
+    allowed?: string;
+    reconnectMs?: number;
+    pingMs?: number;
+    opens?: readonly object[];
+  } = {}) => {
+    const deps = await buildDeps(launchesOk);
+    const { cwd } = tempWorkspace(
+      deps.home,
+      okWorkflow({ inputs: { prompt: { type: "string", required: true } } }),
+    );
+    writeFileSync(
+      join(deps.home, ".env"),
+      `SLACK_APP_TOKEN=xapp-fake\nSLACK_BOT_TOKEN=xoxb-fake\n${allowed}\n`,
+    );
+    const keys = readSlackKeys(deps.home);
+    if (keys === undefined) throw new Error("the fake home has no Slack keys");
+    const slack = fakeSlack(reply, opens);
+    const adapter = startSlackAdapter({
+      keys,
+      client: channelClient(deps),
+      log: noopLogger,
+      fetch: slack.fetch,
+      reconnectMs,
+      pingMs,
+      stopWaitMs: 200,
+    });
+    stops.push(adapter.stop, slack.stop);
+    if (opens === undefined) await eventually(() => slack.sockets.length === 1);
+    return { deps, slack, adapter, cwd };
+  };
+
+  test("SC636: a slash command is acknowledged, opens a thread, and starts a run that reports there", async () => {
+    const { deps, slack } = await connect();
+    slack.hold();
+
+    slack.command(0, "E1", "run ok.yaml do it --project demo");
+
+    await eventually(() => slack.frames.length === 1);
+    expect(slack.frames).toEqual([{ envelope_id: "E1" }]);
+    expect(slack.state.answered).toBe(0);
+    slack.release();
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    const [opened, reply] = slack.callsTo("chat.postMessage");
+    expect(opened?.body).toEqual({
+      channel: "C9",
+      text: expect.stringMatching(/^⏳ <@U1> \/yok run ok\.yaml/),
+    });
+    const [run] = await deps.registry.listRuns();
+    expect(run?.thread).toEqual({ place: "C9", threadId: "17.1", memberId: "U1" });
+    expect(run?.source).toEqual({ channel: "slack", id: "U1", name: "aman", place: "C9" });
+    expect(run?.policies?.values.interaction).toBe(false);
+    expect(reply?.body).toEqual(
+      expect.objectContaining({
+        channel: "C9",
+        thread_ts: "17.1",
+        text: expect.stringContaining(run?.id ?? "no run"),
+      }),
+    );
+  });
+
+  test("SC637: when the bot cannot post in the channel, nothing starts and only the user is told", async () => {
+    const { deps, slack } = await connect({ reply: { ok: false, error: "not_in_channel" } });
+
+    slack.command(0, "E1", "run ok.yaml do it --project demo");
+
+    await eventually(() => slack.callsTo("commands/1").length === 1);
+    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(slack.callsTo("commands/1")[0]?.body).toEqual({
+      response_type: "ephemeral",
+      text: expect.stringMatching(/not_in_channel.*Invite the yok app/),
+    });
+  });
+
+  test.each([
+    ["lists other channels", "SLACK_ALLOWED_CHANNELS=C1,C2"],
+    ["lists none", "SLACK_ALLOWED_CHANNELS="],
+    ["has no SLACK_ALLOWED_CHANNELS", ""],
+  ])(
+    "SC643: when the home's .env %s, /yok in C9 starts nothing, posts nothing in the channel and tells only the user",
+    async (_, allowed) => {
+      const { deps, slack } = await connect({ allowed });
+
+      slack.command(0, "E1", "run ok.yaml do it --project demo");
+
+      await eventually(() => slack.callsTo("commands/1").length === 1);
+      expect(slack.frames).toEqual([{ envelope_id: "E1" }]);
+      expect(slack.callsTo("chat.postMessage")).toEqual([]);
+      expect(await deps.registry.listRuns()).toEqual([]);
+      expect(slack.callsTo("commands/1")[0]?.body).toEqual({
+        response_type: "ephemeral",
+        text: expect.stringMatching(/not turned on in this channel.*SLACK_ALLOWED_CHANNELS/),
+      });
+    },
+  );
+
+  test("SC644: with C9 among the channels listed in SLACK_ALLOWED_CHANNELS, /yok run in C9 opens a thread and starts the run", async () => {
+    const { deps, slack } = await connect({ allowed: "SLACK_ALLOWED_CHANNELS=C1, C9" });
+
+    slack.command(0, "E1", "run ok.yaml do it --project demo");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.thread).toEqual({ place: "C9", threadId: "17.1", memberId: "U1" });
+    expect(slack.callsTo("chat.postMessage")[1]?.body).toEqual(
+      expect.objectContaining({
+        thread_ts: "17.1",
+        text: expect.stringContaining(run?.id ?? "no run"),
+      }),
+    );
+    expect(slack.callsTo("commands/1")).toEqual([]);
+  });
+
+  test("SC638: a project list answers in the thread as a table block with a code-block text fallback", async () => {
+    const { deps, slack, cwd } = await connect();
+    const listed = await channelClient(deps).projects();
+    if (!listed.ok) throw new Error(listed.error.message);
+    const [demo] = listed.value.projects;
+
+    slack.command(0, "E1", "project list");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    const cells = (row: readonly string[]) => row.map((text) => ({ type: "raw_text", text }));
+    expect(slack.callsTo("chat.postMessage")[1]?.body).toEqual({
+      channel: "C9",
+      thread_ts: "17.1",
+      text: `\`\`\`${renderProjects(listed.value.projects)}\`\`\``,
+      blocks: [
+        {
+          type: "table",
+          rows: [
+            cells(["NAME", "STATUS", "PATH", "ADDED BY"]),
+            cells(["demo", demo?.status ?? "", cwd, "api"]),
+          ],
+        },
+      ],
+    });
+  });
+
+  test("a reply holding ``` stays inside its one code block", async () => {
+    const { slack } = await connect();
+
+    slack.command(0, "E1", "project remove ```x y");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    const text = String(slack.callsTo("chat.postMessage")[1]?.body.text);
+    expect(text).toStartWith("❌ ```");
+    expect(text).toEndWith("```");
+    const inner = text.slice("❌ ```".length, -"```".length);
+    expect(inner).toContain("x, y");
+    expect(inner).not.toContain("``");
+  });
+
+  test("a thread reply Slack refuses for its table is posted again as text alone", async () => {
+    const { slack } = await connect({
+      reply: (body) =>
+        body.blocks === undefined
+          ? { ok: true, ts: "17.1" }
+          : { ok: false, error: "invalid_blocks" },
+    });
+
+    slack.command(0, "E1", "project list");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 3);
+    const [, table, text] = slack.callsTo("chat.postMessage");
+    expect(text?.body).toEqual({ channel: "C9", thread_ts: "17.1", text: table?.body.text });
+  });
+
+  test("a thread reply Slack refuses even as text reaches the person privately", async () => {
+    const { slack } = await connect({
+      reply: (body) =>
+        body.thread_ts === undefined
+          ? { ok: true, ts: "17.1" }
+          : { ok: false, error: "fatal_error" },
+    });
+
+    slack.command(0, "E1", "project list");
+
+    await eventually(() => slack.callsTo("commands/1").length === 1);
+    expect(slack.callsTo("commands/1")[0]?.body).toEqual({
+      response_type: "ephemeral",
+      text: slack.callsTo("chat.postMessage")[1]?.body.text,
+    });
+  });
+
+  test("SC639: a run refused for an unknown project answers in the thread with ❌ and the server's words", async () => {
+    const { deps, slack } = await connect();
+
+    slack.command(0, "E1", "run ok.yaml do it --project nope");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    expect(await deps.registry.listRuns()).toEqual([]);
+    const text = String(slack.callsTo("chat.postMessage")[1]?.body.text);
+    expect(text.startsWith("❌ ")).toBe(true);
+    expect(text).toContain('unknown project "nope"; known projects: demo');
+  });
+
+  test("SC640: after Slack sends disconnect, the adapter opens a second socket and keeps taking commands", async () => {
+    const { slack } = await connect();
+
+    slack.sockets[0]?.send(JSON.stringify({ type: "disconnect", reason: "refresh_requested" }));
+
+    await eventually(() => slack.sockets.length === 2);
+    expect(slack.callsTo("apps.connections.open")).toHaveLength(2);
+    slack.command(1, "E2", "project list");
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    expect(slack.frames).toEqual([{ envelope_id: "E2" }]);
+  });
+
+  test("after Slack sends disconnect, the next socket opens without waiting the reconnectMs a failure waits", async () => {
+    const { slack } = await connect({ reconnectMs: 60_000 });
+
+    slack.sockets[0]?.send(JSON.stringify({ type: "disconnect", reason: "refresh_requested" }));
+
+    await eventually(() => slack.sockets.length === 2, 1000);
+  });
+
+  test("a socket that answers no ping by the next pingMs is dropped and a new one opened", async () => {
+    const silent = silentSocket();
+    stops.push(silent.stop);
+    const { slack } = await connect({ pingMs: 20, opens: [{ ok: true, url: silent.url }] });
+
+    await eventually(() => slack.sockets.length === 1);
+    slack.command(0, "E2", "project list");
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+  });
+
+  test("a socket that answers its pings stays open", async () => {
+    const { slack } = await connect({ pingMs: 20 });
+
+    await Bun.sleep(200);
+
+    expect(slack.callsTo("apps.connections.open")).toHaveLength(1);
+    expect(slack.state.closed).toBe(0);
+  });
+
+  test("when apps.connections.open fails, the adapter asks again after reconnectMs and connects", async () => {
+    const { slack } = await connect({ opens: [{ ok: false, error: "invalid_auth" }] });
+
+    await eventually(() => slack.sockets.length === 1);
+    expect(slack.callsTo("apps.connections.open")).toHaveLength(2);
+  });
+
+  test("frames that are not JSON, have no type, or carry a bad slash payload are dropped and the next command is answered", async () => {
+    const { slack } = await connect();
+
+    slack.sockets[0]?.send("not json");
+    slack.sockets[0]?.send(JSON.stringify({ envelope_id: "E0" }));
+    slack.sockets[0]?.send(
+      JSON.stringify({ type: "slash_commands", envelope_id: "E1", payload: { text: 1 } }),
+    );
+    slack.command(0, "E2", "project list");
+
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    expect(slack.frames).toEqual([{ envelope_id: "E1" }, { envelope_id: "E2" }]);
+  });
+
+  test("SC641: stop() closes the socket for good: no new socket is asked for after reconnectMs", async () => {
+    const { slack, adapter } = await connect();
+
+    adapter.stop();
+
+    await eventually(() => slack.state.closed === 1);
+    await Bun.sleep(50);
+    expect(slack.callsTo("apps.connections.open")).toHaveLength(1);
+  });
+
+  test("stop() waits for a command already being answered, so the run it starts is recorded and the thread gets its reply", async () => {
+    const { deps, slack, adapter } = await connect();
+    slack.hold();
+    slack.command(0, "E1", "run ok.yaml do it --project demo");
+    await eventually(() => slack.callsTo("chat.postMessage").length === 1);
+
+    const stopped = { done: false };
+    const stopping = adapter.stop().then(() => {
+      stopped.done = true;
+    });
+    await Bun.sleep(20);
+    expect(stopped.done).toBe(false);
+    slack.release();
+    await stopping;
+
+    expect(await deps.registry.listRuns()).toHaveLength(1);
+    expect(slack.state.answered).toBe(2);
+  });
+
+  test("stop() gives up on a command still unanswered after stopWaitMs instead of hanging", async () => {
+    const { slack, adapter } = await connect();
+    slack.hold();
+    slack.command(0, "E1", "run ok.yaml do it --project demo");
+    await eventually(() => slack.callsTo("chat.postMessage").length === 1);
+
+    const started = Date.now();
+    await adapter.stop();
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(slack.state.answered).toBe(0);
+  });
+
+  test.each([
+    ["run ok.yaml “fix it” --input k=a&amp;b", 'run ok.yaml "fix it" --input k=a&b'],
+    ["run ok.yaml fix a &lt;b&gt; tag", "run ok.yaml fix a <b> tag"],
+    ["run ok.yaml say &amp;lt; literally", "run ok.yaml say &lt; literally"],
+    ["run ok.yaml ‘fix it’ --project demo", "run ok.yaml 'fix it' --project demo"],
+    ["project list", "project list"],
+  ])("SC635: command text %p reads back as %p, the way the person typed it", (text, typed) => {
+    expect(readCommandText(text)).toBe(typed);
   });
 });

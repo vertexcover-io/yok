@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { parseEnv } from "node:util";
 import {
   AgentStoppedEvent,
   type ArtifactRef,
@@ -13,9 +14,11 @@ import {
   type Notifier,
   QuestionAskedEvent,
   type Result,
+  readIfExists,
   type State,
   type Subscriber,
   type SubscriberInput,
+  type Thread,
   WorkflowBlockedEvent,
 } from "@yok/sdk";
 import * as z from "zod";
@@ -263,7 +266,7 @@ export const describeEvent = (event: Event, state: State): Notice | undefined =>
 
 // Slack reads <…> as a mention or a link, so text from a prompt or an agent could ping the
 // channel or disguise a link.
-const escapeSlack = (text: string): string =>
+export const escapeSlack = (text: string): string =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 // Outside the bold marker: Slack renders <@ID> as a name, and bold-wrapping it reads as shouting.
@@ -362,6 +365,26 @@ export const openNotifier = (type: Notifier["type"], env: Env = process.env): Re
 };
 
 export type OpenNotifier = typeof openNotifier;
+
+// A thread run reports with the yok home's bot token into the thread's channel, over any Slack
+// keys the project's .env sets. Read on every call, so the token never enters process.env.
+export const buildThreadEnv = async (
+  thread: Thread | undefined,
+  home: string,
+): Promise<Result<Record<string, string>>> => {
+  if (thread === undefined) return { ok: true, value: {} };
+  const path = join(home, ".env");
+  const token = parseEnv((await readIfExists(path)) ?? "").SLACK_BOT_TOKEN;
+  if (!token) return { ok: false, error: `a thread run needs SLACK_BOT_TOKEN in ${path}` };
+  return {
+    ok: true,
+    value: {
+      SLACK_BOT_TOKEN: token,
+      SLACK_CHANNEL_ID: thread.place,
+      ...(thread.memberId === undefined ? {} : { SLACK_MEMBER_ID: thread.memberId }),
+    },
+  };
+};
 
 // What init freezes as the notifier subscriber's module: the CLI serves this file under that name, so
 // it loads in a compiled binary, where this file has no path on disk.

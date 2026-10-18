@@ -17,13 +17,28 @@ import { createGit, execWithTimeout, noopLogger, registryPath } from "@yok/sdk";
 import { createRegistry, VERSION } from "@yok/sdk/internal";
 import prettyFactory from "pino-pretty";
 import { createApp } from "./app.ts";
+import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
-import { ensureApiKey, pidPath, portPath, readPort } from "./protocol.ts";
+import {
+  ensureApiKey,
+  homeEnvPath,
+  pidPath,
+  portPath,
+  readPort,
+  readSlackKeys,
+} from "./protocol.ts";
+import { startSlackAdapter } from "./slack.ts";
 import { startViewer } from "./viewer.ts";
 
 export type CheckCheckout = (
-  input: Readonly<{ cwd: string; config?: string; plan?: WorkflowPlan }>,
+  // env: values laid over the checkout's own env, such as a thread run's Slack keys
+  input: Readonly<{
+    cwd: string;
+    config?: string;
+    plan?: WorkflowPlan;
+    env?: Readonly<Record<string, string>>;
+  }>,
 ) => Promise<Readonly<{ env: Result<Record<string, string>>; report: DoctorReport }>>;
 
 export type Runtime = Readonly<{
@@ -48,9 +63,10 @@ export const runtimeChecks = (agent: WorkflowAgent): readonly Check[] => {
 
 // What yok doctor checks on a checkout, plus a workflow's own checks when one is starting. Its
 // env checks fall back to process.env, which is the server's.
-const checkCheckout: CheckCheckout = async ({ cwd, config, plan }) => {
+const checkCheckout: CheckCheckout = async ({ cwd, config, plan, env: over = {} }) => {
   const agent = plan?.agent ?? "claude";
-  const env = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent });
+  const loaded = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent });
+  const env = loaded.ok ? { ok: true as const, value: { ...loaded.value, ...over } } : loaded;
   const declared = plan === undefined ? [] : workflowChecks(plan.doctor, env);
   const report = await runDoctor({
     cwd,
@@ -75,6 +91,9 @@ const listen = (fetch: Fetch, port: number | undefined, saved: number | null) =>
 };
 
 // A newer server may already have written its own pid, and the CLI trusts only server.pid.
+// How long shutdown waits for a Slack command still being answered, such as a git clone.
+export const SLACK_STOP_WAIT_MS = 30_000;
+
 const removeOwnPid = async (home: string): Promise<void> => {
   const pid = await readFile(pidPath(home), "utf8").catch(() => "");
   if (pid === String(process.pid)) await rm(pidPath(home), { force: true });
@@ -147,10 +166,38 @@ export const startServer = async ({
     { port: server.port, pid: process.pid, version, viewer: viewer.origin },
     "server listening",
   );
+  const slackKeys = readSlackKeys(home);
+  if (slackKeys === undefined) {
+    serverLog.info(
+      {},
+      `slack off: set SLACK_APP_TOKEN and SLACK_BOT_TOKEN in ${homeEnvPath(home)}`,
+    );
+  }
+  // The client calls this app in-process, so a Slack command takes no network hop to reach it.
+  const slack =
+    slackKeys === undefined
+      ? undefined
+      : startSlackAdapter({
+          keys: slackKeys,
+          client: createYokClient({
+            url: `http://127.0.0.1:${server.port}`,
+            apiKey,
+            transport: (input, init) => Promise.resolve(app.request(input, init)),
+          }),
+          log: log.child({ component: "slack" }),
+          fetch,
+          reconnectMs: 5_000,
+          pingMs: 30_000,
+          stopWaitMs: SLACK_STOP_WAIT_MS,
+        });
 
   const stop = async (): Promise<void> => {
+    // First, so no command arriving during shutdown starts a run; one already being
+    // answered gets up to stopWaitMs to finish.
+    const slackStopped = slack?.stop();
     stopDeliveries();
     closing.abort();
+    await slackStopped;
     // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
     await server.stop();
     await Promise.all([viewer.stop(), removeOwnPid(home)]);

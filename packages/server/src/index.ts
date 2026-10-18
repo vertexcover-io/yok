@@ -49,5 +49,6 @@ export {
   defaultRuntime,
   type Runtime,
   runtimeChecks,
+  SLACK_STOP_WAIT_MS,
   startServer,
 } from "./server.ts";
