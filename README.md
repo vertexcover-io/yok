@@ -297,6 +297,8 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok claude` / `yok codex` | Open an agent session by hand with the yok plugin loaded |
 | `yok orchestrate …` | Called by skills during a run, not typed by hand |
 
+Once the Slack tokens are in the yok home's `.env`, `/yok run …` and `/yok project …` work from Slack too, in the channels listed in `SLACK_ALLOWED_CHANNELS`. With that key missing or empty, `/yok` works in no channel. See [Starting runs from Slack](docs/guide/07-setup-and-first-run.md#9-starting-runs-from-slack).
+
 ## Skills
 
 Each skill is a folder under `skills/`. In Claude Code every one is a slash command, `/yok:NAME`. In Codex it is `$NAME`. Both work inside any session, with or without a run. Click a name for its README.
