@@ -1453,7 +1453,7 @@ describe("runChannelCommand", () => {
     tempWorkspace(deps.home);
 
     const reply = await runChannelCommand(
-      "task fix the login bug --project demo --input environment=staging",
+      "run task fix the login bug --project demo --input environment=staging",
       slack,
       channelClient(deps),
     );
@@ -1475,7 +1475,7 @@ describe("runChannelCommand", () => {
     tempWorkspace(deps.home);
 
     const reply = await runChannelCommand(
-      "task don't break user's file",
+      "run task don't break user's file",
       slack,
       channelClient(deps),
     );
@@ -1489,7 +1489,7 @@ describe("runChannelCommand", () => {
     tempWorkspace(deps.home);
 
     const reply = await runChannelCommand(
-      'task store the token --project demo --input environment="QA 7"',
+      'run task store the token --project demo --input environment="QA 7"',
       slack,
       channelClient(deps),
     );
@@ -1503,7 +1503,7 @@ describe("runChannelCommand", () => {
     tempWorkspace(deps.home);
 
     const reply = await runChannelCommand(
-      "task fix it --interaction true --no-attach",
+      "run task fix it --interaction true --no-attach",
       slack,
       channelClient(deps),
     );
@@ -1572,7 +1572,7 @@ describe("runChannelCommand", () => {
     writeFileSync(join(cwd, "yok.yaml"), "version: 2\n");
 
     const reply = await runChannelCommand(
-      "task fix it --project demo --name login --config yok.yaml",
+      "run task fix it --project demo --name login --config yok.yaml",
       slack,
       channelClient(deps),
     );
@@ -1583,8 +1583,8 @@ describe("runChannelCommand", () => {
   });
 
   test.each([
-    ["--config", "task fix --config secret.yaml"],
-    ["workflow", "secret.yaml fix"],
+    ["--config", "run task fix --config secret.yaml"],
+    ["workflow", "run secret.yaml fix"],
   ])(
     "a %s file in the checkout that is not YAML is refused with its line and column, not its lines",
     async (_label, text) => {
@@ -1639,31 +1639,35 @@ describe("runChannelCommand", () => {
 
   const USAGE = [
     "commands:",
-    "  WORKFLOW PROMPT... [--project NAME] [--name NAME] [--input KEY=VALUE] [--config FILE]",
+    "  run WORKFLOW PROMPT... [--project NAME] [--name NAME] [--input KEY=VALUE] [--config FILE]",
     "  project list",
     "  project add [NAME] --git URL | --path DIR",
     "  project remove NAME [--purge]",
   ].join("\n");
 
   test.each([
-    ["task", () => "no prompt: write it after the workflow"],
-    ["task fix --bogus", () => "error: unknown option '--bogus'"],
-    ["task fix --input nope", () => '--input must be KEY=VALUE, got "nope"'],
+    ["run task", () => "no prompt: write it after the workflow"],
+    ["run task fix --bogus", () => "error: unknown option '--bogus'"],
+    ["run task fix --input nope", () => '--input must be KEY=VALUE, got "nope"'],
     [
-      "task fix --project nobody",
+      "run task fix --project nobody",
       async (client: YokClient) => {
         const refused = await client.run({ project: "nobody", workflow: "task", inputs: {} });
         return refused.ok ? "" : startErrorText(refused.error);
       },
     ],
     ["project frob", () => 'unknown project command "frob"; use add, list or remove'],
+    ["task fix it", () => 'unknown command "task"; use run or project'],
     ["", () => USAGE],
-    ['task "open', () => `unclosed quote\n${USAGE}`],
+    ['run task "open', () => `unclosed quote\n${USAGE}`],
     [
-      "task fix --config /etc/passwd",
+      "run task fix --config /etc/passwd",
       () => "/etc/passwd: name a file inside the project's checkout",
     ],
-    ["sub/../../ok.yaml fix", () => "sub/../../ok.yaml: name a file inside the project's checkout"],
+    [
+      "run sub/../../ok.yaml fix",
+      () => "sub/../../ok.yaml: name a file inside the project's checkout",
+    ],
   ])("SC623: %j is refused in the CLI's words and saves no run", async (text, expected) => {
     const deps = await buildDeps(launchesOk);
     tempWorkspace(deps.home);
@@ -1685,9 +1689,9 @@ describe("runChannelCommand", () => {
     const client = channelClient(deps);
 
     const replies = await Promise.all([
-      runChannelCommand("link.yaml fix it --project demo", slack, client),
-      runChannelCommand("away/ok.yaml fix it --project demo", slack, client),
-      runChannelCommand("ok.yaml fix it --project demo --config link.yaml", slack, client),
+      runChannelCommand("run link.yaml fix it --project demo", slack, client),
+      runChannelCommand("run away/ok.yaml fix it --project demo", slack, client),
+      runChannelCommand("run ok.yaml fix it --project demo --config link.yaml", slack, client),
     ]);
 
     expect(replies).toEqual([
@@ -1709,7 +1713,11 @@ describe("runChannelCommand", () => {
     };
     tempWorkspace(deps.home);
 
-    const reply = await runChannelCommand("task fix it --project demo", slack, channelClient(deps));
+    const reply = await runChannelCommand(
+      "run task fix it --project demo",
+      slack,
+      channelClient(deps),
+    );
 
     expect(reply.ok).toBe(false);
     expect(reply.text.split("\n").slice(0, 2)).toEqual([

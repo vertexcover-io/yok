@@ -200,7 +200,7 @@ export type ChannelReply = Readonly<{
 
 const USAGE = [
   "commands:",
-  "  WORKFLOW PROMPT... [--project NAME] [--name NAME] [--input KEY=VALUE] [--config FILE]",
+  "  run WORKFLOW PROMPT... [--project NAME] [--name NAME] [--input KEY=VALUE] [--config FILE]",
   "  project list",
   "  project add [NAME] --git URL | --path DIR",
   "  project remove NAME [--purge]",
@@ -399,6 +399,7 @@ export const runChannelCommand = async (
   if (!words.ok) return refuse(`${words.error}\n${USAGE}`);
   if (words.value.length === 0) return refuse(USAGE);
   const [first, ...rest] = words.value;
+  if (first === "run") return startRun(rest, source, client);
   if (first === "project") return manageProjects(rest, source, client);
-  return startRun(words.value, source, client);
+  return refuse(`unknown command "${first}"; use run or project`);
 };
