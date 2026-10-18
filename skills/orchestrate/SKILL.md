@@ -115,6 +115,9 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
        a `YOK-ERROR` line and the reason, instead of running `done`;
      - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
 
+     Tell it the node runs with `mode: subagent`. When the node's skill says how to use
+     sub-agents, tell it to follow the skill: the skill wins over this brief.
+
      Relay its questions to the user and send back the answers. For an approval request, run
      `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn, then send
      it each `[review]` message and the approval. When it ends, run `done` with its result, or

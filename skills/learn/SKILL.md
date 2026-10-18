@@ -3,7 +3,7 @@ name: learn
 description: "Turns corrections the user made into short learnings in docs/learnings/, after the user agrees how each should read, and records every proposal. Runs as the pipeline's learn stage right after planning, and whenever the user runs /yok:learn (with or without the rule) or says \"add a learning\" or \"remember that…\". Reads what the user said since the last learn pass. Not for one-off steering about one task, PR review comments, or architecture decisions (that is adr)."
 mode: inline
 allowed-tools: [Bash, Read, Edit, Write, Grep, Glob, AskUserQuestion]
-tier: standard
+tier: fast
 protocols: []
 scopes: []
 references:
