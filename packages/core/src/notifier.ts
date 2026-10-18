@@ -381,7 +381,8 @@ export const buildThreadEnv = async (
     value: {
       SLACK_BOT_TOKEN: token,
       SLACK_CHANNEL_ID: thread.place,
-      ...(thread.memberId === undefined ? {} : { SLACK_MEMBER_ID: thread.memberId }),
+      // empty rather than absent, so a member the project's .env names is not mentioned instead
+      SLACK_MEMBER_ID: thread.memberId ?? "",
     },
   };
 };

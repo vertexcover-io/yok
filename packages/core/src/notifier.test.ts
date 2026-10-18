@@ -619,6 +619,14 @@ describe("buildThreadEnv", () => {
     });
   });
 
+  test("SC626: a thread with no member clears SLACK_MEMBER_ID, so a project's own member is not mentioned", async () => {
+    const home = await homeWith("SLACK_BOT_TOKEN=xoxb-home\n");
+    expect(await buildThreadEnv({ place: "C9", threadId: "17.1" }, home)).toEqual({
+      ok: true,
+      value: { SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "" },
+    });
+  });
+
   test("SC626: no thread gives no keys", async () => {
     expect(await buildThreadEnv(undefined, await homeWith(""))).toEqual({ ok: true, value: {} });
   });
