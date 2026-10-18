@@ -9,7 +9,7 @@ tags: [harness-server, harness-cli, chat-channels]
 
 ## Context and Problem Statement
 
-A chat inbox (Slack, later Discord or Telegram) must turn a typed line such as `task fix the login bug --project refrens` into a run, with the same flags and wording the CLI has. The commander definitions lived in @yok/cli, which @yok/server cannot import because the CLI depends on the server.
+A chat inbox (Slack, later Discord or Telegram) must turn a typed line such as `run task "fix the login bug" --project refrens` into a run, with the same flags and wording the CLI has. The commander definitions lived in @yok/cli, which @yok/server cannot import because the CLI depends on the server.
 
 ## Considered Options
 
