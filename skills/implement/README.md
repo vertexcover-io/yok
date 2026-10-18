@@ -1,6 +1,6 @@
 # implement
 
-Builds a change test-first and commits it: an approved plan, one of its phases, or a plain request. Independent phases are built in parallel by sub-agents.
+Builds a change test-first and commits it: an approved plan, one of its phases, or a plain request. Phases are built one after another: each in its own sub-agent when the node runs with `mode: subagent`, inline otherwise.
 
 ## When it runs
 
@@ -12,7 +12,7 @@ Standalone, invoke it with `/yok:implement` in Claude Code or `$implement` in Co
 
 - Picks the assignment, first match wins: the run's `plan.md`, else the user's request.
 - Reads the project's `orchestrate.config.yaml` or `.json` for each package's test, typecheck and lint commands, and the run's baseline to tell old failures from regressions. Loads `code-quality` and `tdd`.
-- Builds phases in waves from the plan's dependency graph. Phases with no unbuilt dependency run at once, one sub-agent each, in the same worktree; two phases that share a file run one after the other.
+- Builds the phases one at a time in the order of the plan's dependency graph. With `mode: subagent`, each phase gets its own sub-agent in the same worktree; with `mode: inline`, the stage builds them itself.
 - Each phase: one test per scenario at the level the plan assigns, then the full tests, typecheck and lint, then its E2E leg with the runner's JSON saved as evidence.
 - Commits each completed phase with the plan's `## Commit` message. Never pushes.
 - Asks the user one question when blocked; if the answer cannot unblock it, finishes the stage with an error rather than reporting unfinished work.
