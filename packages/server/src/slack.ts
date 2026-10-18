@@ -146,6 +146,9 @@ export const answerSlashCommand = async (payload: SlashPayload, deps: SlackDeps)
   if (!retried.ok) await replyPrivately(fetch, payload, formatted.text);
 };
 
+// A redelivery follows its first delivery closely, so only the latest envelope ids are kept.
+const SEEN_LIMIT = 500;
+
 // Bun's client socket has these; the DOM WebSocket type the checker sees does not.
 type BunSocket = WebSocket & Readonly<{ ping: () => void; terminate: () => void }>;
 const isBunSocket = (ws: WebSocket): ws is BunSocket => "ping" in ws && "terminate" in ws;
@@ -163,11 +166,15 @@ const parseFrame = (data: unknown): unknown => {
 export const startSlackAdapter = (deps: SlackDeps): Readonly<{ stop: () => Promise<void> }> => {
   const { log } = deps;
   const answering = new Set<Promise<void>>();
+  // Envelope ids already answered, so a redelivered one does not start a second run.
+  const seen = new Set<string>();
   let stopped = false;
   let socket: WebSocket | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   const receive = (ws: WebSocket, data: unknown): void => {
+    // Unacknowledged, so Slack hands it to the server that replaces this one.
+    if (stopped) return;
     const envelope = EnvelopeSchema.safeParse(parseFrame(data)).data;
     if (envelope === undefined) return;
     if (envelope.type === "hello") log.info({}, "slack connected");
@@ -180,6 +187,9 @@ export const startSlackAdapter = (deps: SlackDeps): Readonly<{ stop: () => Promi
     if (envelope.type !== "slash_commands" || envelope.envelope_id === undefined) return;
     // Acknowledged first: Slack shows the person an error after three seconds without it.
     ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+    if (seen.has(envelope.envelope_id)) return;
+    seen.add(envelope.envelope_id);
+    if (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value ?? "");
     const payload = SlashPayloadSchema.safeParse(envelope.payload).data;
     if (payload === undefined) return;
     const answer = answerSlashCommand(payload, deps).catch((error: unknown) =>

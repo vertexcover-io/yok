@@ -2206,6 +2206,31 @@ describe("Slack adapter", () => {
     expect(slack.frames).toEqual([{ envelope_id: "E1" }, { envelope_id: "E2" }]);
   });
 
+  test("an envelope Slack delivers twice is acknowledged both times and answered once", async () => {
+    const { slack } = await connect();
+
+    slack.command(0, "E1", "project list");
+    slack.command(0, "E1", "project list");
+
+    await eventually(() => slack.frames.length === 2);
+    await eventually(() => slack.callsTo("chat.postMessage").length === 2);
+    await Bun.sleep(50);
+    expect(slack.frames).toEqual([{ envelope_id: "E1" }, { envelope_id: "E1" }]);
+    expect(slack.callsTo("chat.postMessage")).toHaveLength(2);
+  });
+
+  test("a command that reaches the socket after stop() begins is neither acknowledged nor answered", async () => {
+    const { slack, adapter } = await connect();
+
+    const stopping = adapter.stop();
+    slack.command(0, "E1", "project list");
+    await stopping;
+    await Bun.sleep(50);
+
+    expect(slack.frames).toEqual([]);
+    expect(slack.callsTo("chat.postMessage")).toHaveLength(0);
+  });
+
   test("SC641: stop() closes the socket for good: no new socket is asked for after reconnectMs", async () => {
     const { slack, adapter } = await connect();
 
