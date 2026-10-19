@@ -550,6 +550,25 @@ describe("viewer in a browser", () => {
     }
   }, 30000);
 
+  test("SC531: an unattended run's page draws no Comment mode button", async () => {
+    const policies = { values: { interaction: false }, sources: { interaction: "cli" } };
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), policies }),
+    );
+    try {
+      await browser("open", `${url}#artifacts/design.md`);
+      await until("document.querySelector('#modeBtn').hidden === true");
+      expect(await evaluate("getComputedStyle(document.querySelector('#modeBtn')).display")).toBe(
+        "none",
+      );
+    } finally {
+      rmSync(join(runDir, "state.json"), { force: true });
+      // the next test opens this same URL, which does not reload the page
+      await until("document.querySelector('#modeBtn').hidden === false");
+    }
+  }, 30000);
+
   test("SC13: Send posts one comment at once, Control+Enter does the same, no batch appears, and stored anchors keep their lines", async () => {
     await browser("set", "viewport", "1280", "800");
     await browser("open", `${url}#artifacts/design.md`);

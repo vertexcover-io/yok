@@ -1,9 +1,17 @@
 import { stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { readWorkflowFile, sortTopologically, type Workflow, type WorkflowNode } from "@yok/core";
-import type { Blocker, ITerminalHost, JsonValue, NodeRun, State, WorkflowRun } from "@yok/sdk";
+import type {
+  Blocker,
+  ITerminalHost,
+  JsonValue,
+  NodeRun,
+  SavedPolicies,
+  State,
+  WorkflowRun,
+} from "@yok/sdk";
 import { runDirOf, SkipOutputSchema } from "@yok/sdk";
-import { findRunningLeaf, isRunLive, type Registry } from "@yok/sdk/internal";
+import { findRunningLeaf, isRunLive, type Registry, resolvePolicies } from "@yok/sdk/internal";
 import * as z from "zod";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
 
@@ -26,6 +34,8 @@ export type RunSummary = Readonly<{
   startedAt: string;
   completedAt: string | null;
   pr: string | null;
+  // each policy's value and where it came from
+  policies: SavedPolicies;
 }>;
 
 export type RunFiles = Readonly<{
@@ -84,6 +94,7 @@ export const summarizeRun = (
     startedAt: run.createdAt,
     completedAt: null,
     pr: null,
+    policies: run.policies ?? resolvePolicies({}),
   };
   if (run.name === null) return { ...base, status: "starting" };
   const { state } = files;
@@ -103,6 +114,7 @@ export const summarizeRun = (
     startedAt: state.startedAt,
     completedAt: state.completedAt,
     pr: findPr(state),
+    policies: state.policies ?? base.policies,
   };
 };
 

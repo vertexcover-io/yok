@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { ERROR_MESSAGE_LIMIT, type JsonValue, runDirOf, type WorkflowRun } from "@yok/sdk";
+import {
+  ERROR_MESSAGE_LIMIT,
+  type JsonValue,
+  runDirOf,
+  type SavedPolicies,
+  type WorkflowRun,
+} from "@yok/sdk";
 import { appendRunEvent, jsonlEventStore, RegistryFileSchema } from "@yok/sdk/internal";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./workflow/test-stages.ts";
@@ -247,6 +253,27 @@ describe("SC26: orchestrate emit", () => {
     expect(attempted.code).toBe(1);
     expect(attempted.stderr).toContain("workflow.node.completed");
     expect(await eventsOf(repo)).toHaveLength(before);
+  });
+
+  test("SC519: emit policy.applied with a valid payload exits 1 as engine-written and stores nothing", async () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    initializedRun(home, repo);
+    const before = await eventsOf(repo);
+    const payload = { policy: "interaction", effect: "auto-approved", path: "artifacts/design.md" };
+    const attempted = orchestrate(repo, home, [
+      "emit",
+      "policy.applied",
+      "--run",
+      "feat-x",
+      "--source",
+      "design",
+      "--payload",
+      JSON.stringify(payload),
+    ]);
+    expect(attempted.code).not.toBe(0);
+    expect(attempted.stderr).toContain("policy.applied is written only by the engine");
+    expect(await eventsOf(repo)).toEqual(before);
   });
 
   test.each([
@@ -1103,8 +1130,41 @@ describe("SC26: orchestrate next and done with stages", () => {
       extension: join(repo, "docs/producer-ext.md"),
       input: { request: "hi" },
       variables: {},
+      policies: { interaction: true },
       done: `yok orchestrate done ${reply.nodeRunId} --run feat-x`,
     });
+  });
+
+  test("SC508: init copies the saved policies into state.json, and the stage and agent replies carry interaction false", () => {
+    const POLICED = `name: policed
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: make, type: agent, stage: plain, input: {} }
+  - { id: plan, type: agent, prompt: plan it, dependsOn: [make], input: {} }
+`;
+    const policies: SavedPolicies = {
+      values: { interaction: false },
+      sources: { interaction: "workflow" },
+    };
+    const run = startedRun(POLICED, undefined, { policies });
+    const step = (args: readonly string[]) =>
+      orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
+    expect(stateOf(run.repo).policies).toEqual(policies);
+
+    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(make).toMatchObject({ kind: "stage", policies: { interaction: false } });
+
+    const summary = ["--summary", "Made it.", "--output", "{}"];
+    expect(step(["done", make.nodeRunId, "--run", "feat-x", ...summary]).code).toBe(0);
+    const plan = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    expect(plan).toMatchObject({ kind: "agent", policies: { interaction: false } });
+
+    const unsaved = startedRun(POLICED);
+    const first = orchestrate(unsaved.repo, unsaved.home, ["next", "--run", "feat-x"], {
+      YOK_SKILLS_DIR: STAGE_SKILLS,
+    });
+    expect(JSON.parse(first.stdout)).toMatchObject({ policies: { interaction: true } });
   });
 
   test("next hands a stage its summary hint, and done records the summary in state", () => {
@@ -1359,6 +1419,49 @@ nodes:
     expect(JSON.parse(failed.stdout)).toMatchObject({
       status: "failed",
       error: { message: "could not" },
+    });
+  });
+
+  const ALLOWED_TO_FAIL = `name: allowed
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: make, type: agent, stage: plain, allowFailure: true, input: {} }
+  - { id: after, type: agent, prompt: go on, input: {} }
+`;
+  // Starts ALLOWED_TO_FAIL with OVERRIDES on its registry entry, and fails `make` with QUESTION.
+  const failMake = (overrides: Partial<WorkflowRun>) => {
+    const run = startedRun(ALLOWED_TO_FAIL, undefined, overrides);
+    const step = (args: readonly string[], input = "") =>
+      orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS }, input);
+    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const question = "Which region? Only a person knows.";
+    step(["done", make.nodeRunId, "--run", "feat-x", "--error", "-"], question);
+    return { ...run, step, question };
+  };
+
+  test("SC516: with interaction off, done --error fails an allowFailure stage as needs-input and next ends the run failed", () => {
+    const policies: SavedPolicies = {
+      values: { interaction: false },
+      sources: { interaction: "cli" },
+    };
+    const { repo, step, question } = failMake({ policies });
+
+    expect(stateOf(repo).nodeRuns.make.output).toEqual({ kind: "needs-input", message: question });
+    expect(JSON.parse(step(["next", "--run", "feat-x"]).stdout)).toEqual({
+      kind: "finished",
+      status: "failed",
+    });
+    expect(stateOf(repo).nodeRuns.after).toBeUndefined();
+  });
+
+  test("SC517: with no saved policies, done --error fails an allowFailure stage as exception and next starts the following node", () => {
+    const { repo, step, question } = failMake({});
+
+    expect(stateOf(repo).nodeRuns.make.output).toEqual({ kind: "exception", message: question });
+    expect(JSON.parse(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({
+      kind: "agent",
+      nodeId: "after",
     });
   });
 });
@@ -1807,6 +1910,45 @@ describe("SC26: orchestrate hook stop", () => {
       expect(replies[2]?.stderr).toContain("notes.md");
       expect(replies[3]?.stderr).toContain("artifacts/drafts");
       expect(await approvalRequests(run.repo)).toEqual([]);
+    });
+
+    test("SC518: with interaction off, await-approval approves at once, records policy.applied, and done then completes the node", async () => {
+      const policies: SavedPolicies = {
+        values: { interaction: false },
+        sources: { interaction: "cli" },
+      };
+      const run = startedRun(ONE_AGENT, undefined, { policies });
+      const next = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+      mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts"), { recursive: true });
+      writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "design.md"), "# Design\n");
+
+      const reply = awaitApproval(run, next.nodeRunId, "artifacts/design.md");
+
+      expect(reply.code).toBe(0);
+      expect(JSON.parse(reply.stdout)).toEqual({
+        nodeRunId: next.nodeRunId,
+        path: "artifacts/design.md",
+        autoApproved: true,
+      });
+      expect(stateOf(run.repo).nodeRuns.plan.awaitingApproval).toBeUndefined();
+      expect(stateOf(run.repo).autoApproved).toEqual(["artifacts/design.md"]);
+      const events = await eventsOf(run.repo);
+      expect(events.filter((event) => event.type === "policy.applied")).toEqual([
+        expect.objectContaining({
+          nodeRunId: next.nodeRunId,
+          payload: {
+            policy: "interaction",
+            effect: "auto-approved",
+            nodeId: "plan",
+            path: "artifacts/design.md",
+          },
+        }),
+      ]);
+      expect(await approvalRequests(run.repo)).toEqual([]);
+      const finish = ["--summary", "Planned.", "--output", "{}"];
+      const done = ["done", next.nodeRunId, "--run", "feat-x", ...finish];
+      expect(orchestrate(run.repo, run.home, done).code).toBe(0);
+      expect(stateOf(run.repo).nodeRuns.plan.status).toBe("completed");
     });
   });
 });

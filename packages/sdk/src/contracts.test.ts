@@ -6,6 +6,8 @@ import {
   StateSchema,
   tierLaunch,
 } from "./contracts.ts";
+import { readPolicies } from "./policies.ts";
+import { WorkflowRunSchema } from "./registry.ts";
 
 const agentRun = {
   nodeRunId: "plan-1",
@@ -48,6 +50,23 @@ const validState = {
 };
 
 describe("StateSchema", () => {
+  test("SC505: a state.json and a registry entry saved before policies parse, and read as interaction true", () => {
+    const state = StateSchema.parse(validState);
+    const run = WorkflowRunSchema.parse({
+      id: "r-test",
+      workflow: "feature",
+      workflowPath: "/work/workflow.yaml",
+      inputs: {},
+      cwd: "/work",
+      sessions: [],
+      name: null,
+      tiers: null,
+      createdAt: "2026-09-26T10:00:00Z",
+    });
+    expect(readPolicies(state.policies)).toEqual({ interaction: true });
+    expect(readPolicies(run.policies)).toEqual({ interaction: true });
+  });
+
   test("EH3 — a state.json with no custom or eventHandlers parses with no custom and no handlers", () => {
     const parsed = StateSchema.parse(validState);
     expect(parsed.eventHandlers).toEqual({});

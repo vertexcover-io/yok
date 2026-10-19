@@ -32,6 +32,7 @@ import {
   TierModelSchema,
 } from "./contracts.ts";
 import type { IEventStore } from "./event-store.ts";
+import { PoliciesSchema } from "./policies.ts";
 import type { EventHandler, EventHandlers } from "./state.ts";
 import { VerifierRunSchema } from "./verifier.ts";
 
@@ -118,14 +119,15 @@ export const WorkflowStartedEvent = z.object({
 
 export const WorkflowEndedEvent = z.object({ payload: z.strictObject({}) });
 
-// Why the Stop hook answered as it did. node-not-done and next-not-run send the agent back to
-// work; the rest let the turn end.
+// Why the Stop hook answered as it did. node-not-done, next-not-run and unanswered-stop send the
+// agent back to work; the rest let the turn end.
 export const StopReasonSchema = z.enum([
   "run-finished",
   "user-chat",
   "max-blocks-reached",
   "node-not-done",
   "next-not-run",
+  "unanswered-stop",
   "context-node",
   "model-switch",
   "awaiting-approval",
@@ -146,6 +148,8 @@ export const StopCalledEvent = z.object({
     // the text the agent was sent back with
     message: z.string().optional(),
     nodeRunId: NonEmptyStringSchema.optional(),
+    // tool calls in the session's transcript at this check, when the hook read it
+    toolCalls: z.int().nonnegative().optional(),
   }),
 });
 
@@ -486,6 +490,17 @@ const ApprovalRequestedEvent = nodeEvent(
   z.strictObject({ path: FileArtifactSchema.shape.path, ...placement }),
 );
 
+// A run policy changed what would have happened: a question refused, an approval given without a
+// person, or a node failed because its agent stopped with no one to answer.
+export const PolicyAppliedEvent = z.object({
+  payload: z.strictObject({
+    policy: PoliciesSchema.keyof(),
+    effect: z.enum(["question-refused", "auto-approved", "unanswered-stop"]),
+    nodeId: NonEmptyStringSchema.optional(),
+    path: FileArtifactSchema.shape.path.optional(),
+  }),
+});
+
 const catalog: Readonly<Record<string, z.ZodType>> = {
   "workflow.started": WorkflowStartedEvent,
   "workflow.completed": WorkflowEndedEvent,
@@ -533,6 +548,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "artifact.comment.delivered": CommentDeliveredEvent,
   "artifact.comment.replied": CommentRepliedEvent,
   "artifact.approval.requested": ApprovalRequestedEvent,
+  "policy.applied": PolicyAppliedEvent,
 };
 
 // An event before the emitter fills runId, ts and (when not given) id. Built from the shape,
@@ -854,6 +870,15 @@ const onCustomStateUpdated: EventHandler = (state, event) => {
   return { ...state, custom: { ...state.custom, ...parsed.data.payload } };
 };
 
+const onPolicyApplied: EventHandler = (state, event) => {
+  const parsed = PolicyAppliedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { effect, path } = parsed.data.payload;
+  const approved = state.autoApproved ?? [];
+  if (effect !== "auto-approved" || path === undefined || approved.includes(path)) return state;
+  return { ...state, autoApproved: [...approved, path] };
+};
+
 const onApprovalRequested: EventHandler = (state, event) => {
   const parsed = ApprovalRequestedEvent.safeParse(event);
   if (!parsed.success) return state;
@@ -985,4 +1010,5 @@ export const builtInHandlers: EventHandlers = {
   "custom.state.updated": onCustomStateUpdated,
   "artifact.comment.added": onCommentAdded,
   "artifact.approval.requested": onApprovalRequested,
+  "policy.applied": onPolicyApplied,
 };

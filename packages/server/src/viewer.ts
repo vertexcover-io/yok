@@ -20,7 +20,7 @@ import type {
   State,
   WorkflowRun,
 } from "@yok/sdk";
-import { emitRunEvent, NonEmptyStringSchema, runDirOf } from "@yok/sdk";
+import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
 import { CommentDraftSchema, type Registry } from "@yok/sdk/internal";
 import hljs from "highlight.js/lib/common";
 import type { Context, MiddlewareHandler } from "hono";
@@ -65,6 +65,7 @@ export type ArtifactEntry = Readonly<{
   type: FileType;
   draft: boolean;
   awaitingApproval: boolean;
+  autoApproved: boolean;
 }>;
 export type ViewedRun =
   | Readonly<{ kind: "missing" }>
@@ -476,6 +477,7 @@ export const listArtifacts = async (
     ),
   );
   const awaited = new Set(findAwaitedFiles(state));
+  const autoApproved = new Set(state?.autoApproved ?? []);
   const inside = (await walk(artifactsDir)).filter(
     (file) => resolveArtifactPath(runDir, relative(runDir, file).split(sep).join("/")) !== null,
   );
@@ -490,6 +492,7 @@ export const listArtifacts = async (
         type: fileType(path),
         draft: !delivered.has(path),
         awaitingApproval: awaited.has(path),
+        autoApproved: autoApproved.has(path),
       };
     });
 };
@@ -538,6 +541,14 @@ const fileReply = async (c: Context, page: ReadyRun, entry: ArtifactEntry) => {
   }
   return c.json(entry);
 };
+
+// The registry keeps the policies the run launched with, so a missing or unreadable state.json
+// cannot open an unattended run to comments; state.json covers runs saved before policies.
+const takesComments = (page: ReadyRun, state: State | null): boolean =>
+  readPolicies(page.run.policies ?? state?.policies).interaction;
+
+const refuseUnattended = (c: Context): Response =>
+  c.text("this run takes no comments: its interaction policy is off", 409);
 
 const requireReadyRun = async (c: Context, deps: ViewerDeps): Promise<ReadyRun | Response> => {
   const page = await findViewedRun(deps.registry, c.req.param("id") ?? "");
@@ -775,7 +786,9 @@ export const viewerRoutes = (deps: ViewerDeps) =>
         return c.text("a batch can approve each file only once", 409);
       }
       return inRunQueue(id, async () => {
-        const awaited = new Set(findAwaitedFiles(await readStateOrNull(page.runDir)));
+        const state = await readStateOrNull(page.runDir);
+        if (!takesComments(page, state)) return refuseUnattended(c);
+        const awaited = new Set(findAwaitedFiles(state));
         const unawaited = approved.find((file) => !awaited.has(file));
         if (unawaited !== undefined) {
           return c.text(`nothing waits for approval on ${unawaited}`, 409);
@@ -811,6 +824,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       if (page instanceof Response) return page;
       const body = FollowUpSchema.safeParse(await c.req.json().catch(() => null));
       if (!body.success) return c.text("invalid reply", 400);
+      if (!takesComments(page, await readStateOrNull(page.runDir))) return refuseUnattended(c);
       const replied = await addUserReply(
         page.runDir,
         c.req.param("cid"),

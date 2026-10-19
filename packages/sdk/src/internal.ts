@@ -36,6 +36,11 @@ export {
   runLockPath,
   runScriptFile,
 } from "./files.ts";
+export {
+  type PolicyLayers,
+  parsePolicyFlags,
+  resolvePolicies,
+} from "./policies.ts";
 export { devPluginDir, isCompiled, prependPath, selfArgv, writeShim } from "./process.ts";
 export {
   createRegistry,

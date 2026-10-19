@@ -1,6 +1,12 @@
 import { isAbsolute, join } from "node:path";
 import { WorkflowAgentSchema } from "@yok/core";
-import { JsonObjectSchema, SlugSchema, TiersConfigSchema, yokHome } from "@yok/sdk";
+import {
+  JsonObjectSchema,
+  PolicyLayerSchema,
+  SlugSchema,
+  TiersConfigSchema,
+  yokHome,
+} from "@yok/sdk";
 import * as z from "zod";
 
 export const socketPath = (home: string = yokHome()): string => join(home, "yok.sock");
@@ -30,6 +36,11 @@ export const StartRunBodySchema = z.strictObject({
   agent: WorkflowAgentSchema.default("claude"),
   // the workflow's tiers, merged over the built-in and the config's into the run's tier set
   tiers: TiersConfigSchema.default({}),
+  // the top workflow's policies and the `yok run` flags' values; the server merges them over the
+  // config's into the run's policies
+  policies: z
+    .strictObject({ workflow: PolicyLayerSchema.default({}), cli: PolicyLayerSchema.default({}) })
+    .prefault({}),
   // the env the session starts with, which yok run builds from the project's .env, the config
   // and the workflow; required, so a caller that forgets it is refused rather than run without it
   env: z.record(z.string(), z.string()),

@@ -61,8 +61,11 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
    - `stage` with `mode: inline`: tell the user `▶ NODE_ID (stage STAGE)`. Read the file at `skill`,
      then the file at `extension` when it is not null; where the extension conflicts with the skill,
      the extension wins. Follow the skill with the reply's `input` as its input, `variables` as the
-     values of the variables the skill names, and `prompt` as extra instructions when present. When
-     the skill needs one of its references, run
+     values of the variables the skill names, and `prompt` as extra instructions when present.
+     The reply's `policies` lists the run's policies. Open `references/policies.md` and find
+     each policy from the reply by its heading, `## NAME: VALUE`. Do what those entries say.
+     A policy with no heading there changes nothing.
+     When the skill needs one of its references, run
      `yok orchestrate skill ref STAGE.REF`. It needs no `--run`: it finds the run through
      `YOK_RUN_ID` and reads the config that run started with. Never open a reference file by
      its path, since that skips the project's changes to it. When the skill says to run one of
@@ -105,7 +108,8 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      completed, reports `verify-exhausted`, or you report an unrecoverable stage error with
      `done --error`. Log `✓` or `✗` from the printed JSON, then go back to 1.
    - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
-     `input` as its data, then finish it with the reply's `done` command the same way as a stage.
+     `input` as its data, and follow the reply's `policies` the same way as a stage. Then finish
+     it with the reply's `done` command the same way as a stage.
    - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. Start a
      background subagent on the reply's `tier` when present. Brief it to do the node as the
      `mode: inline` steps above say, with the reply's fields, and:

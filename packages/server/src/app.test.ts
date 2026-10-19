@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { captureLogger } from "@yok/core";
-import type { IAgentProvider, ITerminal, LaunchOptions, Result } from "@yok/sdk";
+import type { IAgentProvider, ITerminal, LaunchOptions, Result, SavedPolicies } from "@yok/sdk";
 import { noopLogger, WorkflowRunSchema } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import * as z from "zod";
@@ -239,7 +239,7 @@ describe("POST /runs", () => {
 
   // Starts a run of AGENT with the config file CONFIG holds and the request's TIERS; gives back the
   // reply and the launch options the provider saw.
-  const startTiered = async (agent: string, config: string, tiers?: object) => {
+  const startTiered = async (agent: string, config: string, tiers?: object, policies?: object) => {
     const { workflowPath, cwd } = tempWorkspace();
     const configPath = join(cwd, "tiers.yaml");
     writeFileSync(configPath, config);
@@ -260,6 +260,7 @@ describe("POST /runs", () => {
         agent,
         config: configPath,
         ...(tiers === undefined ? {} : { tiers }),
+        ...(policies === undefined ? {} : { policies }),
       }),
     });
     const launched = seen.map(({ model, effort }) => ({ model, effort }));
@@ -307,6 +308,35 @@ describe("POST /runs", () => {
     };
     expect((await deps.registry.findRun(run.id))?.tiers).toEqual(tiers);
     expect(launched).toEqual([{ model: "haiku-x", effort: undefined }]);
+  });
+
+  test("SC506: the CLI's interaction false wins over the config's and workflow's true, saved on the run and returned", async () => {
+    const { res, deps } = await startTiered(
+      "claude",
+      "version: 2\npolicies:\n  interaction: true\n",
+      undefined,
+      { workflow: { interaction: true }, cli: { interaction: false } },
+    );
+
+    expect(res.status).toBe(201);
+    const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
+    const policies: SavedPolicies = {
+      values: { interaction: false },
+      sources: { interaction: "cli" },
+    };
+    expect(run.policies).toEqual(policies);
+    expect((await deps.registry.findRun(run.id))?.policies).toEqual(policies);
+  });
+
+  test("SC507: a request with no policies starts a run with interaction true from the default", async () => {
+    const { res } = await startTiered("claude", "version: 2\n");
+
+    expect(res.status).toBe(201);
+    const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
+    expect(run.policies).toEqual({
+      values: { interaction: true },
+      sources: { interaction: "default" },
+    });
   });
 
   test("the session starts with the env the request carries, under yok's own variables", async () => {

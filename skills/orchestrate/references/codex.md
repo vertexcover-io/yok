@@ -11,7 +11,8 @@ marked unverified come from Codex's documentation and were not run against a liv
   the second stop goes through. A stage asking for approval runs `yok orchestrate await-approval`
   first, and then the first stop goes through. Between nodes, a turn that ran no orchestrate
   command is treated as a chat with the user and is not sent back. Unverified: a structured
-  question tool, which Codex offers only in some modes, would also work.
+  question tool, which Codex offers only in some modes, would also work. When the run's
+  `interaction` policy is false, never ask: see `policies.md`.
 - **Long commands:** run an inline `exec` as a normal shell call and allow it up to 10 minutes.
   For a `mode: background` command, or an inline one that timed out, start it as a long-running
   shell command and poll it until it ends. Unverified: Codex's background-process behavior varies
