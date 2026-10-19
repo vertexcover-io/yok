@@ -16,7 +16,15 @@ import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
+import {
+  claudeOver,
+  EMPTY_BOX,
+  fakeHost,
+  RULE,
+  type SseEvent,
+  seedState,
+  sseReader,
+} from "./fake-host.ts";
 import {
   editorCommand,
   listArtifacts,
@@ -347,6 +355,7 @@ const setup = async (screen?: string, alive = true) => {
     providerFor: () => claudeOver(host),
     host,
     now,
+    closing: new AbortController().signal,
     openInEditor: (target) => {
       opened.push(target);
       return { ok: true, value: null };
@@ -775,40 +784,6 @@ describe("comment routes", () => {
   });
 });
 
-type SseEvent = { event: string; data: unknown };
-
-const sseReader = (res: Response) => {
-  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-  const decoder = new TextDecoder();
-  const seen: SseEvent[] = [];
-  let buffer = "";
-  const parse = (chunk: string): void => {
-    const event = /^event: (.*)$/m.exec(chunk)?.[1];
-    const data = /^data: (.*)$/m.exec(chunk)?.[1];
-    if (event !== undefined && data !== undefined) seen.push({ event, data: JSON.parse(data) });
-  };
-  const pump = (async () => {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop() ?? "";
-      chunks.forEach(parse);
-    }
-  })().catch(() => undefined);
-  const waitFor = async (match: (e: SseEvent) => boolean, ms = 3000): Promise<SseEvent> => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      const hit = seen.find(match);
-      if (hit !== undefined) return hit;
-      await Bun.sleep(25);
-    }
-    throw new Error(`no matching event in ${ms}ms; saw ${JSON.stringify(seen)}`);
-  };
-  return { seen, waitFor, close: () => reader.cancel().then(() => pump) };
-};
-
 describe("run stream", () => {
   test("SC30: the stream sends the run's state at once and again when something changes", async () => {
     const { app, registry, cwd } = await setup();
@@ -1029,6 +1004,7 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
     host,
     now: () => new Date(),
     openInEditor: () => ({ ok: true, value: null }),
+    closing: new AbortController().signal,
   });
 };
 

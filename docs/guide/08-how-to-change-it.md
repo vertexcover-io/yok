@@ -48,6 +48,8 @@ Every action a skill takes is a subcommand of `yok orchestrate`. Not a server ro
 3. If it needs the server: parse flags, `await ensureServer()`, call one route through `yokClient()`, print the reply. `ensureServer()` starts a local server when none answers, and only checks a remote one. If it needs a new route, add it in `packages/server/src/` and its typed client method in `client.ts`.
 4. Errors go through `fail()` so the exit code and `LOG_LEVEL=debug` behave like the other commands.
 
+`run` and `project` keep their arguments and options in [packages/server/src/commands.ts](../../packages/server/src/commands.ts), so a chat channel parses typed text with the same definitions. A new flag on either goes there, and the CLI's action reads it.
+
 ## Add a fact to the record
 
 A new event type.

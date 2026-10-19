@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type Exec, type ITerminalHost, noopLogger } from "@yok/sdk";
 import { agentProvider, findSessionAgent } from "./index.ts";
 import { yokTerminalHost } from "./tmux.ts";
@@ -44,7 +47,11 @@ const recordingHost = (argvs: (readonly string[])[]): ITerminalHost => ({
 
 describe("agentProvider binaries", () => {
   test("SC5: YOK_CLAUDE_BIN and YOK_CODEX_BIN choose the program each provider checks and launches", async () => {
-    const env = { YOK_CLAUDE_BIN: "/bin/fake-claude", YOK_CODEX_BIN: "/bin/fake-codex" };
+    const env = {
+      YOK_CLAUDE_BIN: "/bin/fake-claude",
+      YOK_CODEX_BIN: "/bin/fake-codex",
+      YOK_CLAUDE_CONFIG: join(mkdtempSync(join(tmpdir(), "yok-claude-config-")), ".claude.json"),
+    };
     const cases = [
       { agent: "claude", binary: "/bin/fake-claude" },
       { agent: "codex", binary: "/bin/fake-codex" },

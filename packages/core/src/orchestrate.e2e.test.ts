@@ -137,7 +137,7 @@ const orchestrateAsync = async (
 };
 
 describe("SC26: orchestrate init", () => {
-  test("SC23: init NAME --run-id prints { runId, dir }, writes state.json there, and names the run in the registry", () => {
+  test("SC23: init NAME --run-id prints { runId, name, dir }, writes state.json there, and names the run in the registry", () => {
     const repo = tempRepo();
     const home = tempDir();
     writeRegistry(home, [savedRun(repo)]);
@@ -146,9 +146,25 @@ describe("SC26: orchestrate init", () => {
 
     expect(init.code).toBe(0);
     const dir = join(repo, ".yok", "fix-login");
-    expect(JSON.parse(init.stdout)).toEqual({ runId: "r-1", dir });
+    expect(JSON.parse(init.stdout)).toEqual({ runId: "r-1", name: "fix-login", dir });
     expect(existsSync(join(dir, "state.json"))).toBe(true);
     expect(readRegistry(home).runs["r-1"]?.name).toBe("fix-login");
+  });
+
+  test("init --derived with a taken name prints the name it gave the run, NAME plus the run id's last 4 characters", () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    writeRegistry(home, [savedRun(repo, { id: "r-0a1b2c3d" })]);
+    mkdirSync(runDirOf(repo, "fix-login"), { recursive: true });
+
+    const init = orchestrate(repo, home, ["init", "fix-login", "--derived"], {
+      YOK_RUN_ID: "r-0a1b2c3d",
+    });
+
+    expect([init.code, init.stderr]).toEqual([0, ""]);
+    const dir = join(repo, ".yok", "fix-login-2c3d");
+    expect(JSON.parse(init.stdout)).toEqual({ runId: "r-0a1b2c3d", name: "fix-login-2c3d", dir });
+    expect(readRegistry(home).runs["r-0a1b2c3d"]?.name).toBe("fix-login-2c3d");
   });
 
   test("SC24: init with no --run-id and no YOK_RUN_ID exits 1 with the no-run message", () => {

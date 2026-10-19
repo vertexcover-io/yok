@@ -68,6 +68,8 @@ The biggest package, and the one you will edit most.
 
 A Hono app on HTTP on loopback, at the port in `server.port`; every route but `/health` is behind the key in the home's `.env`. The routes that matter are `GET /health`, `POST /runs` and `/projects`: a run starts from a project's name, and the server compiles the workflow, loads the env and runs the doctor on that project's checkout. It also serves the viewer page for each run, the list of every run at `/` (what `yok view` opens when no run is named), streams the run's files to it, stores comments, and types them into the run's tmux session when the agent's input box is free. It is the only process that launches agent sessions. It is started on demand by the CLI and stays up until stopped. Each run's page has an Artifacts tab and a Workflow tab that lists the run's steps in order with their status, model, files and output.
 
+It holds the run and project command definitions and `runChannelCommand`, which a chat inbox calls in-process to turn typed text into an API call.
+
 ### `@yok/cli`: commands for people
 
 `run`, `project add|list|remove`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `uninstall`, `server start|stop|status|use`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.

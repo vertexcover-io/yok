@@ -5,5 +5,5 @@ export {
   readWorkflowFile,
   sortTopologically,
 } from "./compile.ts";
-export { type Decision, decideNext } from "./next.ts";
+export { type Decision, decideNext, resolveWorkflowInputs } from "./next.ts";
 export * from "./types.ts";

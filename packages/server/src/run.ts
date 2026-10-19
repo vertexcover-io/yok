@@ -1,16 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { zValidator } from "@hono/zod-validator";
 import {
   compilePlan,
   findWorkflowPath,
   orchestrateArgv,
+  resolveWorkflowInputs,
   verdict,
   type WorkflowAgent,
+  WorkflowError,
   type WorkflowPlan,
 } from "@yok/core";
 import {
   type IAgentProvider,
+  type ITerminalHost,
   loadStartConfig,
   type PolicyLayer,
   type ResolvedTiers,
@@ -30,18 +34,25 @@ import {
 } from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
+import * as z from "zod";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
+import { readRunFiles, summarizeLiveRun } from "./overview.ts";
 import { addRunIfProjectKept, pickProject, saveVerdict } from "./projects.ts";
 import { type StartRunBody, StartRunBodySchema } from "./protocol.ts";
 // A type import only: server.ts imports app.ts, which imports this file.
 import type { CheckCheckout } from "./server.ts";
+import { filesBody, findViewedRun, readArtifact, streamRun } from "./viewer.ts";
 
 export type RunDeps = Readonly<{
   registry: Registry;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
+  host: ITerminalHost;
   home: string;
   viewerOrigin: string;
   checkCheckout: CheckCheckout;
+  // Fired on shutdown: a run stream ends, since the server's stop waits for every open request.
+  closing: AbortSignal;
 }>;
 
 const viewUrl = (deps: RunDeps, runId: string): string => `${deps.viewerOrigin}/runs/${runId}`;
@@ -104,6 +115,13 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     return errorResponse(c, 400, "bad-request", resolved.error);
   }
   const { tiers, policies } = resolved.value;
+  // The check `orchestrate next` makes on every step, so a run it would refuse is never saved.
+  try {
+    resolveWorkflowInputs(plan.inputs, inputs);
+  } catch (error) {
+    if (!(error instanceof WorkflowError)) throw error;
+    return errorResponse(c, 400, "bad-request", error.message);
+  }
 
   const provider = deps.providerFor(agent);
 
@@ -122,6 +140,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     config,
     tiers,
     policies,
+    ...(body.source === undefined ? {} : { source: body.source }),
     createdAt: new Date().toISOString(),
   };
   const added = await addRunIfProjectKept(deps.home, project.value, () =>
@@ -174,4 +193,33 @@ export const runRoutes = (deps: RunDeps) =>
         return errorResponse(c, 404, "not-found", `no run with id ${id}`);
       }
       return c.json({ view: viewUrl(deps, id) }, 200);
+    })
+    .get("/:id", async (c) => {
+      const id = c.req.param("id");
+      const run = await deps.registry.findRun(id);
+      if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+      return c.json({ run, summary: await summarizeLiveRun(run, deps.host) }, 200);
+    })
+    .get("/:id/files", async (c) => {
+      const id = c.req.param("id");
+      const page = await findViewedRun(deps.registry, id);
+      if (page.kind === "missing") {
+        return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+      }
+      return c.json(await filesBody(page, (await readRunFiles(page.run)).state), 200);
+    })
+    .get("/:id/file", zValidator("query", z.strictObject({ path: z.string() })), async (c) => {
+      const id = c.req.param("id");
+      const { path } = c.req.valid("query");
+      const page = await findViewedRun(deps.registry, id);
+      const read = page.kind === "ready" ? await readArtifact(page, path) : null;
+      if (read === null) return errorResponse(c, 404, "not-found", `run ${id} has no file ${path}`);
+      return c.json(read, 200);
+    })
+    .get("/:id/stream", async (c) => {
+      const id = c.req.param("id");
+      if ((await findViewedRun(deps.registry, id)).kind === "missing") {
+        return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+      }
+      return streamSSE(c, (stream) => streamRun(stream, deps, id));
     });

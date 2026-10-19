@@ -1,6 +1,6 @@
 import type { AgentAdapter, IAgentProvider, ILogger, ITerminalHost, SessionRef } from "@yok/sdk";
 import { type WorkflowAgent, WorkflowAgentSchema } from "../workflow/types.ts";
-import { claudeProvider } from "./claude.ts";
+import { claudeConfigPath, claudeProvider } from "./claude.ts";
 import { claudeAdapter } from "./claude-hooks.ts";
 import { codexProvider } from "./codex.ts";
 import { codexAdapter } from "./codex-hooks.ts";
@@ -28,7 +28,13 @@ export const agentBinary = (
   agent === "claude" ? (env.YOK_CLAUDE_BIN ?? "claude") : (env.YOK_CODEX_BIN ?? "codex");
 
 const providers: Readonly<Record<WorkflowAgent, ProviderBuild>> = {
-  claude: ({ host, env, log }) => claudeProvider({ host, binary: agentBinary("claude", env), log }),
+  claude: ({ host, env, log }) =>
+    claudeProvider({
+      host,
+      configPath: claudeConfigPath(env),
+      binary: agentBinary("claude", env),
+      log,
+    }),
   codex: ({ host, env, log }) => codexProvider({ host, binary: agentBinary("codex", env), log }),
 };
 

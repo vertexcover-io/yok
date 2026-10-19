@@ -1,5 +1,30 @@
 export { type AppDeps, type AppType, createApp } from "./app.ts";
-export { createYokClient, type YokClient, type YokClientOptions } from "./client.ts";
+export {
+  createYokClient,
+  type Transport,
+  type YokClient,
+  type YokClientOptions,
+} from "./client.ts";
+export {
+  apiErrorText,
+  type ChannelReply,
+  collectInput,
+  exitCodeFor,
+  folderSlug,
+  nameProject,
+  projectAddDefinition,
+  projectListDefinition,
+  projectRemoveDefinition,
+  projectRows,
+  promptFrom,
+  renderProjects,
+  renderTable,
+  renderText,
+  runChannelCommand,
+  runDefinition,
+  startErrorText,
+  tokenize,
+} from "./commands.ts";
 export {
   AddProjectBodySchema,
   type AddProjectRequest,

@@ -14,8 +14,9 @@ import { addComments, agentBinary, readComments, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { ensureApiKey } from "./protocol.ts";
+import { ensureApiKey, readPort } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
+import { viewerPortPath } from "./viewer.ts";
 
 const readyCheckout: CheckCheckout = () =>
   Promise.resolve({ env: { ok: true, value: {} }, report: summarize([]) });
@@ -151,3 +152,75 @@ test("a first start creates the home readable by this user alone", async () => {
 
   expect(statSync(home).mode & 0o777).toBe(0o700);
 });
+
+test("a connection that got a 401 for want of the key and then sits idle is closed by the server", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-idle-")));
+  const { host } = fakeHost(EMPTY_BOX);
+  const server = await startServer({
+    home,
+    runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+  });
+  const replies: string[] = [];
+  const closed = Promise.withResolvers<void>();
+  const socket = await Bun.connect({
+    hostname: "127.0.0.1",
+    port: readPort(home) ?? 0,
+    socket: {
+      data: (_, chunk) => void replies.push(chunk.toString()),
+      close: () => closed.resolve(),
+    },
+  });
+
+  socket.write("GET /runs HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  // Bun checks idle sockets on a coarse timer, so its 10-second limit can fire as late as ~12s.
+  const outcome = await Promise.race([
+    closed.promise.then(() => "closed"),
+    Bun.sleep(15_000).then(() => "still open"),
+  ]);
+
+  socket.end();
+  await server.stop();
+  expect(replies.join("")).toStartWith("HTTP/1.1 401");
+  expect(outcome).toBe("closed");
+}, 20_000);
+
+test("a run stream held open on the API and on the viewer does not keep stop() from resolving", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-cwd-")));
+  const run: WorkflowRun = {
+    id: "r-1",
+    workflow: "w",
+    workflowPath: "/w.yaml",
+    inputs: {},
+    cwd,
+    sessions: [],
+    name: "demo",
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
+  const { host } = fakeHost(EMPTY_BOX);
+  const server = await startServer({
+    home,
+    runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+  });
+  const key = await ensureApiKey(home);
+  const viewerPort = readFileSync(viewerPortPath(home), "utf8");
+  const streams = await Promise.all([
+    fetch(`http://127.0.0.1:${readPort(home)}/runs/r-1/stream`, {
+      headers: { authorization: `Bearer ${key}` },
+    }),
+    fetch(`http://127.0.0.1:${viewerPort}/runs/r-1/stream`),
+  ]);
+  await Promise.all(streams.map((res) => res.body?.getReader().read()));
+
+  const outcome = await Promise.race([
+    server.stop().then(() => "stopped"),
+    Bun.sleep(5_000).then(() => "still waiting"),
+  ]);
+
+  expect(streams.map((res) => res.status)).toEqual([200, 200]);
+  expect(outcome).toBe("stopped");
+}, 10_000);

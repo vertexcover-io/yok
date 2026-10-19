@@ -238,6 +238,8 @@ export {
   type RegistryReader,
   registryPath,
   type SessionRef,
+  type Source,
+  SourceSchema,
   type WorkflowRun,
   WorkflowRunSchema,
   yokHome,

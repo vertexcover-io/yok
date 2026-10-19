@@ -18,11 +18,12 @@ import { delimiter, dirname, join } from "node:path";
 import { captureLogger, type DoctorReport, loadStartEnv, summarize } from "@yok/core";
 import type { Exec, IAgentProvider, ITerminal, LaunchOptions, Result, WorkflowRun } from "@yok/sdk";
 import { createGit, execWithTimeout, noopLogger, runDirOf, WorkflowRunSchema } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { createRegistry, type Registry } from "@yok/sdk/internal";
 import * as z from "zod";
 import { createApp } from "./app.ts";
-import { createYokClient } from "./client.ts";
-import { EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
+import { createYokClient, type YokClient } from "./client.ts";
+import { renderProjects, runChannelCommand, startErrorText } from "./commands.ts";
+import { EMPTY_BOX, fakeHost, type SseEvent, seedState, sseReader } from "./fake-host.ts";
 import { AddProjectBodySchema } from "./protocol.ts";
 import type { CheckCheckout } from "./server.ts";
 
@@ -115,6 +116,7 @@ const buildDeps = async (
     host: fakeHost(EMPTY_BOX).host,
     git: createGit(),
     checkCheckout: readyCheckout,
+    closing: new AbortController().signal,
   };
 };
 
@@ -233,7 +235,10 @@ describe("POST /runs", () => {
         value: { terminalName: "session-xyz", terminal: fakePane("%7") },
       });
     });
-    const { workflowPath, cwd } = tempWorkspace(deps.home);
+    const { workflowPath, cwd } = tempWorkspace(
+      deps.home,
+      okWorkflow({ inputs: { prompt: { type: "string", required: true } } }),
+    );
 
     const res = await postRun(createApp(deps), { inputs: { prompt: "x" } });
 
@@ -331,6 +336,11 @@ describe("POST /runs", () => {
       (cwd: string) => `no workflow at ${join(cwd, "missing.yaml")}`,
     ],
     ["a workflow that is not valid YAML", { workflow: "bad.yaml" }, () => "yaml:"],
+    [
+      "an input the workflow does not declare",
+      { inputs: { ticket: "QA-7" } },
+      () => 'inputs: Unrecognized key: "ticket"',
+    ],
     [
       "a missing config file",
       { config: "missing.yaml" },
@@ -509,8 +519,28 @@ describe("POST /runs", () => {
     },
   );
 
+  test("SC603: a run's source is saved on the run and returned; a request with none saves no source", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+    const app = createApp(deps);
+    const source = { channel: "slack", id: "U1", name: "aman", place: "C9" };
+    const start = async (extra: object) =>
+      z.object({ run: WorkflowRunSchema }).parse(await (await postRun(app, extra)).json()).run;
+
+    const named = await start({ source });
+    const unnamed = await start({});
+
+    expect(named.source).toEqual(source);
+    expect((await deps.registry.findRun(named.id))?.source).toEqual(source);
+    expect(await deps.registry.findRun(unnamed.id)).not.toHaveProperty("source");
+  });
+
   test.each([
     ["SC602: a policy value that is not a boolean", { policies: { interaction: "maybe" } }],
+    [
+      "SC604: a source with a field outside channel, id, name and place",
+      { source: { channel: "slack", team: "T1" } },
+    ],
   ])("%s is 400 bad-request and saves no run", async (_label, extra) => {
     const deps = await buildDeps(launchesOk);
     tempWorkspace(deps.home);
@@ -804,6 +834,173 @@ describe("run page URL", () => {
     const missing = await app.request("/runs/r-missing/view", { headers: authed() });
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not-found");
+  });
+});
+
+// A run in the registry; a named one gets a folder holding a running state.json, as init leaves it.
+const seedRun = async (registry: Registry, extra: Partial<WorkflowRun> = {}) => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-run-")));
+  const run: WorkflowRun = {
+    id: "r-read",
+    workflow: "ok",
+    workflowPath: join(cwd, "ok.yaml"),
+    inputs: {},
+    cwd,
+    sessions: [],
+    name: "demo-run",
+    terminal: "t1",
+    config: null,
+    tiers: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...extra,
+  };
+  const runDir = runDirOf(cwd, run.name ?? "demo-run");
+  if (run.name !== null) {
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(seedState(runDir, {})));
+  }
+  await registry.addRun(run);
+  return { run, runDir };
+};
+
+describe("run read routes", () => {
+  test("SC608: GET /runs/:id answers the saved run with its policies and source, and its live summary", async () => {
+    const deps = await buildDeps(launchesOk);
+    const policies = { values: { interaction: false }, sources: { interaction: "cli" as const } };
+    const source = { channel: "slack", id: "U1", place: "C1" };
+    const { run } = await seedRun(deps.registry, { policies, source });
+
+    const res = await createApp(deps).request(`/runs/${run.id}`, { headers: authed() });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      run: WorkflowRun;
+      summary: { id: string; status: string };
+    };
+    expect(body.run.policies).toEqual(policies);
+    expect(body.run.source).toEqual(source);
+    expect(body.summary.id).toBe(run.id);
+    expect(body.summary.status).toBe("running");
+  });
+
+  test("SC611: GET /runs/:id/files lists a named run's artifacts as the viewer does, and a run with no name yet as starting", async () => {
+    const deps = await buildDeps(launchesOk);
+    const { runDir } = await seedRun(deps.registry);
+    mkdirSync(join(runDir, "artifacts"));
+    writeFileSync(join(runDir, "artifacts", "design.md"), "# Design\n");
+    await seedRun(deps.registry, { id: "r-starting", name: null });
+    const app = createApp(deps);
+
+    const named = await app.request("/runs/r-read/files", { headers: authed() });
+    const starting = await app.request("/runs/r-starting/files", { headers: authed() });
+
+    expect(named.status).toBe(200);
+    expect(await named.json()).toMatchObject({
+      state: "ready",
+      run: { id: "r-read", name: "demo-run" },
+      files: [{ path: "artifacts/design.md", type: "md" }],
+    });
+    expect(await starting.json()).toEqual({
+      state: "starting",
+      run: { id: "r-starting", name: null },
+      files: [],
+    });
+  });
+
+  test("SC612: GET /runs/:id/file answers a Markdown artifact's source text, not rendered HTML", async () => {
+    const deps = await buildDeps(launchesOk);
+    const { runDir } = await seedRun(deps.registry);
+    mkdirSync(join(runDir, "artifacts"));
+    writeFileSync(join(runDir, "artifacts", "design.md"), "# Design\n");
+
+    const res = await createApp(deps).request("/runs/r-read/file?path=artifacts/design.md", {
+      headers: authed(),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ path: "artifacts/design.md", type: "md", text: "# Design\n" });
+    expect(body).not.toHaveProperty("html");
+  });
+
+  const readPaths = (id: string) => [
+    `/runs/${id}`,
+    `/runs/${id}/files`,
+    `/runs/${id}/file?path=artifacts/design.md`,
+    `/runs/${id}/stream`,
+  ];
+
+  test.each(
+    readPaths("r-read").flatMap((path) => [
+      [path, "no key", {}],
+      [path, "a wrong key", { authorization: "Bearer wrong" }],
+    ]),
+  )("SC609: %s with %s answers 401 unauthorized", async (path, _label, headers) => {
+    const deps = await buildDeps(launchesOk);
+    await seedRun(deps.registry);
+
+    const res = await createApp(deps).request(path, { headers });
+
+    expect(res.status).toBe(401);
+    expect((await errorOf(res)).code).toBe("unauthorized");
+  });
+
+  test.each(readPaths("r-missing"))(
+    "SC610: %s for a run the registry does not hold answers 404 not-found",
+    async (path) => {
+      const deps = await buildDeps(launchesOk);
+
+      const res = await createApp(deps).request(path, { headers: authed() });
+
+      expect(res.status).toBe(404);
+      expect((await errorOf(res)).code).toBe("not-found");
+    },
+  );
+
+  test.each(["../../../etc/passwd", "state.json", "artifacts/absent.md"])(
+    "SC613: GET /runs/:id/file?path=%s is never read and answers 404 not-found",
+    async (path) => {
+      const deps = await buildDeps(launchesOk);
+      await seedRun(deps.registry);
+
+      const res = await createApp(deps).request(
+        `/runs/r-read/file?path=${encodeURIComponent(path)}`,
+        { headers: authed() },
+      );
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(Object.keys(body)).toEqual(["error"]);
+      expect((body as { error: { code: string } }).error.code).toBe("not-found");
+    },
+  );
+
+  test("SC614: GET /runs/:id/stream sends a starting run's files, then its artifacts and summary once it is named", async () => {
+    const deps = await buildDeps(launchesOk);
+    const { run } = await seedRun(deps.registry, { name: null });
+    const res = await createApp(deps).request(`/runs/${run.id}/stream`, { headers: authed() });
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const sse = sseReader(res);
+    const filesIn = (state: string) => (e: SseEvent) =>
+      e.event === "files" && (e.data as { state: string }).state === state;
+    try {
+      await sse.waitFor(filesIn("starting"));
+
+      await deps.registry.initRun(run.id, "late");
+      const runDir = runDirOf(run.cwd, "late");
+      mkdirSync(join(runDir, "artifacts"), { recursive: true });
+      writeFileSync(join(runDir, "artifacts", "design.md"), "# Design\n");
+
+      const ready = await sse.waitFor(
+        (e) => filesIn("ready")(e) && JSON.stringify(e.data).includes("artifacts/design.md"),
+      );
+      expect(ready.data).toMatchObject({ files: [{ path: "artifacts/design.md", type: "md" }] });
+      await sse.waitFor(
+        (e) => e.event === "summary" && (e.data as { name: string | null }).name === "late",
+      );
+    } finally {
+      await sse.close();
+    }
   });
 });
 
@@ -1236,5 +1433,296 @@ describe("/projects", () => {
     const res = await createApp(deps).request(path, { method });
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe("runChannelCommand", () => {
+  // The typed client over the app in memory, as an inbox inside the server builds it.
+  const channelClient = (deps: Awaited<ReturnType<typeof buildDeps>>) => {
+    const app = createApp(deps);
+    return createYokClient({
+      url: "http://yok.test",
+      apiKey: "test-key",
+      transport: (input, init) => Promise.resolve(app.request(input, init)),
+    });
+  };
+  const slack = { channel: "slack", id: "U1", name: "aman", place: "C9" };
+
+  test("SC618: typed text starts a run with interaction off, its inputs from the words and --input, recorded under the typing person", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand(
+      "run task fix the login bug --project demo --input environment=staging",
+      slack,
+      channelClient(deps),
+    );
+
+    expect(reply.ok).toBe(true);
+    const [runId, view] = reply.text.split("\n");
+    const run = await deps.registry.findRun(runId ?? "");
+    expect(view).toBe(`view: http://localhost:1/runs/${runId}`);
+    expect(run?.inputs).toEqual({ prompt: "fix the login bug", environment: "staging" });
+    expect(run?.policies).toEqual({
+      values: { interaction: false },
+      sources: { interaction: "cli" },
+    });
+    expect(run?.source).toEqual(slack);
+  });
+
+  test("SC616: a prompt with apostrophes inside words starts a run with the prompt as typed", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand(
+      "run task don't break user's file",
+      slack,
+      channelClient(deps),
+    );
+
+    const run = await deps.registry.findRun(reply.text.split("\n")[0] ?? "");
+    expect(run?.inputs).toEqual({ prompt: "don't break user's file" });
+  });
+
+  test("SC616: a quoted --input value with a space is saved whole, apart from the prompt", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand(
+      'run task store the token --project demo --input environment="QA 7"',
+      slack,
+      channelClient(deps),
+    );
+
+    const run = await deps.registry.findRun(reply.text.split("\n")[0] ?? "");
+    expect(run?.inputs).toEqual({ prompt: "store the token", environment: "QA 7" });
+  });
+
+  test("SC619: a typed --interaction true is overruled, and the reply says so and that --no-attach does nothing", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand(
+      "run task fix it --interaction true --no-attach",
+      slack,
+      channelClient(deps),
+    );
+
+    const run = await deps.registry.findRun(reply.text.split("\n")[0] ?? "");
+    expect(run?.policies?.values.interaction).toBe(false);
+    expect(reply.text).toContain(
+      "interaction is always off from a channel; --interaction was ignored",
+    );
+    expect(reply.text).toContain("--no-attach and --no-open do nothing from a channel");
+  });
+
+  test("SC620: project list replies with the CLI's table as text and as header-first rows", async () => {
+    const deps = await buildDeps(launchesOk);
+    addProjectEntry(deps.home, "demo", gitRepo());
+    addProjectEntry(deps.home, "other", gitRepo());
+    const client = channelClient(deps);
+    const listed = await client.projects();
+    if (!listed.ok) throw new Error(listed.error.message);
+
+    const reply = await runChannelCommand("project list", slack, client);
+
+    expect(reply.ok).toBe(true);
+    expect(reply.text).toBe(renderProjects(listed.value.projects));
+    expect(reply.rows?.[0]).toEqual(["NAME", "STATUS", "PATH", "ADDED BY"]);
+    expect(reply.rows).toHaveLength(3);
+  });
+
+  test("SC621: project add needs a git URL or a server path, and records the typing person as who added it", async () => {
+    const { deps } = await projectDeps();
+    const client = channelClient(deps);
+    const checkout = gitRepo();
+    const source = { channel: "slack", name: "aman" };
+
+    const bare = await runChannelCommand("project add demo2", source, client);
+    const added = await runChannelCommand(`project add demo2 --path ${checkout}`, source, client);
+
+    expect(bare).toEqual({
+      ok: false,
+      text: "the server is remote: pass --path DIR (a folder on the server) or --git URL",
+    });
+    expect(added.text.startsWith(`added demo2  ${checkout}`)).toBe(true);
+    expect(await listProjects(createApp(deps))).toEqual([
+      expect.objectContaining({ name: "demo2", addedBy: source }),
+    ]);
+  });
+
+  test("SC622: project remove of a project with no live run replies `removed NAME` and the project is gone", async () => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand("project remove demo", slack, channelClient(deps));
+
+    expect(reply.ok).toBe(true);
+    expect(reply.text.startsWith("removed demo")).toBe(true);
+    expect(await listProjects(createApp(deps))).toEqual([]);
+  });
+
+  test("typed --name reaches the agent's start prompt and --config is saved on the run, resolved in the project's checkout", async () => {
+    const prompts: Array<string | undefined> = [];
+    const deps = await buildDeps((options) => {
+      prompts.push(options.prompt);
+      return launchesOk();
+    });
+    const { cwd } = tempWorkspace(deps.home);
+    writeFileSync(join(cwd, "yok.yaml"), "version: 2\n");
+
+    const reply = await runChannelCommand(
+      "run task fix it --project demo --name login --config yok.yaml",
+      slack,
+      channelClient(deps),
+    );
+
+    const run = await deps.registry.findRun(reply.text.split("\n")[0] ?? "");
+    expect(run?.config).toBe(join(cwd, "yok.yaml"));
+    expect(prompts).toEqual([expect.stringMatching(/ --name login$/)]);
+  });
+
+  test.each([
+    ["--config", "run task fix --config secret.yaml"],
+    ["workflow", "run secret.yaml fix"],
+  ])(
+    "a %s file in the checkout that is not YAML is refused with its line and column, not its lines",
+    async (_label, text) => {
+      const deps = await buildDeps(launchesOk);
+      const { cwd } = tempWorkspace(deps.home);
+      writeFileSync(
+        join(cwd, "secret.yaml"),
+        "[core]\n\tbare = false\n[remote]\n\turl = https://TOKEN@example.test/r.git\n",
+      );
+
+      const reply = await runChannelCommand(text, slack, channelClient(deps));
+
+      expect(reply.ok).toBe(false);
+      expect(reply.text).toContain("at line 2, column 2");
+      expect(reply.text).not.toContain("TOKEN");
+    },
+  );
+
+  test("project remove keeps a folder yok cloned, and project remove --purge deletes it", async () => {
+    const deps = await buildDeps(launchesOk);
+    const kept = join(deps.home, "projects", "kept");
+    const purged = join(deps.home, "projects", "purged");
+    mkdirSync(kept, { recursive: true });
+    mkdirSync(purged, { recursive: true });
+    const entry = (path: string) =>
+      `  path: ${path}\n  git: https://example.test/x.git\n  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`;
+    writeFileSync(
+      join(deps.home, "projects.yaml"),
+      `kept:\n${entry(kept)}purged:\n${entry(purged)}`,
+    );
+    const client = channelClient(deps);
+
+    await runChannelCommand("project remove kept", slack, client);
+    await runChannelCommand("project remove purged --purge", slack, client);
+
+    expect([existsSync(kept), existsSync(purged)]).toEqual([true, false]);
+  });
+
+  test("project add replies with the added project and runs no doctor", async () => {
+    const { deps, calls } = await projectDeps();
+    const root = gitRepo();
+
+    const reply = await runChannelCommand(
+      `project add demo2 --path ${root}`,
+      slack,
+      channelClient(deps),
+    );
+
+    expect(reply).toEqual({ ok: true, text: `added demo2  ${root}` });
+    expect(calls).toEqual([]);
+  });
+
+  const USAGE = [
+    "commands:",
+    "  run WORKFLOW PROMPT... [--project NAME] [--name NAME] [--input KEY=VALUE] [--config FILE]",
+    "  project list",
+    "  project add [NAME] --git URL | --path DIR",
+    "  project remove NAME [--purge]",
+  ].join("\n");
+
+  test.each([
+    ["run task", () => "no prompt: write it after the workflow"],
+    ["run task fix --bogus", () => "error: unknown option '--bogus'"],
+    ["run task fix --input nope", () => '--input must be KEY=VALUE, got "nope"'],
+    [
+      "run task fix --project nobody",
+      async (client: YokClient) => {
+        const refused = await client.run({ project: "nobody", workflow: "task", inputs: {} });
+        return refused.ok ? "" : startErrorText(refused.error);
+      },
+    ],
+    ["project frob", () => 'unknown project command "frob"; use add, list or remove'],
+    ["task fix it", () => 'unknown command "task"; use run or project'],
+    ["", () => USAGE],
+    ['run task "open', () => `unclosed quote\n${USAGE}`],
+    [
+      "run task fix --config /etc/passwd",
+      () => "/etc/passwd: name a file inside the project's checkout",
+    ],
+    [
+      "run sub/../../ok.yaml fix",
+      () => "sub/../../ok.yaml: name a file inside the project's checkout",
+    ],
+  ])("SC623: %j is refused in the CLI's words and saves no run", async (text, expected) => {
+    const deps = await buildDeps(launchesOk);
+    tempWorkspace(deps.home);
+    const client = channelClient(deps);
+
+    const reply = await runChannelCommand(text, slack, client);
+
+    expect(reply).toEqual({ ok: false, text: await expected(client) });
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC623: a workflow or config named through a symlink in the checkout that points outside it is refused and saves no run", async () => {
+    const deps = await buildDeps(launchesOk);
+    const { cwd } = tempWorkspace(deps.home);
+    const outside = mkdtempSync(join(tmpdir(), "yok-outside-"));
+    writeFileSync(join(outside, "ok.yaml"), okWorkflow());
+    symlinkSync(join(outside, "ok.yaml"), join(cwd, "link.yaml"));
+    symlinkSync(outside, join(cwd, "away"));
+    const client = channelClient(deps);
+
+    const replies = await Promise.all([
+      runChannelCommand("run link.yaml fix it --project demo", slack, client),
+      runChannelCommand("run away/ok.yaml fix it --project demo", slack, client),
+      runChannelCommand("run ok.yaml fix it --project demo --config link.yaml", slack, client),
+    ]);
+
+    expect(replies).toEqual([
+      { ok: false, text: "link.yaml: name a file inside the project's checkout" },
+      { ok: false, text: "away/ok.yaml: name a file inside the project's checkout" },
+      { ok: false, text: "link.yaml: name a file inside the project's checkout" },
+    ]);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC624: a run the doctor blocks replies with the BLOCKED verdict and the failing check's NAME: DETAIL line", async () => {
+    const deps = {
+      ...(await buildDeps(launchesOk)),
+      checkCheckout: (() =>
+        Promise.resolve({
+          env: { ok: true, value: {} },
+          report: BLOCKED_REPORT,
+        })) satisfies CheckCheckout,
+    };
+    tempWorkspace(deps.home);
+
+    const reply = await runChannelCommand(
+      "run task fix it --project demo",
+      slack,
+      channelClient(deps),
+    );
+
+    expect(reply.ok).toBe(false);
+    expect(reply.text.split("\n").slice(0, 2)).toEqual([
+      "BLOCKED orchestrate-config",
+      "orchestrate-config: no orchestrate.config.yaml",
+    ]);
   });
 });
