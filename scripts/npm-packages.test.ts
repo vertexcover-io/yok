@@ -43,6 +43,19 @@ describe("writeNpmPackages", () => {
     )
   })
 
+  // npm trusted publishing rejects a package whose repository does not match the publishing repo.
+  test("names the GitHub repo in every package, so trusted publishing accepts it", () => {
+    const out = temp("yok-npm-")
+    writeNpmPackages(fakeDist(), "1.2.3", out)
+
+    for (const name of [...PLATFORMS.map((p) => `yok-${p}`), "yok"]) {
+      assert.deepEqual(readJson(join(out, name, "package.json")).repository, {
+        type: "git",
+        url: "git+https://github.com/vertexcover-io/yok.git",
+      })
+    }
+  })
+
   test("fails when a platform binary is missing, before writing anything", () => {
     const dist = temp("yok-dist-")
     const out = join(temp("yok-npm-"), "packages")

@@ -16,6 +16,7 @@ const LAUNCHER = fileURLToPath(new URL("npm-launcher.cjs", import.meta.url))
 const common = {
   license: "UNLICENSED",
   homepage: "https://github.com/vertexcover-io/yok",
+  repository: { type: "git", url: "git+https://github.com/vertexcover-io/yok.git" },
 }
 
 const writeJson = (path: string, value: unknown): void =>
