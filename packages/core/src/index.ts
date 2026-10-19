@@ -54,6 +54,7 @@ export * as samskaraHooks from "./samskara.ts";
 export {
   findPluginSkills,
   findWorkflowPath,
+  isWorkflowFile,
   loadProjectConfig,
   orchestrateArgv,
   type Stage,

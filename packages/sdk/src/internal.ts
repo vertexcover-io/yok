@@ -35,6 +35,7 @@ export {
   type ModuleError,
   runLockPath,
   runScriptFile,
+  stringifyYaml,
 } from "./files.ts";
 export {
   type PolicyLayers,
