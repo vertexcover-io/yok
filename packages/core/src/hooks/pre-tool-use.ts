@@ -3,17 +3,25 @@ import { homedir } from "node:os";
 import {
   type HookDeps,
   type PreToolUseHandler,
-  readState,
+  readPolicies,
   registryPath,
-  runDirOf,
   spawn,
   type ToolCall,
   type ToolUse,
   type ToolVerdict,
   yokHome,
 } from "@yok/sdk";
+import { findRunningLeaf } from "@yok/sdk/internal";
 import BASH_ANTIPATTERNS from "../../vendor/bash-antipatterns.sh" with { type: "text" };
-import { findSessionRun, recordRunEvent, recordSessionEvent } from "./common.ts";
+import { orchestrateLine } from "../runs.ts";
+import {
+  findSessionRun,
+  findSessionState,
+  noAnswerBetweenNodesMessage,
+  noAnswerMessage,
+  recordRunEvent,
+  recordSessionEvent,
+} from "./common.ts";
 import { expandPath, type PathBase, shellWriteTargets } from "./write-targets.ts";
 
 export type ProtectedRecord =
@@ -78,10 +86,10 @@ export const recordResumed: PreToolUseHandler = {
   run: async (use, deps) => {
     if (use.subagent) return ALLOW;
     try {
-      const run = await findSessionRun(use, deps);
-      if (run === undefined) return ALLOW;
-      const state = await readState(runDirOf(run.cwd, run.name));
-      if (state?.status !== "blocked" || state.blocker === undefined) return ALLOW;
+      const found = await findSessionState(use, deps);
+      if (found === undefined) return ALLOW;
+      const { run, state } = found;
+      if (state.status !== "blocked" || state.blocker === undefined) return ALLOW;
       const { reason } = state.blocker;
       const payload = { agent: use.agent, sessionId: use.sessionId, reason, tool: use.toolName };
       // Another call may have closed the blocker since the read above.
@@ -128,7 +136,11 @@ export const bashAntipatterns: PreToolUseHandler = {
 export const questionNotice: PreToolUseHandler = {
   name: "question-notice",
   run: async ({ agent, sessionId, toolUseId, call }, deps) => {
-    if (call.kind !== "question") return ALLOW;
+    // a question whose input could not be read has nothing to post
+    if (call.kind !== "question" || call.questions.length === 0) return ALLOW;
+    // question-guard refuses it, so it is never asked and must not mark the run as waiting
+    const found = await findSessionState({ agent, sessionId }, deps);
+    if (found !== undefined && !readPolicies(found.state.policies).interaction) return ALLOW;
     const payload = {
       agent,
       sessionId,
@@ -142,9 +154,35 @@ export const questionNotice: PreToolUseHandler = {
   },
 };
 
+// With interaction off no one will answer, so the question is refused before it is shown and the
+// agent is told what to do instead. Outside a yok run it allows, as before.
+export const questionGuard: PreToolUseHandler = {
+  name: "question-guard",
+  run: async (use, deps) => {
+    if (use.call.kind !== "question") return ALLOW;
+    const found = await findSessionState(use, deps);
+    if (found === undefined || readPolicies(found.state.policies).interaction) return ALLOW;
+    // done finishes only an agent node; a loop waiting between its children is not one.
+    const leaf = findRunningLeaf(found.state.nodeRuns);
+    const node = leaf?.run.nodeType === "agent" ? leaf : undefined;
+    const payload = {
+      policy: "interaction",
+      effect: "question-refused",
+      ...(node === undefined ? {} : { nodeId: node.path.slice(node.path.lastIndexOf(".") + 1) }),
+    };
+    await recordRunEvent(found.run, { type: "policy.applied", payload }, deps);
+    if (node === undefined) {
+      const next = orchestrateLine({ verb: "next", run: found.run });
+      return { kind: "deny", message: noAnswerBetweenNodesMessage(next) };
+    }
+    const done = orchestrateLine({ verb: "done", run: found.run, nodeRunId: node.run.nodeRunId });
+    return { kind: "deny", message: noAnswerMessage(done) };
+  },
+};
+
 // The handlers an agent can register, by the name `orchestrate hook pre-tool-use --handler` takes.
 export const preToolUseHandlers: Readonly<Record<string, PreToolUseHandler>> = Object.fromEntries(
-  [recordGuard, recordResumed, bashAntipatterns, questionNotice].map((handler) => [
+  [recordGuard, recordResumed, bashAntipatterns, questionNotice, questionGuard].map((handler) => [
     handler.name,
     handler,
   ]),

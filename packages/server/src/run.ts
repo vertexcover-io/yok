@@ -6,11 +6,19 @@ import {
   loadStartConfig,
   type ResolvedTiers,
   type Result,
+  type SavedPolicies,
   sessionEnv,
   tierLaunch,
   type WorkflowRun,
 } from "@yok/sdk";
-import { devPluginDir, type Registry, resolveTiers, selfArgv, writeShim } from "@yok/sdk/internal";
+import {
+  devPluginDir,
+  type Registry,
+  resolvePolicies,
+  resolveTiers,
+  selfArgv,
+  writeShim,
+} from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
@@ -25,11 +33,17 @@ export type RunDeps = Readonly<{
 
 const viewUrl = (deps: RunDeps, runId: string): string => `${deps.viewerOrigin}/runs/${runId}`;
 
-// The run's tier set, merged once here; init copies it into the run's state.
-const resolveRunTiers = async (body: StartRunBody): Promise<Result<ResolvedTiers | null>> => {
+// The run's tier set and policies, merged once here; init copies both into the run's state.
+const resolveRunSettings = async (
+  body: StartRunBody,
+): Promise<Result<Readonly<{ tiers: ResolvedTiers | null; policies: SavedPolicies }>>> => {
   const loaded = await loadStartConfig(body.config ?? null, body.cwd);
   if (!loaded.ok) return loaded;
-  return resolveTiers(loaded.value.config, body.agent, body.tiers);
+  const { config } = loaded.value;
+  const tiers = resolveTiers(config, body.agent, body.tiers);
+  if (!tiers.ok) return tiers;
+  const policies = resolvePolicies({ config: config.policies ?? {}, ...body.policies });
+  return { ok: true, value: { tiers: tiers.value, policies } };
 };
 
 const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
@@ -40,7 +54,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     return errorResponse(c, 400, "bad-request", "workflowPath and cwd must exist");
   }
 
-  const resolved = await resolveRunTiers(body);
+  const resolved = await resolveRunSettings(body);
   if (!resolved.ok) {
     log.error(
       { err: resolved.error, workflow, agent },
@@ -48,7 +62,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     );
     return errorResponse(c, 400, "bad-request", resolved.error);
   }
-  const tiers = resolved.value;
+  const { tiers, policies } = resolved.value;
 
   const provider = deps.providerFor(agent);
 
@@ -66,6 +80,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     terminal: null,
     config: config ?? null,
     tiers,
+    policies,
     createdAt: new Date().toISOString(),
   };
   await deps.registry.addRun(pending);

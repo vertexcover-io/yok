@@ -27,10 +27,13 @@ export type AgentAdapter = Readonly<{
 export type HookReply =
   | { readonly kind: "allow" }
   | { readonly kind: "continue"; readonly message: string };
-// One step of a session, in order: a message the user typed, or a shell command the agent ran.
+// One step of a session, in order: a message the user typed, a shell command the agent ran, a
+// question it put to the person, or any other tool it called, such as a file edit.
 export type TranscriptEntry =
   | { readonly kind: "prompt"; readonly text: string }
-  | { readonly kind: "command"; readonly command: string };
+  | { readonly kind: "command"; readonly command: string }
+  | { readonly kind: "question" }
+  | { readonly kind: "tool"; readonly name: string };
 
 export type StopInput = Readonly<{
   agent: AgentType;
@@ -41,6 +44,8 @@ export type StopInput = Readonly<{
   waitingOnBackground: boolean;
   // undefined when the transcript is missing or cannot be read
   readTranscript: () => Promise<readonly TranscriptEntry[] | undefined>;
+  // the text the agent ended its turn with, when the agent reports it
+  lastMessage?: string;
 }>;
 
 // One rule for the end of a turn, shared by every agent: it sees only the parsed input.

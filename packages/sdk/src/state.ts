@@ -108,6 +108,7 @@ export const createState = async ({
   subscribers,
   config,
   tiers = null,
+  policies,
 }: Readonly<{
   runId: string;
   runDir: string;
@@ -116,6 +117,7 @@ export const createState = async ({
   subscribers?: SubscriberRefs;
   config?: State["config"];
   tiers?: State["tiers"];
+  policies?: State["policies"];
 }>): Promise<State> => {
   const cwd = dirname(dirname(runDir));
   const state: State = {
@@ -139,6 +141,7 @@ export const createState = async ({
     nodeRuns: {},
     activeSessions: [],
     tiers,
+    ...(policies === undefined ? {} : { policies }),
     eventHandlers,
     subscribers: subscribers ?? {},
     ...(config === undefined ? {} : { config }),
@@ -308,6 +311,7 @@ const ENGINE_OWNED: readonly (readonly [prefix: string, reason: string])[] = [
   ["orchestrate.", "is written only by the orchestrate script"],
   ["hooks.", "is written only by the agent's hooks"],
   ["subscriber.", "is written only by the run's subscribers"],
+  ["policy.", "is written only by the engine and the agent's hooks, as a policy applies"],
 ];
 
 export const emitRunEvent = async (run: RunRef, input: EmitInput): Promise<Result<Event>> => {

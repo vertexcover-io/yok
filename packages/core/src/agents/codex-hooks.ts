@@ -15,18 +15,20 @@ import {
 } from "@yok/sdk";
 import * as z from "zod";
 import { parseStdin, preToolUseReply, runNoReplyHook, stopReply } from "../hooks/common.ts";
-import { recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
+import { questionGuard, recordGuard, recordResumed, runPreToolUse } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
 import { continueWorkflow, runStop } from "../hooks/stop.ts";
-import { shellQuote } from "./common.ts";
+import { parseQuestionCall, shellQuote } from "./common.ts";
 
 const HOOK_TIMEOUT_S = 30;
 const SHELL_TOOLS = ["Bash", "shell", "exec_command", "local_shell"] as const;
 const PATCH_TOOL = "apply_patch";
+const QUESTION_TOOL = "request_user_input";
 
 const CodexStopInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   transcript_path: z.string().nullish(),
+  last_assistant_message: z.string().nullish(),
 });
 
 const CodexSessionStartInputSchema = z.looseObject({
@@ -59,6 +61,12 @@ const toToolCalls = (
   toolName: string,
   toolInput: Readonly<Record<string, unknown>>,
 ): readonly ToolCall[] => {
+  // read first: a question call has no command, so the parse below would drop it
+  if (toolName === QUESTION_TOOL) {
+    const call = parseQuestionCall(toolInput);
+    // the tool's name makes it a question, whatever shape its input takes
+    return [call.kind === "question" ? call : { kind: "question", questions: [] }];
+  }
   const parsed = ToolCommandSchema.safeParse(toolInput);
   if (!parsed.success) return [];
   const command = parsed.data;
@@ -73,7 +81,11 @@ const codexStop = async (stdin: string, deps: HookDeps, handler: StopHandler): P
     deps.log.warn({ error: parsed.error }, "stop allowed: hook input not understood");
     return "";
   }
-  const { session_id: sessionId, transcript_path: transcriptPath } = parsed.value;
+  const {
+    session_id: sessionId,
+    transcript_path: transcriptPath,
+    last_assistant_message: lastMessage,
+  } = parsed.value;
   const reply = await runStop(
     {
       agent: "codex",
@@ -81,6 +93,7 @@ const codexStop = async (stdin: string, deps: HookDeps, handler: StopHandler): P
       contextSteps: codexAdapter.contextSteps,
       waitingOnBackground: false,
       readTranscript: () => readCodexTranscript(transcriptPath ?? undefined),
+      ...(lastMessage == null ? {} : { lastMessage }),
     },
     handler,
     deps,
@@ -159,7 +172,7 @@ const FunctionCallSchema = z.looseObject({
 });
 const CustomToolCallSchema = z.looseObject({
   type: z.literal("custom_tool_call"),
-  name: z.literal("exec"),
+  name: z.string(),
   input: z.string(),
 });
 const ExecArgsSchema = z.looseObject({ cmd: z.string() });
@@ -167,6 +180,7 @@ const ShellArgsSchema = z.looseObject({ command: z.array(z.string()) });
 
 const command = (text: string): TranscriptEntry[] =>
   text === "" ? [] : [{ kind: "command", command: text }];
+const tool = (name: string): TranscriptEntry[] => [{ kind: "tool", name }];
 
 // `bash -lc X` is the shell tool's own wrapper; the command the agent wrote is X.
 const shellCommand = (argv: readonly string[]): string => {
@@ -176,13 +190,14 @@ const shellCommand = (argv: readonly string[]): string => {
 };
 
 const functionCallEntries = (call: z.infer<typeof FunctionCallSchema>): TranscriptEntry[] => {
+  if (call.name === QUESTION_TOOL) return [{ kind: "question" }];
+  if (call.name !== "exec_command" && call.name !== "shell") return tool(call.name);
   const args = parseJson(call.arguments);
   if (!args.ok) return [];
   if (call.name === "exec_command") {
     const parsed = ExecArgsSchema.safeParse(args.value);
     return parsed.success ? command(parsed.data.cmd) : [];
   }
-  if (call.name !== "shell") return [];
   const parsed = ShellArgsSchema.safeParse(args.value);
   return parsed.success ? command(shellCommand(parsed.data.command)) : [];
 };
@@ -206,7 +221,11 @@ const toEntries = (line: z.infer<typeof RolloutLineSchema>): TranscriptEntry[] =
   const call = FunctionCallSchema.safeParse(line.payload);
   if (call.success) return functionCallEntries(call.data);
   const custom = CustomToolCallSchema.safeParse(line.payload);
-  return custom.success ? codeModeEntries(custom.data.input) : [];
+  if (!custom.success) return [];
+  // a code-mode script that runs no shell command still did work
+  if (custom.data.name !== "exec") return tool(custom.data.name);
+  const commands = codeModeEntries(custom.data.input);
+  return commands.length === 0 ? tool("exec") : commands;
 };
 
 const parseLine = (text: string): z.infer<typeof RolloutLineSchema>[] => {
@@ -247,6 +266,7 @@ const codexHooks = () =>
     Stop: [{ handlers: [continueWorkflow] }],
     PreToolUse: [
       { matcher: [...SHELL_TOOLS, PATCH_TOOL].join("|"), handlers: [recordGuard, recordResumed] },
+      { matcher: QUESTION_TOOL, handlers: [questionGuard] },
     ],
   }) as const;
 

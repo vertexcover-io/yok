@@ -74,6 +74,7 @@ const nodeRun = (
 });
 
 const planOpen = { plan: nodeRun("plan", "running") };
+const UNATTENDED = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
 
 const decide = (overrides: Partial<State>, check: Partial<Omit<StopCheck, "run" | "state">> = {}) =>
   decideStop({
@@ -162,6 +163,24 @@ describe("decideStop", () => {
     expect(decide({}, { touchedRun })).toMatchObject(expected);
   });
 
+  test("SC522: with interaction off and an agent node open, a first stop is sent back with the policy's message, and one at maxBlocks is unanswered-stop, not max-blocks-reached", () => {
+    const first = decide({ nodeRuns: planOpen, policies: UNATTENDED });
+    const atMax = decide({
+      nodeRuns: planOpen,
+      policies: UNATTENDED,
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
+
+    expect(first).toMatchObject({
+      reason: "node-not-done",
+      blockStreak: 1,
+      nodeRunId: "plan",
+      message: expect.stringContaining("No one will answer in this run."),
+    });
+    expect(atMax).toMatchObject({ reason: "unanswered-stop", blockStreak: 2, nodeRunId: "plan" });
+  });
+
   test("SC6 — a chat turn with a node open still blocks", () => {
     const decision = decide({ nodeRuns: planOpen }, { touchedRun: false });
     expect(decision).toMatchObject({
@@ -231,7 +250,11 @@ describe("decideStop", () => {
   });
 });
 
-const setUp = async (nodeRuns: State["nodeRuns"], agent: "claude" | "codex" = "claude") => {
+const setUp = async (
+  nodeRuns: State["nodeRuns"],
+  agent: "claude" | "codex" = "claude",
+  overrides: Partial<State> = {},
+) => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "hooks-repo-")));
   const registry = createRegistry(registryPath(home));
@@ -251,7 +274,10 @@ const setUp = async (nodeRuns: State["nodeRuns"], agent: "claude" | "codex" = "c
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const config = { path: null, root: cwd };
-  await writeFile(join(runDir, "state.json"), JSON.stringify({ ...seed, nodeRuns, config }));
+  await writeFile(
+    join(runDir, "state.json"),
+    JSON.stringify({ ...seed, ...overrides, nodeRuns, config }),
+  );
   return { runDir, cwd, deps: { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger } };
 };
 
@@ -424,6 +450,100 @@ describe("runStopHook", () => {
     const run = { id: "r-1", cwd, name: "feat-x" };
     await emitRunEvent(run, { type: "custom.test.progress", source: "test", payload: {} });
     expect(await runStopHook(input(undefined), deps)).toMatchObject({ kind: "continue" });
+  });
+
+  test("with interaction off, any tool call since the last stop is progress, file edits included, so only a stop with no work since fails the node", async () => {
+    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const ran: TranscriptEntry[] = [
+      { kind: "prompt", text: "go" },
+      { kind: "command", command: "ls" },
+    ];
+    const edited: TranscriptEntry[] = [
+      ...ran,
+      { kind: "tool", name: "Write" },
+      { kind: "tool", name: "Edit" },
+    ];
+
+    await runStopHook(input(ran), deps);
+    await runStopHook(input(edited), deps);
+    await runStopHook(input(edited), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual(["node-not-done", "node-not-done", "unanswered-stop"]);
+  });
+
+  test("with interaction off, a question tried between stops is not work, so the stop after it still fails the node", async () => {
+    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const ran: TranscriptEntry[] = [
+      { kind: "prompt", text: "go" },
+      { kind: "command", command: "ls" },
+    ];
+
+    await runStopHook(input(ran), deps);
+    await runStopHook(input([...ran, { kind: "question" }]), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual(["node-not-done", "unanswered-stop"]);
+  });
+
+  const denied = (handler: string, tool: string) => ({
+    type: "hooks.pre-tool-use.called",
+    source: "hooks",
+    payload: { agent: "claude", sessionId: "s1", tool, handler, decision: "deny", message: "no" },
+  });
+
+  test("with interaction off, a tool call yok's guard denied between stops is not work, so the stop after it still fails the node", async () => {
+    const { deps, runDir, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const ran: TranscriptEntry[] = [
+      { kind: "prompt", text: "go" },
+      { kind: "command", command: "ls" },
+    ];
+
+    await runStopHook(input(ran), deps);
+    await appendRunEvent({ id: "r-1", cwd, name: "feat-x" }, denied("record-guard", "Write"));
+    await runStopHook(input([...ran, { kind: "tool", name: "Write" }]), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual(["node-not-done", "unanswered-stop"]);
+  });
+
+  test("with interaction off, a refused question is not taken off the tool calls, so a command run beside it is still work", async () => {
+    const { deps, runDir, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const ran: TranscriptEntry[] = [
+      { kind: "prompt", text: "go" },
+      { kind: "command", command: "ls" },
+    ];
+
+    await runStopHook(input(ran), deps);
+    await appendRunEvent(
+      { id: "r-1", cwd, name: "feat-x" },
+      denied("question-guard", "AskUserQuestion"),
+    );
+    const asked: TranscriptEntry[] = [
+      ...ran,
+      { kind: "question" },
+      { kind: "command", command: "pwd" },
+    ];
+    await runStopHook(input(asked), deps);
+
+    const events = await jsonlEventStore(runDir).read();
+    const reasons = events.flatMap((event) => {
+      const stop = sdk.StopCalledEvent.safeParse(event);
+      return stop.success ? [stop.data.payload.reason] : [];
+    });
+    expect(reasons).toEqual(["node-not-done", "node-not-done"]);
   });
 
   test("a block that cannot be logged lets the turn end, so an unsaved count can't trap the session", async () => {

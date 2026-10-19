@@ -621,6 +621,51 @@ describe("yok run", () => {
     TIMEOUT_MS,
   );
 
+  test(
+    "SC509: --interaction maybe fails before any run starts, naming the flag, its text and the allowed values",
+    () => {
+      const repo = makeRepo();
+      const { env, home, fakeOut } = makeEnv();
+
+      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "x", "--interaction", "maybe");
+
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain("--interaction maybe: must be true or false");
+      expect(readLines(fakeOut)).toEqual([]);
+      expect(existsSync(join(home, "registry.json"))).toBe(false);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    ["--interaction false", ["ok.yaml", "--interaction", "false"], "cli"],
+    ["a workflow file with interaction: false", ["unattended.yaml"], "workflow"],
+  ] as const)(
+    "SC510: %s is saved on the run as interaction false, with where it came from",
+    (_case, args, source) => {
+      const repo = makeRepo();
+      writeFileSync(
+        join(repo, "unattended.yaml"),
+        OK_WORKFLOW.replace("name: ok", "name: ok\npolicies:\n  interaction: false"),
+      );
+      const { env, home } = makeEnv();
+
+      const run = yok(repo, env, "run", ...args, "--prompt", "x");
+
+      expect(run.stderr).not.toContain("BLOCKED");
+      expect(run.code).toBe(0);
+      const runId = run.stdout.trim().split("\n")[0] ?? "";
+      const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8"));
+      expect(registry.runs[runId].policies).toEqual({
+        values: { interaction: false },
+        sources: { interaction: source },
+      });
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
   test.each([
     ["a missing file", (_file: string) => {}],
     ["an invalid file", (file: string) => writeFileSync(file, "{")],

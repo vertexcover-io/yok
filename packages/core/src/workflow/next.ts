@@ -187,12 +187,21 @@ const buildContainerOutput = (
   return result?.status === "completed" ? (result.output ?? null) : null;
 };
 
-// The first of `nodes` that failed and does not allow failure; only such a failure stops its scope.
+const NeedsInputSchema = z.object({ kind: z.literal("needs-input") });
+
+// A failure that needs a person's answer stops its scope even under allowFailure; an `always`
+// node's never does, so a retro that fails leaves the run's status alone.
+const blocksScope = (node: PlanNode, nodeRun: NodeRun | undefined): boolean => {
+  if (nodeRun?.status !== "failed") return false;
+  if (!node.allowFailure) return true;
+  return !node.always && NeedsInputSchema.safeParse(nodeRun.output).success;
+};
+
+// The first of `nodes` whose failure stops its scope.
 const findBlockingFailure = (
   nodes: readonly PlanNode[],
   nodeRuns: Readonly<Record<string, NodeRun>>,
-): string | undefined =>
-  nodes.find((node) => !node.allowFailure && own(nodeRuns, node.id)?.status === "failed")?.id;
+): string | undefined => nodes.find((node) => blocksScope(node, own(nodeRuns, node.id)))?.id;
 
 // The artifacts a stage needs, did not mark optional, and no completed node has listed yet.
 const findMissingArtifacts = (stage: PlanStage, state: State): readonly string[] => {
@@ -321,9 +330,8 @@ const recordStart = async (
   return { state: started, nodeRun };
 };
 
-// Ends a container: failed with `failure` or, without one, with its first failed child that does
-// not allow failure;
-// otherwise completed with its output.
+// Ends a container: failed with `failure` or, without one, with its first child whose failure
+// stops its scope, as needs-input when that child's was; otherwise completed with its output.
 const endContainer = async (
   node: Container,
   nodeRun: NodeRun,
@@ -333,11 +341,13 @@ const endContainer = async (
 ): Promise<Walked> => {
   const results = findNodeRuns(state.nodeRuns, [...node.parents, node.id]);
   const failedChild = findBlockingFailure(pickChildren(node, nodeRun), results);
+  const childOutput = failedChild === undefined ? undefined : own(results, failedChild)?.output;
+  const childKind = NeedsInputSchema.safeParse(childOutput).success ? "needs-input" : "exception";
   const failure =
     ending.failure ??
     (failedChild === undefined
       ? undefined
-      : new NodeFailure("exception", `${node.id}.${failedChild} failed`));
+      : new NodeFailure(childKind, `${node.id}.${failedChild} failed`));
   const payload =
     failure === undefined
       ? { attempts: ending.attempts, output: buildContainerOutput(node, nodeRun, results) }

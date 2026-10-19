@@ -121,6 +121,7 @@ button { cursor: pointer; }
 .mode-btn[aria-pressed="true"] .knob { background: var(--accent); }
 .mode-btn[aria-pressed="true"] .knob::after { left: 13px; }
 .mode-btn:disabled { opacity: .45; cursor: default; }
+.mode-btn[hidden] { display: none; }
 kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
 .code-view { margin: 28px 24px 80px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; counter-reset: ln; padding: 10px 0; }
 .code-view span { display: block; white-space: pre; padding-right: 16px; }
@@ -456,10 +457,12 @@ let commentMode = readMode();
 let focusId = null;
 let sendError = "";
 let blockKeys = new Set();
+// true when the run's interaction policy is off: no one reviews, so the page takes no comments
+let readOnly = false;
 
 const base = (path) => path.split("/").pop();
 const rel = (path) => path.replace(/^artifacts\//, "");
-const canComment = (type) => type === "md" || type === "html";
+const canComment = (type) => !readOnly && (type === "md" || type === "html");
 const currentFile = () => files.find((f) => f.path === current);
 const forFile = (path) => [...comments, ...drafts].filter((c) => c.file === path);
 
@@ -510,7 +513,10 @@ function renderHead() {
   if (!file) return;
   $("#docPath").textContent = file.path;
   const badge = $("#docBadge");
-  if (!canComment(file.type)) {
+  if (file.autoApproved) {
+    badge.className = "badge final";
+    badge.textContent = "Auto-approved";
+  } else if (!canComment(file.type)) {
     badge.className = "badge readonly";
     badge.textContent = "View only";
   } else if (file.awaitingApproval) {
@@ -526,11 +532,12 @@ function renderHead() {
   const ok = canComment(file.type);
   const modeBtn = $("#modeBtn");
   modeBtn.disabled = !ok;
+  modeBtn.hidden = readOnly;
   modeBtn.title = ok ? "Turn on to select text and comment" : "Comments work on Markdown and HTML files";
   modeBtn.setAttribute("aria-pressed", String(commentMode && ok));
   $("#globalBtn").hidden = !(commentMode && ok);
   $("#docPane").classList.toggle("commenting", commentMode && ok);
-  $("#approveBtn").hidden = !file.awaitingApproval;
+  $("#approveBtn").hidden = readOnly || !file.awaitingApproval;
 }
 
 function emptyState(starting) {
@@ -1086,6 +1093,7 @@ function card(c) {
 }
 
 function threadsEmptyText(file) {
+  if (readOnly) return "This run takes no comments: its interaction policy is off.";
   if (file && !canComment(file.type)) return "This file is view only. Comments work on Markdown and HTML files.";
   if (!commentMode) return "No comments on this file yet. Turn on Comment mode (press C), then select text to add one.";
   return "No comments on this file yet. Select text in the page to add one, or comment on the whole file.";
@@ -1630,12 +1638,23 @@ function applySummary(run) {
   ago.dataset.since = String(started.getTime());
   const startedValue = el("div", "v", `${time} · `);
   startedValue.append(ago, " ago");
+  const wasReadOnly = readOnly;
+  readOnly = run.policies.values.interaction === false;
+  const policies = Object.entries(run.policies.values)
+    .map(([name, value]) => `${name}: ${value} (${run.policies.sources[name] ?? "default"})`)
+    .join(" · ");
   $("#runSummary").replaceChildren(
     summaryCell("asked", asked),
     summaryCell("started", startedValue),
     summaryCell("status", RUN_STATUS_WORDS[run.status] ?? run.status),
     summaryCell("pr", prCell(run.pr)),
+    summaryCell("policies", policies),
   );
+  // The summary can arrive after the files, which then still show their comment controls.
+  if (readOnly !== wasReadOnly) {
+    renderHead();
+    refresh();
+  }
   runStatus = run.status;
   if (steps.length === 0) renderSteps();
 }

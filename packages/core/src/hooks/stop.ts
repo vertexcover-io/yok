@@ -4,10 +4,13 @@ import {
   type HookDeps,
   type HookReply,
   type NodeRun,
+  PreToolUseCalledEvent,
   type RunRef,
+  readPolicies,
   readState,
   runDirOf,
   type State,
+  StopCalledEvent,
   type StopHandler,
   type StopInput,
   type StopReason,
@@ -21,8 +24,8 @@ import {
   type ModelSwitch,
 } from "@yok/sdk/internal";
 import { startContextStep, startModelStep } from "../context-step.ts";
-import { completeContextStep, findContextPlanNode, orchestrateLine } from "../runs.ts";
-import { findSessionRun, recordRunEvent } from "./common.ts";
+import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
+import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
 // `yok orchestrate next` or `bun …/index.ts orchestrate done`, but not a path like orchestrate/SKILL.md
@@ -66,7 +69,13 @@ export type StopDecision =
   | Readonly<{ reason: "model-switch"; blockStreak: number; seq: number }>
   | Readonly<{ reason: "awaiting-approval"; blockStreak: number; nodeRunId: string }>
   | Readonly<{ reason: "next-not-run"; blockStreak: number; message: string }>
-  | Readonly<{ reason: "node-not-done"; blockStreak: number; message: string; nodeRunId: string }>;
+  | Readonly<{ reason: "node-not-done"; blockStreak: number; message: string; nodeRunId: string }>
+  | Readonly<{
+      reason: "unanswered-stop";
+      blockStreak: number;
+      message: string;
+      nodeRunId: string;
+    }>;
 
 type Position =
   | Readonly<{ kind: "finished" }>
@@ -145,6 +154,14 @@ const openNodeMessage = (run: RunRef, leaf: ActiveLeaf): string => {
   );
 };
 
+const unansweredStopMessage = (run: RunRef, leaf: ActiveLeaf): string => {
+  const done = orchestrateLine({ verb: "done", run, nodeRunId: leaf.nodeRunId });
+  return (
+    `Yok run ${run.name}: node ${leaf.nodeId} is still open. ${noAnswerMessage(done)} ` +
+    `Otherwise finish it with \`${done} --output -\`.`
+  );
+};
+
 const positionOf = (state: State): Position => {
   if (!isRunLive(state.status)) return { kind: "finished" };
   const leaf = findActiveLeaf(state.nodeRuns);
@@ -179,6 +196,22 @@ export const decideStop = ({
   if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
+  // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
+  const { interaction } = readPolicies(state.policies);
+  if (!interaction && position.kind === "open-node" && position.leaf.nodeType === "agent") {
+    const { leaf } = position;
+    const { nodeRunId } = leaf;
+    if (prior >= maxBlocks) {
+      return {
+        reason: "unanswered-stop",
+        blockStreak: prior + 1,
+        message: nextMessage(run),
+        nodeRunId,
+      };
+    }
+    const message = unansweredStopMessage(run, leaf);
+    return { reason: "node-not-done", blockStreak: prior + 1, message, nodeRunId };
+  }
   if (prior >= maxBlocks) return { reason: "max-blocks-reached", blockStreak: prior };
   if (position.kind === "between-nodes") {
     return { reason: "next-not-run", blockStreak: prior + 1, message: nextMessage(run) };
@@ -199,6 +232,7 @@ const stopCalledEvent = (
   input: StopInput,
   check: StopCheck,
   decision: StopDecision,
+  toolCalls: number | undefined,
 ): EmitInput => ({
   type: "hooks.stop.called",
   source: "hooks",
@@ -211,14 +245,55 @@ const stopCalledEvent = (
     blockStreak: decision.blockStreak,
     ...("message" in decision ? { message: decision.message } : {}),
     ...("nodeRunId" in decision ? { nodeRunId: decision.nodeRunId } : {}),
+    ...(toolCalls === undefined ? {} : { toolCalls }),
   },
 });
 
-// Only a turn between nodes reads touchedRun, so only then is the transcript worth reading.
-const readTouchedRun = async (input: StopInput, state: State): Promise<boolean | undefined> =>
-  positionOf(state).kind === "between-nodes"
-    ? touchedRunSinceLastPrompt(await input.readTranscript())
-    : undefined;
+// A turn between nodes reads touchedRun from the transcript. An unattended agent node counts its
+// tool calls, since its work leaves no run event and a stop after real work is not a lapse. A
+// question is not work: the guard refuses it, and an agent that keeps asking must still fail.
+const readTranscriptFacts = async (
+  input: StopInput,
+  state: State,
+): Promise<Readonly<{ touchedRun: boolean | undefined; toolCalls: number | undefined }>> => {
+  const position = positionOf(state);
+  const unattendedNode =
+    !readPolicies(state.policies).interaction &&
+    position.kind === "open-node" &&
+    position.leaf.nodeType === "agent";
+  if (position.kind !== "between-nodes" && !unattendedNode) {
+    return { touchedRun: undefined, toolCalls: undefined };
+  }
+  const entries = await input.readTranscript();
+  return {
+    touchedRun: position.kind === "between-nodes" ? touchedRunSinceLastPrompt(entries) : undefined,
+    toolCalls: entries?.filter((entry) => entry.kind === "command" || entry.kind === "tool").length,
+  };
+};
+
+// A transcript lists a tool call before the guards decide on it, so a call yok denied is not
+// work. A refused question is no tool call in the transcript, so its denial is not taken off.
+const isDeniedCall = (event: Event): boolean => {
+  const called = PreToolUseCalledEvent.safeParse(event);
+  return (
+    called.success &&
+    called.data.payload.decision === "deny" &&
+    called.data.payload.handler !== "question-guard"
+  );
+};
+
+// Whether the transcript holds more tool calls than it did at the last check, less those denied.
+const workedSince = (
+  events: readonly Event[],
+  seq: number | undefined,
+  toolCalls: number | undefined,
+): boolean => {
+  const last = StopCalledEvent.safeParse(events.find((event) => event.seq === seq));
+  const before = last.success ? last.data.payload.toolCalls : undefined;
+  if (toolCalls === undefined || before === undefined || seq === undefined) return false;
+  const denied = events.filter((event) => event.seq > seq && isDeniedCall(event)).length;
+  return toolCalls - before > denied;
+};
 
 // An agent without context steps: the node ends as not applied and the session goes on to `next`.
 const decideForAgent = async (input: StopInput, check: StopCheck): Promise<StopDecision> => {
@@ -239,6 +314,25 @@ const decideForAgent = async (input: StopInput, check: StopCheck): Promise<StopD
   };
 };
 
+// The agent kept stopping with its node open and no one to answer: the node fails with what it
+// last said, which is usually its question. done records it as needs-input, which ends the run.
+const failUnansweredNode = async (
+  run: RunRef,
+  nodeRunId: string,
+  lastMessage: string | undefined,
+  deps: HookDeps,
+): Promise<void> => {
+  const said = lastMessage?.trim() || "(the agent's last message was not available)";
+  const error = `The agent stopped without finishing, and no one will answer. It last said: ${said}`;
+  const failed = await finishStep(run, nodeRunId, { error }, []);
+  if (!failed.ok) {
+    deps.log.warn({ error: failed.error }, "the unanswered node was not failed");
+    return;
+  }
+  const payload = { policy: "interaction", effect: "unanswered-stop", nodeId: failed.value.nodeId };
+  await recordRunEvent(run, { type: "policy.applied", payload }, deps);
+};
+
 // Decides whether the agent may end its turn and logs the call as hooks.stop.called. It never
 // throws: a hook that fails must let the turn end, or it could trap the session.
 export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
@@ -251,21 +345,22 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     const runDir = runDirOf(run.cwd, run.name);
     const state = await readState(runDir);
     if (state === null) return ALLOW;
-    const [touchedRun, events] = await Promise.all([
-      readTouchedRun(input, state),
+    const [{ touchedRun, toolCalls }, events] = await Promise.all([
+      readTranscriptFacts(input, state),
       jsonlEventStore(runDir).read(),
     ]);
+    const seq = state.stopHook?.seq;
     const check = {
       run,
       state,
       touchedRun,
-      progressSinceCheck: progressSince(events, state.stopHook?.seq),
+      progressSinceCheck: progressSince(events, seq) || workedSince(events, seq, toolCalls),
       maxBlocks: maxBlocksOf(deps.env),
       waitingOnBackground: input.waitingOnBackground,
       pendingSwitch: foldModelSwitch(events, state.tiers).pending,
     };
     const decision = await decideForAgent(input, check);
-    const stored = await appendRunEvent(run, stopCalledEvent(input, check, decision));
+    const stored = await appendRunEvent(run, stopCalledEvent(input, check, decision, toolCalls));
     if (!stored.ok) {
       // An unrecorded block would reset the count, so it could block forever.
       deps.log.warn({ error: stored.error }, "stop allowed: the hook call was not recorded");
@@ -276,6 +371,9 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     }
     if (decision.reason === "model-switch") {
       await startModelStep(run, input.sessionId, decision.seq);
+    }
+    if (decision.reason === "unanswered-stop") {
+      await failUnansweredNode(run, decision.nodeRunId, input.lastMessage, deps);
     }
     if (decision.reason === "max-blocks-reached") {
       const payload = { agent: input.agent, sessionId: input.sessionId };

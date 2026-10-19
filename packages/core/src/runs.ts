@@ -24,9 +24,11 @@ import {
   loadStartConfig,
   type NodeRun,
   NodeStartedEvent,
+  type Policies,
   type ResolvedTiers,
   type Result,
   type RunRef,
+  readPolicies,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -218,6 +220,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     subscribers,
     config,
     tiers: run.tiers,
+    ...(run.policies === undefined ? {} : { policies: run.policies }),
   });
   const appended = await appendRunEvent(
     { id: run.id, cwd: run.cwd, name },
@@ -375,6 +378,7 @@ export type StepReply =
       prompt?: string;
       input: JsonValue;
       variables: Readonly<Record<string, string>>;
+      policies: Policies;
       done: string;
     }>
   | Readonly<{
@@ -385,6 +389,7 @@ export type StepReply =
       tier?: string;
       prompt: string;
       input: JsonValue;
+      policies: Policies;
       done: string;
     }>
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
@@ -508,6 +513,7 @@ const buildLeafReply = (
   decision: Extract<Decision, { kind: "leaf" }>,
   run: RunRef,
   options: CheckoutConfig,
+  policies: Policies,
 ): StepReply => {
   const { node, nodeRunId, input, variables, runsOn } = decision;
   if (node.type === "context") {
@@ -530,7 +536,7 @@ const buildLeafReply = (
       : { mode: runsOn.mode, ...(runsOn.tier === null ? {} : { tier: runsOn.tier }) };
   if (node.stage === undefined) {
     const prompt = node.prompt ?? "";
-    return { kind: "agent", nodeRunId, nodeId: node.id, ...launch, prompt, input, done };
+    return { kind: "agent", nodeRunId, nodeId: node.id, ...launch, prompt, input, policies, done };
   }
   const extension = extensionPath(options.config, node.stage.name);
   return {
@@ -545,6 +551,7 @@ const buildLeafReply = (
     ...(node.prompt === undefined ? {} : { prompt: node.prompt }),
     input,
     variables,
+    policies,
     done,
   };
 };
@@ -573,7 +580,9 @@ const walkToNextStep = async (
   const tiers = contextSteps ? state.tiers : null;
   const switching = foldModelSwitch(events, state.tiers);
   const { decision } = await decideNext(plan, state, emit, { tiers, switching, subagents });
-  const reply = decision.kind === "leaf" ? buildLeafReply(decision, run, config.value) : decision;
+  const policies = readPolicies(state.policies);
+  const reply =
+    decision.kind === "leaf" ? buildLeafReply(decision, run, config.value, policies) : decision;
   return { ok: true, value: reply };
 };
 
@@ -622,7 +631,11 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
 export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
   logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
 
-const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<RunningLeaf>> => {
+// The running step, with the run's policies read from the same state.
+const loadRunningLeaf = async (
+  run: RunRef,
+  nodeRunId: string,
+): Promise<Result<RunningLeaf & Readonly<{ policies: Policies }>>> => {
   const state = await readRunState(runDirOf(run.cwd, run.name));
   const plan = await loadRunPlan(run, state);
   if (!plan.ok) return plan;
@@ -630,7 +643,7 @@ const loadRunningLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<R
   if (step === undefined) {
     return { ok: false, error: `${nodeRunId} is not the step this run is running` };
   }
-  return { ok: true, value: step };
+  return { ok: true, value: { ...step, policies: readPolicies(state.policies) } };
 };
 
 // A completed node names the session it ran in. A loop's next pass or a retry replaces the node's
@@ -660,7 +673,8 @@ const buildStepEndEvent = (
       ? {}
       : { error: eventError(record.error.kind, record.error.message, record.error.stack) }),
     ...(artifacts.length === 0 ? {} : { artifacts: [...artifacts] }),
-    ...sessionField(step.nodeRun.agentState),
+    // only a completed node's event carries the session; the others refuse the field
+    ...(record.status === "completed" ? sessionField(step.nodeRun.agentState) : {}),
     ...buildParentsField(step.node.parents),
   },
 });
@@ -720,11 +734,23 @@ export const requestApproval = async (
   run: RunRef,
   nodeRunId: string,
   path: string,
-): Promise<Result<Readonly<{ nodeRunId: string; path: string }>>> => {
+): Promise<Result<Readonly<{ nodeRunId: string; path: string; autoApproved?: true }>>> => {
   const step = await loadRunningLeaf(run, nodeRunId);
   if (!step.ok) return step;
   const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
   if (issue !== undefined) return { ok: false, error: issue.message };
+  // No one reviews in this run: the file counts as approved, and nothing waits.
+  if (!step.value.policies.interaction) {
+    const nodeId = step.value.node.id;
+    const applied = await appendRunEvent(run, {
+      type: "policy.applied",
+      source: "orchestrate",
+      nodeId,
+      nodeRunId,
+      payload: { policy: "interaction", effect: "auto-approved", nodeId, path },
+    });
+    return applied.ok ? { ok: true, value: { nodeRunId, path, autoApproved: true } } : applied;
+  }
   const stored = await appendRunEvent(run, {
     type: "artifact.approval.requested",
     source: "orchestrate",
@@ -859,7 +885,10 @@ const finishStepChecked = async (
     };
   }
   if ("error" in outcome) {
-    const error = { kind: "exception" as const, message: outcome.error };
+    const kind = step.value.policies.interaction
+      ? ("exception" as const)
+      : ("needs-input" as const);
+    const error = { kind, message: outcome.error };
     const record: NodeRecord = {
       path: nodeRunId,
       type: node.type,

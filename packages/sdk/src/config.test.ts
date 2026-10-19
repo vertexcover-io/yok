@@ -540,6 +540,14 @@ describe("loadConfig", () => {
     expect(result.error.code).toBe("CONFIG_INVALID");
   });
 
+  test("SC504: policies.interaction set to 3 fails naming policies.interaction and the allowed values", async () => {
+    await writeConfig("orchestrate.config.yaml", "version: 2\npolicies:\n  interaction: 3\n");
+    const result = await loadConfig(root);
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.error.message).toContain("policies.interaction");
+    expect(result.error.message).toContain("must be true or false");
+  });
+
   test("SC15 — two config files fail with CONFIG_AMBIGUOUS naming both", async () => {
     await writeConfig("orchestrate.config.yaml", "version: 2\n");
     await writeConfig("orchestrate.config.json", '{"version": 2}');
