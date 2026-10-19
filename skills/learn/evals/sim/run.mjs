@@ -80,15 +80,20 @@ const startRun = (id) => {
   };
   writeFileSync(join(runDir, "event.jsonl"), `${JSON.stringify(started)}\n`);
 };
-// An afterRun scenario starts once the workflow has finished: state.json says completed, the repo
+// An afterRun scenario starts once the run's PR is up while retro still runs: state.json has the
+// `pr` stage completed and the run still running, the repo
 // has a remote to push to, and the session gets yok's offer-learn Stop hook, as `yok run` installs it.
 const finishRun = () => {
   const at = new Date().toISOString();
   const state = {
     schemaVersion: 1, lastEventSeq: 1, runId: RUN.id, runName: RUN.name, runDir, version: "2.0.0",
-    workflow: { name: "task", path: "workflow.yaml" }, input: {}, scope: null, startedAt: at, completedAt: at, status: "completed",
+    workflow: { name: "task", path: "workflow.yaml" }, input: {}, scope: null, startedAt: at, completedAt: null, status: "running",
     workspace: { type: "mono", path: repo, repositories: { shop: { path: repo, git: { branch: "feat/invoice-id", baseBranch: "main", startSha: "init" } } } },
-    nodeRuns: {}, activeSessions: [], tiers: null, eventHandlers: {}, subscribers: {}, config: { path: null, root: repo },
+    nodeRuns: {
+      pr: { nodeRunId: "pr", nodeType: "agent", status: "completed", startedAt: at, completedAt: at, artifacts: [] },
+      retro: { nodeRunId: "retro", nodeType: "agent", status: "running", startedAt: at, completedAt: null, artifacts: [] },
+    },
+    activeSessions: [], tiers: null, eventHandlers: {}, subscribers: {}, config: { path: null, root: repo },
   };
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
   const remote = join(simCwd, "origin.git");
@@ -167,6 +172,42 @@ const nextUserMessage = (conversation) => {
   return (reply.result ?? "").trim().replace(/^["']|["']$/g, "");
 };
 
+// The session's records, from Claude Code's own transcript file.
+const transcriptPath = (id) => {
+  const projects = join(homedir(), ".claude", "projects");
+  return readdirSync(projects).map((dir) => join(projects, dir, `${id}.jsonl`)).find(existsSync) ?? null;
+};
+const readRecords = (id) => {
+  const path = transcriptPath(id);
+  return path
+    ? readFileSync(path, "utf8").split("\n").flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      })
+    : [];
+};
+const recordText = (record) => {
+  const content = record?.message?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.map((block) => block.text ?? JSON.stringify(block.input ?? "")).join("\n") : "";
+};
+// Everything the agent wrote since `sent`, as a person at the terminal sees it. `claude -p` prints
+// only the last message, which loses the reply before a Stop hook sent the agent back. A message
+// not found as typed (a slash command is stored differently) gives "", and the caller falls back.
+const agentTextSince = (id, sent) => {
+  const records = readRecords(id);
+  const start = records.findLastIndex((record) => record.type === "user" && recordText(record).trim() === sent.trim());
+  if (start === -1) return "";
+  return records.slice(start + 1)
+    .filter((record) => record.type === "assistant" && Array.isArray(record.message?.content))
+    .flatMap((record) => record.message.content.filter((block) => block.type === "text").map((block) => block.text.trim()))
+    .filter(Boolean)
+    .join("\n\n");
+};
+
 // --- the agent ---------------------------------------------------------------------------------
 const agentTurn = (message, sessionId, firstId) =>
   claude(
@@ -206,29 +247,13 @@ for (let turn = 0; !previous && turn < MAX_TURNS; turn += 1) {
   const reply = agentTurn(sent, sessionId, firstId);
   if (!firstId && !sessionId && reply.session_id) startRun(reply.session_id);
   sessionId = reply.session_id ?? sessionId;
-  conversation.push({ role: "agent", text: reply.result ?? "(no reply)", error: reply.is_error === true });
+  const text = (sessionId && agentTextSince(sessionId, sent)) || reply.result || "(no reply)";
+  conversation.push({ role: "agent", text, error: reply.is_error === true });
   if (reply.is_error && !reply.session_id) break;
 }
 
 // --- what happened -----------------------------------------------------------------------------
-const transcriptPath = () => {
-  const projects = join(homedir(), ".claude", "projects");
-  return readdirSync(projects).map((dir) => join(projects, dir, `${sessionId}.jsonl`)).find(existsSync) ?? null;
-};
-const transcript = sessionId && transcriptPath()
-  ? readFileSync(transcriptPath(), "utf8").split("\n").flatMap((line) => {
-      try {
-        return [JSON.parse(line)];
-      } catch {
-        return [];
-      }
-    })
-  : [];
-const recordText = (record) => {
-  const content = record?.message?.content;
-  if (typeof content === "string") return content;
-  return Array.isArray(content) ? content.map((block) => block.text ?? JSON.stringify(block.input ?? "")).join("\n") : "";
-};
+const transcript = sessionId ? readRecords(sessionId) : [];
 
 const eventsDir = join(repo, plugin.events);
 const events = existsSync(eventsDir)
@@ -273,7 +298,7 @@ const commands = transcript.flatMap((record) =>
 );
 const mistakeFiles = scenario.mistake(writes, commands, conversation);
 // After the run, the offer needs a push of review changes on top of the run's own first push.
-const pushes = commands.filter((command) => /\bgit\b[^;&|\n]*\spush\b/.test(command)).length;
+const pushes = commands.filter((command) => /(?:^|[\s;&|(])git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*push\b/.test(command)).length;
 const expected = scenario.afterRun && pushes < 2
   ? { notExercised: "the agent pushed only once, so there was no review push to offer learn after" }
   : scenario.expect(mistakeFiles.length > 0);
@@ -300,7 +325,7 @@ const typedLearn = userMessages.some((text) => text.startsWith(`/${pluginName}:l
 if (scenario.afterRun) {
   check("user never typed /learn", !typedLearn);
   // Each offer comes back as hook feedback; its learn pass may start only after the user's answer.
-  const isOffer = (record) => record.type === "user" && recordText(record).includes("You pushed changes after the yok run finished");
+  const isOffer = (record) => record.type === "user" && recordText(record).includes("You pushed changes after the run's PR was created");
   const isTyped = (record) => record.type === "user" && userMessages.includes(recordText(record).trim());
   const isLearn = (record) =>
     (Array.isArray(record.message?.content) ? record.message.content : []).some((block) => block.type === "tool_use" && block.name === "Skill" && /(^|:)learn$/.test(block.input?.skill ?? ""));
@@ -309,10 +334,15 @@ if (scenario.afterRun) {
     const offer = transcript.findLastIndex((record, index) => index < start && isOffer(record));
     return offer !== -1 && transcript.slice(offer + 1, start).some(isTyped);
   });
-  check("learn ran, and each pass only after the user answered an offer", learnStarts.length > 0 && askedFirst, `learn at records ${learnStarts.join(", ")}`);
-  // yok's Stop hook offers on every push, the run's own first one included. The agent asks only
-  // when the user corrected it since the last pass: not after the first push (nothing corrected
-  // yet), yes after the review fix's push, and not after the last push, of just the learning file.
+  check(
+    mistakeFiles.length > 0 ? "learn ran, and each pass only after the user answered an offer" : "learn never ran",
+    mistakeFiles.length > 0 ? learnStarts.length > 0 && askedFirst : learnStarts.length === 0,
+    `learn at records ${learnStarts.join(", ")}`,
+  );
+  // yok's Stop hook offers on a push once the PR stage is done, when the user typed something
+  // since the last learning session. The agent asks only when that corrected it: not after the
+  // first push (nothing corrected yet), yes after the review fix's push. The push of just the
+  // learning file comes with nothing typed since learn's mark, so it gets no question.
   const offers = transcript.flatMap((record, index) => (isOffer(record) ? [index] : []));
   const secondTyped = transcript.findIndex((record, index) => isTyped(record) && transcript.slice(0, index).some(isTyped));
   check("the first push (the run's own PR) was offered too", offers.length > 0 && (secondTyped === -1 || offers[0] < secondTyped), `offers at records ${offers.join(", ")}`);
@@ -321,10 +351,21 @@ if (scenario.afterRun) {
     return transcript.slice(offer + 1, next === -1 ? undefined : next).some((record) =>
       record.type === "assistant" && /learning session/i.test(recordText(record)) && recordText(record).includes("?"));
   });
+  check("did not ask after the first push, with nothing corrected yet", asked[0] === false, `asked per offer: ${asked.join(", ")}`);
+  // When it does not ask, its whole reply to the offer is the one line the offer gives it.
+  const replies = offers.map((offer) => {
+    const next = transcript.findIndex((record, index) => index > offer && isTyped(record));
+    return transcript.slice(offer + 1, next === -1 ? undefined : next)
+      .filter((record) => record.type === "assistant").map(recordText).join(" ").trim();
+  });
+  const notQuiet = replies.filter((reply, i) => !asked[i] && !/^No new learnings from your messages\.?$/.test(reply));
+  check("when it does not ask, it replies only \"No new learnings from your messages\"", notQuiet.length === 0, notQuiet.join(" | ").slice(0, 300));
   if (mistakeFiles.length > 0) {
-    check("did not ask after the first push, with nothing corrected yet", asked[0] === false, `asked per offer: ${asked.join(", ")}`);
     check("asked after the review fix's push", asked.slice(1).includes(true), `asked per offer: ${asked.join(", ")}`);
-    check("did not ask after pushing just the learning file", asked.length > 1 && asked.at(-1) === false, `asked per offer: ${asked.join(", ")}`);
+    const lastLearn = learnStarts.at(-1) ?? Number.POSITIVE_INFINITY;
+    check("did not ask again after the learning session", asked.every((ask, i) => !ask || offers[i] < lastLearn), `offers at records ${offers.join(", ")}, learn at ${lastLearn}`);
+  } else {
+    check("never asked: nothing typed was a correction", !asked.includes(true), `asked per offer: ${asked.join(", ")}`);
   }
 } else if (scenario.auto) {
   check("user never typed /learn", !typedLearn);
@@ -480,7 +521,7 @@ const result = {
   source: scenario.source,
   repo,
   sessionId,
-  transcript: sessionId ? transcriptPath() : null,
+  transcript: sessionId ? transcriptPath(sessionId) : null,
   conversation,
   mistakeMade: mistakeFiles.length > 0,
   mistakeFiles,

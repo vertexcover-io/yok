@@ -25,7 +25,7 @@ Most passes produce none. A wrong learning is worse than a missing one, because 
 follow it in every later session.
 
 Trigger is `auto` when this runs as the pipeline's learn stage, or after the user said yes to the
-learning session yok offers when the agent pushes once the run has finished. It is `manual` when
+learning session yok offers when the agent pushes once the run's PR is created. It is `manual` when
 the user invoked it unprompted (`/yok:learn`, or they asked for a learning). Text the user gave with `/yok:learn` is the rule
 they want; with none, look at everything since the last pass.
 

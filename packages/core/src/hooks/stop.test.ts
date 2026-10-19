@@ -656,14 +656,10 @@ describe("an open context node", () => {
 });
 
 describe("offerLearn", () => {
-  // A run whose workflow has finished: the user now reviews the code and asks for changes.
-  const setUpFinished = async () => {
-    const run = await setUp({});
-    const statePath = join(run.runDir, "state.json");
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    await writeFile(statePath, JSON.stringify({ ...state, status: "completed" }));
-    return run;
-  };
+  // A run whose PR stage has finished while retro still runs: the user now reviews the code and
+  // asks for changes.
+  const setUpPrDone = () =>
+    setUp({ pr: nodeRun("pr", "completed"), retro: nodeRun("retro", "running") });
 
   const firstPr: TranscriptEntry[] = [
     { kind: "prompt", text: "run the ticket" },
@@ -680,14 +676,14 @@ describe("offerLearn", () => {
   const eventTypes = async (runDir: string) =>
     (await jsonlEventStore(runDir).read()).map((event) => event.type);
 
-  test("while the workflow runs it never offers, even after a push", async () => {
-    const { deps, runDir } = await setUp({});
+  test("before the PR stage completes it never offers, even after a push", async () => {
+    const { deps, runDir } = await setUp({ pr: nodeRun("pr", "running") });
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
     expect(await eventTypes(runDir)).toEqual([]);
   });
 
-  test("once the workflow finished, its own PR's push has the agent ask before running learn", async () => {
-    const { deps, runDir } = await setUpFinished();
+  test("once the PR stage completed, its own push has the agent ask before running learn", async () => {
+    const { deps, runDir } = await setUpPrDone();
     const reply = await offer(firstPr, deps);
     expect(reply).toMatchObject({ kind: "continue" });
     expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
@@ -695,21 +691,21 @@ describe("offerLearn", () => {
   });
 
   test("a review push after the next message asks too", async () => {
-    const { deps, runDir } = await setUpFinished();
+    const { deps, runDir } = await setUpPrDone();
     await offer(firstPr, deps);
     expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
     expect(await eventTypes(runDir)).toEqual(["learning.offered", "learning.offered"]);
   });
 
   test("it asks once per push: the stop after the user answers lets the turn end", async () => {
-    const { deps } = await setUpFinished();
+    const { deps } = await setUpPrDone();
     await offer(firstPr, deps);
     expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
   });
 
   test("a turn without a push since the user's last message lets the turn end", async () => {
-    const { deps } = await setUpFinished();
+    const { deps } = await setUpPrDone();
     await offer(firstPr, deps);
     const chatAfterPush: TranscriptEntry[] = [
       ...reviewPush,
@@ -720,13 +716,30 @@ describe("offerLearn", () => {
       ...firstPr,
       { kind: "prompt", text: "check the branch" },
       { kind: "command", command: "git status && echo push later" },
+      { kind: "command", command: 'git commit -m "fix it and push"' },
     ];
     expect(await offer(chatAfterPush, deps)).toEqual({ kind: "allow" });
     expect(await offer(notAPush, deps)).toEqual({ kind: "allow" });
   });
 
+  test("the push of a learning session's own file, with nothing typed since its mark, lets the turn end", async () => {
+    const { deps } = await setUpPrDone();
+    await offer(firstPr, deps);
+    await offer(reviewPush, deps);
+    const learnPush: TranscriptEntry[] = [
+      ...reviewPush,
+      { kind: "prompt", text: "yes" },
+      {
+        kind: "command",
+        command: "yok orchestrate emit learning.reviewed --source learn --payload '{}'",
+      },
+      { kind: "command", command: "git push" },
+    ];
+    expect(await offer(learnPush, deps)).toEqual({ kind: "allow" });
+  });
+
   test("a session that is not a yok run's lets the turn end", async () => {
-    const { deps } = await setUpFinished();
+    const { deps } = await setUpPrDone();
     const stranger = { ...input(reviewPush), sessionId: "someone-else" };
     expect(await offerLearn.run(stranger, { ...deps, env: {} })).toEqual({ kind: "allow" });
   });
