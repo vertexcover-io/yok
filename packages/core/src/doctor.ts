@@ -137,7 +137,7 @@ const checkNotifier = async (
   const notifier = pickNotifier(workflowNotifier, configNotifier);
   if (notifier?.enabled !== true) return ok("off");
   if (!env.ok) return fail(env.error);
-  const missing = findMissingNotifierKeys({ ...process.env, ...env.value });
+  const missing = findMissingNotifierKeys(notifier.type, { ...process.env, ...env.value });
   if (missing.length === 0) return ok(`${notifier.type} on`);
   return fail(`${notifier.type} on, but ${missing.join(" and ")} not set`);
 };
@@ -146,7 +146,7 @@ const checkNotifier = async (
 export const buildNotifierCheck = (workflowNotifier: Notifier | undefined, env: RunEnv): Check => ({
   name: "notifier",
   fix: [
-    "set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID in .env or in the workflow's or config's env",
+    "set the keys named above in .env or in the workflow's or config's env",
     "or turn it off in the workflow or the config: notifier: { enabled: false }",
   ],
   run: (context) => checkNotifier(context, workflowNotifier, env),

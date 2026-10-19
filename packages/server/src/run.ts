@@ -98,10 +98,10 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
   const workflow = plan.name;
   const agent = plan.agent;
 
-  const slack = await notifierHooks.buildThreadEnv(body.thread, deps.home);
-  if (!slack.ok) return errorResponse(c, 400, "bad-request", slack.error);
+  const threadEnv = await notifierHooks.buildThreadEnv(body.thread, deps.home);
+  if (!threadEnv.ok) return errorResponse(c, 400, "bad-request", threadEnv.error);
   const checkoutConfig = config === null ? {} : { config };
-  const checked = await deps.checkCheckout({ cwd, plan, env: slack.value, ...checkoutConfig });
+  const checked = await deps.checkCheckout({ cwd, plan, env: threadEnv.value, ...checkoutConfig });
   const line = verdict(checked.report);
   await saveVerdict(deps.home, project.value.name, line);
   if (checked.report.failed.length > 0) {

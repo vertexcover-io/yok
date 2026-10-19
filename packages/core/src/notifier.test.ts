@@ -461,7 +461,7 @@ describe("the notifier's Slack variables", () => {
     expect(opened.ok ? [] : SLACK_KEYS.filter((key) => opened.error.includes(key))).toEqual(
       missing,
     );
-    expect(findMissingNotifierKeys(env)).toEqual(missing);
+    expect(findMissingNotifierKeys("slack", env)).toEqual(missing);
   });
 });
 
@@ -612,7 +612,7 @@ describe("buildThreadEnv", () => {
 
   test("SC626: a thread gives the home's bot token, the thread's channel and its member", async () => {
     const home = await homeWith("SLACK_BOT_TOKEN=xoxb-home\n");
-    const thread = { place: "C9", threadId: "17.1", memberId: "U1" };
+    const thread = { provider: "slack" as const, place: "C9", threadId: "17.1", memberId: "U1" };
     expect(await buildThreadEnv(thread, home)).toEqual({
       ok: true,
       value: { SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "U1" },
@@ -621,7 +621,9 @@ describe("buildThreadEnv", () => {
 
   test("SC626: a thread with no member clears SLACK_MEMBER_ID, so a project's own member is not mentioned", async () => {
     const home = await homeWith("SLACK_BOT_TOKEN=xoxb-home\n");
-    expect(await buildThreadEnv({ place: "C9", threadId: "17.1" }, home)).toEqual({
+    expect(
+      await buildThreadEnv({ provider: "slack", place: "C9", threadId: "17.1" }, home),
+    ).toEqual({
       ok: true,
       value: { SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "" },
     });
@@ -633,7 +635,9 @@ describe("buildThreadEnv", () => {
 
   test("SC626: a home .env with no SLACK_BOT_TOKEN fails naming that file", async () => {
     const home = await homeWith("OTHER=1\n");
-    expect(await buildThreadEnv({ place: "C9", threadId: "17.1" }, home)).toEqual({
+    expect(
+      await buildThreadEnv({ provider: "slack", place: "C9", threadId: "17.1" }, home),
+    ).toEqual({
       ok: false,
       error: `a thread run needs SLACK_BOT_TOKEN in ${join(home, ".env")}`,
     });

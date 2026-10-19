@@ -34,11 +34,11 @@ export const SourceSchema = z.strictObject({
 });
 export type Source = z.infer<typeof SourceSchema>;
 
-// The chat thread a run reports into: the channel it was asked from, and the message that opened
-// the thread there.
+// A Slack thread: the channel it was asked from, and the message that opened the thread there.
 // Slack's id shapes: memberId goes into the notifier's <@...> markup, where anything else could
 // post an @channel.
-export const ThreadSchema = z.strictObject({
+const SlackThreadSchema = z.strictObject({
+  provider: z.literal("slack"),
   place: z.string().regex(/^[CGD][A-Z0-9]+$/),
   threadId: NonEmptyStringSchema,
   // the person the notifier mentions on moments that need them
@@ -47,6 +47,9 @@ export const ThreadSchema = z.strictObject({
     .regex(/^[UW][A-Z0-9]+$/)
     .optional(),
 });
+
+// The chat thread a run reports into, in the shape of the notifier provider it came from.
+export const ThreadSchema = z.discriminatedUnion("provider", [SlackThreadSchema]);
 export type Thread = z.infer<typeof ThreadSchema>;
 
 export const WorkflowRunSchema = z.strictObject({

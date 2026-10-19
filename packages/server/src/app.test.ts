@@ -565,7 +565,7 @@ describe("POST /runs", () => {
     const { cwd } = tempWorkspace(deps.home);
     writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
     writeFileSync(join(cwd, ".env"), "SLACK_CHANNEL_ID=C-project\n");
-    const thread = { place: "C9", threadId: "17.1" };
+    const thread = { provider: "slack" as const, place: "C9", threadId: "17.1" };
 
     const res = await postRun(createApp(deps), { thread });
 
@@ -578,9 +578,14 @@ describe("POST /runs", () => {
   test.each([
     [
       "memberId that is not a Slack user id",
-      { place: "C9", threadId: "17.1", memberId: "U1> <!channel" },
+      { provider: "slack", place: "C9", threadId: "17.1", memberId: "U1> <!channel" },
     ],
-    ["place that is not a Slack channel id", { place: "#general", threadId: "17.1" }],
+    [
+      "place that is not a Slack channel id",
+      { provider: "slack", place: "#general", threadId: "17.1" },
+    ],
+    ["provider is missing", { place: "C9", threadId: "17.1" }],
+    ["provider has no notifier in yok", { provider: "teams", place: "C9", threadId: "17.1" }],
   ])("a thread whose %s is 400 bad-request and saves nothing", async (_label, thread) => {
     const deps = await buildDeps(launchesOk);
     tempWorkspace(deps.home);
@@ -602,7 +607,9 @@ describe("POST /runs", () => {
     tempWorkspace(deps.home);
     writeFileSync(join(deps.home, ".env"), "OTHER=1\n");
 
-    const res = await postRun(createApp(deps), { thread: { place: "C9", threadId: "17.1" } });
+    const res = await postRun(createApp(deps), {
+      thread: { provider: "slack", place: "C9", threadId: "17.1" },
+    });
 
     expect(res.status).toBe(400);
     expect((await errorOf(res)).message).toContain(join(deps.home, ".env"));
@@ -1558,7 +1565,7 @@ describe("runChannelCommand", () => {
       okWorkflow({ inputs: { prompt: { type: "string", required: true } } }),
     );
     writeFileSync(join(deps.home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
-    const thread = { place: "C9", threadId: "17.1" };
+    const thread = { provider: "slack" as const, place: "C9", threadId: "17.1" };
 
     const reply = await runChannelCommand(
       "run ok.yaml do it --project demo",
@@ -1998,7 +2005,12 @@ describe("Slack adapter", () => {
       text: expect.stringMatching(/^⏳ <@U1> \/yok run ok\.yaml/),
     });
     const [run] = await deps.registry.listRuns();
-    expect(run?.thread).toEqual({ place: "C9", threadId: "17.1", memberId: "U1" });
+    expect(run?.thread).toEqual({
+      provider: "slack",
+      place: "C9",
+      threadId: "17.1",
+      memberId: "U1",
+    });
     expect(run?.source).toEqual({ channel: "slack", id: "U1", name: "aman", place: "C9" });
     expect(run?.policies?.values.interaction).toBe(false);
     expect(reply?.body).toEqual(
@@ -2052,7 +2064,12 @@ describe("Slack adapter", () => {
 
     await eventually(() => slack.callsTo("chat.postMessage").length === 2);
     const [run] = await deps.registry.listRuns();
-    expect(run?.thread).toEqual({ place: "C9", threadId: "17.1", memberId: "U1" });
+    expect(run?.thread).toEqual({
+      provider: "slack",
+      place: "C9",
+      threadId: "17.1",
+      memberId: "U1",
+    });
     expect(slack.callsTo("chat.postMessage")[1]?.body).toEqual(
       expect.objectContaining({
         thread_ts: "17.1",

@@ -13,7 +13,7 @@ A run started by `/yok` in Slack must post its progress into the thread its comm
 
 ## Considered Options
 
-- The thread rides on the run: `POST /runs` takes `thread: { place, threadId, memberId? }`, the run record keeps it, init seeds `state.notification` with it and turns the notifier on, and every session of the run starts with the yok home's `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` set to the thread's channel
+- The thread rides on the run: `POST /runs` takes `thread: { provider, place, threadId, memberId? }`, the run record keeps it, init seeds `state.notification` with it and turns on the notifier of the thread's `provider`, and every session of the run starts with that provider's keys from the yok home's `.env` and the thread's channel (for Slack, `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID`)
 - The server posts progress: one Slack object in the server both receives commands and posts every run's notices, fed the run's events
 
 ## Decision Outcome

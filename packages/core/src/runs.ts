@@ -186,8 +186,6 @@ const mergeSubscribers = (
   };
 };
 
-const THREAD_NOTIFIER: Notifier = { enabled: true, type: "slack" };
-
 // The workflow's notifier and samskara blocks replace the config's whole. Relative paths resolve
 // against the file that declares them.
 export const freezeSubscribers = async (
@@ -201,9 +199,12 @@ export const freezeSubscribers = async (
     resolveSubscribers(workflow.subscribers, dirname(run.workflowPath)),
   );
   if (!project.ok) return project;
-  // A run asked from a chat thread always reports into it: the person is waiting there.
-  const notifier =
-    run.thread === undefined ? pickNotifier(workflow.notifier, config.notifier) : THREAD_NOTIFIER;
+  // A run asked from a chat thread always reports into it, through its provider: the person is
+  // waiting there.
+  const notifier: Notifier | undefined =
+    run.thread === undefined
+      ? pickNotifier(workflow.notifier, config.notifier)
+      : { enabled: true, type: run.thread.provider };
   // Built-in names are reserved from project subscribers, so these never clash.
   const builtIns = concatSubscribers(
     buildNotifierSubscribers(notifier),
@@ -223,7 +224,6 @@ const frozenHandlers = (config: Config, root: string): EventHandlerRefs =>
 // A thread run's notifier starts out knowing its thread, so its first post replies there. An
 // absent memberId is left out: a notification holds JSON only.
 const toNotification = ({ memberId, ...where }: Thread): NonNullable<State["notification"]> => ({
-  provider: "slack",
   ...where,
   ...(memberId === undefined ? {} : { memberId }),
 });
@@ -550,10 +550,10 @@ export const loadSessionEnv = async (
   const env = await loadEnv(config.value, { ...plan, agent }, run.cwd);
   if (!env.ok) return env;
   const state = await readState(runDirOf(run.cwd, run.name));
-  // z.object drops the notification's other keys (provider), which the strict schema refuses.
-  const thread = z.object(ThreadSchema.shape).safeParse(state?.notification).data;
-  const slack = await buildThreadEnv(thread, home);
-  return slack.ok ? { ok: true, value: { ...env.value, ...slack.value } } : slack;
+  // An ordinary run's notification holds no place, so only a thread run's parses.
+  const thread = ThreadSchema.safeParse(state?.notification).data;
+  const threadEnv = await buildThreadEnv(thread, home);
+  return threadEnv.ok ? { ok: true, value: { ...env.value, ...threadEnv.value } } : threadEnv;
 };
 
 const buildLeafReply = (

@@ -127,7 +127,12 @@ export const answerSlashCommand = async (payload: SlashPayload, deps: SlackDeps)
     ...(payload.user_name === undefined ? {} : { name: payload.user_name }),
     place: channel,
   };
-  const thread: Thread = { place: channel, threadId: opened.ts, memberId: payload.user_id };
+  const thread: Thread = {
+    provider: "slack",
+    place: channel,
+    threadId: opened.ts,
+    memberId: payload.user_id,
+  };
   const reply = await runChannelCommand(text, source, deps.client, thread);
   const formatted = formatReply(reply);
   const posted = await callSlack(fetch, keys.botToken, "chat.postMessage", {

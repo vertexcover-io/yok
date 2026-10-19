@@ -148,7 +148,7 @@ extensions:
 | `subscribers` | see below |
 | `eventHandlers` | project functions that fold an event into `state.custom` |
 | `env`, `envFile` | variables every session starts with |
-| `notifier` | `{ enabled, type: slack }`; a run started from a chat thread has it on whatever this says |
+| `notifier` | `{ enabled, type: slack }`; a run started from a chat thread uses its thread's provider, on, whatever this says |
 | `samskara` | `{ enabled }`: upload each completed node's artifact files, or the subfolder of `artifacts/` they sit in, to the run's Claude session in samskara |
 
 Init freezes which config file a run uses into `state.json`, so a run keeps its settings even if you edit the file mid-run.
@@ -214,7 +214,7 @@ Where a run writes code. `layout: mono` means one repo: a worktree at `.worktree
 
 `registry.json` in the yok home lists every run on the machine: id, workflow, inputs, cwd, name, tmux session, Claude session ids, tiers. The server adds a run; init names it; the SessionStart hook links sessions. It is read and written under a file lock by both the server and orchestrate.
 
-A run started from Slack also records its `thread`: the channel, the thread's first message and the person who typed the command. Init copies it into `state.json`, and the run's notifier posts every notice as a reply in that thread.
+A run started from Slack also records its `thread`: the chat service it came from (`provider`), the channel, the thread's first message and the person who typed the command. Init copies it into `state.json`, and the run's notifier posts every notice as a reply in that thread.
 
 The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, API key, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
 

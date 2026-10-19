@@ -487,7 +487,7 @@ describe("the notifier at init", () => {
     "SC630: a thread run with %s in its config seeds the thread into state and turns the notifier on",
     async (_label, config) => {
       const { init } = await notifierRun(config, "", {
-        thread: { place: "C9", threadId: "17.1" },
+        thread: { provider: "slack", place: "C9", threadId: "17.1" },
       });
 
       const result = await init("fix-login");
@@ -542,7 +542,9 @@ describe("the notifier at init", () => {
   });
 
   test("SC631: a thread run's first notice replies in its thread on channel C9 and records no new thread", async () => {
-    const { init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    const { init } = await notifierRun({}, "", {
+      thread: { provider: "slack", place: "C9", threadId: "17.1" },
+    });
     const result = await init("fix-login");
     if (!result.ok) throw new Error(result.error);
     const { dir, state } = result.value;
@@ -572,7 +574,9 @@ describe("the notifier at init", () => {
   });
 
   test("SC632: a restarted session of a thread run gets the home's bot token and the thread's channel over the project's", async () => {
-    const { cwd, init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    const { cwd, init } = await notifierRun({}, "", {
+      thread: { provider: "slack", place: "C9", threadId: "17.1" },
+    });
     writeFileSync(join(cwd, ".env"), "SLACK_BOT_TOKEN=xoxb-project\nSLACK_CHANNEL_ID=C-project\n");
     const home = tempDir();
     writeFileSync(join(home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
@@ -615,7 +619,9 @@ describe("the notifier at init", () => {
   });
 
   test("a thread run restarted after the home's bot token was removed gets no env, an error instead", async () => {
-    const { cwd, init } = await notifierRun({}, "", { thread: { place: "C9", threadId: "17.1" } });
+    const { cwd, init } = await notifierRun({}, "", {
+      thread: { provider: "slack", place: "C9", threadId: "17.1" },
+    });
     const home = tempDir();
     writeFileSync(join(home, ".env"), "SLACK_BOT_TOKEN=xoxb-home\n");
     const result = await init("fix-login");

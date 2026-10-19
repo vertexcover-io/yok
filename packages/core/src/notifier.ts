@@ -345,46 +345,71 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
   },
 });
 
-export const SLACK_REQUIRED_KEYS = ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"] as const;
-
 type Env = Readonly<Record<string, string | undefined>>;
 
-export const findMissingNotifierKeys = (env: Env): readonly string[] =>
-  SLACK_REQUIRED_KEYS.filter((key) => !env[key]);
+// What core needs from each notifier provider. Nothing outside this table names one.
+type NotifierProvider = Readonly<{
+  // the run env keys the notifier cannot open without
+  requiredKeys: readonly string[];
+  // called once every required key is set
+  open: (env: Env) => INotifier;
+  // the keys a thread run's sessions get over the project's, from the thread and the home's .env
+  threadEnv: (thread: Thread, home: Env) => Record<string, string>;
+}>;
+
+const PROVIDERS: Readonly<Record<Notifier["type"], NotifierProvider>> = {
+  slack: {
+    requiredKeys: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
+    open: (env) =>
+      createSlackNotifier({
+        token: env.SLACK_BOT_TOKEN ?? "",
+        channel: env.SLACK_CHANNEL_ID ?? "",
+        memberId: env.SLACK_MEMBER_ID,
+        fetch,
+      }),
+    threadEnv: (thread, home) => ({
+      SLACK_BOT_TOKEN: home.SLACK_BOT_TOKEN ?? "",
+      SLACK_CHANNEL_ID: thread.place,
+      // empty rather than absent, so a member the project's .env names is not mentioned instead
+      SLACK_MEMBER_ID: thread.memberId ?? "",
+    }),
+  },
+};
+
+export const findMissingNotifierKeys = (type: Notifier["type"], env: Env): readonly string[] =>
+  PROVIDERS[type].requiredKeys.filter((key) => !env[key]);
 
 // Secrets come from the run's env, which its agent session starts with and every subscriber process
 // inherits. That env is built from .env and the config's and workflow's env and envFile, so keep a
 // token in .env or an envFile, not inline in a committed file.
 export const openNotifier = (type: Notifier["type"], env: Env = process.env): Result<INotifier> => {
-  const { SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: channel, SLACK_MEMBER_ID: memberId } = env;
-  if (!token || !channel) {
-    const missing = findMissingNotifierKeys(env).join(" and ");
-    return { ok: false, error: `the ${type} notifier needs ${missing} in the run's env` };
+  const missing = findMissingNotifierKeys(type, env);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: `the ${type} notifier needs ${missing.join(" and ")} in the run's env`,
+    };
   }
-  return { ok: true, value: createSlackNotifier({ token, channel, memberId, fetch }) };
+  return { ok: true, value: PROVIDERS[type].open(env) };
 };
 
 export type OpenNotifier = typeof openNotifier;
 
-// A thread run reports with the yok home's bot token into the thread's channel, over any Slack
-// keys the project's .env sets. Read on every call, so the token never enters process.env.
+// A thread run reports into its thread with the yok home's keys, over any the project's .env sets.
+// Read on every call, so a token never enters process.env.
 export const buildThreadEnv = async (
   thread: Thread | undefined,
   home: string,
 ): Promise<Result<Record<string, string>>> => {
   if (thread === undefined) return { ok: true, value: {} };
   const path = join(home, ".env");
-  const token = parseEnv((await readIfExists(path)) ?? "").SLACK_BOT_TOKEN;
-  if (!token) return { ok: false, error: `a thread run needs SLACK_BOT_TOKEN in ${path}` };
-  return {
-    ok: true,
-    value: {
-      SLACK_BOT_TOKEN: token,
-      SLACK_CHANNEL_ID: thread.place,
-      // empty rather than absent, so a member the project's .env names is not mentioned instead
-      SLACK_MEMBER_ID: thread.memberId ?? "",
-    },
-  };
+  const provider = PROVIDERS[thread.provider];
+  const env = provider.threadEnv(thread, parseEnv((await readIfExists(path)) ?? ""));
+  const missing = provider.requiredKeys.filter((key) => !env[key]);
+  if (missing.length > 0) {
+    return { ok: false, error: `a thread run needs ${missing.join(" and ")} in ${path}` };
+  }
+  return { ok: true, value: env };
 };
 
 // What init freezes as the notifier subscriber's module: the CLI serves this file under that name, so
