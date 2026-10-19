@@ -2,7 +2,14 @@ import { realpath } from "node:fs/promises";
 import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
 import { Command, type OptionValues } from "@commander-js/extra-typings";
 import { type DoctorReport, type DoctorRow, isWorkflowFile, verdict } from "@yok/core";
-import { POLICY_NAMES, PoliciesSchema, type PolicyLayer, type Result, type Source } from "@yok/sdk";
+import {
+  POLICY_NAMES,
+  PoliciesSchema,
+  type PolicyLayer,
+  type Result,
+  type Source,
+  type Thread,
+} from "@yok/sdk";
 import { parsePolicyFlags } from "@yok/sdk/internal";
 import type { YokClient } from "./client.ts";
 import type { ApiError, ProjectView } from "./protocol.ts";
@@ -280,6 +287,7 @@ const startRun = async (
   words: readonly string[],
   source: Source,
   client: YokClient,
+  thread: Thread | undefined,
 ): Promise<ChannelReply> => {
   const parsed = parseWords(runDefinition(), words);
   if (!parsed.ok) return refuse(parsed.error);
@@ -308,6 +316,7 @@ const startRun = async (
     ...(opts.name === undefined ? {} : { name: opts.name }),
     ...(opts.project === undefined ? {} : { project: opts.project }),
     ...(opts.config === undefined ? {} : { config: opts.config }),
+    ...(thread === undefined ? {} : { thread }),
   });
   if (!started.ok) return refuse(withoutQuotedLines(startErrorText(started.error)));
   const { run, view } = started.value;
@@ -393,16 +402,18 @@ const manageProjects = (
 };
 
 // Typed chat text, read with the CLI's own definitions and answered in the CLI's words.
+// thread: where a run it starts reports, for an inbox that opened one.
 export const runChannelCommand = async (
   text: string,
   source: Source,
   client: YokClient,
+  thread?: Thread,
 ): Promise<ChannelReply> => {
   const words = tokenize(text);
   if (!words.ok) return refuse(`${words.error}\n${USAGE}`);
   if (words.value.length === 0) return refuse(USAGE);
   const [first, ...rest] = words.value;
-  if (first === "run") return startRun(rest, source, client);
+  if (first === "run") return startRun(rest, source, client, thread);
   if (first === "project") return manageProjects(rest, source, client);
   return refuse(`unknown command "${first}"; use run or project`);
 };

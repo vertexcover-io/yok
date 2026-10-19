@@ -240,6 +240,8 @@ export {
   type SessionRef,
   type Source,
   SourceSchema,
+  type Thread,
+  ThreadSchema,
   type WorkflowRun,
   WorkflowRunSchema,
   yokHome,

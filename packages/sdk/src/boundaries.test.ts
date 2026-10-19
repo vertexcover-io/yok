@@ -96,6 +96,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "SubscriberRefSchema",
   "SubscriberRefsSchema",
   "SubscribersSchema",
+  "ThreadSchema",
   "TicketSchema",
   "TierModelSchema",
   "TiersConfigSchema",

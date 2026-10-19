@@ -5,6 +5,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   compilePlan,
   findWorkflowPath,
+  notifierHooks,
   orchestrateArgv,
   resolveWorkflowInputs,
   verdict,
@@ -97,7 +98,10 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
   const workflow = plan.name;
   const agent = plan.agent;
 
-  const checked = await deps.checkCheckout({ cwd, plan, ...(config === null ? {} : { config }) });
+  const threadEnv = await notifierHooks.buildThreadEnv(body.thread, deps.home);
+  if (!threadEnv.ok) return errorResponse(c, 400, "bad-request", threadEnv.error);
+  const checkoutConfig = config === null ? {} : { config };
+  const checked = await deps.checkCheckout({ cwd, plan, env: threadEnv.value, ...checkoutConfig });
   const line = verdict(checked.report);
   await saveVerdict(deps.home, project.value.name, line);
   if (checked.report.failed.length > 0) {
@@ -141,6 +145,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     tiers,
     policies,
     ...(body.source === undefined ? {} : { source: body.source }),
+    ...(body.thread === undefined ? {} : { thread: body.thread }),
     createdAt: new Date().toISOString(),
   };
   const added = await addRunIfProjectKept(deps.home, project.value, () =>

@@ -34,6 +34,24 @@ export const SourceSchema = z.strictObject({
 });
 export type Source = z.infer<typeof SourceSchema>;
 
+// A Slack thread: the channel it was asked from, and the message that opened the thread there.
+// Slack's id shapes: memberId goes into the notifier's <@...> markup, where anything else could
+// post an @channel.
+const SlackThreadSchema = z.strictObject({
+  provider: z.literal("slack"),
+  place: z.string().regex(/^[CGD][A-Z0-9]+$/),
+  threadId: NonEmptyStringSchema,
+  // the person the notifier mentions on moments that need them
+  memberId: z
+    .string()
+    .regex(/^[UW][A-Z0-9]+$/)
+    .optional(),
+});
+
+// The chat thread a run reports into, in the shape of the notifier provider it came from.
+export const ThreadSchema = z.discriminatedUnion("provider", [SlackThreadSchema]);
+export type Thread = z.infer<typeof ThreadSchema>;
+
 export const WorkflowRunSchema = z.strictObject({
   id: NonEmptyStringSchema,
   workflow: SlugSchema,
@@ -54,6 +72,8 @@ export const WorkflowRunSchema = z.strictObject({
   policies: SavedPoliciesSchema.optional(),
   // who asked for the run; absent when the caller named nobody
   source: SourceSchema.optional(),
+  // the chat thread the run reports into, whatever the project's notifier config says
+  thread: ThreadSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;

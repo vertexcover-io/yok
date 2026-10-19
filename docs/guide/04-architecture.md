@@ -70,6 +70,8 @@ A Hono app on HTTP on loopback, at the port in `server.port`; every route but `/
 
 It holds the run and project command definitions and `runChannelCommand`, which a chat inbox calls in-process to turn typed text into an API call.
 
+With `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` in the home's `.env`, it also runs the Slack adapter (`slack.ts`). The adapter takes `/yok` commands over a Socket Mode WebSocket that the server opens to Slack, so no inbound route exists. It posts a message per command in the channel the command was typed in and passes the text to `runChannelCommand` with that message's thread. A run started this way reports into the thread through its own notifier.
+
 ### `@yok/cli`: commands for people
 
 `run`, `project add|list|remove`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `uninstall`, `server start|stop|status|use`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.
@@ -112,7 +114,7 @@ Every box is the same binary. Only the CLI and the hooks are short-lived. The se
 
 | Path | Owner | What |
 |---|---|---|
-| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (the API key), `projects.yaml`, `client.env` (a remote server's URL and key), `shims/` |
+| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (the API key, and the Slack keys `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` and `SLACK_ALLOWED_CHANNELS` when Slack is set up; `/yok` answers in no channel until the last one lists it), `projects.yaml`, `client.env` (a remote server's URL and key), `shims/` |
 | `REPO/.yok/RUN_NAME/` | orchestrate | `workflow.yaml`, `event.jsonl`, `state.json`, `comments.json`, `artifacts/` |
 | `REPO/.worktrees/RUN_NAME/` | create-workspace stage | the git worktree the code is written in |
 | `REPO/orchestrate.config.yaml` | you | packages, commands, tiers, extensions, subscribers, workspace, notifier |

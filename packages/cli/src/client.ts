@@ -5,11 +5,13 @@ import { parseEnv } from "node:util";
 import { compilePlan, createLogger, resolveLevel, type WorkflowPlan } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { logPath, pidPath, readApiKey, readPort } from "@yok/server";
+import { logPath, pidPath, readApiKey, readPort, SLACK_STOP_WAIT_MS } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
 const HEALTH_TIMEOUT_MS = 5_000;
-const STOP_TIMEOUT_MS = 5_000;
+// Longer than the server's own shutdown wait, so a server still finishing its work is not
+// reported as hung.
+const STOP_TIMEOUT_MS = SLACK_STOP_WAIT_MS + 5_000;
 const POLL_INTERVAL_MS = 100;
 
 let level: ReturnType<typeof resolveLevel> | null = null;
@@ -187,7 +189,7 @@ export const stopServer = async (pid: number): Promise<void> => {
     log.info({ pid, durationMs: Date.now() - startedAt }, "server stopped");
     return;
   }
-  log.warn({ pid }, "server still running 5s after SIGTERM");
+  log.warn({ pid }, `server still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
   throw new Error(`server (pid ${pid}) is still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
 };
 

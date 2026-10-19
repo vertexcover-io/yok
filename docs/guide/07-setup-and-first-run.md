@@ -123,6 +123,24 @@ yok-dev run task --prompt "Describe a small change to this repo"
 
 This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it even for a plain prompt), `gh` logged in, and about an hour. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
+## 9. Starting runs from Slack
+
+The server can take `/yok` commands typed in Slack. It connects to Slack over Socket Mode, so it needs no public address.
+
+1. Create a Slack app and turn on Socket Mode.
+2. Make an app-level token with the `connections:write` scope. This is `SLACK_APP_TOKEN` (`xapp-…`).
+3. Give the bot the scopes `commands`, `chat:write` and `files:write`, and install the app. The bot token is `SLACK_BOT_TOKEN` (`xoxb-…`).
+4. Add a slash command named `/yok`.
+5. Put both tokens in the yok home's `.env` (`~/.yok-dev/.env` for the dev build).
+6. In the same file, set `SLACK_ALLOWED_CHANNELS` to the ids of the channels `/yok` may be used in, separated by commas, for example `SLACK_ALLOWED_CHANNELS=C0123ABCD,C0456EFGH`. In any other channel, `/yok` starts nothing and tells only the person who typed it to add the channel here. With the key missing or empty, `/yok` works in no channel. Anyone who can post in a listed channel can start agent sessions as the server's OS user, add any repo or folder and purge any project, and a public channel opens that to the whole workspace: list only private channels whose members you would trust with a shell on the server.
+7. Restart the server with `yok-dev server stop` and `yok-dev server start`. The server reads these keys only when it starts.
+
+With either token missing, the server starts without Slack and says so in `server.log`.
+
+`/yok run WORKFLOW PROMPT --project NAME` and `/yok project list|add|remove` take the same words and flags as the CLI. Each command gets a message in the channel it was typed in. The reply goes in that message's thread, and a run started this way posts every later notice there too. Interaction is always off for these runs, so a stage that would ask a question fails the run as needs-input instead.
+
+Invite the app to every channel listed in `SLACK_ALLOWED_CHANNELS`, public or private. In a channel it was not invited to, `/yok` starts nothing and tells only the person who typed it to invite the app. A Slack run posts with the home's bot token into the channel it was typed in, whatever the project's `.env` says about Slack.
+
 ## Useful commands
 
 ```bash

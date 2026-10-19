@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { EmitInput, Event, emitRunEvent, JsonValue, NodeRun, RunRef, State } from "@yok/sdk";
 import {
+  buildThreadEnv,
   createSlackNotifier,
   describeEvent,
   findMissingNotifierKeys,
@@ -460,7 +461,7 @@ describe("the notifier's Slack variables", () => {
     expect(opened.ok ? [] : SLACK_KEYS.filter((key) => opened.error.includes(key))).toEqual(
       missing,
     );
-    expect(findMissingNotifierKeys(env)).toEqual(missing);
+    expect(findMissingNotifierKeys("slack", env)).toEqual(missing);
   });
 });
 
@@ -599,5 +600,46 @@ describe("notify", () => {
 
     expect(result).toBeUndefined();
     expect(calls.opened).toEqual([]);
+  });
+});
+
+describe("buildThreadEnv", () => {
+  const homeWith = async (content: string): Promise<string> => {
+    const home = await mkdtemp(join(tmpdir(), "core-thread-env-"));
+    await writeFile(join(home, ".env"), content);
+    return home;
+  };
+
+  test("SC626: a thread gives the home's bot token, the thread's channel and its member", async () => {
+    const home = await homeWith("SLACK_BOT_TOKEN=xoxb-home\n");
+    const thread = { provider: "slack" as const, place: "C9", threadId: "17.1", memberId: "U1" };
+    expect(await buildThreadEnv(thread, home)).toEqual({
+      ok: true,
+      value: { SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "U1" },
+    });
+  });
+
+  test("SC626: a thread with no member clears SLACK_MEMBER_ID, so a project's own member is not mentioned", async () => {
+    const home = await homeWith("SLACK_BOT_TOKEN=xoxb-home\n");
+    expect(
+      await buildThreadEnv({ provider: "slack", place: "C9", threadId: "17.1" }, home),
+    ).toEqual({
+      ok: true,
+      value: { SLACK_BOT_TOKEN: "xoxb-home", SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "" },
+    });
+  });
+
+  test("SC626: no thread gives no keys", async () => {
+    expect(await buildThreadEnv(undefined, await homeWith(""))).toEqual({ ok: true, value: {} });
+  });
+
+  test("SC626: a home .env with no SLACK_BOT_TOKEN fails naming that file", async () => {
+    const home = await homeWith("OTHER=1\n");
+    expect(
+      await buildThreadEnv({ provider: "slack", place: "C9", threadId: "17.1" }, home),
+    ).toEqual({
+      ok: false,
+      error: `a thread run needs SLACK_BOT_TOKEN in ${join(home, ".env")}`,
+    });
   });
 });

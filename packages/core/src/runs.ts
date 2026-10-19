@@ -24,11 +24,13 @@ import {
   loadStartConfig,
   type NodeRun,
   NodeStartedEvent,
+  type Notifier,
   type Policies,
   type ResolvedTiers,
   type Result,
   type RunRef,
   readPolicies,
+  readState,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -40,6 +42,8 @@ import {
   type SubscriberRefs,
   type Subscribers,
   stackOf,
+  type Thread,
+  ThreadSchema,
   type VerifierRun,
   type WorkflowRun,
 } from "@yok/sdk";
@@ -59,6 +63,7 @@ import {
   VERSION,
 } from "@yok/sdk/internal";
 import * as z from "zod";
+import { buildThreadEnv } from "./notifier.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { type AgentMode, extensionPath } from "./stage.ts";
@@ -194,9 +199,15 @@ export const freezeSubscribers = async (
     resolveSubscribers(workflow.subscribers, dirname(run.workflowPath)),
   );
   if (!project.ok) return project;
+  // A run asked from a chat thread always reports into it, through its provider: the person is
+  // waiting there.
+  const notifier: Notifier | undefined =
+    run.thread === undefined
+      ? pickNotifier(workflow.notifier, config.notifier)
+      : { enabled: true, type: run.thread.provider };
   // Built-in names are reserved from project subscribers, so these never clash.
   const builtIns = concatSubscribers(
-    buildNotifierSubscribers(pickNotifier(workflow.notifier, config.notifier)),
+    buildNotifierSubscribers(notifier),
     buildSamskaraSubscribers(pickSamskara(workflow.samskara, config.samskara)),
   );
   return { ok: true, value: concatSubscribers(project.value, builtIns) };
@@ -209,6 +220,13 @@ const frozenHandlers = (config: Config, root: string): EventHandlerRefs =>
       list.map((ref) => ({ ...ref, module: resolve(root, ref.module) })),
     ]),
   );
+
+// A thread run's notifier starts out knowing its thread, so its first post replies there. An
+// absent memberId is left out: a notification holds JSON only.
+const toNotification = ({ memberId, ...where }: Thread): NonNullable<State["notification"]> => ({
+  ...where,
+  ...(memberId === undefined ? {} : { memberId }),
+});
 
 const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<State> => {
   const { run, eventHandlers, subscribers, config } = checked;
@@ -224,6 +242,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     config,
     tiers: run.tiers,
     ...(run.policies === undefined ? {} : { policies: run.policies }),
+    ...(run.thread === undefined ? {} : { notification: toNotification(run.thread) }),
   });
   const appended = await appendRunEvent(
     { id: run.id, cwd: run.cwd, name },
@@ -523,11 +542,18 @@ export const loadStartEnv = async (
 export const loadSessionEnv = async (
   run: RunRef,
   agent: AgentType,
+  home: string,
 ): Promise<Result<Record<string, string>>> => {
   const config = await loadRunConfig(run);
   if (!config.ok) return config;
   const plan = await compileRunWorkflow(run, config.value);
-  return loadEnv(config.value, { ...plan, agent }, run.cwd);
+  const env = await loadEnv(config.value, { ...plan, agent }, run.cwd);
+  if (!env.ok) return env;
+  const state = await readState(runDirOf(run.cwd, run.name));
+  // An ordinary run's notification holds no place, so only a thread run's parses.
+  const thread = ThreadSchema.safeParse(state?.notification).data;
+  const threadEnv = await buildThreadEnv(thread, home);
+  return threadEnv.ok ? { ok: true, value: { ...env.value, ...threadEnv.value } } : threadEnv;
 };
 
 const buildLeafReply = (

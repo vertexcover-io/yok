@@ -181,7 +181,7 @@ const startNewSession = async (
   terminal: ITerminal,
 ): Promise<Result<void>> => {
   const { run, registry, provider, oldSessionId, log } = options;
-  const env = await loadSessionEnv(run, provider.type);
+  const env = await loadSessionEnv(run, provider.type, options.home);
   if (!env.ok) return env;
   const idle = await waitForIdle(terminal);
   if (!idle.ok) return idle;
@@ -347,7 +347,7 @@ const resumeOnModel = async (
   target: TierModel,
 ): Promise<Result<void>> => {
   const { run, provider, sessionId, launch, home, log } = options;
-  const env = await loadSessionEnv(run, provider.type);
+  const env = await loadSessionEnv(run, provider.type, home);
   if (!env.ok) return env;
   const idle = await waitForIdle(terminal);
   if (!idle.ok) return idle;

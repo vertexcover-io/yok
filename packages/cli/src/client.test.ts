@@ -10,6 +10,7 @@ import {
   resolveTarget,
   runningServer,
   shouldOpenBrowser,
+  stopServer,
   type Target,
 } from "./client.ts";
 
@@ -165,4 +166,22 @@ describe("runningServer", () => {
 
     expect(running).toBeNull();
   });
+});
+
+describe("stopServer", () => {
+  test("waits for a server still finishing a Slack command more than 5 s after SIGTERM", async () => {
+    const server = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 6000)); console.log('ready'); setInterval(() => {}, 1000);",
+      ],
+      { stdout: "pipe" },
+    );
+    await server.stdout.getReader().read();
+
+    await stopServer(server.pid);
+
+    expect(await server.exited).toBe(0);
+  }, 15_000);
 });
