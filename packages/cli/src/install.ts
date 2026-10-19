@@ -63,7 +63,7 @@ type PackageManager = "homebrew" | "npm";
 // A binary Homebrew or npm put in place is theirs to replace and remove.
 export const installedBy = (execPath: string): PackageManager | null => {
   if (execPath.includes("/Cellar/yok/")) return "homebrew";
-  if (execPath.includes("/node_modules/@vertexcover-io/yok-")) return "npm";
+  if (execPath.includes("/node_modules/@vertexcover/yok-")) return "npm";
   return null;
 };
 
@@ -78,7 +78,7 @@ export const managedUpdate = (
 ): Result<ManagedUpdate> => {
   if (manager === "npm") {
     const tag = preRelease ? "next" : "latest";
-    const upgrade = ["npm", "install", "-g", `@vertexcover-io/yok@${tag}`] as const;
+    const upgrade = ["npm", "install", "-g", `@vertexcover/yok@${tag}`] as const;
     return { ok: true, value: { upgrade, binary: execPath } };
   }
   if (preRelease) {
@@ -96,7 +96,7 @@ export const managedUpdate = (
 
 const MANAGED_UNINSTALL: Readonly<Record<PackageManager, string>> = {
   homebrew: "brew uninstall yok",
-  npm: "npm rm -g @vertexcover-io/yok",
+  npm: "npm rm -g @vertexcover/yok",
 };
 
 // Homebrew links bin/yok to its Cellar, so the real path is the one that names the manager.

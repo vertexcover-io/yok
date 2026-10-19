@@ -307,16 +307,16 @@ describe("installedBy", () => {
   test("names Homebrew or npm when one of them put the binary in place, else nothing", () => {
     expect(installedBy("/opt/homebrew/Cellar/yok/1.2.3/bin/yok")).toBe("homebrew");
     expect(installedBy("/home/linuxbrew/.linuxbrew/Cellar/yok/1.2.3/bin/yok")).toBe("homebrew");
-    expect(
-      installedBy("/usr/local/lib/node_modules/@vertexcover-io/yok-darwin-arm64/bin/yok"),
-    ).toBe("npm");
+    expect(installedBy("/usr/local/lib/node_modules/@vertexcover/yok-darwin-arm64/bin/yok")).toBe(
+      "npm",
+    );
     expect(installedBy("/Users/me/.yok/bin/yok")).toBeNull();
   });
 });
 
 describe("managedUpdate", () => {
   const brewed = "/opt/homebrew/Cellar/yok/1.2.3/bin/yok";
-  const npmBinary = "/usr/local/lib/node_modules/@vertexcover-io/yok-darwin-arm64/bin/yok";
+  const npmBinary = "/usr/local/lib/node_modules/@vertexcover/yok-darwin-arm64/bin/yok";
 
   test.each([
     [
@@ -337,7 +337,7 @@ describe("managedUpdate", () => {
       {
         ok: true,
         value: {
-          upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@latest"],
+          upgrade: ["npm", "install", "-g", "@vertexcover/yok@latest"],
           binary: npmBinary,
         },
       },
@@ -349,7 +349,7 @@ describe("managedUpdate", () => {
       true,
       {
         ok: true,
-        value: { upgrade: ["npm", "install", "-g", "@vertexcover-io/yok@next"], binary: npmBinary },
+        value: { upgrade: ["npm", "install", "-g", "@vertexcover/yok@next"], binary: npmBinary },
       },
     ],
     [
