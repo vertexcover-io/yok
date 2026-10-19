@@ -23,6 +23,7 @@ import {
   jsonlEventStore,
   type ModelSwitch,
 } from "@yok/sdk/internal";
+import * as z from "zod";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
 import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
@@ -389,9 +390,87 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
 // Keeps a workflow run moving: sends the agent back when it stops with work still owed.
 export const continueWorkflow: StopHandler = { name: "continue-workflow", run: runStopHook };
 
+// `git push` or `git -C dir push`, but not `git commit -m "fix and push"`
+const PUSH = /(?:^|[\s;&|(])git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*push\b/;
+// the command learn runs last, which marks everything said so far as looked at
+const LEARN_MARK = /\bemit\s+learning\.reviewed\b/;
+const LEARN_OFFER =
+  "You pushed changes after the run's PR was created. If nothing the user said since the last " +
+  "learning session corrected you, reply only with: No new learnings from your messages. Otherwise ask the user one question: " +
+  "start a learning session now, from their corrections since the last one? If they say yes, run " +
+  `the learn skill (/yok:learn) with trigger auto. If they say no, end your turn. ${ASK_RULE}`;
+const OfferedEvent = z.object({
+  type: z.literal("learning.offered"),
+  payload: z.object({ prompts: z.int() }),
+});
+
+type LearnOffer = Readonly<{ kind: "allow" }> | Readonly<{ kind: "offer"; prompts: number }>;
+
+const lastCommandIndex = (entries: readonly TranscriptEntry[], pattern: RegExp): number =>
+  entries.findLastIndex((entry) => entry.kind === "command" && pattern.test(entry.command));
+
+// The agent pushed since the user's last message, and that message came after the last learning
+// session, so it may hold a correction no session has looked at.
+const pushedAfterNewPrompt = (entries: readonly TranscriptEntry[]): boolean => {
+  const lastPrompt = entries.findLastIndex((entry) => entry.kind === "prompt");
+  return (
+    lastCommandIndex(entries, PUSH) > lastPrompt &&
+    lastPrompt > lastCommandIndex(entries, LEARN_MARK)
+  );
+};
+
+export const decideLearnOffer = (
+  events: readonly Event[],
+  entries: readonly TranscriptEntry[] | undefined,
+): LearnOffer => {
+  if (entries === undefined || !pushedAfterNewPrompt(entries)) return { kind: "allow" };
+  const prompts = entries.filter((entry) => entry.kind === "prompt").length;
+  const offered = events.some(
+    (event) => OfferedEvent.safeParse(event).data?.payload.prompts === prompts,
+  );
+  return offered ? { kind: "allow" } : { kind: "offer", prompts };
+};
+
+// Never throws, like the workflow's Stop handler: a failure lets the turn end.
+const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
+  try {
+    const run = await findSessionRun(input, deps);
+    if (run === undefined) return ALLOW;
+    const runDir = runDirOf(run.cwd, run.name);
+    const state = await readState(runDir);
+    if (state?.nodeRuns.pr?.status !== "completed") return ALLOW;
+    const [events, entries] = await Promise.all([
+      jsonlEventStore(runDir).read(),
+      input.readTranscript(),
+    ]);
+    const offer = decideLearnOffer(events, entries);
+    if (offer.kind === "allow") return ALLOW;
+    const stored = await appendRunEvent(run, {
+      type: "learning.offered",
+      source: "hooks",
+      payload: { prompts: offer.prompts },
+    });
+    if (!stored.ok) {
+      // An unrecorded offer would be made again at every stop.
+      deps.log.warn({ error: stored.error }, "learn not offered: the offer was not recorded");
+      return ALLOW;
+    }
+    return { kind: "continue", message: LEARN_OFFER };
+  } catch (error) {
+    deps.log.error({ err: error }, "learn not offered: the offer check failed");
+    return ALLOW;
+  }
+};
+
+// Runs when the agent finishes a reply. If the run's `pr` stage has completed, the agent ran
+// `git push` since the user's last message, and that message came after the last learning
+// session, it sends the agent LEARN_OFFER. The agent asks the user if it can start a learning
+// session only if there are user corrections since the previous learning session.
+export const offerLearn: StopHandler = { name: "offer-learn", run: runLearnOffer };
+
 // The handlers an agent can register, by the name `orchestrate hook stop --handler` takes.
 export const stopHandlers: Readonly<Record<string, StopHandler>> = Object.fromEntries(
-  [continueWorkflow].map((handler) => [handler.name, handler]),
+  [continueWorkflow, offerLearn].map((handler) => [handler.name, handler]),
 );
 
 // Runs one Stop handler. It never throws: a handler that fails lets the turn end, or it could

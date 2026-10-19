@@ -173,7 +173,7 @@ describe("claudeSettings", () => {
       statusLine: { type: "command", command: `${argv} 'statusline'`, refreshInterval: 5 },
       hooks: {
         SessionStart: [{ hooks: [entry("session-start", "link-session")] }],
-        Stop: [{ hooks: [entry("stop", "continue-workflow")] }],
+        Stop: [{ hooks: [entry("stop", "continue-workflow"), entry("stop", "offer-learn")] }],
         StopFailure: [
           { matcher: "rate_limit", hooks: [entry("stop-failure", "resume-after-limit")] },
           { matcher: "*", hooks: [entry("stop-failure", "record-agent-error")] },

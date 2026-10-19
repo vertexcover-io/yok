@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Appends one learning event (JSON on stdin) to the session's events file.
-// Usage: node log-event.mjs <session_id> <<'EOF'
+// Usage: yok orchestrate skill run learn.log-learning-event [SESSION_ID] <<'EOF'
 //        { ...event fields... }
 //        EOF
 import { spawnSync } from "node:child_process";
@@ -9,23 +9,31 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  createRegistryReader,
+  readEvents,
+  readRunSessions,
+  registryPath,
+  requireRun,
+  runDirOf,
+} from "@yok/sdk";
 import { PLUGIN, readPlugin } from "./plugin.mjs";
 import { parseRecords } from "./transcript.mjs";
 
 // What the skill may send. Every field is text unless it is a list.
 const FIELDS = {
   trigger: { required: true, oneOf: ["manual", "auto"] },
-  why_triggered: { required: true },
-  evidence_from: {},
-  evidence_to: {},
-  options_shown: { list: true },
-  proposed_learning: { required: true },
-  option_user_picked: {},
+  whyTriggered: { required: true },
+  evidenceFrom: {},
+  evidenceTo: {},
+  optionsShown: { list: true },
+  proposedLearning: { required: true },
+  optionUserPicked: {},
   outcome: { required: true, oneOf: ["new", "occurrence", "lint", "rejected"] },
   status: { required: true },
-  final_learning: {},
-  rejection_reason: {},
-  learning_file: {},
+  finalLearning: {},
+  rejectionReason: {},
+  learningFile: {},
   replaces: {},
 };
 // Which statuses each outcome can have: the table in SKILL.md step 7, enforced.
@@ -51,12 +59,23 @@ export const skillVersion = (manifestPath) => {
   return version ? `${name}@${version}` : "";
 };
 
-// Outside Claude Code the argument arrives empty, or as the literal placeholder. Sessions without
-// an id share one file per day.
-export const usableSessionId = (id, env) => {
-  const candidates = [id, env.CLAUDE_SESSION_ID, env.CLAUDE_CODE_SESSION_ID];
-  const found = candidates.find((value) => value && !value.includes("CLAUDE_SESSION_ID"));
-  return found ?? `unknown-${new Date().toISOString().slice(0, 10)}`;
+// The run's current session, from its event log: the hooks record each session the run starts and
+// each one a context step replaces, for every agent. Undefined when the log names none.
+export const runSessionId = (runDir) => {
+  const path = join(runDir, "event.jsonl");
+  return existsSync(path) ? readRunSessions(readEvents(path)).at(-1)?.sessionId : undefined;
+};
+
+const currentRunSessionId = async () => {
+  const run = await requireRun({
+    registry: createRegistryReader(registryPath()),
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (!run.ok) throw new Error(`learn works only in a yok run: ${run.error}`);
+  const sessionId = runSessionId(runDirOf(run.value.cwd, run.value.name));
+  if (sessionId === undefined) throw new Error("the run's event log names no session");
+  return sessionId;
 };
 
 const transcriptPath = (sessionId, env) => {
@@ -90,7 +109,7 @@ const searchableText = (record) => {
   const text = content
     .flatMap((block) => {
       if (block.type === "text") return [block.text];
-      if (block.type !== "tool_use" || String(block.input?.command).includes("log-event"))
+      if (block.type !== "tool_use" || String(block.input?.command).includes("log-learning-event"))
         return [];
       return stringsIn(block.input);
     })
@@ -121,16 +140,16 @@ export const resolveEvidence = (messages, from = "", to = "") => {
     : -1;
   return {
     ids: {
-      evidence_from_message: messages[fromIndex]?.uuid ?? "",
-      evidence_to_message: messages[toIndex]?.uuid ?? "",
+      evidenceFromMessage: messages[fromIndex]?.uuid ?? "",
+      evidenceToMessage: messages[toIndex]?.uuid ?? "",
     },
     missing: [
       ...(needles.from && fromIndex === -1
         ? [
-            `evidence_from was not found in your own messages or tool calls${toIndex === -1 ? "" : " before evidence_to"} (it must be your words or code, never the user's)`,
+            `evidenceFrom was not found in your own messages or tool calls${toIndex === -1 ? "" : " before evidenceTo"} (it must be your words or code, never the user's)`,
           ]
         : []),
-      ...(needles.to && toIndex === -1 ? ["evidence_to was not found"] : []),
+      ...(needles.to && toIndex === -1 ? ["evidenceTo was not found"] : []),
     ],
   };
 };
@@ -162,11 +181,11 @@ export const validate = (event) => {
           `status for outcome ${event.outcome} must be one of ${STATUSES_BY_OUTCOME[event.outcome].join(", ")}`,
         ]
       : []),
-    ...(event.status === "edited" && !event.final_learning
-      ? ["final_learning is required when status is edited"]
+    ...(event.status === "edited" && !event.finalLearning
+      ? ["finalLearning is required when status is edited"]
       : []),
-    ...(event.status !== "edited" && event.final_learning
-      ? ["final_learning is only for status edited"]
+    ...(event.status !== "edited" && event.finalLearning
+      ? ["finalLearning is only for status edited"]
       : []),
   ];
 };
@@ -174,30 +193,29 @@ export const validate = (event) => {
 // The snippets are only for finding the messages; the event keeps their ids. Generated fields come
 // last, so nothing the model sends can override them.
 export const buildEvent = (
-  { evidence_from, evidence_to, ...input },
+  { evidenceFrom, evidenceTo, ...input },
   sessionId,
   { now = new Date(), cwd = process.cwd(), evidence = {}, version = skillVersion() } = {},
 ) => ({
   ...input,
-  evidence_from_message: evidence.evidence_from_message ?? "",
-  evidence_to_message: evidence.evidence_to_message ?? "",
-  event_id: randomUUID(),
-  session_id: sessionId,
+  evidenceFromMessage: evidence.evidenceFromMessage ?? "",
+  evidenceToMessage: evidence.evidenceToMessage ?? "",
+  eventId: randomUUID(),
+  sessionId,
   timestamp: now.toISOString(),
   cwd,
-  skill_version: version,
+  skillVersion: version,
 });
 
-// Snippets are only checked against a transcript that was found: without one (Codex, or a run
-// outside a session) the event is logged with empty ids.
-export const logEvent = (raw, sessionIdArg, { env = process.env, cwd = process.cwd() } = {}) => {
+// Snippets are only checked against a transcript that was found: without one (Codex's, which this
+// does not read) the event is logged with empty ids.
+export const logEvent = (raw, sessionId, { env = process.env, cwd = process.cwd() } = {}) => {
   const input = JSON.parse(raw);
   const invalid = validate(input);
   if (invalid.length > 0) throw new Error(invalid.join("; "));
-  const sessionId = usableSessionId(sessionIdArg, env);
   const path = transcriptPath(sessionId, env);
   const messages = path ? parseTranscript(readFileSync(path, "utf8")) : [];
-  const { ids, missing } = resolveEvidence(messages, input.evidence_from, input.evidence_to);
+  const { ids, missing } = resolveEvidence(messages, input.evidenceFrom, input.evidenceTo);
   if (messages.length > 0 && missing.length > 0) {
     throw new Error(
       `${missing.join("; ")}; copy a few words exactly from one message of this session`,
@@ -213,16 +231,17 @@ export const logEvent = (raw, sessionIdArg, { env = process.env, cwd = process.c
 
 // `yok orchestrate skill run` imports this file and calls main. Run directly, it calls main itself;
 // Node before 24.2 has no import.meta.main, so the file's own path decides there.
-export const main = (argv) => {
+export const main = async (argv) => {
   try {
-    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), argv[0])}`);
+    const sessionId = argv[0] || (await currentRunSessionId());
+    console.log(`logged to ${logEvent(readFileSync(0, "utf8"), sessionId)}`);
     return 0;
   } catch (error) {
-    console.error(`log-event: ${error.message}`);
+    console.error(`log-learning-event: ${error.message}`);
     return 1;
   }
 };
 
 if (import.meta.main ?? import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 }

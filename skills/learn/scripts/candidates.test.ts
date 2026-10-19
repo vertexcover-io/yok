@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Event, EventSchema, type Rec, runDirOf } from "@yok/sdk";
-import { exchanges, lastReviewedAt, listRun, listSession } from "./candidates.ts";
+import { exchanges, lastReviewedAt, listRun, main } from "./candidates.ts";
 
 const at = (minute: number): string => `2026-10-12T10:${String(minute).padStart(2, "0")}:00Z`;
 
@@ -79,6 +79,28 @@ const fixture = (
     writeFileSync(join(slug, `${id}.jsonl`), jsonl(rows));
   }
   return { runDir, projectsDir };
+};
+
+// A registry in a fresh yok home naming the fixture's run, and $YOK_RUN_ID set to it.
+const inRun = (runDir: string): void => {
+  const home = mkdtempSync(join(tmpdir(), "learn-home-"));
+  const cwd = join(runDir, "..", "..");
+  const run = {
+    id: "r-1",
+    workflow: "task",
+    workflowPath: join(cwd, "task.yaml"),
+    inputs: {},
+    cwd,
+    sessions: [],
+    name: "run-x",
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: at(0),
+  };
+  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
+  process.env.YOK_HOME = home;
+  process.env.YOK_RUN_ID = "r-1";
 };
 
 describe("the last learn pass", () => {
@@ -202,15 +224,36 @@ describe("listing a run", () => {
   });
 });
 
-describe("listing one session outside a run", () => {
-  test("prints every exchange of that session", () => {
-    const { projectsDir } = fixture([], { S: [user(at(1), "use pnpm here")] });
-    const listed = listSession({ sessionId: "S", projectsDir });
-    expect(listed.ok && listed.value).toContain("use pnpm here");
+describe("choosing what to list", () => {
+  const saved = { YOK_HOME: process.env.YOK_HOME, YOK_RUN_ID: process.env.YOK_RUN_ID };
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
-  test("fails when the transcript is missing", () => {
-    const { projectsDir } = fixture([], {});
-    expect(listSession({ sessionId: "missing", projectsDir }).ok).toBe(false);
+  test("in a run, lists the run's sessions from the last pass", async () => {
+    const { runDir, projectsDir } = fixture([started("A"), reviewed(at(4))], {
+      A: [user(at(1), "before the pass"), user(at(6), "after the pass")],
+    });
+    inRun(runDir);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const code = await main(["--projects", projectsDir]);
+    const printed = log.mock.calls.flat().join("\n");
+    log.mockRestore();
+    expect(code).toBe(0);
+    expect(printed).toContain("after the pass");
+    expect(printed).not.toContain("before the pass");
+  });
+
+  test("outside a run, says learn needs one and fails", async () => {
+    delete process.env.YOK_RUN_ID;
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const code = await main([]);
+    const printed = error.mock.calls.flat().join("\n");
+    error.mockRestore();
+    expect(code).toBe(1);
+    expect(printed).toContain("learn works only in a yok run");
   });
 });

@@ -76,7 +76,7 @@ const get = (path) =>
   fetch(`${api}/api/compound-learnings${path}`, { headers: { cookie: `session=${webToken}` } }).then((res) => res.json());
 
 // The watcher uploads transcripts and learn events on its own cycle; wait for both to land.
-const wanted = new Set(result.events.map((event) => event.event_id));
+const wanted = new Set(result.events.map((event) => event.eventId));
 let rows = [];
 let details = [];
 for (let i = 0; i < 90; i += 1) {
@@ -96,11 +96,11 @@ if (pid) {
 
 check(`every local event is a row (${wanted.size})`, rows.length === wanted.size, `${rows.length} row(s)`);
 for (const detail of details) {
-  const local = result.events.find((event) => event.event_id === detail.event?.eventId);
+  const local = result.events.find((event) => event.eventId === detail.event?.eventId);
   const label = `${local?.outcome}/${local?.status}`;
-  check(`${label}: fields match the jsonl`, detail.event?.outcome === local?.outcome && (detail.event?.status ?? "") === (local?.status ?? "") && detail.event?.skillVersion === local?.skill_version);
+  check(`${label}: fields match the jsonl`, detail.event?.outcome === local?.outcome && (detail.event?.status ?? "") === (local?.status ?? "") && detail.event?.skillVersion === local?.skillVersion);
   check(`${label}: linked to its session's project`, detail.event?.projectId !== null, detail.event?.projectName ?? "no project");
-  if (local?.evidence_to_message) {
+  if (local?.evidenceToMessage) {
     // The detail returns the evidence range and the messages in it; both ends must be among them.
     const lines = (detail.evidence ?? []).map((message) => message.lineNumber);
     const range = detail.evidenceRange;

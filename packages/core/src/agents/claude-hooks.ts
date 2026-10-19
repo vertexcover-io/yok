@@ -27,7 +27,7 @@ import {
   runPreToolUse,
 } from "../hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
-import { continueWorkflow, runStop } from "../hooks/stop.ts";
+import { continueWorkflow, offerLearn, runStop } from "../hooks/stop.ts";
 import { recordAgentError, resumeAfterLimit } from "../hooks/stop-failure.ts";
 import { OTHER_TOOL, parseQuestionCall, QuestionInputSchema, shellQuote } from "./common.ts";
 
@@ -358,7 +358,7 @@ export const claudeAdapter: AgentAdapter = {
 const claudeHooks = () =>
   ({
     SessionStart: [{ handlers: Object.values(sessionStartHandlers) }],
-    Stop: [{ handlers: [continueWorkflow] }],
+    Stop: [{ handlers: [continueWorkflow, offerLearn] }],
     // Claude ends a turn with rate_limit when the plan's usage limit is hit.
     StopFailure: [
       { matcher: "rate_limit", handlers: [resumeAfterLimit] },
