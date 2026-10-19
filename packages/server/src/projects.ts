@@ -3,7 +3,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import { zValidator } from "@hono/zod-validator";
-import { verdict } from "@yok/core";
 import {
   type IGit,
   type ITerminalHost,
@@ -30,8 +29,6 @@ import {
   ProjectSchema,
   type ProjectView,
 } from "./protocol.ts";
-// A type import only: server.ts imports app.ts, which imports this file.
-import type { CheckCheckout } from "./server.ts";
 
 export const CLONE_TIMEOUT_MS = 10 * 60_000;
 
@@ -43,7 +40,6 @@ export type ProjectDeps = Readonly<{
   registry: Registry;
   host: ITerminalHost;
   git: IGit;
-  checkCheckout: CheckCheckout;
 }>;
 
 const projectsPath = (home: string): string => join(home, "projects.yaml");
@@ -67,7 +63,7 @@ export const writeProjects = async (home: string, projects: ProjectsFile): Promi
 
 const projectStatus = (project: Project): ProjectView["status"] => {
   if (!existsSync(project.path)) return "missing";
-  if (project.verdict.startsWith("BLOCKED")) return "blocked";
+  if (project.verdict?.startsWith("BLOCKED")) return "blocked";
   return "ready";
 };
 
@@ -181,9 +177,9 @@ const claimAndClone = async (
   return { ok: false, error: { status: 502, code: "git-failed", message: cloned.error } };
 };
 
-// The clone and the doctor run outside the projects lock, so a slow clone holds up no run start;
-// the conflicts are checked again under it. Each refusal leaves no entry and no clone behind; the
-// doctor's FAIL rows never refuse.
+// The clone runs outside the projects lock, so a slow clone holds up no run start; the conflicts
+// are checked again under it. Each refusal leaves no entry and no clone behind. The doctor does
+// not run here: a run start checks the checkout.
 const addProject = async (
   c: Context<{ Variables: Vars }>,
   deps: ProjectDeps,
@@ -208,16 +204,14 @@ const addProject = async (
   if (!root.ok) return refuse(400, root.error);
   const owned = conflictWith(projects, { name, root: root.value });
   if (owned !== null) return refuse(409, owned);
-  // A missing config is not an error: the doctor's orchestrate-config row reports it.
+  // A missing config is not an error: the doctor reports it when a run starts.
   const config = await loadStartConfig(null, root.value);
   if (!config.ok) return refuse(400, config.error);
-  const { report } = await deps.checkCheckout({ cwd: root.value });
   const project: Project = {
     path: root.value,
     ...(git === undefined ? {} : { git }),
     addedBy,
     addedAt: new Date().toISOString(),
-    verdict: verdict(report),
   };
   const saved = await withLock(projectsLockPath(deps.home), async () => {
     const current = await readProjects(deps.home);
@@ -226,7 +220,7 @@ const addProject = async (
     return conflict;
   });
   if (saved !== null) return refuse(409, saved);
-  return c.json({ project: viewProject(name, project), findings: report }, 201);
+  return c.json({ project: viewProject(name, project) }, 201);
 };
 
 // Long past any launch: a run still without a terminal by then was left by a server that died.

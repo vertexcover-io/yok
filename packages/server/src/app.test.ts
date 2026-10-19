@@ -837,29 +837,25 @@ describe("AddProjectBodySchema", () => {
 });
 
 describe("/projects", () => {
-  test("SC203: a checkout is added with the doctor's report, never refused by it, and listed", async () => {
+  test("SC203: a checkout is added without running the doctor, and listed as ready", async () => {
     const root = gitRepo();
-    const { deps } = await projectDeps(() =>
-      Promise.resolve({ env: { ok: true, value: {} }, report: BLOCKED_REPORT }),
-    );
+    const { deps, calls } = await projectDeps();
     const app = createApp(deps);
 
     const res = await post(app, { name: "demo", path: root });
 
     expect(res.status).toBe(201);
-    const body = (await res.json()) as {
-      project: { path: string; status: string };
-      findings: DoctorReport;
-    };
-    expect(body.project).toMatchObject({ path: root, status: "blocked" });
-    expect(body.findings).toEqual(BLOCKED_REPORT);
+    expect(await res.json()).toEqual({
+      project: expect.objectContaining({ path: root, status: "ready" }),
+    });
+    expect(calls).toEqual([]);
     expect(readdirSync(root)).toEqual([".git"]);
     expect(await listProjects(app)).toEqual([
       expect.objectContaining({
         name: "demo",
         path: root,
         addedBy: { channel: "api" },
-        status: "blocked",
+        status: "ready",
       }),
     ]);
   });
@@ -937,7 +933,7 @@ describe("/projects", () => {
       expect(res.status).toBe(status);
       expect((await errorOf(res)).code).toBe(code);
       expect(await listProjects(app)).toEqual(before);
-      expect(calls).toEqual([taken]);
+      expect(calls).toEqual([]);
     },
   );
 

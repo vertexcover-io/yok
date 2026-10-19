@@ -3,7 +3,6 @@ import { Command } from "@commander-js/extra-typings";
 import { createGit } from "@yok/sdk";
 import type { ProjectView } from "@yok/server";
 import { apiErrorText, ensureServer, fail, remoteUrl, yokClient } from "./client.ts";
-import { exitCodeFor, renderText } from "./doctor.ts";
 
 // "Refrens_Main" -> "refrens-main"; empty or digit-first when the folder has no usable name.
 export const folderSlug = (folder: string): string =>
@@ -69,10 +68,8 @@ export const projectCommand = () => {
         addedBy: { channel: "cli" },
       });
       if (!added.ok) return fail(apiErrorText(added.error));
-      const { project: saved, findings } = added.value;
-      console.log(`added ${saved.name}  ${saved.path}\n`);
-      console.log(renderText(findings));
-      process.exitCode = exitCodeFor(findings);
+      const { project: saved } = added.value;
+      console.log(`added ${saved.name}  ${saved.path}`);
     });
 
   project

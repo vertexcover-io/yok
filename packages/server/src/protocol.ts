@@ -97,8 +97,8 @@ export const ProjectSchema = z.strictObject({
   git: z.string().optional(),
   addedBy: AddedBySchema,
   addedAt: z.iso.datetime(),
-  // the doctor's verdict at the last add or run start
-  verdict: z.string(),
+  // the doctor's verdict at the last run start; none before the first
+  verdict: z.string().optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 

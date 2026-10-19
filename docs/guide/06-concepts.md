@@ -218,7 +218,7 @@ The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has
 
 ## Doctor
 
-`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. The server runs the same checks when a run starts, and refuses the run on any failure; it runs them too when a project is added, and `yok project add` reports a failing row without refusing the project. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
+`yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. The server runs the same checks when a run starts, and refuses the run on any failure. Adding a project runs no checks. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
 
 ## Not built yet
 

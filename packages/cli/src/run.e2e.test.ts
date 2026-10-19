@@ -1064,9 +1064,8 @@ describe("yok project", () => {
       const { env } = makeEnv();
 
       const added = yok(checkout, env, "project", "add");
-      expect(added.stdout).toContain(`added demo-repo  ${checkout}`);
-      expect(added.stdout).toContain("ENVIRONMENT");
-      expect(added.stdout).toContain("VERDICT");
+      expect(added.code).toBe(0);
+      expect(added.stdout).toBe(`added demo-repo  ${checkout}\n`);
 
       const listed = yok(checkout, env, "project", "list");
       expect(listed.code).toBe(0);
