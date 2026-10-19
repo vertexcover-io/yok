@@ -110,7 +110,10 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
    - `agent` with `mode: inline`: tell the user `▶ NODE_ID`. Do what `prompt` asks, with
      `input` as its data, and follow the reply's `policies` the same way as a stage. Then finish
      it with the reply's `done` command the same way as a stage.
-   - `stage` or `agent` with `mode: subagent`: tell the user `▶ NODE_ID (subagent)`. Start a
+   - `stage` or `agent` with `mode: subagent`: first check the node's skill. When the skill
+     says how it uses sub-agents, run the node here as the `mode: inline` steps above say and
+     tell the skill the node runs with `mode: subagent`; the skill starts the sub-agents it
+     needs. Otherwise tell the user `▶ NODE_ID (subagent)`. Start a
      background subagent on the reply's `tier` when present. Brief it to do the node as the
      `mode: inline` steps above say, with the reply's fields, and:
      - send you its questions and approval requests and wait, instead of asking the user or
@@ -119,8 +122,7 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
        a `YOK-ERROR` line and the reason, instead of running `done`;
      - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
 
-     Tell it the node runs with `mode: subagent`. When the node's skill says how to use
-     sub-agents, tell it to follow the skill: the skill wins over this brief.
+     Tell it the node runs with `mode: subagent`.
 
      Relay its questions to the user and send back the answers. For an approval request, run
      `yok orchestrate await-approval NODE_RUN_ID --run NAME --file FILE`, end the turn, then send

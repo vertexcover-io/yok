@@ -71,10 +71,12 @@ after the one before it is committed. When a phase is `BLOCKED`, stop.
 
 The node's mode decides who builds each phase:
 
-- `mode: subagent`: every phase, even the only one, is built by its own sub-agent in the same
-  worktree. Give each: the paths to its phase file and `plan.md`, the worktree, the commands,
-  and these parts of this skill: section 2, "For each phase", "The E2E leg" and section 4. It
-  returns `COMPLETED` or `BLOCKED` and its commit SHA.
+- `mode: subagent`: you start one sub-agent per phase, directly from here. A plan with one
+  phase still gets its sub-agent. No intermediate sub-agent sits between you and the phase
+  sub-agents. Each phase sub-agent works in the same worktree. Give it: the paths to its
+  phase file and `plan.md`, the worktree, the commands, and these parts of this skill:
+  section 2, "For each phase", "The E2E leg" and section 4. It returns `COMPLETED` or
+  `BLOCKED` and its commit SHA. You brief it, collect its result and write the report.
 - `mode: inline`, or run standalone: build every phase here, inline.
 
 For each phase:
