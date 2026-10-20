@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { BuiltinModuleSchema, type Result } from "./contracts.ts";
 
 const LOCK_RETRY_MS = 10;
@@ -38,6 +38,8 @@ export const parseYaml = (text: string, path: string): Result<unknown> => {
     return { ok: false, error: `${path}: invalid YAML: ${String(error)}` };
   }
 };
+
+export const stringifyYaml = (value: unknown): string => stringify(value);
 
 export const parseFrontmatter = (text: string, path: string): Result<unknown> => {
   const lines = text.split("\n");

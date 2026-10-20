@@ -166,9 +166,12 @@ export const extensionPath = (config: Config, skill: string): string | undefined
 
 // A bare name is one of yok's own workflows; a name with a "/" or a .yaml/.yml extension
 // is a file in the project at `cwd`.
+export const isWorkflowFile = (workflow: string): boolean =>
+  workflow.includes("/") || /\.ya?ml$/.test(workflow);
+
 // A project file never needs the plugin, so the shipped folder is looked up only for a bare name.
 export const findWorkflowPath = (workflow: string, cwd: string, workflowsDir?: string): string => {
-  if (workflow.includes("/") || /\.ya?ml$/.test(workflow)) return resolve(cwd, workflow);
+  if (isWorkflowFile(workflow)) return resolve(cwd, workflow);
   return join(workflowsDir ?? yokWorkflowsDir(), `${workflow}.yaml`);
 };
 

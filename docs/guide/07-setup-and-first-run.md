@@ -73,7 +73,7 @@ You know it worked when the JSON shows `"errors": 0` for typecheck and lint and 
 
 Start with `step-demo`. It has only exec and wait nodes, so the agent only drives the loop and nothing needs a ticket, a Slack token, or a worktree. It finishes in under a minute.
 
-One more check runs at `yok run` time that the doctor alone does not: the notifier. This repo's config turns the Slack notifier on, so a run blocks unless `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are in a `.env` file at the repo root. If you do not have them, make a local config that turns it off. This file is yours and is not committed:
+One more check runs at `yok run` time that the doctor alone does not: the notifier. The server runs it, with the rest of the doctor, when the run starts. This repo's config turns the Slack notifier on, so a run blocks unless `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are in a `.env` file at the repo root. If you do not have them, make a local config that turns it off. This file is yours and is not committed:
 
 ```bash
 cat > /tmp/yok-local.yaml <<'EOF'
@@ -92,7 +92,7 @@ Drop `--config …` if you have the Slack variables in `.env`.
 
 What you will see, in order:
 
-1. The CLI compiles the workflow, runs the doctor, and starts the server. The first time, that takes a few seconds.
+1. The CLI starts the server and adds this checkout as a project, named after its folder. The server compiles the workflow and runs the doctor. The first time, that takes a few seconds.
 2. It prints a run id like `r-1a2b3c4d`, an attach command, and a `view:` URL, and opens the URL in your browser.
 3. Your terminal becomes the agent's tmux window. `yok run` attaches by default; `--no-attach` skips it. You watch Claude read the orchestrate skill, run `yok orchestrate init`, then `next`, `exec`, `next`, `exec`, and so on.
 4. Claude says the run finished with `completed`.
@@ -128,6 +128,10 @@ This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it e
 ```bash
 yok-dev server status           # is the server up, pid, version
 yok-dev server stop             # stop it; tmux sessions keep running
+yok-dev project list            # the checkouts the server runs on, and their status
+yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
+yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
+yok-dev server use URL --key KEY  # point this CLI at a server; `use --unset` to come back
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine
@@ -137,11 +141,11 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 
 ## When it breaks
 
-**"yok server did not start within 5s."** Read the tail it prints, or `~/.yok-dev/server.log`. A stale `yok.sock` from a crashed server is removed on start, so the usual cause is a port or a missing tmux.
+**"yok server did not start within 5s."** Read the tail it prints, or `~/.yok-dev/server.log`. A port another program took is not the cause: the server falls back to a free port and rewrites `server.port`. The usual cause is a missing tmux.
 
 **The doctor says `.yok/` is not gitignored.** Add `.yok/*` to `.gitignore`. This repo already has it.
 
-**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow.
+**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow. The doctor reads a key missing from `.env` from the server's environment, not your shell's, so on a remote server the key belongs in the project's `.env`.
 
 **Two servers, two registries.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`. A run started by one is invisible to the other. Pick one for the day.
 

@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { isCurrentServer, shouldOpenBrowser } from "./client.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Result } from "@yok/sdk";
+import {
+  checkServerUrl,
+  isCurrentServer,
+  resolveTarget,
+  runningServer,
+  shouldOpenBrowser,
+  type Target,
+} from "./client.ts";
 
 const base = { noOpen: false, isTTY: true, env: {}, platform: "darwin" as NodeJS.Platform };
 
@@ -51,5 +62,97 @@ describe("isCurrentServer", () => {
     ["starts a server when none is running", null, 0, "1.2.3", false],
   ])("%s", (_label, running, replaceBefore, version, expected) => {
     expect(isCurrentServer(running, replaceBefore, version)).toBe(expected);
+  });
+});
+
+describe("resolveTarget", () => {
+  const homeWith = (homeEnv: string | null): string => {
+    const home = mkdtempSync(join(tmpdir(), "yok-target-"));
+    if (homeEnv !== null) writeFileSync(join(home, ".env"), homeEnv);
+    return home;
+  };
+  const fileA = "YOK_SERVER_URL=https://a.example\nYOK_API_KEY=key-a\n";
+  const cases: ReadonlyArray<readonly [string, NodeJS.ProcessEnv, string | null, Result<Target>]> =
+    [
+      [
+        "nothing set is the server yok runs here, at the port file and the key in .env",
+        {},
+        "YOK_API_KEY=key-here\n",
+        { ok: true, value: { url: "http://127.0.0.1:1", apiKey: "key-here" } },
+      ],
+      [
+        ".env alone points at its server",
+        {},
+        fileA,
+        { ok: true, value: { url: "https://a.example", apiKey: "key-a" } },
+      ],
+      [
+        "the environment wins over .env",
+        { YOK_SERVER_URL: "https://b.example", YOK_API_KEY: "key-b" },
+        fileA,
+        { ok: true, value: { url: "https://b.example", apiKey: "key-b" } },
+      ],
+      [
+        "a URL with no key anywhere is an error naming both",
+        { YOK_SERVER_URL: "https://b.example" },
+        null,
+        { ok: false, error: "YOK_SERVER_URL is https://b.example, but YOK_API_KEY is not set" },
+      ],
+      [
+        "a URL in the environment never takes .env's key for another server",
+        { YOK_SERVER_URL: "https://b.example" },
+        fileA,
+        { ok: false, error: "YOK_SERVER_URL is https://b.example, but YOK_API_KEY is not set" },
+      ],
+      [
+        "a key alone in the environment does not replace .env's key for its URL",
+        { YOK_API_KEY: "key-b" },
+        fileA,
+        { ok: true, value: { url: "https://a.example", apiKey: "key-a" } },
+      ],
+      [
+        "a trailing slash is trimmed",
+        { YOK_SERVER_URL: "https://h/", YOK_API_KEY: "k" },
+        null,
+        { ok: true, value: { url: "https://h", apiKey: "k" } },
+      ],
+    ];
+
+  test.each(cases)("SC401: %s", (_label, env, homeEnv, expected) => {
+    expect(resolveTarget(homeWith(homeEnv), env)).toEqual(expected);
+  });
+});
+
+describe("checkServerUrl", () => {
+  test.each(["https://yok.example.com", "http://127.0.0.1:7420", "http://localhost:7420"])(
+    "SC402: accepts %s",
+    (url) => {
+      expect(checkServerUrl(url)).toEqual({ ok: true, value: url });
+    },
+  );
+
+  test.each(["http://yok.example.com", "not a url"])("SC402: refuses %s", (url) => {
+    expect(checkServerUrl(url).ok).toBe(false);
+  });
+});
+
+describe("runningServer", () => {
+  test("a home pointed at a remote server has no running server here, whatever pid the remote reports", async () => {
+    const remote = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json({ pid: process.pid, version: "1", startedAt: 0 }),
+    });
+    const home = mkdtempSync(join(tmpdir(), "yok-remote-"));
+    writeFileSync(
+      join(home, ".env"),
+      `YOK_SERVER_URL=http://127.0.0.1:${remote.port}\nYOK_API_KEY=k\n`,
+    );
+    writeFileSync(join(home, "server.pid"), String(process.pid));
+
+    const running = await runningServer(home);
+    await remote.stop(true);
+
+    expect(running).toBeNull();
   });
 });
