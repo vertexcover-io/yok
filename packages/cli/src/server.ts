@@ -1,16 +1,14 @@
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { Command, InvalidArgumentError } from "@commander-js/extra-typings";
 import { yokHome } from "@yok/sdk";
-import { startServer } from "@yok/server";
+import { startServer, updateHomeEnv } from "@yok/server";
 import { createYokClient } from "@yok/server/client";
 import {
   apiErrorText,
   checkServerUrl,
-  clientEnvPath,
   cliLog,
   commandLog,
+  configuredServerUrl,
   fail,
-  remoteUrl,
   runningServer,
   stopServer,
   yokClient,
@@ -22,25 +20,20 @@ const parsePort = (text: string): number => {
   throw new InvalidArgumentError(`--port must be a port number, got "${text}"`);
 };
 
-// One request checks the URL and the key before anything is written, so a wrong key leaves
-// client.env as it was. writeFile's mode applies only when it creates the file, hence the chmod.
+// One request checks the URL and the key before .env is touched.
 const useRemote = async (home: string, url: string, apiKey: string): Promise<void> => {
   const checked = checkServerUrl(url);
   if (!checked.ok) return fail(checked.error);
   const listed = await createYokClient({ url, apiKey, log: cliLog() }).projects();
   if (!listed.ok) return fail(`${url}: ${apiErrorText(listed.error)}`);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  await writeFile(clientEnvPath(home), `YOK_SERVER_URL=${url}\nYOK_API_KEY=${apiKey}\n`, {
-    mode: 0o600,
-  });
-  await chmod(clientEnvPath(home), 0o600);
+  await updateHomeEnv(home, { YOK_SERVER_URL: url, YOK_API_KEY: apiKey });
   console.log(`using ${url}, ${listed.value.projects.length} projects`);
 };
 
-const refuseWhenRemote = (home: string): boolean => {
-  const remote = remoteUrl(home);
-  if (remote === null) return false;
-  fail(`this CLI uses the server at ${remote}; run yok server use local first`);
+const refuseWhenConfigured = (home: string): boolean => {
+  const configured = configuredServerUrl(home);
+  if (configured === null) return false;
+  fail(`this CLI uses the server at ${configured}; run yok server use --unset first`);
   return true;
 };
 
@@ -57,7 +50,7 @@ export const serverCommand = () => {
     )
     .action(async ({ port }) => {
       const home = yokHome();
-      if (refuseWhenRemote(home)) return;
+      if (refuseWhenConfigured(home)) return;
       const running = await runningServer(home);
       if (running !== null) {
         commandLog("server start").info({ pid: running.pid }, "server already running");
@@ -73,7 +66,7 @@ export const serverCommand = () => {
     .description("Stop the running yok server")
     .action(async () => {
       const home = yokHome();
-      if (refuseWhenRemote(home)) return;
+      if (refuseWhenConfigured(home)) return;
       const running = await runningServer(home);
       if (running === null) return fail("not running");
       await stopServer(running.pid).catch(fail);
@@ -83,8 +76,8 @@ export const serverCommand = () => {
     .command("status")
     .description("Show whether the yok server is running")
     .action(async () => {
-      const remote = remoteUrl();
-      if (remote === null) {
+      const configured = configuredServerUrl();
+      if (configured === null) {
         const running = await runningServer();
         if (running === null) {
           console.log("not running");
@@ -93,29 +86,32 @@ export const serverCommand = () => {
         }
         return console.log(`pid ${running.pid}, version ${running.version}`);
       }
-      // A remote server's pid cannot be checked from here, so its reply is taken as it is.
+      // A configured server's pid cannot be checked from here, so its reply is taken as it is.
       const health = await yokClient().health();
       if (!health.ok) {
-        console.log(`${remote}: not answering`);
+        console.log(`${configured}: not answering`);
         process.exitCode = 1;
         return;
       }
-      console.log(`${remote}: pid ${health.value.pid}, version ${health.value.version}`);
+      console.log(`${configured}: pid ${health.value.pid}, version ${health.value.version}`);
     });
 
   server
     .command("use")
-    .description("Point this CLI at a remote server, or back at the local one")
-    .argument("<url>", "the server's URL, or local")
+    .description("Point this CLI at a server by URL and key")
+    .argument("[url]", "the server's URL")
     .option("--key <key>", "the server's API key (default: $YOK_API_KEY)")
+    .option("--unset", "forget the URL and key; the CLI then uses the server yok runs here")
     .action(async (url, opts) => {
       const home = yokHome();
-      if (url === "local") {
-        await rm(clientEnvPath(home), { force: true });
-        console.log("using the local server");
+      if (opts.unset) {
+        // The key goes with its URL; the next start here mints its own.
+        await updateHomeEnv(home, { YOK_SERVER_URL: null, YOK_API_KEY: null });
+        console.log("using the server yok runs on this machine");
         if (process.env.YOK_SERVER_URL) console.log("YOK_SERVER_URL is still set and wins");
         return;
       }
+      if (url === undefined) return fail("pass the server's URL, or --unset");
       const apiKey = opts.key ?? process.env.YOK_API_KEY;
       if (!apiKey) return fail("pass --key KEY or set YOK_API_KEY");
       await useRemote(home, url, apiKey);

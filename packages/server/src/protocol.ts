@@ -1,9 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
-import { DoctorReportSchema } from "@yok/core";
 import {
   AbsolutePathSchema,
   JsonObjectSchema,
@@ -32,8 +31,32 @@ export const readPort = (home: string): number | null => {
   return Number.isInteger(port) && port > 0 ? port : null;
 };
 
+export const readHomeEnv = (home: string): Record<string, string | undefined> =>
+  parseEnv(readHomeFile(homeEnvPath(home)));
+
 export const readApiKey = (home: string): string | undefined =>
-  parseEnv(readHomeFile(homeEnvPath(home))).YOK_API_KEY || undefined;
+  readHomeEnv(home).YOK_API_KEY || undefined;
+
+const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
+
+// Replaces the named keys' lines and drops the ones set to null; every other line stays.
+export const updateHomeEnv = async (
+  home: string,
+  values: Record<string, string | null>,
+): Promise<void> => {
+  const kept = readHomeFile(homeEnvPath(home))
+    .split("\n")
+    .filter((line) => line.trim() !== "" && !(envLineKey(line) in values));
+  const added = Object.entries(values).flatMap(([key, value]) =>
+    value === null ? [] : [`${key}=${value}`],
+  );
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  await writeFile(homeEnvPath(home), [...kept, ...added].map((line) => `${line}\n`).join(""), {
+    mode: 0o600,
+  });
+  // writeFile's mode applies only when it creates the file.
+  await chmod(homeEnvPath(home), 0o600);
+};
 
 // Never put in process.env: the server hands its env to every run's agent session.
 // base64url stays inside the bearer-token alphabet, so the key needs no quoting anywhere.
@@ -60,8 +83,8 @@ export const ErrorBodySchema = z.strictObject({
       "unauthorized",
     ]),
     message: z.string(),
-    // the doctor's report, when the doctor is why the request was refused
-    findings: DoctorReportSchema.optional(),
+    // what the route knows beyond the message: the doctor's report when a run is refused
+    details: z.json().optional(),
   }),
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;

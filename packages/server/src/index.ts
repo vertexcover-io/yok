@@ -16,9 +16,11 @@ export {
   pidPath,
   portPath,
   readApiKey,
+  readHomeEnv,
   readPort,
   type StartRunBody,
   StartRunBodySchema,
+  updateHomeEnv,
 } from "./protocol.ts";
 export {
   defaultRuntime,

@@ -131,7 +131,7 @@ yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
-yok-dev server use URL --key KEY  # point this CLI at a remote server; `use local` to come back
+yok-dev server use URL --key KEY  # point this CLI at a server; `use --unset` to come back
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine

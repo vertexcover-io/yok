@@ -66,26 +66,31 @@ describe("isCurrentServer", () => {
 });
 
 describe("resolveTarget", () => {
-  const homeWith = (clientEnv: string | null): string => {
+  const homeWith = (homeEnv: string | null): string => {
     const home = mkdtempSync(join(tmpdir(), "yok-target-"));
-    if (clientEnv !== null) writeFileSync(join(home, "client.env"), clientEnv);
+    if (homeEnv !== null) writeFileSync(join(home, ".env"), homeEnv);
     return home;
   };
   const fileA = "YOK_SERVER_URL=https://a.example\nYOK_API_KEY=key-a\n";
   const cases: ReadonlyArray<readonly [string, NodeJS.ProcessEnv, string | null, Result<Target>]> =
     [
-      ["nothing set is the local server", {}, null, { ok: true, value: { kind: "local" } }],
       [
-        "client.env alone points at its server",
+        "nothing set is the server yok runs here, at the port file and the key in .env",
         {},
-        fileA,
-        { ok: true, value: { kind: "remote", url: "https://a.example", apiKey: "key-a" } },
+        "YOK_API_KEY=key-here\n",
+        { ok: true, value: { url: "http://127.0.0.1:1", apiKey: "key-here" } },
       ],
       [
-        "the environment wins over client.env",
+        ".env alone points at its server",
+        {},
+        fileA,
+        { ok: true, value: { url: "https://a.example", apiKey: "key-a" } },
+      ],
+      [
+        "the environment wins over .env",
         { YOK_SERVER_URL: "https://b.example", YOK_API_KEY: "key-b" },
         fileA,
-        { ok: true, value: { kind: "remote", url: "https://b.example", apiKey: "key-b" } },
+        { ok: true, value: { url: "https://b.example", apiKey: "key-b" } },
       ],
       [
         "a URL with no key anywhere is an error naming both",
@@ -94,27 +99,27 @@ describe("resolveTarget", () => {
         { ok: false, error: "YOK_SERVER_URL is https://b.example, but YOK_API_KEY is not set" },
       ],
       [
-        "a URL in the environment never takes client.env's key for another server",
+        "a URL in the environment never takes .env's key for another server",
         { YOK_SERVER_URL: "https://b.example" },
         fileA,
         { ok: false, error: "YOK_SERVER_URL is https://b.example, but YOK_API_KEY is not set" },
       ],
       [
-        "a key alone in the environment does not replace client.env's key for its URL",
+        "a key alone in the environment does not replace .env's key for its URL",
         { YOK_API_KEY: "key-b" },
         fileA,
-        { ok: true, value: { kind: "remote", url: "https://a.example", apiKey: "key-a" } },
+        { ok: true, value: { url: "https://a.example", apiKey: "key-a" } },
       ],
       [
         "a trailing slash is trimmed",
         { YOK_SERVER_URL: "https://h/", YOK_API_KEY: "k" },
         null,
-        { ok: true, value: { kind: "remote", url: "https://h", apiKey: "k" } },
+        { ok: true, value: { url: "https://h", apiKey: "k" } },
       ],
     ];
 
-  test.each(cases)("SC401: %s", (_label, env, clientEnv, expected) => {
-    expect(resolveTarget(homeWith(clientEnv), env)).toEqual(expected);
+  test.each(cases)("SC401: %s", (_label, env, homeEnv, expected) => {
+    expect(resolveTarget(homeWith(homeEnv), env)).toEqual(expected);
   });
 });
 
@@ -140,7 +145,7 @@ describe("runningServer", () => {
     });
     const home = mkdtempSync(join(tmpdir(), "yok-remote-"));
     writeFileSync(
-      join(home, "client.env"),
+      join(home, ".env"),
       `YOK_SERVER_URL=http://127.0.0.1:${remote.port}\nYOK_API_KEY=k\n`,
     );
     writeFileSync(join(home, "server.pid"), String(process.pid));

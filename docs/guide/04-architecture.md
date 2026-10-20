@@ -110,7 +110,7 @@ Every box is the same binary. Only the CLI and the hooks are short-lived. The se
 
 | Path | Owner | What |
 |---|---|---|
-| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (the API key), `projects.yaml`, `client.env` (a remote server's URL and key), `shims/` |
+| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (the API key, or a remote server's URL and key), `projects.yaml`, `shims/` |
 | `REPO/.yok/RUN_NAME/` | orchestrate | `workflow.yaml`, `event.jsonl`, `state.json`, `comments.json`, `artifacts/` |
 | `REPO/.worktrees/RUN_NAME/` | create-workspace stage | the git worktree the code is written in |
 | `REPO/orchestrate.config.yaml` | you | packages, commands, tiers, extensions, subscribers, workspace, notifier |

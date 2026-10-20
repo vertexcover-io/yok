@@ -1,6 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import type { DoctorReport } from "@yok/core";
-import type { ILogger } from "@yok/sdk";
+import type { ILogger, JsonValue } from "@yok/sdk";
 import type { Context } from "hono";
 import * as z from "zod";
 import type { ErrorBody, ErrorCode } from "./protocol.ts";
@@ -13,11 +12,11 @@ export const errorResponse = (
   status: 400 | 401 | 404 | 409 | 500 | 502,
   code: ErrorCode,
   message: string,
-  findings?: DoctorReport,
+  details?: JsonValue,
 ) =>
   c.json(
     {
-      error: { code, message, ...(findings === undefined ? {} : { findings }) },
+      error: { code, message, ...(details === undefined ? {} : { details }) },
     } satisfies ErrorBody,
     status,
   );

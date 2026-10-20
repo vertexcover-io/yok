@@ -1,11 +1,10 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseEnv } from "node:util";
 import { compilePlan, createLogger, resolveLevel, type WorkflowPlan } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { type ApiError, logPath, pidPath, readApiKey, readPort } from "@yok/server";
+import { type ApiError, logPath, pidPath, readApiKey, readHomeEnv, readPort } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
 const HEALTH_TIMEOUT_MS = 5_000;
@@ -62,19 +61,14 @@ export const compileOrFail = async (
 
 export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;
 
-// Before any server has started there is no port file; port 1 answers nothing, so the client
-// reports the server as unreachable.
+// With no port file yet, port 1 answers nothing and the server counts as unreachable.
 export const localUrl = (home: string): string => `http://127.0.0.1:${readPort(home) ?? 1}`;
 
-export const clientEnvPath = (home: string): string => join(home, "client.env");
-
-export type Target =
-  | Readonly<{ kind: "local" }>
-  | Readonly<{ kind: "remote"; url: string; apiKey: string }>;
+export type Target = Readonly<{ url: string; apiKey: string }>;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-// https anywhere; plain http only on this machine, so the key never crosses the network in clear.
+// Plain http is allowed only on this machine, so the key never crosses the network in clear.
 export const checkServerUrl = (url: string): Result<string> => {
   if (!URL.canParse(url)) return { ok: false, error: `not a URL: ${url}` };
   const { protocol, hostname } = new URL(url);
@@ -83,56 +77,45 @@ export const checkServerUrl = (url: string): Result<string> => {
   return { ok: false, error: `${url} must use https:// unless the server is on this machine` };
 };
 
-const readClientEnv = (home: string): Record<string, string | undefined> => {
-  try {
-    return parseEnv(readFileSync(clientEnvPath(home), "utf8"));
-  } catch {
-    return {};
-  }
-};
+// The environment wins over the home's .env, and the key comes from the same place as the URL.
+const serverSettings = (
+  home: string,
+  env: NodeJS.ProcessEnv,
+): Record<string, string | undefined> => (env.YOK_SERVER_URL ? env : readHomeEnv(home));
 
-// A URL in the environment wins over the home's client.env; neither set means the local server.
-// The key comes from wherever the URL did, so one server's key is never sent to another.
+// The URL set in the environment or .env, or null when this CLI uses the server yok runs here.
+export const configuredServerUrl = (
+  home: string = yokHome(),
+  env: NodeJS.ProcessEnv = process.env,
+): string | null => serverSettings(home, env).YOK_SERVER_URL || null;
+
+// With no URL set, the target is the server yok runs on this machine: its port file and its key.
 export const resolveTarget = (
   home: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Result<Target> => {
-  const source = env.YOK_SERVER_URL ? env : readClientEnv(home);
+  const source = serverSettings(home, env);
   const url = source.YOK_SERVER_URL;
-  if (!url) return { ok: true, value: { kind: "local" } };
+  if (!url) return { ok: true, value: { url: localUrl(home), apiKey: readApiKey(home) ?? "" } };
   const apiKey = source.YOK_API_KEY;
   if (!apiKey) return { ok: false, error: `YOK_SERVER_URL is ${url}, but YOK_API_KEY is not set` };
   const checked = checkServerUrl(url);
   if (!checked.ok) return checked;
-  return { ok: true, value: { kind: "remote", url: url.replace(/\/+$/, ""), apiKey } };
+  return { ok: true, value: { url: url.replace(/\/+$/, ""), apiKey } };
 };
 
+// Read on every call, since the first server start writes the port and the key.
 // index.ts prints the thrown error, as it does any command's.
-const targetOrThrow = (home: string): Target => {
+export const yokClient = (home: string = yokHome()): YokClient => {
   const target = resolveTarget(home);
   if (!target.ok) throw new Error(target.error);
-  return target.value;
-};
-
-// The remote server's URL, or null for the local one.
-export const remoteUrl = (home: string = yokHome()): string | null => {
-  const target = targetOrThrow(home);
-  return target.kind === "remote" ? target.url : null;
-};
-
-// Read on every call: the first server start writes the port and the key.
-export const yokClient = (home: string = yokHome()): YokClient => {
-  const target = targetOrThrow(home);
-  if (target.kind === "remote") {
-    return createYokClient({ url: target.url, apiKey: target.apiKey, log: cliLog() });
-  }
-  return createYokClient({ url: localUrl(home), apiKey: readApiKey(home) ?? "", log: cliLog() });
+  return createYokClient({ ...target.value, log: cliLog() });
 };
 
 const tailOf = (path: string, lines = 20): string =>
   existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").slice(-lines).join("\n") : "";
 
-// Signal 0 checks that the process exists and that this user may signal it, without touching it.
+// Signal 0 only checks that the process exists and belongs to this user.
 const isAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -153,19 +136,17 @@ const readServerPid = (home: string): number | null => {
 
 type Running = Readonly<{ pid: number; version: string; startedAt: number }>;
 
-// This home's local server, or null; a remote server is another machine's process, never one to
-// stop or restart. A reply on the port counts only when its pid is the one in server.pid and this
-// user may signal it: while the server is down, another local user can take the port, and must
-// get neither the key nor a signal.
+// The server yok runs here, or null when a URL is configured or the pid on the port is not the
+// one in server.pid. Another user's process could be on that port.
 export const runningServer = async (home: string = yokHome()): Promise<Running | null> => {
-  if (remoteUrl(home) !== null) return null;
+  if (configuredServerUrl(home) !== null) return null;
   const health = await yokClient(home).health();
   if (!health.ok) return null;
   const { pid } = health.value;
   return pid === readServerPid(home) && isAlive(pid) ? health.value : null;
 };
 
-// Asked afresh each time: the starting server writes its port only once it listens.
+// The starting server writes its port only once it listens, so the port is re-read on each poll.
 const waitForHealth = async (home: string, deadline: number): Promise<boolean> => {
   while (Date.now() < deadline) {
     if ((await runningServer(home)) !== null) return true;
@@ -174,8 +155,7 @@ const waitForHealth = async (home: string, deadline: number): Promise<boolean> =
   return (await runningServer(home)) !== null;
 };
 
-// Signal only a pid runningServer vouched for, never one a reply on the port alone names.
-// Its tmux sessions keep running.
+// Takes a pid runningServer vouched for. The server's tmux sessions keep running.
 export const stopServer = async (pid: number): Promise<void> => {
   const log = cliLog().child({ component: "cli" });
   const startedAt = Date.now();
@@ -191,36 +171,32 @@ export const stopServer = async (pid: number): Promise<void> => {
   throw new Error(`server (pid ${pid}) is still running ${STOP_TIMEOUT_MS / 1000}s after SIGTERM`);
 };
 
-// From source, a server holds the code as it was when it started. Replacing only servers older
-// than this command keeps two commands started together from stopping each other's server.
+// From source, a server older than this command runs stale code and is replaced.
 const defaultReplaceBefore = (): number => (isCompiled ? 0 : performance.timeOrigin);
 
-// A server of another version is replaced too: Homebrew and npm swap the binary without
-// restarting the server.
+// A server of another version is replaced too: an upgrade swaps the binary without a restart.
 export const isCurrentServer = (
   server: Running | null,
   replaceBefore: number,
   version: string,
 ): boolean => server !== null && server.startedAt >= replaceBefore && server.version === version;
 
-// The lock stops two CLIs from starting two servers. A server started before replaceBefore
-// (epoch ms) is replaced.
+// Starts the server under a lock, replacing one started before replaceBefore (epoch ms).
 export const ensureServer = async (
   home: string = yokHome(),
   replaceBefore: number = defaultReplaceBefore(),
 ): Promise<void> => {
-  // A remote server is only checked: replacing it would signal a pid on another machine.
-  const remote = remoteUrl(home);
-  if (remote !== null) {
+  // A configured server is only checked, never started or replaced.
+  const configured = configuredServerUrl(home);
+  if (configured !== null) {
     if ((await yokClient(home).health()).ok) return;
-    throw new Error(`the yok server at ${remote} is not answering`);
+    throw new Error(`the yok server at ${configured} is not answering`);
   }
   const isFresh = (server: Running | null): boolean =>
     isCurrentServer(server, replaceBefore, VERSION);
-  // Checked again inside the lock, with a new client: another command may have started the
-  // server meanwhile, on a port this one has not read yet.
+  // Checked again inside the lock: another command may have started the server meanwhile.
   if (isFresh(await runningServer(home))) return;
-  // Before the lock: withLock would create a missing home with the umask's mode.
+  // withLock would create a missing home with the umask's mode.
   mkdirSync(home, { recursive: true, mode: 0o700 });
   await withLock(join(home, ".start.lock"), async () => {
     const running = await runningServer(home);
@@ -235,7 +211,7 @@ export const ensureServer = async (
     const startedAt = Date.now();
     const pid = spawnDetached(command, args, {
       cwd: home,
-      // The server's env reaches every run's session, where no API key may go.
+      // The server's env reaches every run's session, so no key goes in it.
       env: { YOK_HOME: home, YOK_API_KEY: undefined, YOK_SERVER_URL: undefined },
       output: logPath(home),
     });

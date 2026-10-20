@@ -14,7 +14,7 @@ import { addComments, agentBinary, readComments, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { ensureApiKey } from "./protocol.ts";
+import { ensureApiKey, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
 const readyCheckout: CheckCheckout = () =>
@@ -43,6 +43,17 @@ test("SC101: a home whose .env already holds other lines keeps them beside the n
   expect(readFileSync(join(home, ".env"), "utf8")).toBe(
     `LINEAR_API_KEY=lin\n\nYOK_API_KEY=${key}\n`,
   );
+  expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
+});
+
+test("SC102: updateHomeEnv sets and removes keys in .env, keeps the other lines, and leaves the file 0600", async () => {
+  const home = join(mkdtempSync(join(tmpdir(), "yok-env-")), "home");
+
+  await updateHomeEnv(home, { YOK_SERVER_URL: "https://a.example", YOK_API_KEY: "key-a" });
+  await updateHomeEnv(home, { LINEAR_API_KEY: "lin" });
+  await updateHomeEnv(home, { YOK_SERVER_URL: null, YOK_API_KEY: "key-b" });
+
+  expect(readFileSync(join(home, ".env"), "utf8")).toBe("LINEAR_API_KEY=lin\nYOK_API_KEY=key-b\n");
   expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
 });
 

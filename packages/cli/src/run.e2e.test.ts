@@ -1227,24 +1227,24 @@ describe("remote server", () => {
   );
 
   test(
-    "SC405: yok server use saves the URL and key, start is refused while it is set, and use local clears it",
+    "SC405: yok server use saves the URL and key in .env, start is refused while it is set, and use --unset drops both",
     () => {
       const { b, url, key, elsewhere } = remoteSetup();
-      const clientEnv = join(b.home, "client.env");
+      const homeEnv = join(b.home, ".env");
 
       const used = yok(elsewhere, b.env, "server", "use", url, "--key", key);
       expect(used.code).toBe(0);
       expect(used.stdout).toBe(`using ${url}, 1 projects\n`);
-      expect(readFileSync(clientEnv, "utf8")).toBe(`YOK_SERVER_URL=${url}\nYOK_API_KEY=${key}\n`);
-      expect(statSync(clientEnv).mode & 0o777).toBe(0o600);
+      expect(readFileSync(homeEnv, "utf8")).toBe(`YOK_SERVER_URL=${url}\nYOK_API_KEY=${key}\n`);
+      expect(statSync(homeEnv).mode & 0o777).toBe(0o600);
 
       expect(yok(elsewhere, b.env, "project", "list").stdout).toMatch(/^demo /m);
       const start = yok(elsewhere, b.env, "server", "start");
       expect(start.code).toBe(1);
-      expect(start.stderr).toContain("run yok server use local first");
+      expect(start.stderr).toContain("run yok server use --unset first");
 
-      expect(yok(elsewhere, b.env, "server", "use", "local").code).toBe(0);
-      expect(existsSync(clientEnv)).toBe(false);
+      expect(yok(elsewhere, b.env, "server", "use", "--unset").code).toBe(0);
+      expect(readFileSync(homeEnv, "utf8")).toBe("");
     },
     TIMEOUT_MS,
   );
@@ -1261,7 +1261,7 @@ describe("remote server", () => {
       expect(plain.stderr).toContain("must use https:// unless the server is on this machine");
       expect(wrong.code).toBe(1);
       expect(wrong.stderr).toContain("unauthorized");
-      expect(existsSync(join(b.home, "client.env"))).toBe(false);
+      expect(existsSync(join(b.home, ".env"))).toBe(false);
     },
     TIMEOUT_MS,
   );

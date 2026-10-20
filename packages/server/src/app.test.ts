@@ -287,11 +287,11 @@ describe("POST /runs", () => {
 
     expect(res.status).toBe(400);
     const { error } = (await res.json()) as {
-      error: { code: string; message: string; findings: DoctorReport };
+      error: { code: string; message: string; details: DoctorReport };
     };
     expect(error.code).toBe("bad-request");
     expect(error.message).toBe("BLOCKED LINEAR_API_KEY");
-    expect(error.findings.failed).toEqual(["LINEAR_API_KEY"]);
+    expect(error.details.failed).toEqual(["LINEAR_API_KEY"]);
     expect(launched).toBe(false);
     expect(await deps.registry.listRuns()).toEqual([]);
     expect(await listProjects(app)).toEqual([
@@ -314,8 +314,8 @@ describe("POST /runs", () => {
     const res = await postRun(createApp(deps));
 
     expect(res.status).toBe(400);
-    const { error } = (await res.json()) as { error: { findings?: DoctorReport } };
-    expect(error.findings).toEqual(BLOCKED_REPORT);
+    const { error } = (await res.json()) as { error: { details?: DoctorReport } };
+    expect(error.details).toEqual(BLOCKED_REPORT);
     expect(await deps.registry.listRuns()).toEqual([]);
   });
 

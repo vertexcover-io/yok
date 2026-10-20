@@ -1,6 +1,6 @@
 import { basename, resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
-import { type DoctorReport, isWorkflowFile } from "@yok/core";
+import { type DoctorReport, DoctorReportSchema, isWorkflowFile } from "@yok/core";
 import {
   createGit,
   type JsonObject,
@@ -16,10 +16,10 @@ import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
   commandLog,
+  configuredServerUrl,
   ensureServer,
   fail,
   openForPerson,
-  remoteUrl,
   yokClient,
 } from "./client.ts";
 import { folderSlug } from "./project.ts";
@@ -39,8 +39,10 @@ const blockedText = (message: string, report: DoctorReport): string =>
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
 
-const startError = (error: ApiError): string =>
-  error.findings === undefined ? apiErrorText(error) : blockedText(error.message, error.findings);
+const startError = (error: ApiError): string => {
+  const report = DoctorReportSchema.safeParse(error.details);
+  return report.success ? blockedText(error.message, report.data) : apiErrorText(error);
+};
 
 const projectAt = async (client: YokClient, root: string): Promise<Result<string | null>> => {
   const listed = await client.projects();
@@ -147,8 +149,8 @@ export const runCommand = () => {
       // Before the project lookup, which calls the server.
       await ensureServer();
       const client = yokClient();
-      const remote = remoteUrl() !== null;
-      const target = remote
+      const configured = configuredServerUrl() !== null;
+      const target = configured
         ? { ok: true as const, value: remoteTarget(workflowArg, opts) }
         : await localTarget(client, { workflow: workflowArg, opts, cwd });
       if (!target.ok) return fail(target.error);
@@ -162,8 +164,8 @@ export const runCommand = () => {
       if (!result.ok) return fail(startError(result.error));
       const { run } = result.value;
       console.log(run.id);
-      // Attach and the browser need the server's machine, so a remote run prints its page only.
-      if (remote) return console.log(`view: ${result.value.view}`);
+      // Attach and the browser need the server's machine, so a run elsewhere prints its page only.
+      if (configured) return console.log(`view: ${result.value.view}`);
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
 
