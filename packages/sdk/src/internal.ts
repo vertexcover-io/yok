@@ -31,6 +31,7 @@ export {
 } from "./events.ts";
 export {
   importModule,
+  isProcessAlive,
   loadFunction,
   type ModuleError,
   runLockPath,
