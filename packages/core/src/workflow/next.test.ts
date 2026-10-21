@@ -14,7 +14,13 @@ import type {
 } from "@yok/sdk";
 import { builtInHandlers, foldModelSwitch, projectEvents } from "@yok/sdk/internal";
 import { compileWorkflow } from "./compile.ts";
-import { type Decision, decideNext, type Leaf } from "./next.ts";
+import {
+  type Decision,
+  decideNext,
+  type Leaf,
+  type ModelInputs,
+  type StartedLeaf,
+} from "./next.ts";
 import { DEMO_STAGES, writeStages } from "./test-stages.ts";
 import type { WorkflowPlan } from "./types.ts";
 
@@ -81,13 +87,23 @@ const apply = (state: State, draft: EmitInput): State =>
 type Advanced = Readonly<{ state: State; stop: Stop; events: readonly EmitInput[] }>;
 
 // What one `orchestrate next` does, with events stored in memory instead of event.jsonl.
-const advance = async (plan: WorkflowPlan, state: State): Promise<Advanced> => {
+const advance = async (
+  plan: WorkflowPlan,
+  state: State,
+  models: Partial<ModelInputs> = {},
+): Promise<Advanced> => {
   const events: EmitInput[] = [];
   const emit = async (current: State, event: EmitInput): Promise<State> => {
     events.push(event);
     return apply(current, event);
   };
-  const { state: after, decision } = await decideNext(plan, state, emit);
+  const { state: after, decision } = await decideNext(plan, state, emit, {
+    tiers: null,
+    switching: { current: null, pending: null, failed: null },
+    subagents: false,
+    parallel: true,
+    ...models,
+  });
   return { state: after, stop: decision, events };
 };
 
@@ -125,9 +141,28 @@ const end = (
   });
 };
 
-const expectLeaf = (stop: Stop): Extract<Decision, { kind: "leaf" }> => {
-  if (stop.kind !== "leaf") throw new Error(`expected a leaf, got ${stop.kind}`);
+const expectSteps = (stop: Stop): readonly StartedLeaf[] => {
+  if (stop.kind !== "steps") throw new Error(`expected steps, got ${stop.kind}`);
+  return stop.steps;
+};
+
+// The one leaf a `steps` reply hands out.
+const expectLeaf = (stop: Stop): StartedLeaf => {
+  const [leaf, ...rest] = expectSteps(stop);
+  if (leaf === undefined || rest.length > 0) throw new Error("expected exactly one step");
+  return leaf;
+};
+
+const expectContext = (stop: Stop): Extract<Decision, { kind: "context" }> => {
+  if (stop.kind !== "context") throw new Error(`expected a context step, got ${stop.kind}`);
   return stop;
+};
+
+const stepIds = (stop: Stop): readonly string[] => expectSteps(stop).map(({ node }) => node.id);
+
+const waitingOn = (stop: Stop): readonly string[] => {
+  if (stop.kind !== "waiting") throw new Error(`expected waiting, got ${stop.kind}`);
+  return stop.running.map(({ nodeId }) => nodeId);
 };
 
 // The node's entry in state.json, found by the ids from the top of the workflow down to it.
@@ -152,10 +187,7 @@ nodes:${exec("a", "\n    input: {}")}${exec("b", '\n    dependsOn: [a]\n    inpu
     const a = expectLeaf(first.stop);
     expect(a.node.id).toBe("a");
     expect(a.nodeRunId).toMatch(/^nr-[0-9a-f]{16}$/);
-    expect((await advance(plan, first.state)).stop).toEqual({
-      kind: "waiting",
-      nodeRunId: a.nodeRunId,
-    });
+    expect(waitingOn((await advance(plan, first.state)).stop)).toEqual([a.node.id]);
 
     const afterA = end(first.state, a.nodeRunId, "completed", { output: { n: 7 } });
     const second = await advance(plan, afterA);
@@ -338,19 +370,13 @@ nodes:${exec("a", "\n    mode: background\n    input: {}")}${exec("b", "\n    de
     const first = await advance(plan, start());
     const a = expectLeaf(first.stop);
     expect(a.node).toMatchObject({ id: "a", mode: "background" });
-    expect((await advance(plan, first.state)).stop).toEqual({
-      kind: "waiting",
-      nodeRunId: a.nodeRunId,
-    });
+    expect(waitingOn((await advance(plan, first.state)).stop)).toEqual([a.node.id]);
 
     const afterA = end(first.state, a.nodeRunId, "completed", { output: {} });
     const second = await advance(plan, afterA);
     const b = expectLeaf(second.stop);
     expect(b.node.id).toBe("b");
-    expect((await advance(plan, second.state)).stop).toEqual({
-      kind: "waiting",
-      nodeRunId: b.nodeRunId,
-    });
+    expect(waitingOn((await advance(plan, second.state)).stop)).toEqual([b.node.id]);
     const afterB = end(second.state, b.nodeRunId, "completed", { output: {} });
     expect(expectLeaf((await advance(plan, afterB)).stop).node.id).toBe("c");
   });
@@ -498,10 +524,7 @@ nodes:${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}${sta
     const make = expectLeaf(first.stop);
     expect(make.node.id).toBe("make");
     expect(findRun(first.state, "use")).toBeUndefined();
-    expect((await advance(plan, first.state)).stop).toEqual({
-      kind: "waiting",
-      nodeRunId: make.nodeRunId,
-    });
+    expect(waitingOn((await advance(plan, first.state)).stop)).toEqual([make.node.id]);
 
     const withoutPlan = end(first.state, make.nodeRunId, "completed", { output: {} });
     expect((await advance(plan, withoutPlan)).stop).toEqual({
@@ -553,6 +576,23 @@ nodes:${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}${sta
     ]);
   });
 
+  test("x, started by the same next that finds use blocked, is handed out, and the next next reports the block", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${stage("make", "producer", "\n    input: {}")}${exec("x", "\n    dependsOn: [make]\n    input: {}")}${stage("use", "consumer", "\n    dependsOn: [make]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const make = expectLeaf(first.stop);
+    const withoutPlan = end(first.state, make.nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, withoutPlan);
+    expect(stepIds(second.stop)).toEqual(["x"]);
+    expect((await advance(plan, second.state)).stop).toEqual({
+      kind: "blocked",
+      nodeId: "use",
+      stage: "stages/consumer",
+      missing: ["plan"],
+    });
+  });
+
   test("IW15 — an optional consumed artifact never blocks its stage", async () => {
     const plan = await compilePlan(`name: t
 nodes:${stage("read", "reader", "\n    input: {}")}
@@ -601,7 +641,8 @@ const advanceTiered = async (
   };
   const launched = launch === null ? null : { default: "launch", models: { launch } };
   const switching = foldModelSwitch(run.log, launched);
-  const { decision } = await decideNext(plan, run.state, emit, { tiers, switching, subagents });
+  const models = { tiers, switching, subagents, parallel: true };
+  const { decision } = await decideNext(plan, run.state, emit, models);
   return { run: current, stop: decision, events };
 };
 
@@ -670,7 +711,7 @@ nodes:${stage("make", "quick", "\n    input: {}")}
     expect(events.filter((event) => event.type.startsWith("workflow.model."))).toEqual([]);
   });
 
-  const SWITCHES: readonly (readonly [string, TierModel | null, TierModel, "model" | "leaf"])[] = [
+  const SWITCHES: readonly (readonly [string, TierModel | null, TierModel, "model" | "steps"])[] = [
     ["no launch model to opus-x/high switches", null, OPUS_HIGH, "model"],
     [
       "sonnet-x/high to opus-x/high switches",
@@ -683,9 +724,9 @@ nodes:${stage("make", "quick", "\n    input: {}")}
       "SC4: opus-x/high to opus-x with no effort starts the stage",
       OPUS_HIGH,
       { model: "opus-x" },
-      "leaf",
+      "steps",
     ],
-    ["opus-x/high to opus-x/high starts the stage", OPUS_HIGH, OPUS_HIGH, "leaf"],
+    ["opus-x/high to opus-x/high starts the stage", OPUS_HIGH, OPUS_HIGH, "steps"],
   ];
   test.each(SWITCHES)("a deep stage, session on %s", async (_label, launch, target, kind) => {
     const plan = await compilePlan(THINKER_FLOW);
@@ -749,7 +790,7 @@ nodes:
     expect(second.events.map((event) => event.type)).toContain("workflow.model.requested");
   });
 
-  test("SC7: exec and context nodes are handed out as leaves with no model step, though the session is on no model", async () => {
+  test("SC7: exec and context nodes are handed out with no model step, though the session is on no model", async () => {
     const plan = await compilePlan(`name: t
 nodes:${exec("a", "\n    input: {}")}
   - { id: fresh, type: context, action: new, dependsOn: [a] }
@@ -758,7 +799,7 @@ nodes:${exec("a", "\n    input: {}")}
       const { stop, events, run } = await advanceTiered(plan, { state, log: [] }, FAST_AND_DEEP);
       expect(events.filter((event) => event.type.startsWith("workflow.model."))).toEqual([]);
       if (stop.kind === "finished") return handed;
-      const leaf = expectLeaf(stop);
+      const leaf = stop.kind === "context" ? stop : expectLeaf(stop);
       return walk(end(run.state, leaf.nodeRunId, "completed", { output: {} }), [
         ...handed,
         leaf.node.id,
@@ -1420,11 +1461,11 @@ describe("context node", () => {
       output: {},
     });
 
-    const context = expectLeaf((await advance(plan, afterFirst)).stop);
+    const context = expectContext((await advance(plan, afterFirst)).stop);
     expect(context.node).toMatchObject({ id: "fresh", type: "context", action: "new" });
 
     const handed = await advance(plan, afterFirst);
-    const afterContext = end(handed.state, expectLeaf(handed.stop).nodeRunId, "completed", {
+    const afterContext = end(handed.state, expectContext(handed.stop).nodeRunId, "completed", {
       output: { action: "new", sessionId: "B" },
     });
     expect(expectLeaf((await advance(plan, afterContext)).stop).node.id).toBe("second");
@@ -1445,7 +1486,7 @@ nodes:
     let state = start();
     for (let pass = 0; pass < 2; pass++) {
       const handed = await advance(plan, state);
-      const leaf = expectLeaf(handed.stop);
+      const leaf = expectContext(handed.stop);
       expect(leaf.node).toMatchObject({ id: "slim", action: "compact" });
       ids.push(leaf.nodeRunId);
       state = end(handed.state, leaf.nodeRunId, "completed", { output: {} });
@@ -1499,7 +1540,13 @@ describe("the shipped task workflow's qa and review loops", () => {
     input: JsonValue;
     variables: Readonly<Record<string, string>>;
   }>;
-  type Walked = Readonly<{ state: State; stop: Stop; handed: readonly Handed[] }>;
+  // sizes: how many nodes each `next` handed out
+  type Walked = Readonly<{
+    state: State;
+    stop: Stop;
+    handed: readonly Handed[];
+    sizes: readonly number[];
+  }>;
 
   type Answers = Readonly<{ qa?: readonly string[]; review?: readonly JsonObject[] }>;
 
@@ -1512,10 +1559,17 @@ describe("the shipped task workflow's qa and review loops", () => {
     answers: Answers,
     failing: readonly string[] = [],
     handed: readonly Handed[] = [],
+    sizes: readonly number[] = [],
   ): Promise<Walked> => {
     const next = await advance(plan, state);
-    if (next.stop.kind !== "leaf") return { state: next.state, stop: next.stop, handed };
-    const { node, nodeRunId, input, variables } = next.stop;
+    const { stop } = next;
+    if (stop.kind !== "steps" && stop.kind !== "context") {
+      return { state: next.state, stop, handed, sizes };
+    }
+    const size = stop.kind === "steps" ? stop.steps.length : 1;
+    const [first] = stop.kind === "steps" ? stop.steps : [{ ...stop, input: null, variables: {} }];
+    if (first === undefined) throw new Error("a steps reply with no steps");
+    const { node, nodeRunId, input, variables } = first;
     const { qa = [], review = [] } = answers;
     const output =
       node.id === "qa"
@@ -1533,10 +1587,14 @@ describe("the shipped task workflow's qa and review loops", () => {
       qa: node.id === "qa" ? qa.slice(1) : qa,
       review: node.id === "code-review" ? review.slice(1) : review,
     };
-    return walkTask(plan, ended, rest, failing, [
-      ...handed,
-      { id: node.id, node, input, variables },
-    ]);
+    return walkTask(
+      plan,
+      ended,
+      rest,
+      failing,
+      [...handed, { id: node.id, node, input, variables }],
+      [...sizes, size],
+    );
   };
 
   const loopIds = (handed: readonly Handed[]): readonly string[] =>
@@ -1728,5 +1786,309 @@ describe("the shipped task workflow's qa and review loops", () => {
     expect(review[0]?.input).toEqual({ workspace, round: 1, rounds: 2, previous: null });
     expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("skipped");
     expect(findRun(state, "review-loop", "fix")?.status).toBe("skipped");
+  });
+
+  test("SC3: on pass 1 of each loop, code-review and qa run after their skipped fix, not recorded dependency-skipped", async () => {
+    const { state } = await walkTask(await compileWorkflow(TASK_WORKFLOW), start({ prompt: "p" }), {
+      qa: ["PASS"],
+      review: [APPROVED],
+    });
+
+    expect(findRun(state, "review-loop", "compact-before-fix")?.status).toBe("skipped");
+    expect(findRun(state, "review-loop", "fix")?.status).toBe("skipped");
+    expect(findRun(state, "review-loop", "code-review")?.status).toBe("completed");
+    expect(findRun(state, "qa-loop", "fix")?.status).toBe("skipped");
+    expect(findRun(state, "qa-loop", "qa")?.status).toBe("completed");
+  });
+
+  test("SC14 (regression): driven to the end through a fix round in each loop, task.yaml hands out exactly one node per next, in the order the file lists them", async () => {
+    const { stop, handed, sizes } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { review: [CHANGES_REQUESTED, APPROVED], qa: ["FAIL", "PASS"] },
+    );
+
+    expect(sizes.every((size) => size === 1)).toBe(true);
+    expect(handed.map(({ id }) => id)).toEqual([
+      "ticket-fetcher",
+      "create-workspace",
+      "baseline",
+      "design",
+      "planning",
+      "learn",
+      "compact-after-planning",
+      "implement",
+      "compact-after-implement",
+      "code-review",
+      "compact-before-fix",
+      "fix",
+      "code-review",
+      "compact-after-review",
+      "qa",
+      "fix",
+      "qa",
+      "commit",
+      "pr",
+      "retro",
+    ]);
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+});
+
+const startedIds = (events: readonly EmitInput[]): readonly (string | undefined)[] =>
+  events.filter(({ type }) => type === "workflow.node.started").map(({ nodeId }) => nodeId);
+
+describe("decideNext with parallel nodes", () => {
+  test("SC1: b and c, which both depend on the completed a, are handed out together by one next and start in that order", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${stage("c", "delegated", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const first = await advance(plan, start(), { subagents: true });
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA, { subagents: true });
+    expect(stepIds(second.stop)).toEqual(["b", "c"]);
+    expect(findRun(second.state, "b")?.status).toBe("running");
+    expect(findRun(second.state, "c")?.status).toBe("running");
+    expect(startedIds(second.events)).toEqual(["b", "c"]);
+  });
+
+  test("SC2: b, with no dependsOn, waits while a runs and is handed out once a completes", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const waiting = await advance(plan, first.state);
+    expect(waitingOn(waiting.stop)).toEqual(["a"]);
+    expect(findRun(waiting.state, "b")).toBeUndefined();
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    expect(stepIds((await advance(plan, afterA)).stop)).toEqual(["b"]);
+  });
+
+  test("SC4: b, whose dependsOn names a, is recorded dependency-skipped when a is skipped by its when", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", '\n    when: "{{ false }}"\n    input: {}')}${exec("b", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const done = await advance(plan, start());
+    expect(findRun(done.state, "b")).toMatchObject({
+      status: "skipped",
+      output: { reason: "dependency-skipped", proof: { dependencies: ["a"] } },
+    });
+  });
+
+  test("SC5: of x and y, two inline stages that depend on the completed a, next hands out x alone, waits on it, then hands out y", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${stage("x", "plain", "\n    dependsOn: [a]\n    input: {}")}${stage("y", "plain", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA);
+    const x = expectLeaf(second.stop);
+    expect(x.node.id).toBe("x");
+    expect(findRun(second.state, "y")).toBeUndefined();
+    expect(waitingOn((await advance(plan, second.state)).stop)).toEqual(["x"]);
+    const afterX = end(second.state, x.nodeRunId, "completed", { nodeType: "agent", output: {} });
+    expect(stepIds((await advance(plan, afterX)).stop)).toEqual(["y"]);
+  });
+
+  test("SC7: context node c waits while b runs, then goes out alone once b ends", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}
+  - { id: c, type: context, action: compact, dependsOn: [a] }
+`);
+    const first = await advance(plan, start());
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA);
+    const b = expectLeaf(second.stop);
+    expect(b.node.id).toBe("b");
+    expect(findRun(second.state, "c")).toBeUndefined();
+    expect(waitingOn((await advance(plan, second.state)).stop)).toEqual(["b"]);
+    const afterB = end(second.state, b.nodeRunId, "completed", { output: {} });
+    const third = await advance(plan, afterB);
+    expect(expectContext(third.stop).node.id).toBe("c");
+    expect(findRun(third.state, "c")?.status).toBe("running");
+  });
+
+  test("SC8: on a run on its fast model, the deep inline thinker waits while subagent s runs, and gets its model step once s ends", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${stage("s", "delegated", "\n    dependsOn: [a]\n    input: {}")}${stage("thinker", "thinker", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const tiered = (run: Logged) => advanceTiered(plan, run, FAST_AND_DEEP, HAIKU, true);
+    const first = await tiered(fresh());
+    const afterA = end(first.run.state, expectLeaf(first.stop).nodeRunId, "completed", {
+      output: {},
+    });
+    const second = await tiered({ ...first.run, state: afterA });
+    const sub = expectLeaf(second.stop);
+    expect(sub.node.id).toBe("s");
+    expect(second.events.map(({ type }) => type)).not.toContain("workflow.model.requested");
+    const afterS = end(second.run.state, sub.nodeRunId, "completed", {
+      nodeType: "agent",
+      output: {},
+    });
+    const third = await tiered({ ...second.run, state: afterS });
+    expect(third.stop).toEqual({
+      kind: "model",
+      nodeId: "thinker",
+      model: "opus-x",
+      effort: "high",
+    });
+  });
+
+  test("SC10: after a fails, retro (always, dependsOn the never-started b) is handed out, and the run then finishes failed", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("retro", "\n    always: true\n    dependsOn: [b]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const failed = end(first.state, expectLeaf(first.stop).nodeRunId, "failed", {
+      error: { kind: "exit", message: "exited with code 1" },
+    });
+    const second = await advance(plan, failed);
+    expect(stepIds(second.stop)).toEqual(["retro"]);
+    const ended = end(second.state, expectLeaf(second.stop).nodeRunId, "completed", { output: {} });
+    expect((await advance(plan, ended)).stop).toEqual({ kind: "finished", status: "failed" });
+  });
+
+  test("SC10: after a fails while b runs, retro2 (always, dependsOn retro) waits until retro (always, dependsOn b) has run, and the run then finishes failed", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("s", "\n    input: {}")}${exec("a", "\n    dependsOn: [s]\n    input: {}")}${exec("b", "\n    dependsOn: [s]\n    input: {}")}${exec("retro", "\n    always: true\n    dependsOn: [b]\n    input: {}")}${exec("retro2", "\n    always: true\n    dependsOn: [retro]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const afterS = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterS);
+    const [a, b] = expectSteps(second.stop);
+    if (a === undefined || b === undefined) throw new Error("expected a and b");
+    const error = { kind: "exit", message: "exited with code 1" };
+    const afterA = end(second.state, a.nodeRunId, "failed", { error });
+    expect(waitingOn((await advance(plan, afterA)).stop)).toEqual(["b"]);
+    const third = await advance(plan, end(afterA, b.nodeRunId, "completed", { output: {} }));
+    const retro = expectLeaf(third.stop);
+    expect(retro.node.id).toBe("retro");
+    const fourth = await advance(
+      plan,
+      end(third.state, retro.nodeRunId, "completed", { output: {} }),
+    );
+    const retro2 = expectLeaf(fourth.stop);
+    expect(retro2.node.id).toBe("retro2");
+    const done = await advance(
+      plan,
+      end(fourth.state, retro2.nodeRunId, "completed", { output: {} }),
+    );
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+  });
+
+  test("SC11: on a run that cannot run nodes in parallel, b and c, which both depend on the completed a, go out one per next", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("c", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const serial = { parallel: false };
+    const first = await advance(plan, start(), serial);
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA, serial);
+    const b = expectLeaf(second.stop);
+    expect(b.node.id).toBe("b");
+    expect(findRun(second.state, "c")).toBeUndefined();
+    expect(waitingOn((await advance(plan, second.state, serial)).stop)).toEqual(["b"]);
+    const afterB = end(second.state, b.nodeRunId, "completed", { output: {} });
+    expect(stepIds((await advance(plan, afterB, serial)).stop)).toEqual(["c"]);
+  });
+
+  test("SC9: a loop pass does not end while t, one of its children, still runs: next waits and records no completed or iterated event, then the loop completes once t does", async () => {
+    const plan = await compilePlan(`name: t
+nodes:
+  - id: fix
+    type: loop
+    until: "{{ iteration.index >= 1 }}"
+    maxIterations: 2
+    input: {}
+    nodes:
+      - { id: x, type: exec, runtime: sh, script: "true", input: {} }
+      - { id: r, type: agent, stage: stages/delegated, dependsOn: [x], input: {} }
+      - { id: t, type: exec, runtime: sh, script: "true", dependsOn: [x], input: {} }
+`);
+    const models = { subagents: true };
+    const first = await advance(plan, start(), models);
+    const afterX = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterX, models);
+    const [r, t] = expectSteps(second.stop);
+    if (r === undefined || t === undefined) throw new Error("expected r and t");
+    const afterR = end(second.state, r.nodeRunId, "completed", { nodeType: "agent", output: {} });
+    const waiting = await advance(plan, afterR, models);
+    expect(waitingOn(waiting.stop)).toEqual(["t"]);
+    expect(waiting.events.map(({ type }) => type)).toEqual([]);
+    const afterT = end(waiting.state, t.nodeRunId, "completed", { output: {} });
+    const done = await advance(plan, afterT, models);
+    expect(findRun(done.state, "fix")?.status).toBe("completed");
+    expect(done.stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test.each([
+    ["at the top level", []],
+    ["inside an outer loop", ["o"]],
+  ])(
+    "a loop c running beside f, which fails, starts no new pass once its x completes: c ends failed, r (always, dependsOn c) is handed out, and the run ends failed (%s)",
+    async (_, parents) => {
+      const body = (pad: string) => `
+${pad}- { id: s, type: exec, runtime: sh, script: "true", input: {} }
+${pad}- id: c
+${pad}  type: loop
+${pad}  until: "{{ iteration.index >= 2 }}"
+${pad}  maxIterations: 3
+${pad}  dependsOn: [s]
+${pad}  input: {}
+${pad}  nodes:
+${pad}    - { id: x, type: exec, runtime: sh, script: "true", input: {} }
+${pad}- { id: f, type: exec, runtime: sh, script: "true", dependsOn: [s], input: {} }
+${pad}- { id: r, type: exec, runtime: sh, script: "true", always: true, dependsOn: [c], input: {} }`;
+      const outer = `
+  - id: o
+    type: loop
+    until: "{{ iteration.index >= 1 }}"
+    maxIterations: 1
+    input: {}
+    nodes:${body("      ")}`;
+      const plan = await compilePlan(
+        `name: t\nnodes:${parents.length === 0 ? body("  ") : outer}\n`,
+      );
+      const first = await advance(plan, start());
+      const afterS = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", {
+        output: {},
+      });
+      const second = await advance(plan, afterS);
+      const [x, f] = expectSteps(second.stop);
+      if (x === undefined || f === undefined) throw new Error("expected x and f");
+      const error = { kind: "exit", message: "exited with code 1" };
+      const afterF = end(second.state, f.nodeRunId, "failed", { error });
+      const third = await advance(plan, end(afterF, x.nodeRunId, "completed", { output: {} }));
+      expect(findRun(third.state, ...parents, "c")).toMatchObject({
+        status: "failed",
+        iteration: 1,
+      });
+      const r = expectLeaf(third.stop);
+      expect(r.node.id).toBe("r");
+      const done = await advance(plan, end(third.state, r.nodeRunId, "completed", { output: {} }));
+      expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    },
+  );
+
+  test("SC16: s, a subagent stage, and x, an inline stage, handed out by one next record mode subagent and inline; the exec a records no mode", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${stage("s", "delegated", "\n    dependsOn: [a]\n    input: {}")}${stage("x", "plain", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const models = { subagents: true };
+    const first = await advance(plan, start(), models);
+    const afterA = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const second = await advance(plan, afterA, models);
+    expect(stepIds(second.stop)).toEqual(["s", "x"]);
+    expect(findRun(second.state, "s")?.mode).toBe("subagent");
+    expect(findRun(second.state, "x")?.mode).toBe("inline");
+    expect(findRun(second.state, "a")).not.toHaveProperty("mode");
+  });
+
+  test("SC17: on a run that cannot start subagents, a stage set to mode: subagent records mode inline", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${stage("s", "plain", "\n    mode: subagent\n    input: {}")}
+`);
+    const { state } = await advance(plan, start(), { subagents: false });
+    expect(findRun(state, "s")?.mode).toBe("inline");
   });
 });

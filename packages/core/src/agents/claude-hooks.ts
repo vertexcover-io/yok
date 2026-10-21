@@ -344,6 +344,7 @@ const claudePostToolUse = (
 export const claudeAdapter: AgentAdapter = {
   contextSteps: true,
   subagents: true,
+  parallelSteps: true,
   stop: claudeStop,
   preToolUse: claudePreToolUse,
   postToolUse: claudePostToolUse,

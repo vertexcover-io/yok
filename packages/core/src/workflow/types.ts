@@ -17,8 +17,9 @@ import {
   type TiersConfig,
   TiersConfigSchema,
 } from "@yok/sdk";
+import { AgentModeSchema } from "@yok/sdk/internal";
 import { z } from "zod";
-import { AgentModeSchema, type ArtifactDeclaration, type Stage } from "../stage.ts";
+import type { ArtifactDeclaration, Stage } from "../stage.ts";
 
 export const NodeIdSchema = z
   .string()
@@ -340,29 +341,42 @@ export type PlanStage = Readonly<{
 
 // Compiled nodes carry what they need: the ids of the containers around them (the path to their
 // entry in state.json), a stage node its loaded SKILL.md, an include node the workflow it
-// includes, and loops and switches their compiled children.
+// includes, and loops and switches their compiled children. `after` names the node before it in
+// run order when it has no dependsOn: it waits for that node to end, but neither inherits its skip
+// nor may read its output.
 export type PlanExecNode = ExecNode & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   outputSchema?: z.ZodType | undefined;
 };
-export type PlanWaitNode = WaitNode & { readonly parents: readonly string[] };
-export type PlanContextNode = ContextNode & { readonly parents: readonly string[] };
+export type PlanWaitNode = WaitNode & {
+  readonly parents: readonly string[];
+  readonly after: readonly string[];
+};
+export type PlanContextNode = ContextNode & {
+  readonly parents: readonly string[];
+  readonly after: readonly string[];
+};
 export type PlanAgentNode = Omit<AgentNode, "stage"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   stage?: PlanStage;
   outputSchema?: z.ZodType | undefined;
 };
 export type PlanIncludeNode = IncludeNode & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   plan: WorkflowPlan;
 };
 export type PlanLoopNode = Omit<LoopNode, "nodes"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   nodes: PlanNode[];
 };
 export type PlanSwitchCase = Omit<SwitchCase, "nodes"> & { nodes: PlanNode[] };
 export type PlanSwitchNode = Omit<SwitchNode, "cases" | "default"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   cases: PlanSwitchCase[];
   default?: PlanNode[] | undefined;
 };

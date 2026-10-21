@@ -45,54 +45,72 @@ export type Leaf = PlanExecNode | PlanWaitNode | PlanAgentNode | PlanContextNode
 // or the run has no tiers.
 export type RunsOn = Readonly<{ mode: AgentMode; tier: string | null }>;
 
+// A leaf `next` started for the skill to run.
+export type StartedLeaf = Readonly<{
+  node: Exclude<Leaf, PlanContextNode>;
+  nodeRunId: string;
+  input: JsonValue;
+  variables: Readonly<Record<string, string>>;
+  // how an agent node runs; null for every other leaf
+  runsOn: RunsOn | null;
+}>;
+
 // What `next` replies. The events it recorded on the way are already saved.
 export type Decision =
-  | Readonly<{
-      kind: "leaf";
-      node: Leaf;
-      nodeRunId: string;
-      input: JsonValue;
-      variables: Readonly<Record<string, string>>;
-      // how an agent node runs; null for every other leaf
-      runsOn: RunsOn | null;
-    }>
+  // othersRunning: a node started by an earlier `next` is still open
+  | Readonly<{ kind: "steps"; steps: readonly StartedLeaf[]; othersRunning: boolean }>
+  | Readonly<{ kind: "context"; node: PlanContextNode; nodeRunId: string }>
   | (Readonly<{ kind: "model"; nodeId: string }> & TierModel)
-  | Readonly<{ kind: "waiting"; nodeRunId: string }>
+  | Readonly<{
+      kind: "waiting";
+      running: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
+    }>
   | Readonly<{ kind: "blocked"; nodeId: string; stage: string; missing: readonly string[] }>
   | Readonly<{ kind: "finished"; status: Exclude<State["status"], "running" | "blocked"> }>;
 
 // Saves one event and gives back the state with it applied.
 export type Emit = (state: State, event: EmitInput) => Promise<State>;
 
-// What walking a node or a list of nodes decided: stop with a Decision, go on to the next node,
-// or walk again from the top once a failed model switch has failed its stage.
-type Step = Decision | Readonly<{ kind: "continue" }> | Readonly<{ kind: "rewalk" }>;
-type Walked = Readonly<{ state: State; step: Step }>;
+// What walking a node or a list of nodes decided: stop with a reply that goes out alone, go on to
+// the next node, or walk again from the top once a failed model switch has failed its stage.
+// `started` holds the leaves the walk started on the way.
+type Step =
+  | Exclude<Decision, { kind: "steps" | "waiting" | "finished" }>
+  | Readonly<{ kind: "continue" }>
+  | Readonly<{ kind: "rewalk" }>;
+type Walked = Readonly<{ state: State; step: Step; started: readonly StartedLeaf[] }>;
 
 const CONTINUE: Step = { kind: "continue" };
 
 // The run's tiers and where its model switches stand. tiers is null when the run's agent cannot
 // switch models, so every node runs on the model it has. subagents is false when the run's agent
-// cannot start subagents, so every node runs inline.
+// cannot start subagents, so every node runs inline. parallel is false when it runs one node at a
+// time.
 export type ModelInputs = Readonly<{
   tiers: ResolvedTiers | null;
   switching: ModelSwitch;
   subagents: boolean;
+  parallel: boolean;
 }>;
 
 const NO_MODELS: ModelInputs = {
   tiers: null,
   switching: { current: null, pending: null, failed: null },
   subagents: false,
+  parallel: true,
 };
 
-// Where the walk is: the inputs its expressions read and, inside a loop, the current pass.
+// Where the walk is: the inputs its expressions read and, inside a loop, the current pass. root is
+// the plan's top level, for finding every open leaf. draining is true inside a running container
+// whose scope has failed: it starts nothing new and ends once its open children end.
 type Walk = ModelInputs &
   Readonly<{
     emit: Emit;
     agent: WorkflowAgent;
     inputs: JsonValue;
     loop: Readonly<{ index: number; max: number; previous: JsonValue }> | undefined;
+    root: readonly PlanNode[];
+    draining: boolean;
   }>;
 
 // Top-level nodes carry no `parents`; state.json puts them at the root of its tree.
@@ -241,9 +259,45 @@ const resolveVariables = (node: PlanNode, scope: Scope): Record<string, string> 
   return Object.fromEntries([...defaults, ...set]);
 };
 
+const ENDED: ReadonlySet<NodeRun["status"]> = new Set([
+  "completed",
+  "failed",
+  "skipped",
+  "cancelled",
+]);
+
+// A node that will not run again: it ended, or a failure in its scope keeps it from starting.
+const isSettled = (
+  node: PlanNode,
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): boolean => {
+  const status = own(nodeRuns, node.id)?.status;
+  if (status !== undefined && ENDED.has(status)) return true;
+  if (status === "running") return false;
+  return !node.always && findBlockingFailure(nodes, nodeRuns) !== undefined;
+};
+
+// Every node a node waits for, its dependsOn and the node before it, is settled.
+const isReady = (
+  node: PlanNode,
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): boolean =>
+  [...node.dependsOn, ...node.after].every((id) => {
+    const waitedOn = nodes.find((sibling) => sibling.id === id);
+    return waitedOn === undefined || isSettled(waitedOn, nodes, nodeRuns);
+  });
+
+// Every node in the scope is settled, so the container around it can end.
+const isScopeOver = (
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): boolean => nodes.every((node) => isSettled(node, nodes, nodeRuns));
+
 // Whether an unstarted node runs: skipped when a dependency was skipped (unless it is `always`)
-// or its `when` is false, failed when its input or variables cannot be worked out. Nodes are
-// walked in dependency order, so its dependencies have ended or will never start.
+// or its `when` is false, failed when its input or variables cannot be worked out. The walk starts
+// it only once isReady holds, so its dependencies have ended or will never start.
 const decideStart = (node: PlanNode, walk: Walk, state: State): Start => {
   const results = findNodeRuns(state.nodeRuns, node.parents);
   const skipped = node.dependsOn.filter((id) => own(results, id)?.status === "skipped");
@@ -306,7 +360,7 @@ const recordSkipOrFail = async (
     ending instanceof NodeFailure
       ? { type: "failed", nodeRunId, payload: { attempts: 0, error: toEventError(ending) } }
       : { type: "skipped", nodeRunId, payload: { attempts: 0, skip: ending } };
-  return { state: await emitNodeEvent(walk, state, node, event), step: CONTINUE };
+  return { state: await emitNodeEvent(walk, state, node, event), step: CONTINUE, started: [] };
 };
 
 // Records that a node started, and gives back the state with its new node run.
@@ -354,7 +408,23 @@ const endContainer = async (
       : { attempts: ending.attempts, error: toEventError(failure) };
   const type = failure === undefined ? "completed" : "failed";
   const event = { type, nodeRunId: nodeRun.nodeRunId, payload };
-  return { state: await emitNodeEvent(walk, state, node, event), step: CONTINUE };
+  return { state: await emitNodeEvent(walk, state, node, event), step: CONTINUE, started: [] };
+};
+
+// A draining container waits while any of its children runs, then ends failed.
+const drainContainer = async (
+  node: Container,
+  nodeRun: NodeRun,
+  walk: Walk,
+  walked: Walked,
+): Promise<Walked> => {
+  const results = findNodeRuns(walked.state.nodeRuns, [...node.parents, node.id]);
+  const open = pickChildren(node, nodeRun).some(
+    (child) => own(results, child.id)?.status === "running",
+  );
+  if (open) return walked;
+  const failure = new NodeFailure("exception", `${node.id} stopped: a node in its scope failed`);
+  return endContainer(node, nodeRun, walk, walked.state, { attempts: 1, failure });
 };
 
 const isSameModel = (target: TierModel, current: TierModel | null): boolean =>
@@ -430,7 +500,7 @@ const requestModel = async (
   const path = nodePath(node.parents, node.id);
   const { pending, failed } = walk.switching;
   const step: Step = { kind: "model", nodeId: node.id, ...target };
-  if (pending?.node === path) return { state, step };
+  if (pending?.node === path) return { state, step, started: [] };
   if (failed?.node === path) {
     const message = `${node.id}: switching to ${target.model} failed: ${failed.reason}`;
     const recorded = await recordSkipOrFail(
@@ -439,26 +509,33 @@ const requestModel = async (
       walk,
       state,
     );
-    return { state: recorded.state, step: { kind: "rewalk" } };
+    return { state: recorded.state, step: { kind: "rewalk" }, started: [] };
   }
   const requested = await walk.emit(state, {
     type: "workflow.model.requested",
     source: "workflow",
     payload: { node: path, ...tierLaunch(target) },
   });
-  return { state: requested, step };
+  return { state: requested, step, started: [] };
 };
 
-// A leaf node (exec, wait, agent or context): handed to the skill once it can start, then waited on.
+const isInlineOpen = (walk: Walk, state: State): boolean =>
+  findRunningLeaves(walk.root, state.nodeRuns).some(
+    ({ node }) => node.type === "agent" && pickNodeMode(node, walk.subagents) === "inline",
+  );
+
+// The node stays unstarted, for a later `next` to hand out.
+const leaveUnstarted = (state: State): Walked => ({ state, step: CONTINUE, started: [] });
+
+// A leaf node (exec, wait, agent or context): started once it can start, unless the work already
+// open must end first. A context node goes out alone; every other leaf joins the walk's list.
 const executeLeaf = async (
   node: Leaf,
   nodeRun: NodeRun | undefined,
   walk: Walk,
   state: State,
 ): Promise<Walked> => {
-  if (nodeRun?.status === "running") {
-    return { state, step: { kind: "waiting", nodeRunId: nodeRun.nodeRunId } };
-  }
+  if (nodeRun?.status === "running") return leaveUnstarted(state);
   const start = decideStart(node, walk, state);
   if (start.kind === "end") return recordSkipOrFail(node, start.ending, walk, state);
   if (node.type === "agent" && node.stage !== undefined) {
@@ -473,7 +550,7 @@ const executeLeaf = async (
         nodeId: node.id,
         payload: { ...blocked, missing: [...missing] },
       });
-      return { state: recorded, step: { kind: "blocked", ...blocked } };
+      return { state: recorded, step: { kind: "blocked", ...blocked }, started: [] };
     }
   }
   const target = findTierModel(node, walk);
@@ -481,18 +558,27 @@ const executeLeaf = async (
   const runsOn = node.type === "agent" ? pickRunsOn(node, walk) : null;
   // a subagent runs on its tier's model, so the session stays on the one it has
   const inSession = runsOn?.mode !== "subagent";
-  if (inSession && target !== undefined && !isSameModel(target, walk.switching.current)) {
-    return requestModel(node, target, walk, state);
-  }
+  const switches =
+    inSession && target !== undefined && !isSameModel(target, walk.switching.current);
+  const busy = findRunningLeaves(walk.root, state.nodeRuns).length > 0;
+  // a context step or a model switch restarts the session, which would kill the open work
+  if ((node.type === "context" || switches) && busy) return leaveUnstarted(state);
+  if (switches && target !== undefined) return requestModel(node, target, walk, state);
+  if (runsOn?.mode === "inline" && isInlineOpen(walk, state)) return leaveUnstarted(state);
+  if (!walk.parallel && busy) return leaveUnstarted(state);
   const { input, variables } = start;
   const subagentModel = inSession ? null : (target ?? null);
   const agentFields =
     node.type === "agent" ? pickAgentFields(node, walk, state, subagentModel) : {};
   const notify = postsToThread(node);
-  const started = await recordStart(node, { input, notify, ...agentFields }, walk, state);
+  const mode = runsOn === null ? {} : { mode: runsOn.mode };
+  const started = await recordStart(node, { input, notify, ...agentFields, ...mode }, walk, state);
   const { nodeRunId } = started.nodeRun;
-  const step = { kind: "leaf", node, nodeRunId, input, variables, runsOn } as const;
-  return { state: started.state, step };
+  if (node.type === "context") {
+    return { state: started.state, step: { kind: "context", node, nodeRunId }, started: [] };
+  }
+  const leaf: StartedLeaf = { node, nodeRunId, input, variables, runsOn };
+  return { state: started.state, step: CONTINUE, started: [leaf] };
 };
 
 // A switch: starts on the case whose value matches (or its default), walks that case's nodes,
@@ -512,8 +598,12 @@ const executeSwitch = async (
     return executeSwitch(node, started.nodeRun, walk, started.state);
   }
   const inside: Walk = { ...walk, inputs: nodeRun.input ?? null, loop: undefined };
-  const walked = await executeNodes(pickChildren(node, nodeRun), inside, state);
+  const children = pickChildren(node, nodeRun);
+  const walked = await executeNodes(children, inside, state);
   if (walked.step.kind !== "continue") return walked;
+  if (walk.draining) return drainContainer(node, nodeRun, walk, walked);
+  const results = findNodeRuns(walked.state.nodeRuns, [...node.parents, node.id]);
+  if (!isScopeOver(children, results)) return walked;
   return endContainer(node, nodeRun, walk, walked.state);
 };
 
@@ -537,6 +627,9 @@ const executeInclude = async (
   const inside: Walk = { ...walk, inputs: nodeRun.input ?? null, loop: undefined };
   const walked = await executeNodes(node.plan.nodes, inside, state);
   if (walked.step.kind !== "continue") return walked;
+  if (walk.draining) return drainContainer(node, nodeRun, walk, walked);
+  const results = findNodeRuns(walked.state.nodeRuns, [...node.parents, node.id]);
+  if (!isScopeOver(node.plan.nodes, results)) return walked;
   return endContainer(node, nodeRun, walk, walked.state);
 };
 
@@ -562,7 +655,9 @@ const executeLoop = async (
   const inside: Walk = { ...walk, inputs: nodeRun.input ?? null, loop: { index, max, previous } };
   const walked = await executeNodes(node.nodes, inside, state);
   if (walked.step.kind !== "continue") return walked;
+  if (walk.draining) return drainContainer(node, nodeRun, walk, walked);
   const results = findNodeRuns(walked.state.nodeRuns, [...node.parents, node.id]);
+  if (!isScopeOver(node.nodes, results)) return walked;
   const ending = { attempts: index };
   if (findBlockingFailure(node.nodes, results) !== undefined) {
     return endContainer(node, nodeRun, walk, walked.state, ending);
@@ -591,61 +686,96 @@ const executeLoop = async (
   return executeLoop(node, findNodeRun(next, node), walk, next);
 };
 
-// Walks nodes in dependency order until one needs the skill. Once a node in this scope has failed
-// without allowFailure only `always` nodes still start: the container around it sees the failure
-// and ends failed.
+// Walks every node in the scope, starting each one that is ready, until one needs a reply of its
+// own. Once a node in this scope has failed without allowFailure only `always` nodes still start
+// and a running container drains; the container around them sees the failure and ends failed.
 async function executeNodes(nodes: readonly PlanNode[], walk: Walk, state: State): Promise<Walked> {
   let current = state;
+  let started: readonly StartedLeaf[] = [];
   for (const node of nodes) {
     const siblings = findNodeRuns(current.nodeRuns, node.parents);
-    if (!node.always && findBlockingFailure(nodes, siblings) !== undefined) continue;
+    const draining =
+      walk.draining || (!node.always && findBlockingFailure(nodes, siblings) !== undefined);
     const found = findNodeRun(current, node);
     // an interrupted node starts again as if it never ran; the old run stays in event.jsonl
     const nodeRun = found?.status === "interrupted" ? undefined : found;
     if (nodeRun !== undefined && nodeRun.status !== "running") continue;
+    if (nodeRun === undefined && (draining || !isReady(node, nodes, siblings))) continue;
+    const inner: Walk = { ...walk, draining };
     let walked: Walked;
     switch (node.type) {
       case "switch":
-        walked = await executeSwitch(node, nodeRun, walk, current);
+        walked = await executeSwitch(node, nodeRun, inner, current);
         break;
       case "include":
-        walked = await executeInclude(node, nodeRun, walk, current);
+        walked = await executeInclude(node, nodeRun, inner, current);
         break;
       case "loop":
-        walked = await executeLoop(node, nodeRun, walk, current);
+        walked = await executeLoop(node, nodeRun, inner, current);
         break;
       default:
-        walked = await executeLeaf(node, nodeRun, walk, current);
+        walked = await executeLeaf(node, nodeRun, inner, current);
     }
-    if (walked.step.kind !== "continue") return walked;
+    started = [...started, ...walked.started];
+    if (walked.step.kind !== "continue") return { ...walked, started };
     current = walked.state;
   }
-  return { state: current, step: CONTINUE };
+  return { state: current, step: CONTINUE, started };
 }
 
-// One `next`: walks the workflow from the top, recording the engine's own events as it goes,
-// until a node needs the skill or nothing is left, which ends the run.
+// One `next`: walks the workflow from the top, recording the engine's own events as it goes, and
+// replies with every leaf it started, or what it waits on, or the run's end. startedBefore holds
+// what an earlier walk of the same `next` started before a rewalk.
 export const decideNext = async (
   plan: WorkflowPlan,
   state: State,
   emit: Emit,
   models: ModelInputs = NO_MODELS,
+  startedBefore: readonly StartedLeaf[] = [],
 ): Promise<Readonly<{ state: State; decision: Decision }>> => {
   if (!isRunLive(state.status)) {
     return { state, decision: { kind: "finished", status: state.status } };
   }
   const inputs = resolveWorkflowInputs(plan.inputs, state.input);
+  const open = new Set(
+    findRunningLeaves(plan.nodes, state.nodeRuns).map(({ nodeRun }) => nodeRun.nodeRunId),
+  );
   const walked = await executeNodes(
     plan.nodes,
-    { emit, agent: plan.agent, inputs, loop: undefined, ...models },
+    {
+      emit,
+      agent: plan.agent,
+      inputs,
+      loop: undefined,
+      root: plan.nodes,
+      draining: false,
+      ...models,
+    },
     state,
   );
+  const started = [...startedBefore, ...walked.started];
   if (walked.step.kind === "rewalk") {
     // the failed switch is spent: its stage has failed, so a later loop pass asks again
     const switching = { ...models.switching, failed: null };
-    return decideNext(plan, walked.state, emit, { ...models, switching });
+    return decideNext(plan, walked.state, emit, { ...models, switching }, started);
   }
-  if (walked.step.kind !== "continue") return { state: walked.state, decision: walked.step };
+  // leaves started before a blocked stage still go out; the next `next` reports the block again
+  const handsOut = walked.step.kind === "blocked" && started.length > 0;
+  if (walked.step.kind !== "continue" && !handsOut) {
+    return { state: walked.state, decision: walked.step };
+  }
+  const running = findRunningLeaves(plan.nodes, walked.state.nodeRuns);
+  if (started.length > 0) {
+    const othersRunning = running.some(({ nodeRun }) => open.has(nodeRun.nodeRunId));
+    return { state: walked.state, decision: { kind: "steps", steps: started, othersRunning } };
+  }
+  if (running.length > 0) {
+    const ids = running.map(({ node, nodeRun }) => ({
+      nodeRunId: nodeRun.nodeRunId,
+      nodeId: node.id,
+    }));
+    return { state: walked.state, decision: { kind: "waiting", running: ids } };
+  }
   const status =
     findBlockingFailure(plan.nodes, walked.state.nodeRuns) === undefined ? "completed" : "failed";
   const event = { type: `workflow.${status}`, source: "workflow", payload: {} };

@@ -588,11 +588,11 @@ describe("notify", () => {
     expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
   });
 
-  test("SC217: an orchestrate.next with a stage reply returns nothing and never opens the notifier", async () => {
+  test("SC217: an orchestrate.next with a steps reply returns nothing and never opens the notifier", async () => {
     const { calls, open } = fakeOpener();
     const next = event("orchestrate.next", {
       input: {},
-      output: { kind: "stage", nodeId: "plan" },
+      output: { kind: "steps", steps: [{ kind: "stage", nodeId: "plan" }] },
     });
 
     const result = await notify("slack", { event: next, state, run }, open, fakeRecorder().record);

@@ -83,6 +83,7 @@ import {
   findRunningLeaves,
   pickNodeTier,
   type RunningLeaf,
+  type StartedLeaf,
 } from "./workflow/next.ts";
 import {
   type ContextNode,
@@ -355,7 +356,7 @@ export const linkRunSession = async (
   return { ok: true, value: linked?.sessions ?? [session.data] };
 };
 
-export type StepReply =
+type LeafReply =
   | Readonly<{
       kind: "exec";
       nodeRunId: string;
@@ -391,9 +392,12 @@ export type StepReply =
       input: JsonValue;
       policies: Policies;
       done: string;
-    }>
+    }>;
+
+export type StepReply =
+  | Readonly<{ kind: "steps"; steps: readonly LeafReply[] }>
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
-  | Exclude<Decision, { kind: "leaf" }>;
+  | Exclude<Decision, { kind: "steps" | "context" }>;
 
 type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
 
@@ -509,23 +513,22 @@ export const loadSessionEnv = async (
   return loadEnv(config.value, { ...plan, agent }, run.cwd);
 };
 
+// alone: the only node open, so an exec or wait may run in the foreground
 const buildLeafReply = (
-  decision: Extract<Decision, { kind: "leaf" }>,
+  leaf: StartedLeaf,
   run: RunRef,
   options: CheckoutConfig,
   policies: Policies,
-): StepReply => {
-  const { node, nodeRunId, input, variables, runsOn } = decision;
-  if (node.type === "context") {
-    return { kind: "context", nodeRunId, nodeId: node.id, action: node.action };
-  }
+  alone: boolean,
+): LeafReply => {
+  const { node, nodeRunId, input, variables, runsOn } = leaf;
   if (node.type !== "agent") {
-    const mode = node.type === "exec" ? node.mode : "inline";
+    const own = node.type === "exec" ? node.mode : "inline";
     return {
       kind: "exec",
       nodeRunId,
       nodeId: node.id,
-      mode,
+      mode: alone ? own : "background",
       command: orchestrateLine({ verb: "exec", run, nodeRunId }),
     };
   }
@@ -556,9 +559,34 @@ const buildLeafReply = (
   };
 };
 
-// What `next` needs to know about each agent: whether it can switch models, and start subagents.
+// Background work first, so it is going before the session starts its own node.
+const rankLaunch = (reply: LeafReply): number => {
+  if (reply.kind === "exec") return 0;
+  return reply.mode === "subagent" ? 1 : 2;
+};
+
+const buildReply = (
+  decision: Decision,
+  run: RunRef,
+  options: CheckoutConfig,
+  policies: Policies,
+): StepReply => {
+  if (decision.kind === "context") {
+    const { node, nodeRunId } = decision;
+    return { kind: "context", nodeRunId, nodeId: node.id, action: node.action };
+  }
+  if (decision.kind !== "steps") return decision;
+  const alone = decision.steps.length === 1 && !decision.othersRunning;
+  const steps = decision.steps
+    .map((leaf) => buildLeafReply(leaf, run, options, policies, alone))
+    .toSorted((a, b) => rankLaunch(a) - rankLaunch(b));
+  return { kind: "steps", steps };
+};
+
+// What `next` needs to know about each agent: whether it can switch models, start subagents, and
+// run several nodes at once.
 export type AgentAbilities = Readonly<
-  Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents">>
+  Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents" | "parallelSteps">>
 >;
 
 const walkToNextStep = async (
@@ -576,14 +604,13 @@ const walkToNextStep = async (
     if (appended.value.state === null) throw new Error(`${runDir}/state.json is missing`);
     return appended.value.state;
   };
-  const { contextSteps, subagents } = abilities[plan.agent];
+  const { contextSteps, subagents, parallelSteps } = abilities[plan.agent];
   const tiers = contextSteps ? state.tiers : null;
   const switching = foldModelSwitch(events, state.tiers);
-  const { decision } = await decideNext(plan, state, emit, { tiers, switching, subagents });
+  const models = { tiers, switching, subagents, parallel: parallelSteps };
+  const { decision } = await decideNext(plan, state, emit, models);
   const policies = readPolicies(state.policies);
-  const reply =
-    decision.kind === "leaf" ? buildLeafReply(decision, run, config.value, policies) : decision;
-  return { ok: true, value: reply };
+  return { ok: true, value: buildReply(decision, run, config.value, policies) };
 };
 
 export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
