@@ -18,6 +18,7 @@ import {
 } from "@yok/sdk";
 import {
   appendRunEvent,
+  findRunningLeaf,
   foldModelSwitch,
   isRunLive,
   jsonlEventStore,
@@ -42,6 +43,7 @@ type ActiveLeaf = Readonly<{
   nodeRunId: string;
   nodeType: NodeRun["nodeType"];
   awaitingApproval: string | undefined;
+  mode: NodeRun["mode"];
 }>;
 
 export type StopCheck = Readonly<{
@@ -84,25 +86,20 @@ type Position =
   | Readonly<{ kind: "between-nodes" }>;
 
 // A loop, switch or include stays running while it waits between children, so the node being
-// worked on is the running entry of any other type.
+// worked on is the running entry of any other type; with several open, the session's inline one.
 const CONTAINERS: ReadonlySet<NodeRun["nodeType"]> = new Set(["loop", "switch", "include"]);
 
 const findActiveLeaf = (nodeRuns: Readonly<Record<string, NodeRun>>): ActiveLeaf | undefined => {
-  for (const [nodeId, run] of Object.entries(nodeRuns)) {
-    if (run.status !== "running") continue;
-    if (!CONTAINERS.has(run.nodeType)) {
-      return {
-        nodeId,
-        nodeRunId: run.nodeRunId,
-        nodeType: run.nodeType,
-        awaitingApproval: run.awaitingApproval,
-      };
-    }
-    if (run.nodes === undefined) continue;
-    const child = findActiveLeaf(run.nodes);
-    if (child !== undefined) return child;
-  }
-  return undefined;
+  const leaf = findRunningLeaf(nodeRuns);
+  if (leaf === undefined || CONTAINERS.has(leaf.run.nodeType)) return undefined;
+  const { path, run } = leaf;
+  return {
+    nodeId: path.slice(path.lastIndexOf(".") + 1),
+    nodeRunId: run.nodeRunId,
+    nodeType: run.nodeType,
+    awaitingApproval: run.awaitingApproval,
+    mode: run.mode,
+  };
 };
 
 const touchedRunSinceLastPrompt = (
@@ -193,8 +190,12 @@ export const decideStop = ({
   if (position.kind === "between-nodes" && pendingSwitch !== null) {
     return { reason: "model-switch", blockStreak: prior, seq: pendingSwitch.seq };
   }
-  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck.
-  if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
+  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck. An
+  // inline node is the session's own work, so background work beside it never excuses its done.
+  const owesInline = position.kind === "open-node" && position.leaf.mode === "inline";
+  if (waitingOnBackground && (!owesInline || prior >= maxBlocks)) {
+    return { reason: "background-task", blockStreak: prior };
+  }
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.

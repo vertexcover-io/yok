@@ -19,6 +19,7 @@ import {
   findSessionState,
   noAnswerBetweenNodesMessage,
   noAnswerMessage,
+  noAnswerSubagentMessage,
   recordRunEvent,
   recordSessionEvent,
 } from "./common.ts";
@@ -162,8 +163,9 @@ export const questionGuard: PreToolUseHandler = {
     if (use.call.kind !== "question") return ALLOW;
     const found = await findSessionState(use, deps);
     if (found === undefined || readPolicies(found.state.policies).interaction) return ALLOW;
-    // done finishes only an agent node; a loop waiting between its children is not one.
-    const leaf = findRunningLeaf(found.state.nodeRuns);
+    // done finishes only an agent node; a loop waiting between its children is not one. The
+    // running leaf is the session's, so a subagent's question names none.
+    const leaf = use.subagent ? undefined : findRunningLeaf(found.state.nodeRuns);
     const node = leaf?.run.nodeType === "agent" ? leaf : undefined;
     const payload = {
       policy: "interaction",
@@ -171,6 +173,7 @@ export const questionGuard: PreToolUseHandler = {
       ...(node === undefined ? {} : { nodeId: node.path.slice(node.path.lastIndexOf(".") + 1) }),
     };
     await recordRunEvent(found.run, { type: "policy.applied", payload }, deps);
+    if (use.subagent) return { kind: "deny", message: noAnswerSubagentMessage };
     if (node === undefined) {
       const next = orchestrateLine({ verb: "next", run: found.run });
       return { kind: "deny", message: noAnswerBetweenNodesMessage(next) };
