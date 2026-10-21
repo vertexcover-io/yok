@@ -1,5 +1,6 @@
 export {
   type CompileOptions,
+  compileRunWorkflow,
   compileWorkflow,
   readWorkflowFile,
   sortTopologically,

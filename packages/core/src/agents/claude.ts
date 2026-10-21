@@ -216,7 +216,9 @@ export const claudeProvider = ({
   const launch = async (
     options: LaunchOptions,
   ): Promise<Result<{ terminalName: string; terminal: ITerminal }>> => {
-    const terminalName = newId();
+    const { continueSession } = options;
+    const terminalName = continueSession?.terminalName ?? newId();
+    const session = continueSession === undefined ? [] : ["--resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const settings = {
       cwd: options.cwd,
@@ -226,7 +228,7 @@ export const claudeProvider = ({
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...claudeArgs(options)],
+      argv: [binary, ...session, ...claudeArgs(options)],
       env: options.env ?? {},
     });
     if (!created.ok) {

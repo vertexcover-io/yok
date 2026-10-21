@@ -2,22 +2,31 @@ import { resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import {
   builtInChecks,
+  compileRunWorkflow,
   type DoctorReport,
   findWorkflowPath,
   loadStartEnv,
   runDoctor,
   verdict,
+  type WorkflowPlan,
   workflowChecks,
 } from "@yok/core";
 import {
   createGit,
+  type ILogger,
   type JsonObject,
+  loadEnv,
+  loadRunConfig,
   POLICY_NAMES,
   PoliciesSchema,
+  type Result,
   readPolicies,
+  registryPath,
+  requireRun,
+  type SavedPolicies,
   spawnInteractive,
 } from "@yok/sdk";
-import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
+import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
 import { runtimeChecks } from "@yok/server";
 import {
   apiErrorText,
@@ -25,6 +34,7 @@ import {
   commandLog,
   compileOrFail,
   ensureServer,
+  errorText,
   fail,
   openForPerson,
   yokClient,
@@ -44,6 +54,64 @@ const blockedText = (report: DoctorReport): string =>
       .filter((row) => row.status === "fail")
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
+
+// The doctor yok run and yok resume run before the server: the runtime, workflow and built-in
+// checks over the env the session will get. Returns why the run is blocked, or null.
+const checkBeforeStart = async (
+  cwd: string,
+  config: string | undefined,
+  plan: WorkflowPlan,
+  env: Result<Record<string, string>>,
+): Promise<string | null> => {
+  const report = await runDoctor({
+    cwd,
+    config,
+    extraChecks: [
+      ...runtimeChecks(plan.agent),
+      ...workflowChecks(plan.doctor, env),
+      ...builtInChecks(plan, env),
+    ],
+    log: cliLog(),
+  });
+  return verdict(report).startsWith("BLOCKED") ? blockedText(report) : null;
+};
+
+// Only what is read here: the server client's JSON type for a run is looser than WorkflowRun.
+type StartedRun = Readonly<{
+  run: Readonly<{
+    id: string;
+    terminal: string | null;
+    policies?: Pick<SavedPolicies, "values"> | undefined;
+  }>;
+  attach: readonly string[];
+  view: string;
+}>;
+
+const showStartedRun = async (
+  { run, attach, view }: StartedRun,
+  flags: Readonly<{ open: boolean; attach: boolean }>,
+  cwd: string,
+  log: ILogger,
+): Promise<void> => {
+  console.log(run.id);
+  console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
+  console.log(`view: ${view}`);
+  // the run's saved value decides, so a workflow that turns interaction off never opens one either
+  const unattended = !readPolicies(run.policies).interaction;
+  openForPerson(view, !flags.open || unattended);
+
+  // A script, CI job or test has no terminal for tmux to attach to.
+  const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  if (!flags.attach || !hasTerminal || unattended) return;
+  const [command, ...args] = attach;
+  // Without TMUX, the attach also works from inside the user's own tmux.
+  const exitCode = await spawnInteractive(command as string, args, {
+    cwd,
+    env: { TMUX: undefined },
+  });
+  log.info({ runId: run.id, terminal: run.terminal, exitCode }, "detached from the session");
+  process.exitCode = exitCode;
+};
 
 export const runCommand = () => {
   const command = new Command("run")
@@ -69,19 +137,8 @@ export const runCommand = () => {
 
       // Built once: the doctor's env checks and the session see the same values.
       const env = await loadStartEnv(config ?? null, cwd, plan);
-      const report = await runDoctor({
-        cwd,
-        config,
-        extraChecks: [
-          ...runtimeChecks(plan.agent),
-          ...workflowChecks(plan.doctor, env),
-          ...builtInChecks(plan, env),
-        ],
-        log: cliLog(),
-      });
-      const doctorVerdict = verdict(report);
-      log.debug({ verdict: doctorVerdict }, "doctor finished");
-      if (doctorVerdict.startsWith("BLOCKED")) return fail(blockedText(report));
+      const blocked = await checkBeforeStart(cwd, config, plan, env);
+      if (blocked !== null) return fail(blocked);
 
       const repoRoot = await createGit().repoRoot(cwd);
       if (repoRoot === null) return fail("not inside a git repository");
@@ -107,26 +164,7 @@ export const runCommand = () => {
       const { run } = result.value;
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
-
-      console.log(run.id);
-      console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
-      console.log(`view: ${result.value.view}`);
-      // the run's saved value decides, so a workflow that turns interaction off never opens one either
-      const unattended = !readPolicies(run.policies).interaction;
-      openForPerson(result.value.view, opts.open === false || unattended);
-
-      // A script, CI job or test has no terminal for tmux to attach to.
-      const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal && !unattended) {
-        const [command, ...args] = result.value.attach;
-        // Without TMUX, the attach also works from inside the user's own tmux.
-        const exitCode = await spawnInteractive(command as string, args, {
-          cwd,
-          env: { TMUX: undefined },
-        });
-        log.info({ runId: run.id, terminal, exitCode }, "detached from the session");
-        process.exitCode = exitCode;
-      }
+      await showStartedRun(result.value, opts, cwd, log);
     });
   // one `--NAME <value>` option per policy, with the policy's help text
   for (const name of POLICY_NAMES) {
@@ -134,3 +172,51 @@ export const runCommand = () => {
   }
   return command;
 };
+
+export const resumeCommand = () =>
+  new Command("resume")
+    .description("Bring back a run whose agent session is gone, after a reboot or a crash")
+    .argument("[name]", "run name in this repo (default: $YOK_RUN_ID)")
+    .option("--run-id <id>", "resume by run id instead of name")
+    .option("--no-attach", "do not attach to the session's terminal once it starts")
+    .option("--no-open", "do not open the run's page in the browser")
+    .action(async (name, opts) => {
+      const log = commandLog("resume");
+      const registry = createRegistry(registryPath());
+      const picked = await requireRun({
+        registry,
+        name,
+        id: opts.runId,
+        env: process.env,
+        cwd: process.cwd(),
+      });
+      if (!picked.ok) {
+        // A run that died before orchestrate init has no folder to resume from.
+        const found = opts.runId === undefined ? undefined : await registry.findRun(opts.runId);
+        return fail(
+          found?.name === null
+            ? `run ${found.id} never started its agent session; start it again with yok run`
+            : picked.error,
+        );
+      }
+      const run = picked.value;
+      const config = await loadRunConfig(run);
+      if (!config.ok) return fail(config.error);
+      const plan = await compileRunWorkflow(run, config.value).catch((error: unknown) => {
+        fail(errorText(error));
+        return null;
+      });
+      if (plan === null) return;
+
+      // the env every later session of the run gets, from the config init recorded
+      const env = await loadEnv(config.value, plan, run.cwd);
+      const blocked = await checkBeforeStart(run.cwd, config.value.path ?? undefined, plan, env);
+      if (blocked !== null) return fail(blocked);
+      if (!env.ok) return fail(env.error);
+
+      await ensureServer();
+      const result = await yokClient().resume(run.id, { env: env.value });
+      if (!result.ok) return fail(apiErrorText(result.error));
+      log.info({ runId: run.id, terminal: result.value.run.terminal }, "run resumed");
+      await showStartedRun(result.value, opts, process.cwd(), log);
+    });

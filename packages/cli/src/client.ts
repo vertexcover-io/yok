@@ -55,7 +55,7 @@ export const fail = (problem: string | Error): void => {
 };
 
 // The original error stays as the cause, so LOG_LEVEL=debug still shows its stack.
-const errorText = (error: unknown): string | Error => {
+export const errorText = (error: unknown): string | Error => {
   if (error instanceof WorkflowError) {
     return new Error(`${error.code}: ${error.message}`, { cause: error });
   }

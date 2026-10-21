@@ -51,4 +51,8 @@ export type StartRunBody = z.infer<typeof StartRunBodySchema>;
 // What a caller sends: agent may be left out
 export type StartRunRequest = z.input<typeof StartRunBodySchema>;
 
+// The env the resumed session starts with, which yok resume builds the way yok run does
+export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
+export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
+
 export type ApiError = ErrorBody["error"];
