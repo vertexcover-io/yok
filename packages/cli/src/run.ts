@@ -14,7 +14,6 @@ import {
   type JsonObject,
   POLICY_NAMES,
   PoliciesSchema,
-  readPolicies,
   spawnInteractive,
 } from "@yok/sdk";
 import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
@@ -44,6 +43,17 @@ const blockedText = (report: DoctorReport): string =>
       .filter((row) => row.status === "fail")
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
+
+// The run's saved policies have no say here: an unattended run can still be watched.
+export const followUps = ({
+  open,
+  attach,
+  hasTerminal,
+}: {
+  open: boolean;
+  attach: boolean;
+  hasTerminal: boolean;
+}): { noOpen: boolean; attach: boolean } => ({ noOpen: !open, attach: attach && hasTerminal });
 
 export const runCommand = () => {
   const command = new Command("run")
@@ -111,13 +121,11 @@ export const runCommand = () => {
       console.log(run.id);
       console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
       console.log(`view: ${result.value.view}`);
-      // the run's saved value decides, so a workflow that turns interaction off never opens one either
-      const unattended = !readPolicies(run.policies).interaction;
-      openForPerson(result.value.view, opts.open === false || unattended);
-
       // A script, CI job or test has no terminal for tmux to attach to.
       const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal && !unattended) {
+      const next = followUps({ open: opts.open, attach: opts.attach, hasTerminal });
+      openForPerson(result.value.view, next.noOpen);
+      if (next.attach) {
         const [command, ...args] = result.value.attach;
         // Without TMUX, the attach also works from inside the user's own tmux.
         const exitCode = await spawnInteractive(command as string, args, {
