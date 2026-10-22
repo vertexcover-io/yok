@@ -47,8 +47,8 @@ reads `.yok/RUN/artifacts/design.md` and writes `.yok/RUN/artifacts/plan.md` and
 
 **The design is decided.** Build what it says; never reopen a decision or ask what it answers.
 When the design leaves a detail open, choose it yourself and write the choice in plan.md's
-`## Assumptions`. When the gap is a new component, contract or stored data, ask the user
-instead. Code that disproves the design is step 3's.
+`## Assumptions`. When the gap is a new component, library, contract or stored data, or
+anything hard to undo, ask the user instead. Code that disproves the design is step 3's.
 
 **Never assume.** State a claim about the code only after you read the code, the user confirmed
 it, or you recorded it in `## Assumptions`.
@@ -111,9 +111,9 @@ first phase that needs it. Typical: 2-4 phases small, 4-6 large.
 
 Then derive the tests from the `test-scenarios` reference and build the Test Matrix.
 
-**Done when:** every phase has a capability title and names the check it makes pass, every
-requirement has a matrix row, and every scenario has one home and names a failure no other
-scenario catches.
+**Done when:** every phase has a capability title and names the check it makes pass, or the
+part of one it proves, every requirement has a matrix row, and every scenario has one home and
+names a failure no other scenario catches.
 
 ## Step 3 — Write the plan
 
