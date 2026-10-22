@@ -422,8 +422,10 @@ const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoSta
 
 const nextNodeRunId = async (run: RunRef): Promise<string> => {
   const reply = await nextStep(run, agentAdapters);
-  if (!reply.ok || !("nodeRunId" in reply.value)) throw new Error(JSON.stringify(reply));
-  return reply.value.nodeRunId;
+  if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
+  const [step] = reply.value.steps;
+  if (step === undefined) throw new Error(JSON.stringify(reply));
+  return step.nodeRunId;
 };
 
 const finish = (

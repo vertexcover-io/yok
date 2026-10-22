@@ -17,7 +17,7 @@ import {
   SlugSchema,
   spawnDetached,
 } from "@yok/sdk";
-import { devPluginDir, selfArgv, VERSION } from "@yok/sdk/internal";
+import { AgentModeSchema, devPluginDir, selfArgv, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
 
 const UniqueSlugsSchema = z
@@ -72,8 +72,6 @@ const VariableSchema = z.strictObject({
   default: z.string().optional(),
 });
 
-// How the session runs an agent node: itself, or by handing it whole to a subagent.
-export const AgentModeSchema = z.enum(["inline", "subagent"]);
 export type AgentMode = z.infer<typeof AgentModeSchema>;
 
 export const StageSchema = z.strictObject({

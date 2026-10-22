@@ -289,16 +289,21 @@ describe("the compiled yok binary", () => {
       nodes: `${BUN_NODE}${AGENT_NODE("\n    dependsOn: [count]")}`,
     });
 
-    const count = JSON.parse(step(["next"]).stdout);
-    expect(count).toMatchObject({ kind: "exec", nodeId: "count" });
+    const first = JSON.parse(step(["next"]).stdout);
+    expect(first).toMatchObject({ kind: "steps", steps: [{ kind: "exec", nodeId: "count" }] });
+    const [count] = first.steps;
     const exec = step(["exec", count.nodeRunId]);
     expect(exec.stderr).toBe("");
     expect(stateOf(repo).nodeRuns.count.output).toEqual({ n: 3 });
 
     const next = step(["next"]);
     expect(next.stderr).toBe("");
-    const agent = JSON.parse(next.stdout);
-    expect(agent).toMatchObject({ nodeId: "write", stage: "alone-stage" });
+    const second = JSON.parse(next.stdout);
+    expect(second).toMatchObject({
+      kind: "steps",
+      steps: [{ nodeId: "write", stage: "alone-stage" }],
+    });
+    const [agent] = second.steps;
 
     const refused = step([
       "done",
@@ -340,7 +345,7 @@ describe("the compiled yok binary", () => {
         "orchestrate.config.json": JSON.stringify(config),
       },
     });
-    const agent = JSON.parse(step(["next"]).stdout);
+    const [agent] = JSON.parse(step(["next"]).stdout).steps;
 
     const done = step([
       "done",

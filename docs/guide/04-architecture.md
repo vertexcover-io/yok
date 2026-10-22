@@ -48,7 +48,7 @@ The biggest package, and the one you will edit most.
 | Where | What |
 |---|---|
 | `workflow/compile.ts` | YAML to plan: resolves stages, checks ids and dependencies, loads output schemas |
-| `workflow/next.ts` | `decideNext`: walks the plan against state and picks the next leaf, writing start and skip events |
+| `workflow/next.ts` | `decideNext`: walks the plan against state and starts every ready leaf, writing start and skip events |
 | `workflow/done.ts` | the gates a `done` must pass: output schema, artifacts, consumed artifacts |
 | `workflow/verifiers.ts` | runs a stage's verifiers, as a function or a script |
 | `workflow/evaluate.ts` | the `{{ … }}` expression language |

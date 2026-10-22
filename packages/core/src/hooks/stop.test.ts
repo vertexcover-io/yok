@@ -248,6 +248,37 @@ describe("decideStop", () => {
     );
     expect(decision).toEqual({ reason: "background-task", blockStreak: 1 });
   });
+
+  test("SC20 (regression): with only a subagent agent node and an exec node open, a stop while a background task runs ends as background-task", () => {
+    const review = { ...nodeRun("review", "running"), mode: "subagent" as const };
+    const decision = decide(
+      { nodeRuns: { review, check: nodeRun("check", "running", "exec") } },
+      { waitingOnBackground: true },
+    );
+    expect(decision).toEqual({ reason: "background-task", blockStreak: 0 });
+  });
+
+  test("SC21: with interaction off, a second stop in a row with subagent review listed before inline write is unanswered-stop for write", () => {
+    const review = { ...nodeRun("review", "running"), mode: "subagent" as const };
+    const write = { ...nodeRun("write", "running"), mode: "inline" as const };
+    const decision = decide({
+      nodeRuns: { review, write },
+      policies: UNATTENDED,
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
+    expect(decision).toMatchObject({ reason: "unanswered-stop", nodeRunId: "write" });
+  });
+
+  test("SC23 (regression): an inline node awaiting approval lets the turn end as awaiting-approval while a background task runs", () => {
+    const design = {
+      ...nodeRun("design", "running"),
+      mode: "inline" as const,
+      awaitingApproval: "artifacts/design.md",
+    };
+    const decision = decide({ nodeRuns: { design } }, { waitingOnBackground: true });
+    expect(decision).toEqual({ reason: "awaiting-approval", blockStreak: 0, nodeRunId: "design" });
+  });
 });
 
 const setUp = async (
@@ -430,6 +461,26 @@ describe("runStopHook", () => {
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
     expect((await readState(runDir))?.status).toBe("running");
+  });
+
+  test("SC19: with inline write open and a background task running, the first stop sends the agent back to write's done, and the next with no progress ends as background-task with no agent.stuck", async () => {
+    const write = { ...nodeRun("write", "running"), mode: "inline" as const };
+    const { deps, runDir } = await setUp({ write });
+    const waiting = input(undefined, "claude", true);
+
+    const first = await runStopHook(waiting, deps);
+    const second = await runStopHook(waiting, deps);
+
+    expect(first).toMatchObject({
+      kind: "continue",
+      message: expect.stringContaining("yok orchestrate done write --run feat-x"),
+    });
+    expect(second).toEqual({ kind: "allow" });
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.map((event) => [event.type, event.payload])).toEqual([
+      ["hooks.stop.called", expect.objectContaining({ reason: "node-not-done", blockStreak: 1 })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 1 })],
+    ]);
   });
 
   test("a tool call between two stops is not progress, and any other event is", async () => {
