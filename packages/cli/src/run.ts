@@ -14,7 +14,6 @@ import {
   type JsonObject,
   POLICY_NAMES,
   PoliciesSchema,
-  readPolicies,
   spawnInteractive,
 } from "@yok/sdk";
 import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
@@ -111,13 +110,11 @@ export const runCommand = () => {
       console.log(run.id);
       console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
       console.log(`view: ${result.value.view}`);
-      // the run's saved value decides, so a workflow that turns interaction off never opens one either
-      const unattended = !readPolicies(run.policies).interaction;
-      openForPerson(result.value.view, opts.open === false || unattended);
+      openForPerson(result.value.view, opts.open === false);
 
       // A script, CI job or test has no terminal for tmux to attach to.
       const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal && !unattended) {
+      if (opts.attach && hasTerminal) {
         const [command, ...args] = result.value.attach;
         // Without TMUX, the attach also works from inside the user's own tmux.
         const exitCode = await spawnInteractive(command as string, args, {
