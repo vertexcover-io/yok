@@ -6,17 +6,12 @@ builds from it, so it must stand without the conversation that produced it.
 
 ## What belongs
 
-One test decides every line: **if this answer changed, would the plan look different?** Passes:
-a new component, library or service; a changed boundary or contract; stored data added or
-altered; a choice that is hard to undo. Waits for the plan: field names, function names, file
-lists, step order, test plans, edge cases, options nobody weighed.
-
+Every line passes the skill's test: if this answer changed, would the plan look different?
 Cite `file:line` for a claim about the code as it is today. Say each thing once.
 
 ## Caps
 
-Hard caps, on how many things the page says and on how long each is. Check them before
-showing the doc; over a cap, something belongs to planning or is said twice.
+Hard caps, on how many things the page says and on how long each is.
 
 | Block | How many | How long each |
 |---|---|---|

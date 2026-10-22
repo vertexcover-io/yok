@@ -27,7 +27,7 @@ Standalone, it uses a short kebab-case topic name where a run would use the run 
 
 ## Files
 
-- `SKILL.md`: the eight steps, the "would the plan look different" test, and the list of excuses the skill refuses.
+- `SKILL.md`: the eight steps and the "would the plan look different" test.
 - `references/coverage.md`: the coverage map and the lenses that find the questions worth asking.
 - `references/design-doc.md`: the `design.md` blocks, their caps, the decision tags, and the one diagram it may draw.
 - `evals/evals.json`: eval cases for the skill.
