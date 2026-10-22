@@ -73,7 +73,7 @@ a complete plan.
 | `## Inputs` | always in a run — `design.md` and the ticket, plus one line on what this plan adds |
 | `## Requirements` | there is no requirements document, so planning established the ids itself |
 | `## Design corrections` | the code contradicted `design.md`, and the user's answer changed it: what it assumed, what the code shows, what it says now |
-| `## Phases` | always — capability title, repos touched, builds/needs, *why the cut is there*, and the digraph |
+| `## Phases` | always — capability title, the `Done when` check it makes pass, repos touched, builds/needs, *why the cut is there*, and the digraph |
 | `## Global constraints` | something binds every phase and is invisible to one built in isolation — fixed values, verbatim copy, platform limits. A value used in one phase belongs in that step. |
 | `## Signature index` | a name is defined in one phase and used in another |
 | `## Design References` | a phase builds a user-facing surface a design already defines — one row per screen, from `design/INDEX.md` |

@@ -35,34 +35,26 @@ references:
 
 # Planning
 
-Turn the approved design into a plan a coder can build from, then get it approved. This is the
-second gate. The design gate settled the shape; this one shows how the code gets built: the
-phases, each change as a diff, and the tests that prove each phase.
+Turn the approved design into a plan a coder can build from, then get it approved.
 
 The input holds `task`, the same text the design stage had, and may hold `workspace`, the
 create-workspace stage's output. Read code in each repo's `worktreeDir` when it is there, and in
 the current checkout otherwise. When the plan changes a repo the `workspace` lacks, add it before
 writing the plan: `yok orchestrate skill run create-workspace.workspace add RUN --repos NAME
---run RUN`, then use the `worktreeDir` it prints and say in the summary which repo was added and
-why. RUN below is the run's spec name. The stage reads
-`.yok/RUN/artifacts/design.md` and writes:
+--run RUN`, then use the `worktreeDir` it prints. RUN below is the run's spec name. The stage
+reads `.yok/RUN/artifacts/design.md` and writes `.yok/RUN/artifacts/plan.md` and
+`.yok/RUN/artifacts/phases/phase-N.md`, one per phase.
 
-| File | Read by |
-|---|---|
-| `.yok/RUN/artifacts/plan.md` | the user, the `implement` stage, `code-review` |
-| `.yok/RUN/artifacts/phases/phase-N.md` | the user, and the coder that builds phase N |
-
-Standalone with no approved `design.md`, run the `design` skill first.
-
-**The design is decided.** Never reopen a decision the design records, and never ask the user
-what it already answers. When the code disproves it, that goes to the user (step 3), and only
-their answer changes `design.md`.
+**The design is decided.** Build what it says; never reopen a decision or ask what it answers.
+When the design leaves a detail open, choose it yourself and write the choice in plan.md's
+`## Assumptions`. When the gap is a new component, contract or stored data, ask the user
+instead. Code that disproves the design is step 3's.
 
 **Never assume.** State a claim about the code only after you read the code, the user confirmed
-it, or you labeled it an assumption.
+it, or you recorded it in `## Assumptions`.
 
 **When the run's `interaction` policy is off,** no one will answer in this run. If a sensible
-default exists, use it and record it as an assumption. If it's a blocker, fail the run with the
+default exists, use it and record it in `## Assumptions`. If it's a blocker, fail the run with the
 stage's `done` command and `--error -`, and list the question. A blocker is an important call
 only a person should make, such as a design or product decision, information or access you
 don't have, or anything you are stuck on.
@@ -76,8 +68,9 @@ step 2. Load the `writing-style` skill before you write the plan: a person appro
 
 ## Step 1 — Read the design and the code
 
-1. Read `design.md` in full, then `task` and every file it names. When `design.md` is missing or
-   its `status` is not `approved`, stop and finish the stage with that error.
+1. Read `design.md` in full, then `task` and every file it names. It must exist with
+   `status: approved`. In a run, otherwise finish the stage with that error; standalone, run
+   the `design` skill first.
 2. Dispatch in parallel on a fast model (`sonnet`):
    - one **Explore** agent per repo the design touches: for each component and contract the
      design names, where it lands, its call sites, the conventions and tests around it, and what
@@ -85,41 +78,42 @@ step 2. Load the `writing-style` skill before you write the plan: a person appro
    - the **docs scout**, with the `docs-scout` reference as its brief.
    - the **design scout**, with the `design-scout` reference as its brief, only when the change
      has a user-facing surface.
-3. The agents locate; you read. Open every file a step will edit, every doc the docs scout
-   returns, and every frame `design/INDEX.md` names. An active ADR is a decision already made.
+3. The agents locate; you read. Open every file an `Approach` point or a decision lands in,
+   every doc the docs scout returns, and every frame `design/INDEX.md` names. An active ADR
+   is a decision already made.
 4. Search the whole workspace before you claim something is absent. Miss an existing helper and
    the coder builds a second one.
 
 When the design's front matter says `route: atomic`, the plan is one phase with one step. Skip
-step 2's cut and write it.
+step 2's cut, derive its scenarios, and write it.
 
 **Done when:** for every point of the design's `Approach` and every decision, you can name the
 code it lands in, each cited with `file:line`.
 
 ## Step 2 — Cut the phases
 
-A phase exists so a coder can hold it in context and a person can review it in one sitting.
-Each one costs a dispatch, a TDD cycle and a commit, so every phase must earn its place.
+**Every phase must earn its place.** A coder holds it in context; a person reviews it in one
+sitting.
 
-A good phase is a **vertical slice**: it covers one or more requirements and is testable on its
-own, end to end. "db: schema" fails, since nothing can be proven against a schema alone. "An
-account can be created and read back" passes. Typical: 2-4 phases small, 4-6 large.
+**Cut by what the user can see, never by layer.** A phase is a **vertical slice**: when it
+lands, one of the design's `Done when` checks passes, or a smaller version of one, and a
+scenario proves it on its own. Work that makes no check pass is a layer; it goes inside the
+first phase that needs it. Typical: 2-4 phases small, 4-6 large.
 
-- **Phase 1 is the thinnest slice**, barely functional but visible end to end. It proves the
-  wiring. Setup and plumbing ride inside the first phase that needs them.
+- **Phase 1 is the smallest piece that works.** It makes one `Done when` check pass, with
+  the least code that can. Groundwork such as config, schema or shared helpers never gets a
+  phase of its own; it is built inside the first phase that cannot work without it.
 - **Prefer fewer phases.** Merge when a phase cannot be demoed without the next, when its only
   consumer is the next, or when both fit one sitting. Two phases touching the same file are
   ordered.
-- **One mechanism, one phase.** "Export CSV" and "export JSON" are one phase when one exporter
-  handles both as data.
+- **One mechanism, one phase.** Cases one piece of code handles as data share a phase.
 - A risk the design marks unverified becomes phase 1's first step: a spike that proves it.
 
 Then derive the tests from the `test-scenarios` reference and build the Test Matrix.
 
-After approval, phase numbers are frozen: commits reference them. A deleted phase leaves a gap.
-
-**Done when:** every phase has a capability title, every requirement has a matrix row, and
-every scenario has one home and names a failure no other scenario catches.
+**Done when:** every phase has a capability title and names the check it makes pass, every
+requirement has a matrix row, and every scenario has one home and names a failure no other
+scenario catches.
 
 ## Step 3 — Write the plan
 
@@ -132,15 +126,16 @@ Three rules bind every step:
 - **Open before you write.** Write a step against the file's current content, never against a
   sweep pointer or memory.
 - **A contradiction goes to the user.** When the code disproves the design, ask: show the
-  evidence and recommend the new decision. On the answer, fix that line in `design.md`, within
-  its caps, so it stays true, and record the change in plan.md's `## Design corrections`.
+  evidence and recommend the new decision. With `interaction` off, it is a blocker. On the
+  answer, fix that line in `design.md`, within its caps, so it stays true, and record the
+  change in plan.md's `## Design corrections`.
 - **Every frame gets a step.** A step that builds a surface a frame defines names it, `build to
   design/x.png`, and carries that frame's style facts. A screen no step builds is recorded in
   plan.md as `design/FILE — not built: REASON`.
 
 **Done when:** every phase file and `plan.md` exist, and every file a step edits was opened.
 
-## Step 4 — Review it before the user does
+## Step 4 — Review it, then record the ADRs
 
 **Self-review.** Each check is a lookup. Fix what fails:
 
@@ -176,12 +171,13 @@ In the reply:
 
 1. The phases, one line each: number, capability title, what it depends on, what it unlocks.
 2. The test matrix as counts per level.
-3. Every design correction, ADR written and deferred item, one line each.
+3. Every design correction, ADR written, deferred item and repo added to the workspace, one
+   line each.
 4. The paths to `plan.md` and each phase file as `file://` links.
 
-Then ask for approval without a menu: a menu blocks the viewer's comments from reaching you. In
-a yok run, run `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.md`,
-where NODE_RUN_ID is the id in the stage's `done` command, and end the turn with one line: approve
+Then ask for approval without a menu, so the viewer's comments reach you. In a yok run, run
+`yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.md`, where
+NODE_RUN_ID is the id in the stage's `done` command, and end the turn with one line: approve
 with the Approve button in the viewer, or type approve here. While you wait, comments arrive as
 `[review]` messages: reply to each, apply what they change, and end the turn again. An `approve`
 entry in a `[review]` message, or the user typing approve, is the approval; reply to that
@@ -190,9 +186,10 @@ comment as `answered`. Outside a run, ask with `AskUserQuestion`: header `Approv
 
 If `await-approval` says the plan was approved automatically, go to step 6.
 
-A revision is not an approval: apply it to the files, re-run step 4's self-review, say
-what changed and ask again. When a revision changes a decision an ADR from this run records,
-delete that ADR and its INDEX.md line, and record the new decision.
+A revision is not an approval: apply it to the files, re-run step 4's self-review, say what
+changed and ask again. Phase numbers never change in a revision, since commits will reference
+them; a deleted phase leaves a gap. When a revision changes a decision an ADR from this run
+records, delete that ADR and its INDEX.md line, and record the new decision.
 
 **Done when:** the user approved.
 
