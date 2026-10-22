@@ -93,8 +93,8 @@ Walk the coverage map in `references/coverage.md` and mark each area **clear**, 
 **missing** for this task. Every partial or missing area that passes the test is a decision;
 skip the rest.
 
-Decisions form a tree, since one can block another. Keep it written in `design.md` below the
-working-state rule, one line per decision:
+Decisions form a tree, since one can block another. Keep it written in `.yok/RUN/design-tree.md`,
+outside `artifacts/` so the approval viewer never shows it, one line per decision:
 
 ```
 D<n>: <the decision> — blocked-by: D<a>, D<b> · open | resolved | inferred | deferred
@@ -177,10 +177,10 @@ refuted claim before step 7.
 
 ## Step 7 — Confirm with the user
 
-Show the page whole: paste `design.md` from `# TITLE` to the working-state rule, minus the
-mermaid block. Below it, give a `file://` link to `design.md` and say the diagram renders in a
-markdown preview. On a large design, confirm the decisions in blocks of up to four before asking for
-approval of the whole page.
+Show the page whole: paste `design.md` from `# TITLE` on, minus the mermaid block. Below it,
+give a `file://` link to `design.md` and say the diagram renders in a markdown preview. On a
+large design, confirm the decisions in blocks of up to four before asking for approval of the
+whole page.
 
 Then ask for approval without a menu, so the viewer's comments reach you. In a yok run, run
 `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/design.md`, where
@@ -201,7 +201,18 @@ directly; it is unresolved, not badly worded.
 
 ## Step 8 — Finish
 
-Set `status: approved` in `design.md`'s front matter and delete the working state below the
-rule, rule included. Finish the stage with
+Set `status: approved` in `design.md`'s front matter and delete `design-tree.md`. Finish the
+stage with
 `--artifact '{"type":"design","name":"design","path":"artifacts/design.md"}'` and an empty
 output: `design.md` is all it hands on.
+
+## Rationalizations
+
+| Excuse | Reality |
+|---|---|
+| "This is too simple to need a design" | Simple work is where unchecked assumptions waste the most. The design can be three sentences, but the user still approves it. Only the atomic route in step 1 skips the question, and only after the sweep. |
+| "The planner will want this detail, I'll leave it in" | The planner reads the code. The user reads this page. A detail that does not change the shape costs the user's minute and buys the planner nothing. |
+| "Four decisions all matter" | Then one of them changes code, not shape. Move it to planning. The cap is the point. |
+| "The user seems impatient" | A wrong design costs more than one more question. Ask the highest-impact one. |
+| "The planning stage can settle this" | True for a detail inside a shape. False for a component, contract, dependency or stored data: resolve it or ask. |
+| "The page can skip this decision, it's in the chat" | The page is what the user approves and all the planner gets. A decision missing from it was never made. |

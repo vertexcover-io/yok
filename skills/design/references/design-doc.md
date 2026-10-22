@@ -31,10 +31,11 @@ sentence on a line is a sign the line holds two things.
 
 ## Template
 
-Write the blocks in this order. `Problem`, `Approach` and `Done when` are always present;
-`Decisions` whenever a fork was taken. Every other block appears only when it holds something
-that passes the test; otherwise drop it, header included. A one-line fix gets a 60-word doc; a
-new subsystem gets the page.
+Write the blocks in this order, each under a `##` heading: the viewer builds its outline and
+each comment's location from those headings. `Problem`, `Approach` and `Done when` are always
+present; `Decisions` whenever a fork was taken. Every other block appears only when it holds
+something that passes the test; otherwise drop it, heading included. A one-line fix gets a
+60-word doc; a new subsystem gets the page.
 
 ````markdown
 ---
@@ -45,10 +46,13 @@ task: One line naming what is being designed
 
 # TITLE
 
-**Problem.** Why this exists, who has the problem, and the outcome they want. Two sentences,
-citing where the pain shows in the code or the ticket.
+## Problem
 
-**Approach.**
+Why this exists, who has the problem, and the outcome they want. Two sentences, citing where
+the pain shows in the code or the ticket.
+
+## Approach
+
 1. Numbered points in the order the work flows: what starts it, what handles it, what it
    reuses, what comes back.
 2. …
@@ -60,26 +64,30 @@ flowchart LR
   …
 ```
 
-**Non-goals.**
+## Non-goals
+
 - What a reader could reasonably expect this to do, and it will not.
 
-**Decisions.**
+## Decisions
+
 - D1 *(user)*: what we do, instead of the alternative, because the reason.
 - D2 *(agent)*: …
 
-**Risks.**
+## Risks
+
 - A gap in the task that bites, and what it costs if ignored.
 
-**Hard to undo.** What this locks in that every caller will depend on.
+## Hard to undo
 
-**Unsure.**
+What this locks in that every caller will depend on.
+
+## Unsure
+
 - What the task left unclear and nobody settled, and the reading the design took.
 
-**Done when.**
-- A check a person or a test can run after the build: the actor, the action, the result.
+## Done when
 
----
-D3: … — blocked-by: D1 · open
+- A check a person or a test can run after the build: the actor, the action, the result.
 ````
 
 ## Block rules
@@ -114,8 +122,8 @@ D3: … — blocked-by: D1 · open
   system belong in `Risks`; forks the stage closed belong in `Decisions`.
 - **Done when**: three to five checks, each naming the actor, the action and the observable
   result. Planning names a test for each; the Spec reviewer checks the diff against them.
-- **Working state**: everything below the `---` rule after the last block: the decision tree
-  from step 2 and whatever else the stage needs if the session resumes. Never printed; deleted
-  at approval, rule included.
+- **Working state**: none in this file. The decision tree from step 2 and whatever else the
+  stage needs if the session resumes live in `.yok/RUN/design-tree.md`, outside `artifacts/`,
+  so the approval viewer never shows them. Deleted at approval.
 - No component table, contract sketches, failure tables, phases or test plans. Those belong to
   planning.
