@@ -77,7 +77,9 @@ export type Emit = (state: State, event: EmitInput) => Promise<State>;
 type Step =
   | Exclude<Decision, { kind: "steps" | "waiting" | "finished" }>
   | Readonly<{ kind: "continue" }>
-  | Readonly<{ kind: "rewalk" }>;
+  | Readonly<{ kind: "rewalk" }>
+  // storing an event failed after this walk had started leaves; they are interrupted before it fails
+  | Readonly<{ kind: "halted"; error: unknown }>;
 type Walked = Readonly<{ state: State; step: Step; started: readonly StartedLeaf[] }>;
 
 const CONTINUE: Step = { kind: "continue" };
@@ -686,6 +688,24 @@ const executeLoop = async (
   return executeLoop(node, findNodeRun(next, node), walk, next);
 };
 
+const executeNode = (
+  node: PlanNode,
+  nodeRun: NodeRun | undefined,
+  walk: Walk,
+  state: State,
+): Promise<Walked> => {
+  switch (node.type) {
+    case "switch":
+      return executeSwitch(node, nodeRun, walk, state);
+    case "include":
+      return executeInclude(node, nodeRun, walk, state);
+    case "loop":
+      return executeLoop(node, nodeRun, walk, state);
+    default:
+      return executeLeaf(node, nodeRun, walk, state);
+  }
+};
+
 // Walks every node in the scope, starting each one that is ready, until one needs a reply of its
 // own. Once a node in this scope has failed without allowFailure only `always` nodes still start
 // and a running container drains; the container around them sees the failure and ends failed.
@@ -703,18 +723,12 @@ async function executeNodes(nodes: readonly PlanNode[], walk: Walk, state: State
     if (nodeRun === undefined && (draining || !isReady(node, nodes, siblings))) continue;
     const inner: Walk = { ...walk, draining };
     let walked: Walked;
-    switch (node.type) {
-      case "switch":
-        walked = await executeSwitch(node, nodeRun, inner, current);
-        break;
-      case "include":
-        walked = await executeInclude(node, nodeRun, inner, current);
-        break;
-      case "loop":
-        walked = await executeLoop(node, nodeRun, inner, current);
-        break;
-      default:
-        walked = await executeLeaf(node, nodeRun, inner, current);
+    try {
+      walked = await executeNode(node, nodeRun, inner, current);
+    } catch (error) {
+      // leaves this walk already started would stay running with no handout, so the walk ends here
+      if (started.length === 0) throw error;
+      return { state: current, step: { kind: "halted", error }, started };
     }
     started = [...started, ...walked.started];
     if (walked.step.kind !== "continue") return { ...walked, started };
@@ -722,6 +736,20 @@ async function executeNodes(nodes: readonly PlanNode[], walk: Walk, state: State
   }
   return { state: current, step: CONTINUE, started };
 }
+
+// Ends each leaf as interrupted, as `resume` would, one event after another.
+const interruptLeaves = async (
+  leaves: readonly StartedLeaf[],
+  emit: Emit,
+  state: State,
+): Promise<void> => {
+  let current = state;
+  for (const { node, nodeRunId } of leaves) {
+    const payload = { nodeType: node.type, ...buildParentsField(node.parents), attempts: 1 };
+    const event = { type: "workflow.node.interrupted", source: "workflow", nodeId: node.id };
+    current = await emit(current, { ...event, nodeRunId, payload });
+  }
+};
 
 // One `next`: walks the workflow from the top, recording the engine's own events as it goes, and
 // replies with every leaf it started, or what it waits on, or the run's end. startedBefore holds
@@ -754,6 +782,11 @@ export const decideNext = async (
     state,
   );
   const started = [...startedBefore, ...walked.started];
+  if (walked.step.kind === "halted") {
+    // the handout is lost with the error, so the leaves it would have carried end as interrupted
+    await interruptLeaves(started, emit, walked.state);
+    throw walked.step.error;
+  }
   if (walked.step.kind === "rewalk") {
     // the failed switch is spent: its stage has failed, so a later loop pass asks again
     const switching = { ...models.switching, failed: null };

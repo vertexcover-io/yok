@@ -59,7 +59,8 @@ export const noAnswerMessage = (done: string): string =>
 // The same, to a subagent: the session finishes its node from its final result.
 export const noAnswerSubagentMessage =
   "No one will answer in this run. If a sensible default exists, use it and record it as an " +
-  "assumption. If it's a blocker, stop and put the question in your final result.";
+  "assumption. If it's a blocker, stop and end with a `YOK-ERROR` line followed by the question " +
+  "and why it blocks you.";
 
 // The same, when no agent node is open for done to fail.
 export const noAnswerBetweenNodesMessage = (next: string): string =>

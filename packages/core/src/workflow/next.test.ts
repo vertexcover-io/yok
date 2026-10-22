@@ -1839,6 +1839,35 @@ const startedIds = (events: readonly EmitInput[]): readonly (string | undefined)
   events.filter(({ type }) => type === "workflow.node.started").map(({ nodeId }) => nodeId);
 
 describe("decideNext with parallel nodes", () => {
+  test("a next whose second start fails to store interrupts the first, then fails, so no node is left running without a handout", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${exec("c", "\n    dependsOn: [a]\n    input: {}")}
+`);
+    const first = await advance(plan, start());
+    const events: EmitInput[] = [];
+    let current = end(first.state, expectLeaf(first.stop).nodeRunId, "completed", { output: {} });
+    const emit = async (state: State, event: EmitInput): Promise<State> => {
+      if (event.type === "workflow.node.started" && event.nodeId === "c")
+        throw new Error("disk full");
+      events.push(event);
+      current = apply(state, event);
+      return current;
+    };
+    const models = {
+      tiers: null,
+      switching: { current: null, pending: null, failed: null },
+      subagents: false,
+      parallel: true,
+    };
+    await expect(decideNext(plan, current, emit, models)).rejects.toThrow("disk full");
+    expect(events.map(({ type, nodeId }) => `${type}:${nodeId}`)).toEqual([
+      "workflow.node.started:b",
+      "workflow.node.interrupted:b",
+    ]);
+    expect(findRun(current, "b")?.status).toBe("interrupted");
+    expect(stepIds((await advance(plan, current)).stop)).toEqual(["b", "c"]);
+  });
+
   test("SC1: b and c, which both depend on the completed a, are handed out together by one next and start in that order", async () => {
     const plan = await compilePlan(`name: t
 nodes:${exec("a", "\n    input: {}")}${exec("b", "\n    dependsOn: [a]\n    input: {}")}${stage("c", "delegated", "\n    dependsOn: [a]\n    input: {}")}
