@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AgentResult,
@@ -16,11 +15,6 @@ import * as z from "zod";
 const SUBMIT_DELAY_MS = 150;
 
 export const shellQuote = (arg: string): string => `'${arg.replaceAll("'", `'\\''`)}'`;
-
-// What a prompt-received event records in place of the line it reports. Whitespace is trimmed and
-// collapsed first, since Claude may hand its hook the line normalised.
-export const digestLine = (line: string): string =>
-  createHash("sha256").update(line.trim().replace(/\s+/g, " ")).digest("hex");
 
 export const typeLine = async (
   terminal: ITerminal,

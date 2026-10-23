@@ -74,7 +74,6 @@ const PUBLIC_RUNTIME_NAMES = [
   "PolicyLayerSchema",
   "PreToolUseCalledEvent",
   "ProcessRecordSchema",
-  "PromptReceivedCalledEvent",
   "PullRequestSchema",
   "QuestionAnsweredEvent",
   "QuestionAskedEvent",

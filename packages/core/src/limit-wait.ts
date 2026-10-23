@@ -6,13 +6,11 @@ import {
   type ITerminal,
   LimitReachedEvent,
   type LimitWaitingEvent,
-  PromptReceivedCalledEvent,
   type RunRef,
   runDirOf,
 } from "@yok/sdk";
 import { appendRunEvent, jsonlEventStore } from "@yok/sdk/internal";
 import * as z from "zod";
-import { digestLine } from "./agents/common.ts";
 import { spawnOrchestrateHelper } from "./stage.ts";
 
 // With no reset time to read, a retry that hits the limit again schedules the next wait.
@@ -41,10 +39,8 @@ const sessionOf = (event: Event): string | undefined =>
   z.looseObject({ payload: z.looseObject({ sessionId: z.string() }) }).safeParse(event).data
     ?.payload.sessionId;
 
-// A receipt only says the agent took a line yok typed, such as the limit wait's own continue.
 const isActivity = (event: Event): boolean =>
-  (event.type.startsWith("hooks.") && event.type !== "hooks.prompt-received.called") ||
-  event.type === "agent.limit.reached";
+  event.type.startsWith("hooks.") || event.type === "agent.limit.reached";
 
 // The session's hook calls and limit hits, in order.
 const sessionActivity = (events: readonly Event[], sessionId: string): readonly Event[] =>
@@ -53,21 +49,15 @@ const sessionActivity = (events: readonly Event[], sessionId: string): readonly 
 const limitsInARow = (activity: readonly Event[]): number =>
   activity.length - 1 - activity.findLastIndex((event) => event.type !== "agent.limit.reached");
 
-// A prompt the person submitted. The receipt of a continue is left out: it may be the late
-// receipt of the continue that led to this limit, since the hook that writes it runs async.
-const isPromptFromPerson = (event: Event): boolean =>
-  event.type === "hooks.prompt-received.called" &&
-  PromptReceivedCalledEvent.safeParse(event).data?.payload.digest !== digestLine(CONTINUE);
-
-// After this wait's limit: the session's own activity or a prompt the person submitted in it, or
-// any session starting, which means the terminal may now hold another session, as after /clear.
+// After this wait's limit: the session's own activity, or any session starting, which means the
+// terminal may now hold another session, as after /clear.
 const movedOn = (events: readonly Event[], sessionId: string, limitEventId: string): boolean =>
   events
     .slice(events.findIndex((event) => event.id === limitEventId) + 1)
     .some(
       (event) =>
         event.type === "hooks.session-start.called" ||
-        ((isActivity(event) || isPromptFromPerson(event)) && sessionOf(event) === sessionId),
+        (isActivity(event) && sessionOf(event) === sessionId),
     );
 
 // False once the session has moved on.

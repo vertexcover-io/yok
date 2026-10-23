@@ -46,7 +46,6 @@ import { runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
 import { postToolUseHandlers } from "./hooks/post-tool-use.ts";
 import { preToolUseHandlers } from "./hooks/pre-tool-use.ts";
-import { promptReceivedHandlers } from "./hooks/prompt-received.ts";
 import { sessionStartHandlers } from "./hooks/session-start.ts";
 import { stopHandlers } from "./hooks/stop.ts";
 import { stopFailureHandlers } from "./hooks/stop-failure.ts";
@@ -587,12 +586,6 @@ const hookCommand = () => {
     description: "Link a newly started agent session to its run",
     handlers: sessionStartHandlers,
     answer: (adapter) => adapter.sessionStart,
-  });
-  addHookCommand(hook, {
-    name: "prompt-received",
-    description: "Record that the agent took a line yok typed into its pane",
-    handlers: promptReceivedHandlers,
-    answer: (adapter) => adapter.promptReceived,
   });
   addHookCommand(hook, {
     name: "pre-tool-use",

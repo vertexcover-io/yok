@@ -165,16 +165,6 @@ export const SessionStartCalledEvent = z.object({
   }),
 });
 
-// The agent took a line: a typed /compact or a prompt. digest is the line's sha256, so the log
-// never holds a person's prompt.
-export const PromptReceivedCalledEvent = z.object({
-  payload: z.strictObject({
-    agent: AgentTypeSchema,
-    sessionId: NonEmptyStringSchema,
-    digest: NonEmptyStringSchema,
-  }),
-});
-
 export const PreToolUseCalledEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,
@@ -557,7 +547,6 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "hooks.stop.called": StopCalledEvent,
   "hooks.pre-tool-use.called": PreToolUseCalledEvent,
   "hooks.session-start.called": SessionStartCalledEvent,
-  "hooks.prompt-received.called": PromptReceivedCalledEvent,
   "agent.limit.reached": LimitReachedEvent,
   "agent.limit.waiting": LimitWaitingEvent,
   "agent.limit.resumed": LimitResumedEvent,

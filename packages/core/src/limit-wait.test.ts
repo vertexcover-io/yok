@@ -21,7 +21,6 @@ import {
   runDirOf,
 } from "@yok/sdk";
 import { appendRunEvent, jsonlEventStore } from "@yok/sdk/internal";
-import { digestLine } from "./agents/common.ts";
 import { runLimitWait } from "./limit-wait.ts";
 
 const setUp = () => {
@@ -188,13 +187,6 @@ describe("runLimitWait", () => {
       },
     ],
     [
-      "a prompt the person submitted in the session, before any other hook fired",
-      {
-        type: "hooks.prompt-received.called",
-        payload: { agent: "claude", sessionId: "s1", digest: "d" },
-      },
-    ],
-    [
       "a new session starting, such as after /clear in the same terminal",
       {
         type: "hooks.session-start.called",
@@ -210,20 +202,6 @@ describe("runLimitWait", () => {
     expect(seen.prompts).toEqual([]);
   });
 
-  test("the late receipt of the continue typed for the previous limit leaves the wait to prompt continue", async () => {
-    const { run } = setUp();
-    const limitEventId = await limitReached(run, "limit");
-    onSleep = async () =>
-      void (await appendRunEvent(run, {
-        type: "hooks.prompt-received.called",
-        source: "hooks",
-        payload: { agent: "claude", sessionId: "s1", digest: digestLine("continue") },
-      }));
-    const { agent, seen } = fakeAgent({ ms: 2 * HOUR, from: "message" });
-    await waitWith(run, limitEventId, agent);
-    expect(seen.prompts).toEqual(["continue"]);
-  });
-
   test("a limit in another session leaves this session's wait to prompt continue", async () => {
     const { run } = setUp();
     const limitEventId = await limitReached(run, "limit");
@@ -236,23 +214,6 @@ describe("runLimitWait", () => {
   test("after 20 limits in a row with nothing else from the session, it gives up instead of retrying forever", async () => {
     const { run, runDir } = setUp();
     for (const _ of Array.from({ length: 20 })) await limitReached(run, "credits");
-    const limitEventId = await limitReached(run, "credits");
-    const { agent, seen } = fakeAgent(null);
-    await waitWith(run, limitEventId, agent);
-    expect(seen.prompts).toEqual([]);
-    expect(await payloadOf(runDir, "agent.limit.waiting")).toBeUndefined();
-  });
-
-  test("SC10: after 20 limits each followed by the receipt of the continue typed for it, the receipts do not break the run of limits, so it still gives up", async () => {
-    const { run, runDir } = setUp();
-    for (const _ of Array.from({ length: 20 })) {
-      await limitReached(run, "credits");
-      await appendRunEvent(run, {
-        type: "hooks.prompt-received.called",
-        source: "hooks",
-        payload: { agent: "claude", sessionId: "s1", digest: "d" },
-      });
-    }
     const limitEventId = await limitReached(run, "credits");
     const { agent, seen } = fakeAgent(null);
     await waitWith(run, limitEventId, agent);

@@ -5,7 +5,6 @@ import {
   NonEmptyStringSchema,
   type PostToolUseHandler,
   type PreToolUseHandler,
-  type PromptReceivedHandler,
   parseJson,
   type Result,
   type SessionStartHandler,
@@ -27,7 +26,6 @@ import {
   recordResumed,
   runPreToolUse,
 } from "../hooks/pre-tool-use.ts";
-import { promptReceivedHandlers } from "../hooks/prompt-received.ts";
 import { sessionStartHandlers } from "../hooks/session-start.ts";
 import { continueWorkflow, offerLearn, runStop } from "../hooks/stop.ts";
 import { recordAgentError, resumeAfterLimit } from "../hooks/stop-failure.ts";
@@ -66,25 +64,6 @@ const ClaudeSessionStartInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   source: NonEmptyStringSchema,
 });
-
-// PreCompact carries the text typed after /compact; UserPromptSubmit carries the prompt as typed.
-const ClaudePromptReceivedInputSchema = z.discriminatedUnion("hook_event_name", [
-  z.looseObject({
-    hook_event_name: z.literal("PreCompact"),
-    session_id: NonEmptyStringSchema,
-    custom_instructions: z.string().nullish(),
-  }),
-  z.looseObject({
-    hook_event_name: z.literal("UserPromptSubmit"),
-    session_id: NonEmptyStringSchema,
-    prompt: z.string(),
-  }),
-]);
-
-const readTakenLine = (input: z.infer<typeof ClaudePromptReceivedInputSchema>): string => {
-  if (input.hook_event_name === "UserPromptSubmit") return input.prompt;
-  return input.custom_instructions ? `/compact ${input.custom_instructions}` : "/compact";
-};
 
 const ClaudeLineSchema = z.looseObject({
   type: z.string(),
@@ -207,24 +186,6 @@ const claudeSessionStart = (
       agent: "claude" as const,
       sessionId,
       source,
-    }),
-  });
-
-const claudePromptReceived = (
-  stdin: string,
-  deps: HookDeps,
-  handler: PromptReceivedHandler,
-): Promise<string> =>
-  runNoReplyHook({
-    stdin,
-    deps,
-    handler,
-    event: "prompt-received",
-    schema: ClaudePromptReceivedInputSchema,
-    toHandlerInput: (input) => ({
-      agent: "claude" as const,
-      sessionId: input.session_id,
-      line: readTakenLine(input),
     }),
   });
 
@@ -388,7 +349,6 @@ export const claudeAdapter: AgentAdapter = {
   preToolUse: claudePreToolUse,
   postToolUse: claudePostToolUse,
   sessionStart: claudeSessionStart,
-  promptReceived: claudePromptReceived,
   stopFailure: claudeStopFailure,
 };
 
@@ -399,7 +359,6 @@ export const claudeAdapter: AgentAdapter = {
 const claudeHooks = () =>
   ({
     SessionStart: [{ handlers: Object.values(sessionStartHandlers) }],
-    PromptReceived: [{ handlers: Object.values(promptReceivedHandlers) }],
     Stop: [{ handlers: [continueWorkflow, offerLearn] }],
     // Claude ends a turn with rate_limit when the plan's usage limit is hit.
     StopFailure: [
@@ -442,20 +401,6 @@ export const claudeSettings = (orchestrateArgv: readonly string[]) => {
     hooks: {
       SessionStart: registered.SessionStart.map(({ handlers }) => ({
         hooks: handlers.map((handler) => hookEntry(orchestrateArgv, "session-start", handler.name)),
-      })),
-      // async: Claude takes the line without waiting for yok to record it.
-      PreCompact: registered.PromptReceived.map(({ handlers }) => ({
-        matcher: "manual",
-        hooks: handlers.map((handler) => ({
-          ...hookEntry(orchestrateArgv, "prompt-received", handler.name),
-          async: true,
-        })),
-      })),
-      UserPromptSubmit: registered.PromptReceived.map(({ handlers }) => ({
-        hooks: handlers.map((handler) => ({
-          ...hookEntry(orchestrateArgv, "prompt-received", handler.name),
-          async: true,
-        })),
       })),
       Stop: registered.Stop.map(({ handlers }) => ({
         hooks: handlers.map((handler) => hookEntry(orchestrateArgv, "stop", handler.name)),

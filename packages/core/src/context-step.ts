@@ -12,7 +12,6 @@ import {
   type JsonValue,
   type LaunchOptions,
   type NodeRun,
-  PromptReceivedCalledEvent,
   type Result,
   type RunRef,
   readState,
@@ -44,7 +43,7 @@ import {
   isClaudeBusy,
   isClaudePopupOpen,
 } from "./agents/claude.ts";
-import { digestLine, typeLine } from "./agents/common.ts";
+import { typeLine } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
 import { spawnOrchestrateHelper } from "./stage.ts";
 
@@ -53,9 +52,11 @@ const IDLE_POLL_MS = 100;
 const DONE_POLL_MS = 250;
 // how long a new session may take to start, and a compact to finish, before the step fails
 const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
-// how long Claude's hook may take to report a typed line, and how many times a line is typed
-const RECEIPT_TIMEOUT_MS = 5000;
-const LINE_ATTEMPTS = 2;
+// How long a typed resume line may take to show as the run's `orchestrate resume`, counted once
+// Claude is free, and how long at most while it stays busy; and how many times it is typed.
+const RESUME_TIMEOUT_MS = 30_000;
+const RESUME_CAP_MS = 180_000;
+const RESUME_ATTEMPTS = 2;
 
 export const startModelStep = async (run: RunRef, sessionId: string, seq: number): Promise<void> =>
   spawnOrchestrateHelper({ command: "model", id: String(seq), run, sessionId });
@@ -121,18 +122,6 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-const isReceived = async (
-  store: IEventStore,
-  sessionId: string,
-  digest: string,
-  afterSeq: number,
-): Promise<boolean> =>
-  (await store.read()).some((event) => {
-    if (event.seq <= afterSeq || event.type !== "hooks.prompt-received.called") return false;
-    const payload = PromptReceivedCalledEvent.safeParse(event).data?.payload;
-    return payload?.sessionId === sessionId && payload.digest === digest;
-  });
-
 // Sends an Escape, and another while a popup's footer still shows, up to `left` in all.
 const closePopup = async (terminal: ITerminal, left: number): Promise<Result<void>> => {
   const sent = await terminal.sendKeys(["Escape"]);
@@ -145,76 +134,57 @@ const closePopup = async (terminal: ITerminal, left: number): Promise<Result<voi
   return closePopup(terminal, left - 1);
 };
 
-// refusal: screen text saying Claude took the line and refused it. applied: whether the line's
-// effect is already recorded, which proves Claude took it when its receipt never came.
-type LineChecks = Readonly<{ refusal?: string; applied?: () => Promise<boolean> }>;
-
-const isTaken = async (
-  store: IEventStore,
-  sessionId: string,
-  digest: string,
-  afterSeq: number,
-  applied: LineChecks["applied"],
-): Promise<boolean> =>
-  (await isReceived(store, sessionId, digest, afterSeq)) || ((await applied?.()) ?? false);
-
 // One try at a line. Claude must be idle first, so the Escapes that close a popup never
-// interrupt its work; C-u then empties the box, where a cancelled line may be left. false: lost.
-const tryLine = async (
-  target: LineTarget,
-  store: IEventStore,
-  line: string,
-  { refusal, applied }: LineChecks,
-  afterSeq: number,
-): Promise<Result<boolean>> => {
-  const { terminal, sessionId } = target;
-  const digest = digestLine(line);
+// interrupt its work; C-u then empties the box, where a cancelled line may be left. false: Claude
+// never went idle, so nothing was typed.
+const tryLine = async ({ terminal }: LineTarget, line: string): Promise<Result<boolean>> => {
   const idle = await waitForIdle(terminal);
-  const early = await isTaken(store, sessionId, digest, afterSeq, applied);
-  if (early || !idle.ok) return { ok: true, value: early };
+  if (!idle.ok) return { ok: true, value: false };
   const closed = await closePopup(terminal, CLAUDE_MAX_ESCAPES);
   if (!closed.ok) return closed;
   const emptied = await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]);
   if (!emptied.ok) return emptied;
   const typed = await typeLine(terminal, line);
-  if (!typed.ok) return typed;
-  // true once received; the refusal text once Claude shows it took the line and refused it
-  const answer = await pollUntil(
-    { everyMs: DONE_POLL_MS, timeoutMs: RECEIPT_TIMEOUT_MS, timeoutError: "not received" },
-    async (): Promise<Result<true | string | undefined>> => {
-      if (await isTaken(store, sessionId, digest, afterSeq, applied)) {
-        return { ok: true, value: true };
-      }
-      if (refusal === undefined) return { ok: true, value: undefined };
-      const screen = await terminal.capture();
-      const refused = screen.ok && screen.value.includes(refusal);
-      return { ok: true, value: refused ? refusal : undefined };
-    },
-  );
-  if (!answer.ok) return { ok: true, value: false };
-  return answer.value === true ? { ok: true, value: true } : { ok: false, error: answer.value };
+  return typed.ok ? { ok: true, value: true } : typed;
 };
 
-// Types a line Claude must take, where a popup may have opened: it counts once Claude's hook
-// reports it, or `checks.applied` finds its effect, and is typed at most LINE_ATTEMPTS times.
-// false: Claude took neither try.
-const sendLine = async (
-  target: LineTarget,
-  line: string,
-  checks: LineChecks = {},
-): Promise<Result<boolean>> => {
+const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
+  (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
+
+// Claude holds a line typed while it finishes a turn, so the wait only counts from when Claude is
+// free; a line retyped while it is held would run twice.
+const waitForResumed = async (
+  terminal: ITerminal,
+  store: IEventStore,
+  afterSeq: number,
+): Promise<boolean> => {
+  const cap = Date.now() + RESUME_CAP_MS;
+  let freeAt: number | undefined;
+  for (;;) {
+    if (await isResumed(store, afterSeq)) return true;
+    const now = Date.now();
+    if (now >= cap || (freeAt !== undefined && now >= freeAt + RESUME_TIMEOUT_MS)) return false;
+    if (freeAt === undefined) {
+      const screen = await terminal.capture();
+      if (screen.ok && !isClaudeBusy(screen.value)) freeAt = now;
+    }
+    await Bun.sleep(DONE_POLL_MS);
+  }
+};
+
+// Types the resume line until the run's `orchestrate resume`, which the --resume skill runs first,
+// shows Claude took it. false: Claude took neither try.
+const sendResume = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
   const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
   const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
-  for (let attempt = 1; attempt <= LINE_ATTEMPTS; attempt += 1) {
-    const taken = await tryLine(target, store, line, checks, afterSeq);
-    if (!taken.ok || taken.value) return taken;
-    target.log.warn({ line, attempt }, "line not received");
+  for (let attempt = 1; attempt <= RESUME_ATTEMPTS; attempt += 1) {
+    const typed = await tryLine(target, line);
+    if (!typed.ok) return typed;
+    if (typed.value && (await waitForResumed(target.terminal, store, afterSeq))) return typed;
+    target.log.warn({ line, attempt }, "resume line not taken");
   }
   return { ok: true, value: false };
 };
-
-const lostReason = (line: string): string =>
-  `Claude did not take ${line} after ${LINE_ATTEMPTS} tries`;
 
 // A tmux call can throw (a hung tmux times out) and so can reading a half-written event line. The
 // helper runs detached, so a throw would end it silently and leave the node open for good: it
@@ -383,15 +353,12 @@ const compact = async (
   const { log } = target;
   await recordStarted(options, "compact", target.sessionId);
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
-  // The compact's SessionStart completes the node, so a closed node means Claude took the line.
-  const sent = await sendLine(target, command, {
-    refusal: CLAUDE_NOTHING_TO_COMPACT,
-    applied: async () => !(await findContextPlanNode(options.run, options.nodeRunId)).ok,
-  });
-  if (!sent.ok) return sent;
-  // A compaction that did not happen is no emergency: the run goes on in a fuller session.
-  if (!sent.value) return { ok: false, error: lostReason(command) };
-  log.info({ command }, "compact received");
+  // Typed once: a compaction can take minutes, so a retype could start a second one. A compaction
+  // that did not happen is no emergency: the run goes on in a fuller session.
+  const typed = await tryLine(target, command);
+  if (!typed.ok) return typed;
+  if (!typed.value) return { ok: false, error: "Claude did not go idle" };
+  log.info({ command }, "compact typed");
   const done = await watchForFailure(options, target.terminal, "compact");
   if (!done.ok) return done;
   log.info({}, "node completed by the compact's SessionStart");
@@ -449,15 +416,15 @@ export const completeContextOnSessionStart = async (
 };
 
 // The session in the pane carries on: after its compaction, or after a step that did not happen.
-// A resume line Claude never takes leaves the run with nobody driving it, so a lost one blocks the
-// run and pings a person.
+// A resume line Claude never takes leaves the run with nobody driving it, so a lost one pings a
+// person.
 const resumeRun = async (target: LineTarget): Promise<void> => {
   const line = resumePrompt(target.run);
-  const sent = await catchThrow(target.log, sendLine(target, line));
+  const sent = await catchThrow(target.log, sendResume(target, line));
   if (!sent.ok) return target.log.error({ err: sent.error }, "resume prompt not taken");
   if (sent.value) return;
   const { run, sessionId, step, log } = target;
-  log.error({ line }, lostReason(line));
+  log.error({ line }, `Claude did not take ${line} after ${RESUME_ATTEMPTS} tries`);
   await appendRunEvent(run, {
     type: "agent.line.lost",
     source: "orchestrate",

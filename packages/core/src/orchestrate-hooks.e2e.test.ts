@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type JsonValue, runDirOf, type SavedPolicies, type WorkflowRun } from "@yok/sdk";
@@ -458,81 +457,6 @@ describe("SC26: orchestrate hook session-start", () => {
   });
 });
 
-describe("orchestrate hook prompt-received", () => {
-  const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-
-  test("SC11: a PreCompact and a UserPromptSubmit call each print nothing and record one receipt for session A holding the line's sha256, never its text", async () => {
-    const run = startedRun(ONE_AGENT);
-    const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
-    expect(orchestrate(run.repo, run.home, link).code).toBe(0);
-    const before = (await eventsOf(run.repo)).length;
-    const received = (input: Record<string, unknown>) =>
-      orchestrate(
-        run.repo,
-        run.home,
-        ["hook", "prompt-received", "--agent", "claude", "--handler", "record-prompt-received"],
-        { YOK_RUN_ID: "r-1" },
-        JSON.stringify({ session_id: "A", ...input }),
-      );
-
-    const compacted = received({
-      hook_event_name: "PreCompact",
-      trigger: "manual",
-      custom_instructions: "keep the plan",
-    });
-    const prompted = received({
-      hook_event_name: "UserPromptSubmit",
-      prompt: "/yok:orchestrate --resume feat-x",
-    });
-
-    expect(compacted).toMatchObject({ code: 0, stdout: "" });
-    expect(prompted).toMatchObject({ code: 0, stdout: "" });
-    const events = (await eventsOf(run.repo)).slice(before);
-    expect(events.map((event) => [event.type, event.payload])).toEqual([
-      [
-        "hooks.prompt-received.called",
-        { agent: "claude", sessionId: "A", digest: sha256("/compact keep the plan") },
-      ],
-      [
-        "hooks.prompt-received.called",
-        { agent: "claude", sessionId: "A", digest: sha256("/yok:orchestrate --resume feat-x") },
-      ],
-    ]);
-    const log = readFileSync(join(runDirOf(run.repo, "feat-x"), "event.jsonl"), "utf8");
-    expect(log).not.toContain("keep the plan");
-    expect(log).not.toContain("--resume feat-x");
-  });
-
-  test("SC11: a PreCompact call with empty or null custom_instructions records the receipt of a bare /compact", async () => {
-    const run = startedRun(ONE_AGENT);
-    const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
-    expect(orchestrate(run.repo, run.home, link).code).toBe(0);
-    const before = (await eventsOf(run.repo)).length;
-    const compacted = (customInstructions: string | null) =>
-      orchestrate(
-        run.repo,
-        run.home,
-        ["hook", "prompt-received", "--agent", "claude", "--handler", "record-prompt-received"],
-        { YOK_RUN_ID: "r-1" },
-        JSON.stringify({
-          session_id: "A",
-          hook_event_name: "PreCompact",
-          trigger: "manual",
-          custom_instructions: customInstructions,
-        }),
-      );
-
-    expect(compacted("")).toMatchObject({ code: 0, stdout: "" });
-    expect(compacted(null)).toMatchObject({ code: 0, stdout: "" });
-    const events = (await eventsOf(run.repo)).slice(before);
-    const receipt = { agent: "claude", sessionId: "A", digest: sha256("/compact") };
-    expect(events.map((event) => [event.type, event.payload])).toEqual([
-      ["hooks.prompt-received.called", receipt],
-      ["hooks.prompt-received.called", receipt],
-    ]);
-  });
-});
-
 const FAKE_AGENT = join(import.meta.dir, "agents", "fixtures", "fake-agent.ts");
 
 const RESUME = "/yok:orchestrate --resume feat-x";
@@ -748,39 +672,22 @@ nodes:
     }
   }, 30_000);
 
-  test("SC12: compact: a /compact whose PreCompact never comes is typed again; its receipt and SessionStart complete the node, the resume line is taken once, and next moves on", async () => {
+  test("SC12: compact: /compact is typed once; its SessionStart completes the node, the resume line is typed once and the run's orchestrate resume confirms it, and next moves on", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
     const COMPACT = "/compact keep the plan";
     try {
       const flow = await runToContextNode('action: compact, prompt: "keep the plan"', socket);
       expect(flow.context).toMatchObject({ kind: "context", action: "compact" });
       const sessionsBefore = stateOf(flow.run.repo).activeSessions;
-      // What Claude's PreCompact and UserPromptSubmit hooks run once it takes a line.
-      const promptReceived = (input: Record<string, unknown>) =>
-        flow.step(
-          ["hook", "prompt-received", "--agent", "claude", "--handler", "record-prompt-received"],
-          {},
-          JSON.stringify({ session_id: "A", ...input }),
-        );
-      const count = (line: string) => flow.typed().filter((typed) => typed === line).length;
 
       expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => count(COMPACT) === 2, 15_000);
-      const compacted = promptReceived({
-        hook_event_name: "PreCompact",
-        trigger: "manual",
-        custom_instructions: "keep the plan",
-      });
-      expect(compacted).toMatchObject({ code: 0, stdout: "" });
+      await waitFor(() => flow.typed().includes(COMPACT));
       expect(flow.sessionStart("A", "compact")).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => count(RESUME) === 1);
-      const resumeTypedAt = Date.now();
-      const resumed = promptReceived({ hook_event_name: "UserPromptSubmit", prompt: RESUME });
-      expect(resumed).toMatchObject({ code: 0, stdout: "" });
-      // a resume line lost would be typed again 5 seconds after the first
-      await Bun.sleep(Math.max(0, resumeTypedAt + 6000 - Date.now()));
+      await waitFor(() => flow.typed().includes(RESUME));
+      // what the --resume skill runs first
+      expect(flow.step(["resume", "--run", "feat-x"]).code).toBe(0);
 
-      expect(flow.typed()).toEqual([COMPACT, COMPACT, RESUME]);
+      expect(flow.typed()).toEqual([COMPACT, RESUME]);
       expect(stateOf(flow.run.repo).activeSessions).toEqual(sessionsBefore);
       expect(await contextOutput(flow.run.repo)).toMatchObject({
         output: { action: "compact", applied: true, sessionId: "A" },
@@ -789,7 +696,7 @@ nodes:
     } finally {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
     }
-  }, 60_000);
+  }, 30_000);
 });
 
 describe("SC26: orchestrate hook stop-failure", () => {

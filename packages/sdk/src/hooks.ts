@@ -24,11 +24,6 @@ export type AgentAdapter = Readonly<{
   preToolUse?: (stdin: string, deps: HookDeps, handler: PreToolUseHandler) => Promise<string>;
   postToolUse?: (stdin: string, deps: HookDeps, handler: PostToolUseHandler) => Promise<string>;
   stopFailure?: (stdin: string, deps: HookDeps, handler: StopFailureHandler) => Promise<string>;
-  promptReceived?: (
-    stdin: string,
-    deps: HookDeps,
-    handler: PromptReceivedHandler,
-  ) => Promise<string>;
 }>;
 
 export type HookReply =
@@ -103,19 +98,6 @@ export type SessionStartInput = Readonly<{
 export type SessionStartHandler = Readonly<{
   name: string;
   run: (input: SessionStartInput, deps: HookDeps) => Promise<void>;
-}>;
-
-export type PromptReceivedInput = Readonly<{
-  agent: AgentType;
-  sessionId: string;
-  // the line the agent took, as typed: a prompt, or a command such as /compact
-  line: string;
-}>;
-
-// The agent ignores this hook's answer, so a handler only observes.
-export type PromptReceivedHandler = Readonly<{
-  name: string;
-  run: (input: PromptReceivedInput, deps: HookDeps) => Promise<void>;
 }>;
 
 export type StopFailureInput = Readonly<{
