@@ -138,18 +138,13 @@ const revealInputBox = async (terminal: ITerminal, left: number): Promise<Result
 
 // One try at a line, typed once the input box shows, even while Claude finishes its turn: Claude
 // holds the line until then. C-u empties the box, where a cancelled line may be left. false: the
-// box never showed, so nothing was typed and a person is pinged.
+// box never showed, so nothing was typed.
 const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
-  const { run, sessionId, step, terminal, log } = target;
+  const { terminal, log } = target;
   const shown = await revealInputBox(terminal, CLAUDE_MAX_ESCAPES);
   if (!shown.ok) return shown;
   if (!shown.value) {
-    log.error({ line }, INPUT_UNREACHABLE);
-    await appendRunEvent(run, {
-      type: "agent.input.unreachable",
-      source: "orchestrate",
-      payload: { agent: "claude", sessionId, step },
-    });
+    log.warn({ line }, INPUT_UNREACHABLE);
     return { ok: true, value: false };
   }
   const emptied = await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]);
@@ -182,18 +177,26 @@ const waitForResumed = async (
   }
 };
 
+// How the resume line ended: taken, never typed because the input box never showed, or typed and
+// never taken.
+type ResumeOutcome = "taken" | "unreachable" | "lost";
+
 // Types the resume line until the run's `orchestrate resume`, which the --resume skill runs first,
-// shows Claude took it. false: Claude took neither try.
-const sendResume = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
+// shows Claude took it; the outcome is the last try's.
+const sendResume = async (target: LineTarget, line: string): Promise<Result<ResumeOutcome>> => {
   const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
   const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
+  let outcome: ResumeOutcome = "lost";
   for (let attempt = 1; attempt <= RESUME_ATTEMPTS; attempt += 1) {
     const typed = await tryLine(target, line);
     if (!typed.ok) return typed;
-    if (typed.value && (await waitForResumed(target.terminal, store, afterSeq))) return typed;
+    if (typed.value && (await waitForResumed(target.terminal, store, afterSeq))) {
+      return { ok: true, value: "taken" };
+    }
+    outcome = typed.value ? "lost" : "unreachable";
     target.log.warn({ line, attempt }, "resume line not taken");
   }
-  return { ok: true, value: false };
+  return { ok: true, value: outcome };
 };
 
 // A tmux call can throw (a hung tmux times out) and so can reading a half-written event line. The
@@ -426,20 +429,29 @@ export const completeContextOnSessionStart = async (
 };
 
 // The session in the pane carries on: after its compaction, or after a step that did not happen.
-// A resume line Claude never takes leaves the run with nobody driving it, so a lost one pings a
-// person.
+// A resume line Claude never takes leaves the run with nobody driving it, so it alone pings a
+// person, once, saying whether the input box never showed or the typed line was never taken.
 const resumeRun = async (target: LineTarget): Promise<void> => {
   const line = resumePrompt(target.run);
   const sent = await catchThrow(target.log, sendResume(target, line));
   if (!sent.ok) return target.log.error({ err: sent.error }, "resume prompt not taken");
-  if (sent.value) return;
+  if (sent.value === "taken") return;
   const { run, sessionId, step, log } = target;
-  log.error({ line }, `Claude did not take ${line} after ${RESUME_ATTEMPTS} tries`);
-  await appendRunEvent(run, {
-    type: "agent.line.lost",
-    source: "orchestrate",
-    payload: { agent: "claude", sessionId, step, line },
-  });
+  log.error({ line, outcome: sent.value }, `Claude did not take ${line}`);
+  await appendRunEvent(
+    run,
+    sent.value === "unreachable"
+      ? {
+          type: "agent.input.unreachable",
+          source: "orchestrate",
+          payload: { agent: "claude", sessionId, step },
+        }
+      : {
+          type: "agent.line.lost",
+          source: "orchestrate",
+          payload: { agent: "claude", sessionId, step, line },
+        },
+  );
 };
 
 // A context step that did not happen still completes, and the session in the pane carries on.

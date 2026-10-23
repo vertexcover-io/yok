@@ -5,7 +5,7 @@ source: docs/prd-lost-compact-recovery.md
 tags: [agent-plugin, harness-server-to-session, workflow-engine, event-store]
 ---
 
-# A line yok types into Claude's pane for a context step waits for Claude's input box and counts once its effect shows; an unreachable box or a lost resume line pings Slack
+# A line yok types into Claude's pane for a context step waits for Claude's input box and counts once its effect shows; a resume line Claude cannot take pings Slack once
 
 ## Context and Problem Statement
 
@@ -24,7 +24,7 @@ Chosen: type at the input box and confirm by effect. The input box (a `❯` line
 
 Each line counts by what it causes, not by a receipt. A compaction's SessionStart closes its step; `/compact` is typed once, because a compaction can take minutes and a retype could start a second one. The `--resume` skill runs `yok orchestrate resume` first, so an `orchestrate.resume` recorded after the line was typed shows Claude took it. Its 30-second window starts only once Claude no longer shows busy, capped at 180 seconds, so a line Claude holds behind a finishing turn is never typed twice. A receipt hook added two hooks to every session and a record to every prompt, and still could not tell a line Claude held from one it lost.
 
-Two failures need a person, and the Slack notifier posts each with a mention; the run's status does not change, so no blocker, runs-page banner or status line text repeats them. An input box that does not show after 3 Escapes records `agent.input.unreachable` (titled `Agent blocked at STEP — Could not reach Claude's input box`), and nothing is typed; a compaction then ends `applied: false` with reason `Could not reach Claude's input box` (0024), and the resume line is still tried. A resume line not confirmed on either try records `agent.line.lost`: without it the run has nobody driving it.
+Only the resume line needs a person, since without it the run has nobody driving it, and it sends at most one Slack notice, with a mention, from how its last try ended: `agent.input.unreachable` (titled `Agent blocked at STEP — Could not reach Claude's input box`) when the input box did not show after 3 Escapes, or `agent.line.lost` when the typed line was never confirmed. The run's status does not change, so no blocker, runs-page banner or status line text repeats it. A `/compact` whose input box does not show is not typed and pings nobody: the step ends `applied: false` with reason `Could not reach Claude's input box` (0024), and the resume line is still tried, so a popup that clears by then costs nothing.
 
 ## Consequences
 

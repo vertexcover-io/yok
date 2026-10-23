@@ -479,7 +479,7 @@ describe("runContextStep: compact", () => {
     expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
   });
 
-  test("an input box that never shows gets exactly 3 Escapes and no line, records agent.input.unreachable for step and session A, and ends the compaction unapplied with that reason", async () => {
+  test("an input box that never shows gets exactly 3 Escapes per try and no line, ends the compaction unapplied with that reason, and sends one notice: agent.input.unreachable for the resume line", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -497,11 +497,30 @@ describe("runContextStep: compact", () => {
     const unreachable = (await eventsOf(context.runDir)).filter(
       (event) => event.type === "agent.input.unreachable",
     );
-    expect(unreachable.map((event) => event.payload)).toEqual(
-      Array(3).fill({ agent: "claude", sessionId: "A", step: "step" }),
-    );
-    expect(await typesIn(context.runDir)).toContain("agent.line.lost");
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "A", step: "step" },
+    ]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
     expect(stateOf(context.runDir).status).toBe("running");
+  });
+
+  test("a popup that hides the input box for /compact but is gone by the resume line sends no notice", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      // hidden through /compact's 3 Escapes, gone after the resume line's first Escape
+      (_, typed) => (escapesIn(typed) <= 3 ? CONFIG_LIST_FOOTER : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...Array(4).fill("Escape"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
   });
 
   test("SC2: a resume line lost after a compaction that worked is typed again, and the node stays applied with one completion", async () => {
