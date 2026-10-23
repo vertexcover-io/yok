@@ -1505,7 +1505,13 @@ describe("the shipped task workflow's qa and review loops", () => {
   const report = "artifacts/verification/proof-report.html";
   const VERDICTS: Readonly<Record<string, JsonObject>> = {
     PASS: { status: "PASS", report, gaps: [], bugs: [] },
-    PARTIAL: { status: "PARTIAL", reason: "SC2 not verified", report, gaps: [], bugs: [] },
+    PARTIAL: {
+      status: "PARTIAL",
+      reason: "SC2 not verified",
+      report,
+      gaps: [{ scenario: "02", req: "SC2", mechanism: "runs in a nightly job" }],
+      bugs: [],
+    },
     FAIL: {
       status: "FAIL",
       reason: "SC1 failed",

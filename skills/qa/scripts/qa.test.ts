@@ -61,6 +61,36 @@ describe("QaOutputSchema", () => {
     expect(parse([old]).success).toBe(false);
   });
 
+  test.each(["PASS", "PARTIAL", "BLOCKED"])(
+    "a %s verdict that names a bug is rejected on bugs, since a bug makes the verdict FAIL",
+    (status) => {
+      const result = QaOutputSchema.safeParse({
+        status,
+        reason: "why",
+        report: status === "BLOCKED" ? null : report,
+        gaps: status === "PARTIAL" ? [gap] : [],
+        bugs: [{ ...bug, askUser: false }],
+      });
+
+      expect(result.error?.issues.map((issue) => [issue.path, issue.message])).toEqual([
+        [["bugs"], "only a FAIL names bugs: a bug makes the derived verdict FAIL"],
+      ]);
+    },
+  );
+
+  test("a PARTIAL with two gaps naming R5 is rejected on gaps, and one gap per requirement of a scenario parses", () => {
+    const parse = (gaps: readonly object[]) =>
+      QaOutputSchema.safeParse({ status: "PARTIAL", reason: "why", report, gaps, bugs: [] });
+
+    const twice = parse([gap, { ...gap, mechanism: "no browser path" }]);
+    const perRequirement = parse([gap, { ...gap, req: "EC1" }]);
+
+    expect(twice.error?.issues.map((issue) => [issue.path, issue.message])).toEqual([
+      [["gaps"], "each gap req appears once"],
+    ]);
+    expect(perRequirement.success).toBe(true);
+  });
+
   test("a FAIL with two bugs sharing id 03 is rejected on bugs", () => {
     const result = QaOutputSchema.safeParse({
       status: "FAIL",
