@@ -9,7 +9,7 @@ tags: [workflow-engine, orchestrate-script]
 
 ## Context and Problem Statement
 
-A compaction or new session can fail to happen: Claude refuses it, never goes idle, or never takes the typed line. The step has to end somehow, and the steps after it have to decide whether to run.
+A compaction or new session can fail to happen: Claude refuses it, yok cannot reach Claude's input box to type it, or Claude never takes the typed line. The step has to end somehow, and the steps after it have to decide whether to run.
 
 ## Considered Options
 
@@ -23,4 +23,4 @@ Chosen: end it `completed` with `{ applied: false, reason }` and report it nowhe
 
 ## Consequences
 
-The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. The one context-step failure that needs a person is a resume line Claude never takes, which ADR 0023 turns into a Slack notice.
+The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. The context-step failures that need a person are an input box yok cannot reach and a resume line Claude never takes, which ADR 0023 turns into Slack notices.

@@ -182,7 +182,7 @@ A module subscriber is an exported function. A command subscriber reads the JSON
 
 ## Agent hook
 
-A point in the agent's own session where it calls out and waits for an answer. Yok registers six for Claude through `--settings` at launch, each answered by `yok orchestrate hook NAME --handler HANDLER`:
+A point in the agent's own session where it calls out and waits for an answer. Yok registers five for Claude through `--settings` at launch, each answered by `yok orchestrate hook NAME --handler HANDLER`:
 
 | Hook | Handler | What it does |
 |---|---|---|
@@ -191,13 +191,12 @@ A point in the agent's own session where it calls out and waits for an answer. Y
 | StopFailure | `resume-after-limit`, `record-agent-error` | on an API error that is a usage limit, pauses and resumes the run; otherwise records the error |
 | PreToolUse | `record-guard`, `record-resumed`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records, records `agent.resumed` for the main agent's Bash call or file edit on a blocked run, flags risky shell, records a question being asked |
 | PostToolUse | `answer-notice` | records the person's answers to questions |
-| PreCompact (manual), UserPromptSubmit | `record-prompt-received` | records that Claude took a line yok typed, as a hash of the line, so the context-step helper can retype a lost one |
 
 Agent hooks are about the session. Subscribers are about the run. They are different things with the same English word. The handlers live in [packages/core/src/hooks](../../packages/core/src/hooks).
 
 ## Context step and model switch
 
-A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. Before typing a line, yok waits for Claude to go idle, then sends Escape to close any popup, again while a popup footer still shows (at most three), and clears the input line. Each line yok types for a compaction waits for that receipt and is retyped once when it does not come. A context step whose action did not happen still completes, so the steps after it run. A resume line Claude takes on neither try is recorded as `agent.line.lost`, and the Slack notifier pings a person, since nobody else would drive the run; the run's status does not change. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
+A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. Yok types a line as soon as Claude's input box (a `❯` line between two rules) shows, even while Claude finishes its turn, after clearing the box. While the box is hidden, by a popup for instance, yok sends Escape, up to three, until it shows. If it never shows, yok types nothing, records `agent.input.unreachable`, and the Slack notifier pings a person. `/compact` is typed once, and the compaction's SessionStart confirms it. The resume line counts once the run records `orchestrate.resume`, which the `--resume` skill runs first; yok waits 30 seconds for it, counted from when Claude stops showing busy, and types the line once more if it does not come. A context step whose action did not happen still completes, so the steps after it run. A resume line Claude takes on neither try is recorded as `agent.line.lost`, and the Slack notifier pings a person, since nobody else would drive the run. Neither notice changes the run's status. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
 
 ## Limit wait
 
