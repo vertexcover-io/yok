@@ -340,14 +340,24 @@ const compileInclude = async (node: IncludeNode, at: Compiling): Promise<Workflo
 };
 
 const compileNodes = (nodes: readonly WorkflowNode[], at: Compiling): Promise<PlanNode[]> =>
-  Promise.all(nodes.map((node) => compileNode(node, at)));
+  Promise.all(
+    nodes.map((node, index) => {
+      const previous = nodes[index - 1];
+      const after = node.dependsOn.length === 0 && previous !== undefined ? [previous.id] : [];
+      return compileNode(node, at, after);
+    }),
+  );
 
-async function compileNode(node: WorkflowNode, at: Compiling): Promise<PlanNode> {
-  const { parents } = at;
-  const inside: Compiling = { ...at, parents: [...parents, node.id] };
-  if (node.type === "include") return { ...node, parents, plan: await compileInclude(node, at) };
+async function compileNode(
+  node: WorkflowNode,
+  at: Compiling,
+  after: readonly string[],
+): Promise<PlanNode> {
+  const placed = { parents: at.parents, after };
+  const inside: Compiling = { ...at, parents: [...at.parents, node.id] };
+  if (node.type === "include") return { ...node, ...placed, plan: await compileInclude(node, at) };
   if (node.type === "loop") {
-    return { ...node, parents, nodes: await compileNodes(node.nodes, inside) };
+    return { ...node, ...placed, nodes: await compileNodes(node.nodes, inside) };
   }
   if (node.type === "agent") {
     const { stage, ...rest } = node;
@@ -356,7 +366,7 @@ async function compileNode(node: WorkflowNode, at: Compiling): Promise<PlanNode>
         node.output === undefined
           ? undefined
           : await resolveOutputSchema(node.output, at.cwd, node.id);
-      return { ...rest, parents, outputSchema };
+      return { ...rest, ...placed, outputSchema };
     }
     if (node.output !== undefined) {
       throw new WorkflowError(
@@ -367,22 +377,22 @@ async function compileNode(node: WorkflowNode, at: Compiling): Promise<PlanNode>
     }
     const loaded = await loadPlanStage(stage, at);
     checkVariables(node, loaded);
-    return { ...rest, parents, stage: loaded };
+    return { ...rest, ...placed, stage: loaded };
   }
   if (node.type === "exec") {
     const outputSchema =
       node.output === undefined
         ? undefined
         : await resolveOutputSchema(node.output, at.cwd, node.id);
-    return { ...node, parents, outputSchema };
+    return { ...node, ...placed, outputSchema };
   }
-  if (node.type !== "switch") return { ...node, parents };
+  if (node.type !== "switch") return { ...node, ...placed };
   const { cases, default: fallback, ...rest } = node;
   const compiled = await Promise.all(
     cases.map(async (c) => ({ ...c, nodes: await compileNodes(c.nodes, inside) })),
   );
-  if (fallback === undefined) return { ...rest, parents, cases: compiled };
-  return { ...rest, parents, cases: compiled, default: await compileNodes(fallback, inside) };
+  if (fallback === undefined) return { ...rest, ...placed, cases: compiled };
+  return { ...rest, ...placed, cases: compiled, default: await compileNodes(fallback, inside) };
 }
 
 // Every case of a switch counts, since compile can't know which one runs.

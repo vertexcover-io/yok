@@ -20,10 +20,8 @@ import {
   POLICY_NAMES,
   PoliciesSchema,
   type Result,
-  readPolicies,
   registryPath,
   requireRun,
-  type SavedPolicies,
   spawnInteractive,
 } from "@yok/sdk";
 import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
@@ -55,6 +53,17 @@ const blockedText = (report: DoctorReport): string =>
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
 
+// The run's saved policies have no say here: an unattended run can still be watched.
+export const followUps = ({
+  open,
+  attach,
+  hasTerminal,
+}: {
+  open: boolean;
+  attach: boolean;
+  hasTerminal: boolean;
+}): { noOpen: boolean; attach: boolean } => ({ noOpen: !open, attach: attach && hasTerminal });
+
 // The doctor yok run and yok resume run before the server: the runtime, workflow and built-in
 // checks over the env the session will get. Returns why the run is blocked, or null.
 const checkBeforeStart = async (
@@ -78,11 +87,7 @@ const checkBeforeStart = async (
 
 // Only what is read here: the server client's JSON type for a run is looser than WorkflowRun.
 type StartedRun = Readonly<{
-  run: Readonly<{
-    id: string;
-    terminal: string | null;
-    policies?: Pick<SavedPolicies, "values"> | undefined;
-  }>;
+  run: Readonly<{ id: string; terminal: string | null }>;
   attach: readonly string[];
   view: string;
 }>;
@@ -96,13 +101,11 @@ const showStartedRun = async (
   console.log(run.id);
   console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
   console.log(`view: ${view}`);
-  // the run's saved value decides, so a workflow that turns interaction off never opens one either
-  const unattended = !readPolicies(run.policies).interaction;
-  openForPerson(view, !flags.open || unattended);
-
   // A script, CI job or test has no terminal for tmux to attach to.
   const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  if (!flags.attach || !hasTerminal || unattended) return;
+  const next = followUps({ open: flags.open, attach: flags.attach, hasTerminal });
+  openForPerson(view, next.noOpen);
+  if (!next.attach) return;
   const [command, ...args] = attach;
   // Without TMUX, the attach also works from inside the user's own tmux.
   const exitCode = await spawnInteractive(command as string, args, {

@@ -1235,6 +1235,44 @@ describe("findRunningLeaf", () => {
   ])("SC113: the running leaf of $given is the deepest running node", ({ nodes, found }) => {
     expect(findRunningLeaf(nodes)).toEqual(found);
   });
+
+  const review = nodeRun("running", { nodeRunId: "review", nodeType: "agent", mode: "subagent" });
+  const write = nodeRun("running", { nodeRunId: "write", nodeType: "agent", mode: "inline" });
+  const loop = nodeRun("running", { nodeRunId: "loop", nodeType: "loop", nodes: {} });
+  const lint = nodeRun("running", { nodeRunId: "lint" });
+  test.each([
+    {
+      given: "review (subagent) listed before write (inline)",
+      nodes: { review, write },
+      found: { path: "write", run: write },
+    },
+    { given: "only review running", nodes: { review }, found: { path: "review", run: review } },
+    {
+      given: "a loop with nothing inside running",
+      nodes: { loop },
+      found: { path: "loop", run: loop },
+    },
+    {
+      given: "exec lint listed before review (subagent)",
+      nodes: { lint, review },
+      found: { path: "review", run: review },
+    },
+    {
+      given: "a loop with nothing inside running listed before review (subagent)",
+      nodes: { loop, review },
+      found: { path: "review", run: review },
+    },
+    {
+      given: "a loop with nothing inside running listed before exec lint",
+      nodes: { loop, lint },
+      found: { path: "lint", run: lint },
+    },
+  ])(
+    "SC18: with $given, the running step is the session's inline node, else an agent node, else the first running one",
+    ({ nodes, found }) => {
+      expect(findRunningLeaf(nodes)).toEqual(found);
+    },
+  );
 });
 
 describe("foldModelSwitch", () => {

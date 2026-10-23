@@ -17,6 +17,8 @@ export type AgentAdapter = Readonly<{
   contextSteps: boolean;
   // whether the agent can start a subagent on demand and message it while it runs: subagent nodes
   subagents: boolean;
+  // whether the agent can run background work beside its own: several nodes from one `next`
+  parallelSteps: boolean;
   stop?: (stdin: string, deps: HookDeps, handler: StopHandler) => Promise<string>;
   sessionStart?: (stdin: string, deps: HookDeps, handler: SessionStartHandler) => Promise<string>;
   preToolUse?: (stdin: string, deps: HookDeps, handler: PreToolUseHandler) => Promise<string>;

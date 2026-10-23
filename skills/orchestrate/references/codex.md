@@ -22,3 +22,4 @@ marked unverified come from Codex's documentation and were not run against a liv
 - **Context steps:** not supported. A `context` node is completed as not applied for you.
 - **Model steps:** never sent. A Codex run keeps the model it launched with for every stage.
 - **Subagent steps:** never sent. Every `stage` and `agent` reply says `mode: inline`.
+- **Several steps at once:** never sent. A `steps` reply on Codex always holds one entry.

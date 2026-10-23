@@ -71,6 +71,9 @@ export const TokenUsageSchema = z.strictObject({
   cachedOutput: z.int().nonnegative().optional(),
 });
 
+// How the session runs an agent node: itself, or by handing it whole to a subagent.
+export const AgentModeSchema = z.enum(["inline", "subagent"]);
+
 export const AgentStateSchema = z.strictObject({
   agent: NonEmptyStringSchema,
   // null when the run cannot switch models and has no tiers, so the model is unknown
@@ -169,6 +172,8 @@ const NodeRunFieldsSchema = z.strictObject({
   iteration: z.int().positive().optional(),
   stage: SlugSchema.optional(),
   agentState: AgentStateSchema.optional(),
+  // an agent node: whether the session runs it itself or in a background subagent
+  mode: AgentModeSchema.optional(),
   awaitingApproval: ArtifactPathSchema.optional(),
 });
 

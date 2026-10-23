@@ -254,6 +254,8 @@ export const codexAdapter: AgentAdapter = {
   contextSteps: false,
   // Codex starts subagents only on its own, from its agent definitions.
   subagents: false,
+  // Codex's background commands are unverified, so it runs one node at a time.
+  parallelSteps: false,
   stop: codexStop,
   preToolUse: codexPreToolUse,
   sessionStart: codexSessionStart,
