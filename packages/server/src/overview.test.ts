@@ -448,6 +448,26 @@ describe("listSteps details", () => {
       run: nodeRun("completed", { output: { ok: true } }),
       expected: { reason: null, output: '{\n  "ok": true\n}' },
     },
+    {
+      given: "of type context whose compact did not happen (SC19)",
+      run: nodeRun("completed", {
+        nodeType: "context",
+        output: {
+          action: "compact",
+          applied: false,
+          reason: "Claude did not take /compact after 2 tries",
+        },
+      }),
+      expected: { status: "skipped", reason: "Claude did not take /compact after 2 tries" },
+    },
+    {
+      given: "of type context whose compact happened (SC19)",
+      run: nodeRun("completed", {
+        nodeType: "context",
+        output: { action: "compact", applied: true, sessionId: "s1" },
+      }),
+      expected: { status: "completed", reason: null },
+    },
   ])(
     "SC121: a step $given carries why it did not complete, or its output and files",
     ({ run, expected }) => {

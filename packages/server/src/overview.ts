@@ -10,7 +10,7 @@ import type {
   State,
   WorkflowRun,
 } from "@yok/sdk";
-import { runDirOf, SkipOutputSchema } from "@yok/sdk";
+import { readContextSkip, runDirOf, SkipOutputSchema } from "@yok/sdk";
 import { findRunningLeaf, isRunLive, type Registry, resolvePolicies } from "@yok/sdk/internal";
 import * as z from "zod";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
@@ -197,7 +197,15 @@ const skipReason = (output: unknown): string | null => {
   return "no case matched";
 };
 
+// A context step whose action did not happen still completes; the page shows it as skipped.
+const findContextSkip = (run: NodeRun | undefined): string | undefined =>
+  run?.nodeType === "context" && run.status === "completed"
+    ? readContextSkip(run.output)
+    : undefined;
+
 const reasonOf = (run: NodeRun | undefined): string | null => {
+  const skipped = findContextSkip(run);
+  if (skipped !== undefined) return skipped;
   if (run?.status === "skipped") return skipReason(run.output);
   if (run?.status !== "failed" && run?.status !== "cancelled") return null;
   const error = z.object({ message: z.string() }).safeParse(run.output);
@@ -221,7 +229,7 @@ const toStep = (
 ): Step => ({
   ...node,
   path: path.join("."),
-  status: run?.status ?? "pending",
+  status: findContextSkip(run) === undefined ? (run?.status ?? "pending") : "skipped",
   startedAt: run?.startedAt ?? null,
   completedAt: run?.completedAt ?? null,
   iteration: run?.iteration ?? null,
