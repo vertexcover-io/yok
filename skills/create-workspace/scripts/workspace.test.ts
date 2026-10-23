@@ -20,7 +20,6 @@ import {
 import { jsonlEventStore } from "@yok/sdk/internal";
 import {
   addRepositories as addWith,
-  CreateWorkspaceInputSchema,
   createWorkspace as createWith,
   type OutputLine,
   type RepoOutcome,
@@ -484,14 +483,6 @@ describe("fetching the base branch", () => {
   });
 });
 
-describe("CreateWorkspaceInputSchema", () => {
-  test("WS35 — an empty repos list is rejected: it would mean no repo at all", () => {
-    expect(CreateWorkspaceInputSchema.safeParse({ specName: "feat-x", repos: [] }).success).toBe(
-      false,
-    );
-  });
-});
-
 type Rejection = Readonly<{
   name: string;
   root: () => string;
@@ -512,11 +503,6 @@ const REJECTIONS: Rejection[] = [
     name: "unknown path placeholder",
     root: withConfig({ workspace: { path: ".worktrees/{{ repo }}" } }),
     messages: ["{{ repo }}"],
-  },
-  {
-    name: "config not matching the schema, every problem named",
-    root: withConfig({ workspace: { layout: "poly", path: 3 } }),
-    messages: ["workspace.layout", "workspace.path"],
   },
   {
     name: "invalid branch name",

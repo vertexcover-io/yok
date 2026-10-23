@@ -741,17 +741,11 @@ describe("offerLearn", () => {
     expect(await eventTypes(runDir)).toEqual(["learning.offered"]);
   });
 
-  test("a review push after the next message asks too", async () => {
+  test("it asks once per push: the stop after the user answers lets the turn end", async () => {
     const { deps, runDir } = await setUpPrDone();
     await offer(firstPr, deps);
     expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
     expect(await eventTypes(runDir)).toEqual(["learning.offered", "learning.offered"]);
-  });
-
-  test("it asks once per push: the stop after the user answers lets the turn end", async () => {
-    const { deps } = await setUpPrDone();
-    await offer(firstPr, deps);
-    expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
   });
 

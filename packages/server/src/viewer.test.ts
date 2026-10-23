@@ -329,11 +329,12 @@ describe("resolveArtifactPath", () => {
   });
 });
 
-// With a screen, r-named gets a live session showing it, so posted comments are really typed.
-const setup = async (screen?: string, alive = true) => {
+// With a screen, the named run gets a live session showing it, so posted comments are really typed.
+// delivery.ts remembers each run's last delivery by id, so a test that reads it passes its own id.
+const setup = async (screen?: string, alive = true, namedId = "r-named") => {
   const cwd = tempDir("viewer-cwd");
   const registry = createRegistry(join(tempDir("viewer-reg"), "registry.json"), noopLogger);
-  const named = runRecord("r-named", cwd, "demo");
+  const named = runRecord(namedId, cwd, "demo");
   await registry.addRun(screen === undefined ? named : { ...named, terminal: "s1" });
   await registry.addRun(runRecord("r-starting", cwd, null));
   await registry.addRun(runRecord("r-empty", cwd, "bare"));
@@ -360,7 +361,17 @@ const setup = async (screen?: string, alive = true) => {
       headers: { host: "localhost:4000", "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-  return { cwd, registry, app, get, post, calls, opened, runDir: join(cwd, ".yok", "demo") };
+  return {
+    namedId,
+    cwd,
+    registry,
+    app,
+    get,
+    post,
+    calls,
+    opened,
+    runDir: join(cwd, ".yok", "demo"),
+  };
 };
 
 const until = async (check: () => Promise<boolean>): Promise<void> => {
@@ -867,10 +878,11 @@ describe("agent status on the stream", () => {
   const agentOf = async (
     screen: string | undefined,
     alive: boolean,
-    runId: string,
+    run: "named" | "starting",
     after?: (s: Awaited<ReturnType<typeof setup>>) => Promise<void>,
   ): Promise<unknown> => {
-    const ctx = await setup(screen, alive);
+    const ctx = await setup(screen, alive, `r-named-${crypto.randomUUID()}`);
+    const runId = run === "named" ? ctx.namedId : "r-starting";
     const res = await ctx.get(`/runs/${runId}/stream`);
     const sse = sseReader(res);
     try {
@@ -886,18 +898,18 @@ describe("agent status on the stream", () => {
   };
 
   test.each([
-    ["an unnamed run is starting", undefined, true, "r-starting", "starting"],
-    ["a run with no terminal is stopped", undefined, true, "r-named", "stopped"],
-    ["a run whose session is dead is stopped", EMPTY_BOX, false, "r-named", "stopped"],
-    ["a live session is running", EMPTY_BOX, true, "r-named", "running"],
-  ])("%s", async (_label, screen, alive, runId, state) => {
-    expect(await agentOf(screen, alive, runId)).toEqual({ state, reason: null });
+    ["an unnamed run is starting", undefined, true, "starting", "starting"],
+    ["a run with no terminal is stopped", undefined, true, "named", "stopped"],
+    ["a run whose session is dead is stopped", EMPTY_BOX, false, "named", "stopped"],
+    ["a live session is running", EMPTY_BOX, true, "named", "running"],
+  ] as const)("%s", async (_label, screen, alive, run, state) => {
+    expect(await agentOf(screen, alive, run)).toEqual({ state, reason: null });
   });
 
   test("a live session whose last delivery waits shows the reason", async () => {
     const busyBox = `${RULE}\n❯ half typed\n${RULE}\n  Model: Opus`;
-    const data = await agentOf(busyBox, true, "r-named", async ({ post }) => {
-      await post("/runs/r-named/comments", {
+    const data = await agentOf(busyBox, true, "named", async ({ post, namedId }) => {
+      await post(`/runs/${namedId}/comments`, {
         comments: [{ file: "artifacts/a.md", kind: "global", text: "hi" }],
       });
     });

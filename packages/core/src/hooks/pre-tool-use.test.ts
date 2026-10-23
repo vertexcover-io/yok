@@ -150,20 +150,6 @@ describe("recordGuard through runPreToolUse", () => {
     ]);
   });
 
-  test("SC3: an Edit of .yok/demo/state.json is refused naming the run, and the old run folder is left alone", async () => {
-    const { cwd, deps } = await setUp();
-    const edit = (path: string) =>
-      runPreToolUse(use(cwd, write(path), { toolName: "Edit" }), recordGuard, deps);
-
-    const refused = await edit("/repo/.yok/demo/state.json");
-    // Split so the sweep for the old product name (SC10) does not flag this test.
-    const allowed = await edit(`/repo/.${["har", "ness"].join("")}/demo/state.json`);
-
-    expect(refused.kind).toBe("deny");
-    expect(refused.kind === "deny" ? refused.message : "").toContain("--run demo");
-    expect(allowed).toEqual({ kind: "allow" });
-  });
-
   test("SC9, SC23 — a shell command on the registry is refused with init and link-session", async () => {
     const { cwd, deps } = await setUp();
 

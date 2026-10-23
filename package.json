@@ -22,7 +22,8 @@
     "release:version:node": "node scripts/version.ts",
     "test:scripts": "node --test scripts/*.test.ts",
     "test:scripts:bun": "bun test ./scripts/",
-    "test:hooks": "node --test hooks/*.test.mjs"
+    "test:hooks": "node --test hooks/*.test.mjs",
+    "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py'"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",

@@ -203,18 +203,6 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(run.stderr).toContain("installing");
   });
 
-  test("create in a multi repo takes a comma-separated --repos", () => {
-    const root = makeMulti();
-    const home = tempDir();
-    initializedRun(home, root);
-
-    const run = workspace(root, home, ["create", "b", "--repos", "api,web", "--run", "feat-x"]);
-
-    expect(run.code).toBe(0);
-    expect(existsSync(join(root, ".workspaces/b/api"))).toBe(true);
-    expect(existsSync(join(root, ".workspaces/b/web"))).toBe(true);
-  });
-
   test("a failed setup exits 1 and still prints the report", () => {
     const root = tempRepo();
     const home = tempDir();
@@ -257,6 +245,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     const home = tempDir();
     initializedRun(home, root);
     workspace(root, home, ["create", "b", "--repos", "api,web", "--run", "feat-x"]);
+    expect(existsSync(join(root, ".workspaces/b/web"))).toBe(true);
 
     const run = workspace(join(root, ".workspaces/b/api"), home, [
       "remove",

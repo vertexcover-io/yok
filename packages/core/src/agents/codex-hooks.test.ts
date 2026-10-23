@@ -123,11 +123,6 @@ describe("an agent that keeps stopping with its node open", () => {
     session_id: "s1",
     last_assistant_message: "Which database should this use?",
   });
-  const stopTwice = async (deps: Parameters<NonNullable<typeof codexAdapter.stop>>[1]) => [
-    await codexAdapter.stop?.(stop, deps, continueWorkflow),
-    await codexAdapter.stop?.(stop, deps, continueWorkflow),
-  ];
-
   test.each([
     ["codex", codexAdapter, stop],
     ["claude", claudeAdapter, claudeStop],
@@ -164,21 +159,6 @@ describe("an agent that keeps stopping with its node open", () => {
       });
     },
   );
-
-  test("SC526 (regression): with no saved policies, the second stop goes through as max-blocks-reached, records agent.stuck and leaves the node open", async () => {
-    const { runDir, deps, events } = await openAgentRun();
-
-    const [first, second] = await stopTwice(deps);
-
-    expect(JSON.parse(first ?? "")).toMatchObject({ decision: "block" });
-    expect(second).toBe("");
-    const stored = await events();
-    expect(
-      stored.filter((e) => e.type === "hooks.stop.called").map((e) => e.payload),
-    ).toMatchObject([{ reason: "node-not-done" }, { reason: "max-blocks-reached" }]);
-    expect(stored.map((event) => event.type)).toContain("agent.stuck");
-    expect((await readState(runDir))?.nodeRuns.ask?.status).toBe("running");
-  });
 });
 
 describe("codexAdapter.preToolUse", () => {

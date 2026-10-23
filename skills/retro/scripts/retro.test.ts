@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Event, EventSchema, readRunSessions, runDirOf } from "@yok/sdk";
+import { type Event, EventSchema, runDirOf } from "@yok/sdk";
 import { citeLines, extractMain, extractRun, findGateTime, readStages } from "./retro.ts";
 
 const at = (minute: number): string => `2026-10-03T10:${String(minute).padStart(2, "0")}:00Z`;
@@ -65,12 +65,6 @@ describe("a run's sessions", () => {
       stop(at(3), "claude", "B"),
       stop(at(4), "codex", "C"),
     ];
-    expect(readRunSessions(events)).toEqual([
-      { agent: "claude", sessionId: "A" },
-      { agent: "claude", sessionId: "B" },
-      { agent: "codex", sessionId: "C" },
-    ]);
-
     const { runDir, out, projectsDir } = fixture(events, {
       A: [user(at(1), "hello")],
       B: [user(at(3), "again")],

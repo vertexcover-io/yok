@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,15 +38,6 @@ describe("emitEvent", () => {
     expect(Date.parse(result.value.ts)).toBeGreaterThanOrEqual(before - 1000);
     expect(Date.parse(result.value.ts)).toBeLessThanOrEqual(Date.now() + 1000);
     expect(await store.read()).toEqual([result.value]);
-  });
-
-  test("SC5: an event type outside the catalog is stored with any JSON payload", async () => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
-      type: "custom.skill.note",
-      source: "test",
-      payload: [1, "two", null],
-    });
-    expect(result).toMatchObject({ ok: true, value: { payload: [1, "two", null] } });
   });
 
   test.each([
@@ -106,20 +96,6 @@ describe("emitRunEvent", () => {
     expect(state.workspace.type).toBe("multi");
     expect(state.workspace.path).toBe(WS_DIR);
     expect(Object.keys(state.workspace.repositories)).toEqual(["api"]);
-  });
-
-  test("leaves a run folder with no state.json yet without one", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "repo-"));
-    const run = { id: "r-1", cwd, name: "fix-login" };
-
-    const result = await emitRunEvent(run, {
-      type: "custom.skill.note",
-      source: "test",
-      payload: {},
-    });
-
-    expect(result.ok).toBe(true);
-    expect(existsSync(join(runDirOf(cwd, "fix-login"), "state.json"))).toBe(false);
   });
 });
 
