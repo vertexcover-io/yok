@@ -605,6 +605,22 @@ describe("hasClaudeInputBox", () => {
       false,
     ],
     [
+      "a box left in scrollback above the /config popup with its search box focused",
+      `${PROMPT}\n  Search settings\nType to filter · Enter/↓ to select · ↑ to tabs · Esc to clear`,
+      false,
+    ],
+    [
+      "a box left in scrollback above the /config popup's list",
+      `${PROMPT}\n  Theme  Dark\nEnter/Space to change · / to search · Esc to close`,
+      false,
+    ],
+    [
+      "a box with Claude's interrupt hint under it while it works",
+      `${box("❯ ")}\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt`,
+      true,
+    ],
+    ["a box with Claude's shortcuts hint under it", `${box("❯ ")}\n  ? for shortcuts`, true],
+    [
       "a dialog whose footer reads Enter to select with no Esc to cancel",
       `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,
       false,

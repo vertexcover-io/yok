@@ -468,6 +468,22 @@ describe("runContextStep: compact", () => {
     });
   });
 
+  test.each([
+    CONFIG_SEARCH_FOOTER,
+    CONFIG_LIST_FOOTER,
+  ])("an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed", async (footer) => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => `${IDLE}\n  Theme  Dark\n${footer}`,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
+  });
+
   test("a permission dialog whose ❯ 1. Yes sits between rules is not taken for the input box: it gets an Escape, and the line goes in only once the real box shows", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(

@@ -48,13 +48,14 @@ export const isClaudeBusy = (screen: string): boolean =>
 
 const RULE = /^\s*─{10,}\s*$/;
 const INPUT_LINE = /^❯(?:\s|$)/;
-const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to cancel/i;
+const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;
 
 // The text in Claude's input box, the lowest ❯ line between two rules, or undefined when no box
 // shows. A popup or dialog replaces the box, so seeing it is the sign that Enter submits a message.
 // A dialog draws its own ❯ cursor, maybe between rules, where Enter would pick an option such as
-// approving a permission, so its footer below that cursor means no box. Only below: the capture
-// holds scrollback, where the transcript can quote a footer above a real box.
+// approving a permission, and a popup such as /config can sit under a box left in scrollback, so
+// a popup footer below that ❯ means no box. Only below: the capture holds scrollback, where the
+// transcript can quote a footer above a real box.
 const readInputBox = (screen: string): string | undefined => {
   const lines = screen.split("\n");
   const at = lines.findLastIndex(
