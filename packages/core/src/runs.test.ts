@@ -455,6 +455,15 @@ describe("the notifier at init", () => {
     expect(result.value.state.subscribers).toEqual(expected(cwd));
   });
 
+  test("SC5: a new run's notifier subscribes to the approval request", async () => {
+    const { init } = await notifierRun({}, "notifier: {}\n");
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.subscribers["artifact.approval.requested"]).toEqual([NOTIFIER_REF]);
+  });
+
   const SAMSKARA_REF = {
     name: "samskara",
     blocking: false,
