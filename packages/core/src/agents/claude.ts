@@ -48,11 +48,14 @@ export const isClaudeBusy = (screen: string): boolean =>
 
 const RULE = /^\s*─{10,}\s*$/;
 const INPUT_LINE = /^❯(?:\s|$)/;
-const DIALOG_FOOTER = /enter to confirm|esc to cancel/i;
+const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to cancel/i;
 
 // The text in Claude's input box, the lowest ❯ line between two rules, or undefined when no box
 // shows. A popup or dialog replaces the box, so seeing it is the sign that Enter submits a message.
+// A dialog draws its own ❯ cursor, maybe between rules, where Enter would pick an option such as
+// approving a permission, so its footer means no box.
 const readInputBox = (screen: string): string | undefined => {
+  if (DIALOG_FOOTER.test(screen)) return undefined;
   const lines = screen.split("\n");
   const at = lines.findLastIndex(
     (line, i) =>
@@ -68,12 +71,11 @@ export const hasClaudeInputBox = (screen: string): boolean => readInputBox(scree
 const hasEmptyInputBox = (screen: string): boolean => readInputBox(screen) === "";
 
 const isAwaitingInput = (screen: string): boolean =>
-  hasEmptyInputBox(screen) && !isClaudeBusy(screen) && !DIALOG_FOOTER.test(screen);
+  hasEmptyInputBox(screen) && !isClaudeBusy(screen);
 
 // Claude queues a message submitted while it works, so a comment only needs the empty box and no
 // menu; waiting for idle would hold it for the length of the agent's task.
-export const canTypeComment = (screen: string): boolean =>
-  hasEmptyInputBox(screen) && !DIALOG_FOOTER.test(screen);
+export const canTypeComment = (screen: string): boolean => hasEmptyInputBox(screen);
 
 // Some Claude versions preselect "Upgrade your plan" in the limit menu, so a bare Enter would buy
 // an upgrade; this picks "Stop and wait". Returns the screen to judge next, or null for a menu it

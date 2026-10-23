@@ -567,6 +567,11 @@ describe("canTypeComment", () => {
     ["menu footer", `${PROMPT}\nEnter to select · ↑/↓ to navigate · Esc to cancel`, false],
     ["half-typed text", box("❯ half a sentence"), false],
     ["queued-messages hint", box("❯ Press up to edit queued messages"), false],
+    [
+      "an empty ❯ between rules above the bottom box, which holds text",
+      `${box("❯")}\n${box("❯ half")}`,
+      false,
+    ],
   ])("SC14: %s -> %p", (_name, screen, expected) => {
     expect(canTypeComment(screen)).toBe(expected);
   });
@@ -584,6 +589,16 @@ describe("hasClaudeInputBox", () => {
     ],
     ["the limit menu", LIMIT_MENU, false],
     ["a ❯ with no rules around it", "❯ ", false],
+    [
+      "a permission dialog whose ❯ 1. Yes sits between rules",
+      `${box("❯ 1. Yes")}\n  2. No\nEsc to cancel · Tab to amend`,
+      false,
+    ],
+    [
+      "an AskUserQuestion dialog",
+      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
+      false,
+    ],
   ])("%s -> %p", (_name, screen, expected) => {
     expect(hasClaudeInputBox(screen)).toBe(expected);
   });

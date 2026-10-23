@@ -245,6 +245,8 @@ const typedLine = (line: string) => ["C-u", line, "Enter"];
 // leaving it; the popup hides the input box.
 const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear";
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
+// A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
+const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
@@ -462,6 +464,19 @@ describe("runContextStep: compact", () => {
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true },
     });
+  });
+
+  test("a permission dialog whose ❯ 1. Yes sits between rules is not taken for the input box: it gets an Escape, and the line goes in only once the real box shows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => (escapesIn(typed) === 0 ? PERMISSION : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
   });
 
   test("an input box that never shows gets exactly 3 Escapes and no line, records agent.input.unreachable for step and session A, and ends the compaction unapplied with that reason", async () => {
