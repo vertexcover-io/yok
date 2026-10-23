@@ -186,13 +186,15 @@ export const codexProvider = ({
   const launch = async (
     options: LaunchOptions,
   ): Promise<Result<{ terminalName: string; terminal: ITerminal }>> => {
-    const terminalName = newId();
+    const { continueSession } = options;
+    const terminalName = continueSession?.terminalName ?? newId();
+    const session = continueSession === undefined ? [] : ["resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const statusLine = statusLineOf(options);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...codexArgs(options)],
+      argv: [binary, ...session, ...codexArgs(options)],
       env: options.env ?? {},
       ...(statusLine === undefined ? {} : { statusLine }),
     });

@@ -12,12 +12,15 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { type FileHandle, open } from "node:fs/promises";
+import { tmpdir, uptime } from "node:os";
+import { dirname, join } from "node:path";
 import {
   type IAgentProvider,
   type ITerminal,
@@ -30,6 +33,7 @@ import {
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import {
+  clearDeadSwitchLocks,
   completeContextOnSessionStart,
   findOpenContextRun,
   runContextStep,
@@ -619,6 +623,22 @@ describe("runModelStep", () => {
     expect(await appliedEvents(context.runDir)).toHaveLength(1);
   });
 
+  test("a helper whose pid write into model-N.lock fails with ENOSPC still runs the switch it claimed", async () => {
+    const context = await setUpSwitch();
+    const { provider, relaunches } = fakeProvider();
+    const probe = await open(join(context.runDir, "probe"), "w");
+    // every FileHandle shares this prototype, so the helper's own handle fails its write
+    const handle: FileHandle = Object.getPrototypeOf(probe);
+    await probe.close();
+    const write = spyOn(handle, "writeFile").mockRejectedValueOnce(new Error("ENOSPC"));
+
+    await modelHelper(context, fakeTerminal(() => IDLE).terminal, provider);
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(relaunches).toHaveLength(1);
+    expect(await appliedEvents(context.runDir)).toHaveLength(1);
+  });
+
   test("a helper for a seq that is not the pending request, or for one already answered, relaunches nothing and stores nothing", async () => {
     const context = await setUpSwitch();
     const pane = fakeTerminal(() => IDLE);
@@ -690,5 +710,108 @@ describe("findOpenContextRun", () => {
     expect(findOpenContextRun(inLoop)?.nodeRunId).toBe("context-running");
     expect(findOpenContextRun({ c: nodeRun("context", "running") })).toBeDefined();
     expect(findOpenContextRun(done)).toBeUndefined();
+  });
+});
+
+describe("clearDeadSwitchLocks", () => {
+  const deadPid = async (): Promise<number> => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    return child.pid;
+  };
+
+  test("SC630: model-3.lock and context-nr-2.lock with a dead pid and an empty model-4.lock are removed; context-nr-1.lock held by this process and the state and subscriber lock folders stay", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "switch-locks-"));
+    const locks = join(runDir, "locks");
+    mkdirSync(join(locks, "state.lock"), { recursive: true });
+    mkdirSync(join(locks, "subscriber-notify.lock"));
+    const dead = String(await deadPid());
+    writeFileSync(join(locks, "model-3.lock"), dead);
+    writeFileSync(join(locks, "context-nr-2.lock"), dead);
+    writeFileSync(join(locks, "context-nr-1.lock"), String(process.pid));
+    writeFileSync(join(locks, "model-4.lock"), "");
+
+    const { removed, held } = await clearDeadSwitchLocks(runDir, seed(runDir), []);
+
+    expect([...removed].sort()).toEqual(["context-nr-2.lock", "model-3.lock", "model-4.lock"]);
+    expect(held).toEqual(["context-nr-1.lock"]);
+    expect(readdirSync(locks).sort()).toEqual([
+      "context-nr-1.lock",
+      "state.lock",
+      "subscriber-notify.lock",
+    ]);
+  });
+
+  test("SC631: model-1.lock claimed by a helper holds this process's pid and survives the clear while switch 1 is still requested", async () => {
+    const context = await setUp("type: context, action: new");
+
+    await modelHelper({ ...context, seq: 1 }, fakeTerminal(() => IDLE).terminal);
+    const requested = await appendRunEvent(context.run, {
+      type: "workflow.model.requested",
+      source: "workflow",
+      payload: { node: "think", model: "opus-x" },
+    });
+
+    const lock = join(context.runDir, "locks", "model-1.lock");
+    expect(requested.ok && requested.value.event.seq).toBe(1);
+    expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
+    const events = await jsonlEventStore(context.runDir).read();
+    expect(await clearDeadSwitchLocks(context.runDir, seed(context.runDir), events)).toEqual({
+      removed: [],
+      held: ["model-1.lock"],
+    });
+    expect(existsSync(lock)).toBe(true);
+  });
+
+  test("a model lock whose switch was applied and a context lock whose node completed are removed though both hold this live process's pid, since a finished helper's pid can belong to another process", async () => {
+    const context = await setUpSwitch();
+    await appendRunEvent(context.run, {
+      type: "workflow.model.applied",
+      source: "t",
+      payload: { requestSeq: context.seq, node: "think", model: "opus-x", applied: true },
+    });
+    const locks = join(context.runDir, "locks");
+    mkdirSync(locks, { recursive: true });
+    writeFileSync(join(locks, `model-${context.seq}.lock`), String(process.pid));
+    writeFileSync(join(locks, "context-nr-1.lock"), String(process.pid));
+    const step: NodeRun = {
+      nodeRunId: "nr-1",
+      nodeType: "context",
+      status: "completed",
+      startedAt: "2026-09-26T10:00:00Z",
+      completedAt: "2026-09-26T10:01:00Z",
+      artifacts: [],
+      input: null,
+    };
+    const state = { ...seed(context.runDir), nodeRuns: { step } };
+    const events = await jsonlEventStore(context.runDir).read();
+
+    const { removed, held } = await clearDeadSwitchLocks(context.runDir, state, events);
+
+    expect([...removed].sort()).toEqual(["context-nr-1.lock", `model-${context.seq}.lock`]);
+    expect(held).toEqual([]);
+    expect(readdirSync(locks)).toEqual([]);
+  });
+
+  test("a model-5.lock holding a live pid but written before the last boot is removed, since a reboot can hand its pid to another process", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "switch-locks-"));
+    const lock = join(runDir, "locks", "model-5.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, String(process.pid));
+    const beforeBoot = new Date(Date.now() - uptime() * 1000 - 60_000);
+    utimesSync(lock, beforeBoot, beforeBoot);
+
+    expect(await clearDeadSwitchLocks(runDir, seed(runDir), [])).toEqual({
+      removed: ["model-5.lock"],
+      held: [],
+    });
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("SC632: a run folder with no locks folder clears nothing and creates nothing", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "switch-locks-"));
+
+    expect(await clearDeadSwitchLocks(runDir, seed(runDir), [])).toEqual({ removed: [], held: [] });
+    expect(readdirSync(runDir)).toEqual([]);
   });
 });

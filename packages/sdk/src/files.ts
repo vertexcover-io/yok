@@ -49,7 +49,7 @@ export const parseFrontmatter = (text: string, path: string): Result<unknown> =>
   return parseYaml(lines.slice(1, end).join("\n"), path);
 };
 
-const isProcessAlive = (pid: number): boolean => {
+export const isProcessAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;

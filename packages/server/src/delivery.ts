@@ -46,8 +46,8 @@ export const deliverComments = async (
   const sent = read.value.comments.filter((c) => c.status === "sent");
   if (sent.length === 0) return { kind: "nothing" };
 
-  // A session that is gone does not come back, so this is not retried; the next comment or reply
-  // on the run tries again.
+  // Not retried: yok resume schedules a delivery once the session is back, and the next comment
+  // or reply on the run tries again.
   if (run.terminal === null || !(await isAgentAlive(run, deps.host))) {
     return { kind: "failed", reason: "agent session is not running" };
   }

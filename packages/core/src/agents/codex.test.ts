@@ -228,6 +228,37 @@ describe("codexProvider.launch", () => {
 
     expect(created.spec?.statusLine).toBeUndefined();
   });
+
+  test("SC620: with a session to continue it runs codex-x resume t-1 under the given terminal name, the prompt last and the status bar kept", async () => {
+    const created: Created = {};
+    const provider = codexProvider({
+      host: fakeHost(created),
+      binary: "codex-x",
+      newId: () => "fresh",
+    });
+
+    const launched = await provider.launch({
+      cwd: "/repo",
+      model: "gpt-x",
+      prompt: "$orchestrate --resume demo",
+      env: { YOK_RUN_ID: "r-9" },
+      orchestrateArgv: ARGV,
+      continueSession: { id: "t-1", terminalName: "codex-demo-3c4d" },
+    });
+
+    expect(launched.ok && launched.value.terminalName).toBe("codex-demo-3c4d");
+    const argv = created.spec?.argv ?? [];
+    expect(created.spec?.name).toBe("codex-demo-3c4d");
+    expect(argv.slice(0, 4)).toEqual([
+      "codex-x",
+      "resume",
+      "t-1",
+      "--dangerously-bypass-hook-trust",
+    ]);
+    expect(argv.slice(argv.indexOf("-m"), argv.indexOf("-m") + 2)).toEqual(["-m", "gpt-x"]);
+    expect(argv.at(-1)).toBe("$orchestrate --resume demo");
+    expect(created.spec?.statusLine).toEqual([...ARGV, "statusline", "--run-id", "r-9"]);
+  });
 });
 
 type PaneCall = readonly [string, unknown];
