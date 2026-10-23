@@ -23,4 +23,4 @@ Chosen: end it `completed` with `{ applied: false, reason }` and report it nowhe
 
 ## Consequences
 
-The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. The context-step failures that need a person are an input box yok cannot reach and a resume line Claude never takes, which ADR 0023 turns into Slack notices.
+The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. Only the resume line pings a person: when its input box never shows or Claude never takes it, ADR 0023 sends one Slack notice. A `/compact` yok cannot type, or Claude refuses, pings nobody; its step only ends `applied: false`.
