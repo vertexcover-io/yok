@@ -479,6 +479,20 @@ describe("runContextStep: compact", () => {
     expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
   });
 
+  test("a dialog footer quoted in the transcript above a real input box does not hide the box: /compact is typed with no Escape", async () => {
+    const context = await setUp("type: context, action: compact");
+    const quoted = `● The picker shows "Enter to select · Esc to cancel" under its list.\n${IDLE}`;
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => quoted,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
   test("an input box that never shows gets exactly 3 Escapes per try and no line, ends the compaction unapplied with that reason, and sends one notice: agent.input.unreachable for the resume line", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(

@@ -53,9 +53,9 @@ const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to cancel/i;
 // The text in Claude's input box, the lowest ❯ line between two rules, or undefined when no box
 // shows. A popup or dialog replaces the box, so seeing it is the sign that Enter submits a message.
 // A dialog draws its own ❯ cursor, maybe between rules, where Enter would pick an option such as
-// approving a permission, so its footer means no box.
+// approving a permission, so its footer below that cursor means no box. Only below: the capture
+// holds scrollback, where the transcript can quote a footer above a real box.
 const readInputBox = (screen: string): string | undefined => {
-  if (DIALOG_FOOTER.test(screen)) return undefined;
   const lines = screen.split("\n");
   const at = lines.findLastIndex(
     (line, i) =>
@@ -63,6 +63,7 @@ const readInputBox = (screen: string): string | undefined => {
       RULE.test(lines[i - 1] ?? "") &&
       RULE.test(lines[i + 1] ?? ""),
   );
+  if (at === -1 || DIALOG_FOOTER.test(lines.slice(at + 1).join("\n"))) return undefined;
   return lines[at]?.trim().slice(1).trim();
 };
 

@@ -590,6 +590,11 @@ describe("hasClaudeInputBox", () => {
     ["the limit menu", LIMIT_MENU, false],
     ["a ❯ with no rules around it", "❯ ", false],
     [
+      "a box under transcript text quoting a dialog footer",
+      `● Its footer reads Enter to select · Esc to cancel.\n${PROMPT}`,
+      true,
+    ],
+    [
       "a permission dialog whose ❯ 1. Yes sits between rules",
       `${box("❯ 1. Yes")}\n  2. No\nEsc to cancel · Tab to amend`,
       false,
