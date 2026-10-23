@@ -76,7 +76,7 @@ a complete plan.
 | `## Phases` | always — capability title, repos touched, builds/needs, *why the cut is there*, and the digraph |
 | `## Global constraints` | something binds every phase and is invisible to one built in isolation — fixed values, verbatim copy, platform limits. A value used in one phase belongs in that step. |
 | `## Signature index` | a name is defined in one phase and used in another |
-| `## Design References` | a phase builds a user-facing surface a design already defines — one row per screen, from `design/INDEX.md` |
+| `## Design References` | a phase builds a user-facing surface a design already defines — one row per screen, from `.yok/RUN/artifacts/design/INDEX.md` |
 | `## ADRs` | the docs scout returned ADRs that bind this work, or this stage wrote a new ADR |
 | `## Project Docs` | the docs scout returned docs under `docs/`, outside `docs/adr/`, that bind this work |
 | `## Blockers in existing code` | existing code must be repaired or worked around to build **or test** this |
@@ -119,11 +119,11 @@ finding.
 
 ### Design References
 
-Flat, one row per screen, copied from the design scout's `design/INDEX.md` and dropping its
-source column. It exists for the same reader as the signature index: a coder building one phase
-in isolation who needs to know that the checkout screen is already drawn, and where.
+Flat, one row per screen, copied from `design/INDEX.md` without its source column. It tells a
+coder building one phase in isolation which screens are already drawn, where, and at what
+width.
 
-The step that builds the surface carries the instruction — *build to `design/checkout-empty.png`* —
+The step that builds the surface carries the instruction, `build to design/FILE at WIDTHpx`,
 and the index carries the paths. A screen here that no step builds is a finding, as in the
 signature index; where that is deliberate, the row records it as
 `design/FILE — not built: REASON`.
