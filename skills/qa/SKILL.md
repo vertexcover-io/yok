@@ -7,7 +7,7 @@ description: >
   committing. Passing unit and e2e tests are not verification. Trigger on "tests pass",
   "implementation done", "ready for review", "ready to ship", "ship it", "verify this", "is this
   working", "can we merge", or any other move toward calling a feature finished.
-summary: Say whether QA passed, on which round, and how many bugs are left.
+summary: Name the verdict word (PASS, PARTIAL, FAIL or BLOCKED) and the round it came on. On PARTIAL, end the summary, on the same line, with the sentence QA could not verify N of M requirements; nothing failed. Write that sentence without quotes or backticks. M is the number of rows in the proof report's coverage table and N the number marked NOT VERIFIED. List none of the gaps. On FAIL, say how many bugs are left.
 mode: inline
 allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, Skill]
 tier: deep

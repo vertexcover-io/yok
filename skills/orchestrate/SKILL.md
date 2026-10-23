@@ -91,8 +91,9 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
      The summary is what the run's Slack thread shows when the node ends. Write one sentence, at
      most 200 characters, for a person who has not read the run. If the reply has a
      `summaryHint`, say what it asks for. If not, say what the node did and what it means, in
-     plain words. Never paste a verdict code, a raw metric, JSON or the output. Put it in double
-     quotes with no `"`, `$` or backtick inside. Each `--artifact` is one JSON object in single
+     plain words. Never paste a raw metric, JSON or the output, and name a verdict code only when
+     the `summaryHint` asks for it. Put it in double quotes with no `"`, `$` or backtick inside.
+     Each `--artifact` is one JSON object in single
      quotes: a file the skill wrote, `{"type":"TYPE","name":"NAME","path":"artifacts/PATH"}`, or
      a link, `{"type":"TYPE","name":"NAME","url":"https://…"}`. `type` says what it is, in
      lowercase words joined by `-`; `name` says which one, and is the type again when there is

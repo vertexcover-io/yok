@@ -33,6 +33,10 @@ export const QaOutputSchema = z
   .refine((output) => output.status !== "FAIL" || output.bugs.length > 0, {
     path: ["bugs"],
     message: "a FAIL names at least one bug for the fix round",
+  })
+  .refine((output) => output.status !== "PARTIAL" || output.gaps.length > 0, {
+    path: ["gaps"],
+    message: "a PARTIAL names at least one gap it could not verify",
   });
 
 export const schemas = { "qa.output.v1": QaOutputSchema };

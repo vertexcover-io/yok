@@ -8,6 +8,7 @@ const bug = {
   hint: "subtract refunds",
 };
 const report = "verification/proof-report.html";
+const gap = { scenario: "07", req: "R5", mechanism: "runs in a nightly job" };
 
 describe("QaOutputSchema", () => {
   test("SC1: a PASS verdict with no reason parses", () => {
@@ -17,14 +18,13 @@ describe("QaOutputSchema", () => {
   });
 
   test.each([
-    { status: "PARTIAL", report, bugs: [] },
-    { status: "FAIL", report: null, bugs: [{ ...bug, askUser: false }] },
-    { status: "BLOCKED", report: null, bugs: [] },
+    { status: "PARTIAL", report, gaps: [gap], bugs: [] },
+    { status: "FAIL", report: null, gaps: [], bugs: [{ ...bug, askUser: false }] },
+    { status: "BLOCKED", report: null, gaps: [], bugs: [] },
   ])("SC2: a $status verdict fails on reason without one and parses with one", (verdict) => {
-    const missing = QaOutputSchema.safeParse({ ...verdict, gaps: [] });
+    const missing = QaOutputSchema.safeParse(verdict);
     const given = QaOutputSchema.safeParse({
       ...verdict,
-      gaps: [],
       reason: "no-infra: podman is down",
     });
 
@@ -33,16 +33,17 @@ describe("QaOutputSchema", () => {
   });
 
   test.each([
-    ["SC11: a PASS verdict with no report", "PASS", [], ["report"]],
-    ["SC11: a PARTIAL verdict with no report", "PARTIAL", [], ["report"]],
-    ["SC12: a FAIL verdict with no bugs", "FAIL", [], ["bugs"]],
-  ])("%s is rejected on that field", (_label, status, bugs, path) => {
+    ["SC11: a PASS verdict with no report", "PASS", null, [], ["report"]],
+    ["SC11: a PARTIAL verdict with no report", "PARTIAL", null, [gap], ["report"]],
+    ["SC12: a FAIL verdict with no bugs", "FAIL", null, [], ["bugs"]],
+    ["a PARTIAL verdict with no gaps", "PARTIAL", report, [], ["gaps"]],
+  ])("%s is rejected on that field", (_label, status, givenReport, gaps, path) => {
     const result = QaOutputSchema.safeParse({
       status,
       reason: "why",
-      report: null,
-      gaps: [],
-      bugs,
+      report: givenReport,
+      gaps,
+      bugs: [],
     });
 
     expect(result.error?.issues.map((issue) => issue.path)).toEqual([path]);
