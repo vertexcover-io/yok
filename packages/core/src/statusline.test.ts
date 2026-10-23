@@ -210,9 +210,8 @@ describe("renderStatusline", () => {
     ["usage-limit", { resumeAt: new Date(2026, 8, 26, 14, 0).toISOString() }, "paused until 14:00"],
     ["stuck", { message: null }, "stuck"],
     ["agent-error", { error: "authentication_failed", message: null }, "agent error"],
-    ["line-lost", { step: "design", line: "/yok:orchestrate --resume feat-x" }, "line lost"],
   ])(
-    "SC135, SC17: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
+    "SC135: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
     async (reason, details, phrase) => {
       const blocker = { reason, node: "design", since: ago(MINUTE), details };
       const run = makeRun({ status: "blocked", blocker, nodeRuns: { design: node("running") } });

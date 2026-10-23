@@ -201,7 +201,6 @@ const blockerText = (blocker) => {
       ? `hit its usage limit; resumes at ${new Date(details.resumeAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
     : reason === "stuck" ? (details.message ?? "stopped making progress")
     : reason === "agent-error" ? (details.message ?? details.error)
-    : reason === "line-lost" ? `Claude did not take ${details.line}`
     : reason;
   return blocker.node === undefined ? text : `${text} · in ${blocker.node}`;
 };

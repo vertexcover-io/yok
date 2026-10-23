@@ -109,18 +109,9 @@ const FINISHED: Readonly<Record<string, string>> = {
 
 // Phrased around the words the screen checks look for, such as "limit".
 const blockedText = (blocker: Blocker): string => {
-  switch (blocker.reason) {
-    case "question":
-      return "needs your answer";
-    case "usage-limit":
-      return `paused until ${clockOf(blocker.details.resumeAt)}`;
-    case "stuck":
-      return "stuck";
-    case "agent-error":
-      return "agent error";
-    case "line-lost":
-      return "line lost";
-  }
+  if (blocker.reason === "question") return "needs your answer";
+  if (blocker.reason === "usage-limit") return `paused until ${clockOf(blocker.details.resumeAt)}`;
+  return blocker.reason === "stuck" ? "stuck" : "agent error";
 };
 
 const runPart = (state: State, running: Running, workflow: Workflow | null): string[] => {

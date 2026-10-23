@@ -767,7 +767,7 @@ describe("runContextStep: compact", () => {
     expect(await typesIn(context.runDir)).toContain("agent.line.lost");
   });
 
-  test("SC13: a resume line lost on both tries after a compaction that worked records agent.line.lost for step, session A and the line, blocks the run on line-lost, and leaves the node applied", async () => {
+  test("SC13: a resume line lost on both tries after a compaction that worked records agent.line.lost for step, session A and the line, leaves the run running with no blocker, and leaves the node applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(context, (line) => line !== RESUME);
 
@@ -779,10 +779,8 @@ describe("runContextStep: compact", () => {
     expect(lost.map((event) => event.payload)).toEqual([
       { agent: "claude", sessionId: "A", step: "step", line: RESUME },
     ]);
-    expect(stateOf(context.runDir)).toMatchObject({
-      status: "blocked",
-      blocker: { reason: "line-lost", details: { step: "step", line: RESUME } },
-    });
+    expect(stateOf(context.runDir).status).toBe("running");
+    expect(stateOf(context.runDir).blocker).toBeUndefined();
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });

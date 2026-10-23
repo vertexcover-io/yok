@@ -23,4 +23,4 @@ Chosen: end it `completed` with `{ applied: false, reason }` and report it nowhe
 
 ## Consequences
 
-The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. The one context-step failure that needs a person is a resume line Claude never takes, which ADR 0023 turns into a `line-lost` blocker.
+The output keeps `applied: false` and its reason (`ContextOutputSchema`) for anyone reading the event log or the step's output; no surface derives a status from it. The one context-step failure that needs a person is a resume line Claude never takes, which ADR 0023 turns into a Slack notice.

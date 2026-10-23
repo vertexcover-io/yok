@@ -5,7 +5,7 @@ source: docs/prd-lost-compact-recovery.md
 tags: [agent-plugin, harness-server-to-session, workflow-engine, event-store]
 ---
 
-# A line yok types into Claude's pane for a context step counts only once a Claude hook reports it; only a lost resume line blocks the run
+# A line yok types into Claude's pane for a context step counts only once a Claude hook reports it; a lost resume line pings Slack
 
 ## Context and Problem Statement
 
@@ -20,7 +20,7 @@ yok drives a compaction by typing `/compact` and then the resume line into the C
 
 ## Decision Outcome
 
-Chosen: checked typing confirmed by Claude hooks, because it is the only option that sees a lost line within seconds whatever the screen shows: Escape alone misses a popup that opens after it or ignores it, screen text changes between Claude Code versions, and a compaction can take minutes, so SessionStart reports a loss late. Only the resume line typed after a context step is worth a person's attention when it is lost twice: without it the run has nobody driving it. So `resumeRun` alone records `agent.line.lost`, and this amends 0013: that event opens a `line-lost` blocker, which `agent.resumed` clears like the others, and the Slack notifier posts it with a mention. A `/compact` lost twice records nothing; the step ends `applied: false` with reason `Claude did not take /compact after 2 tries` (0024), and the resume line follows as usual. A compaction's SessionStart closing its step also counts as Claude taking the `/compact`, so a receipt that never lands cannot get a compaction typed twice.
+Chosen: checked typing confirmed by Claude hooks, because it is the only option that sees a lost line within seconds whatever the screen shows: Escape alone misses a popup that opens after it or ignores it, screen text changes between Claude Code versions, and a compaction can take minutes, so SessionStart reports a loss late. Only the resume line typed after a context step is worth a person's attention when it is lost twice: without it the run has nobody driving it. So `resumeRun` alone records `agent.line.lost`, and the Slack notifier posts it with a mention. The run's status does not change: the notice is how a person hears of it, so no blocker, runs-page banner or status line text repeats it. A `/compact` lost twice records nothing; the step ends `applied: false` with reason `Claude did not take /compact after 2 tries` (0024), and the resume line follows as usual. A compaction's SessionStart closing its step also counts as Claude taking the `/compact`, so a receipt that never lands cannot get a compaction typed twice.
 
 ## Consequences
 

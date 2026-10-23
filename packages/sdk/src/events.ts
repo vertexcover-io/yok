@@ -297,8 +297,8 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
-// yok typed a line into the agent's pane twice and the agent took neither; the run waits on a
-// person. step is the node the line was typed for.
+// yok typed the resume line into the agent's pane twice and the agent took neither, so nobody
+// drives the run; the notifier pings a person. step is the node the line was typed for.
 export const LineLostEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,
@@ -1020,17 +1020,6 @@ const onAgentStopped: EventHandler = (state, event) => {
   return block(state, { ...blockerBase(state, event), reason: "agent-error", details });
 };
 
-const onLineLost: EventHandler = (state, event) => {
-  const parsed = LineLostEvent.safeParse(event);
-  if (!parsed.success) return state;
-  const { step, line } = parsed.data.payload;
-  return block(state, {
-    ...blockerBase(state, event),
-    reason: "line-lost",
-    details: { step, line },
-  });
-};
-
 const onAgentResumed: EventHandler = (state, event) => {
   const parsed = AgentResumedEvent.safeParse(event);
   return parsed.success ? unblock(state, parsed.data.payload.reason) : state;
@@ -1053,7 +1042,6 @@ export const builtInHandlers: EventHandlers = {
   "agent.limit.resumed": (state) => unblock(state, "usage-limit"),
   "agent.stuck": onAgentStuck,
   "agent.stopped": onAgentStopped,
-  "agent.line.lost": onLineLost,
   "agent.resumed": onAgentResumed,
   "workspace.created": onWorkspaceCreated,
   "workspace.repository.added": onRepositoryAdded,
