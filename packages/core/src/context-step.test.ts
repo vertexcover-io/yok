@@ -355,6 +355,20 @@ describe("runContextStep: new", () => {
       output: { action: "new", applied: false, reason: expect.stringContaining("SessionStart") },
     });
   });
+
+  test("after a relaunch with no SessionStart, the resume line is checked against the new session in the pane, so it is typed once and not recorded lost", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider, relaunches } = fakeProvider();
+    const fake = fakeTerminal(
+      () => IDLE,
+      async (text) => void (await receive(context.run, text, relaunches.at(-1)?.sessionId)),
+    );
+
+    await helper(context, fake.terminal, provider);
+
+    expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+  });
 });
 
 // A terminal whose hook reports a typed line only when TAKES says Claude took that try of it

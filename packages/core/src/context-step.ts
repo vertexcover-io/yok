@@ -17,6 +17,7 @@ import {
   type RunRef,
   readState,
   runDirOf,
+  SessionReplacedEvent,
   SessionStartCalledEvent,
   type State,
   sessionEnv,
@@ -454,7 +455,7 @@ const resumeRun = async (target: LineTarget): Promise<void> => {
   if (!sent.ok) target.log.error({ err: sent.error }, "resume prompt not taken");
 };
 
-// A context step that did not happen still completes, and the old session carries on.
+// A context step that did not happen still completes, and the session in the pane carries on.
 const recover = async (
   options: ContextStepOptions,
   target: LineTarget,
@@ -493,7 +494,22 @@ export const runContextStep = async (options: ContextStepOptions): Promise<void>
     log,
     action === "new" ? startNewSession(options, terminal) : compact(options, target, prompt),
   );
-  if (!outcome.ok) await recover(options, target, action, outcome.error);
+  if (outcome.ok) return;
+  const sessionId = await sessionInPane(run, options.oldSessionId);
+  await recover(options, { ...target, sessionId }, action, outcome.error);
+};
+
+// The session in the pane after a step that began with OLD there: a new session's relaunch swaps
+// it in, and a relaunch that fails swaps OLD back, so the last swap involving OLD says which.
+const sessionInPane = async (run: RunRef, oldSessionId: string): Promise<string> => {
+  const swap = (await jsonlEventStore(runDirOf(run.cwd, run.name)).read())
+    .filter((event) => event.type === "workflow.session.replaced")
+    .map((event) => SessionReplacedEvent.safeParse(event).data?.payload)
+    .findLast(
+      (payload) =>
+        payload?.previousSessionId === oldSessionId || payload?.sessionId === oldSessionId,
+    );
+  return swap?.sessionId ?? oldSessionId;
 };
 
 export type ModelStepOptions = Readonly<{
