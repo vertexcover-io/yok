@@ -11,10 +11,14 @@ allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Ski
 tier: deep
 consumes:
   - artifact: design
+  - artifact: design-refs
+    optional: true
 produces:
   - artifact: plan
 protocols: []
 scopes: []
+verifiers:
+  - { id: design-coverage, module: scripts/plan.ts, functionName: checkDesignCoverage }
 references:
   plan-format:
     path: references/plan-sections.md
@@ -28,9 +32,6 @@ references:
   docs-scout:
     path: references/docs-scout.md
     description: The brief for the sub-agent that finds the ADRs and docs binding the task.
-  design-scout:
-    path: references/design-scout.md
-    description: The brief for the sub-agent that puts the ticket's design frames on disk.
 ---
 
 # Planning
@@ -83,10 +84,9 @@ step 2. Load the `writing-style` skill before you write the plan: a person appro
      design names, where it lands, its call sites, the conventions and tests around it, and what
      is fragile nearby. Findings come back with `file:line` pointers.
    - the **docs scout**, with the `docs-scout` reference as its brief.
-   - the **design scout**, with the `design-scout` reference as its brief, only when the change
-     has a user-facing surface.
 3. The agents locate; you read. Open every file a step will edit, every doc the docs scout
-   returns, and every frame `design/INDEX.md` names. An active ADR is a decision already made.
+   returns, and every frame `.yok/RUN/artifacts/design/INDEX.md` lists. An active ADR is a
+   decision already made.
 4. Search the whole workspace before you claim something is absent. Miss an existing helper and
    the coder builds a second one.
 
@@ -135,8 +135,11 @@ Three rules bind every step:
   evidence and recommend the new decision. On the answer, fix that line in `design.md`, within
   its caps, so it stays true, and record the change in plan.md's `## Design corrections`.
 - **Every frame gets a step.** A step that builds a surface a frame defines names it, `build to
-  design/x.png`, and carries that frame's style facts. A screen no step builds is recorded in
-  plan.md as `design/FILE — not built: REASON`.
+  design/FILE at WIDTHpx` with the width the index gives, carries that frame's style facts, and
+  quotes each `design/spec.md` rule the surface must keep. A frame the index gives no width is
+  named `build to design/FILE`.
+  A screen no step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done`
+  checks that every frame has one or the other.
 
 **Done when:** every phase file and `plan.md` exist, and every file a step edits was opened.
 
@@ -155,7 +158,7 @@ Three rules bind every step:
 - **Coverage.** Every requirement has a matrix row · every scenario appears once across the
   phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
   real-browser fact or a named Blocker · every frame in `design/INDEX.md` is built or recorded
-  as not built.
+  as not built, with its width on the step.
 
 **Fresh-eyes review.** Dispatch one sub-agent with the paths to the plan files, never this
 conversation. It opens every address the steps give and checks that each diff's context and

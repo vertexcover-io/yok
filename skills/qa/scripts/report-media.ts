@@ -300,7 +300,7 @@ const pathOf = (entry: unknown, key: string): unknown => (isRecord(entry) ? entr
 
 const listOf = (v: unknown): readonly unknown[] => (Array.isArray(v) ? v : []);
 
-/** Every file the report names — video, frames, design baseline, artifacts — once each, in order. */
+/** Every file the report names — video, frames, design baseline and re-shoot, artifacts — once each, in order. */
 export function mediaPaths(data: Record<string, unknown>): readonly string[] {
   const named = listOf(data["scenarios"])
     .filter(isRecord)
@@ -308,6 +308,7 @@ export function mediaPaths(data: Record<string, unknown>): readonly string[] {
       scenario["video"],
       ...listOf(scenario["frames"]).map((frame) => pathOf(frame, "src")),
       isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["baseline"] : null,
+      isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["build"] : null,
       ...listOf(scenario["artifacts"]).map((artifact) => pathOf(artifact, "href")),
     ]);
   const local = named

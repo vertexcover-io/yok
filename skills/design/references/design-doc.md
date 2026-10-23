@@ -24,6 +24,7 @@ Hard caps. Count before showing the doc; over a cap, something belongs to planni
 | Body words, front matter and mermaid excluded | 500 |
 | Diagrams | 1 |
 | `What changes` rows | 6 |
+| `Screens` lines | one per `design/INDEX.md` row |
 | `Decisions` rows | 3 |
 | `Risks` bullets | 3 |
 
@@ -73,6 +74,9 @@ flowchart LR
 | Config | | |
 | User surface | | |
 
+## Screens
+- `design/FILE` — what this frame settles for the build: the components and states it draws.
+
 ## Decisions
 | # | What we do | Instead of | Because |
 |---|---|---|---|
@@ -115,6 +119,8 @@ D3: … — blocked-by: D1 · open
 - **Decisions**: one row per fork that changes the shape; a fork that changes only code is
   planning's. Name the mechanism: the service, the key, the value. Mark forks closed on the
   user's behalf `inferred`. Cite the ticket or a `file:line` in `Because` where one drives it.
+- **Screens**: only when `design/INDEX.md` exists, one line per row. The rules in
+  `design/spec.md` go in one `Decisions` row.
 - **Risks**: gaps in the task that bite, not a checklist. Each says what it costs if ignored.
 - **Hard to undo**: a changed contract every caller sees, a new table, a new runtime dependency.
 - **Unsure**: the agent's own gaps in reading the task, not risks in the system.

@@ -77,15 +77,20 @@
        frames[]    {src,label} in order. A bare path works too — the label is
                    then derived from the filename.
        framesOpen  true to leave the Screenshots toggle open on load
-       visualMatch {baseline,fidelity,matched,findings[]} — the screen read
-                   against the design that defines it. baseline is the
-                   reference image's path, or null for a screen nobody drew;
-                   fidelity is derived (100, less 25 a BLOCKER and 8 a HIGH),
-                   null when baseline is. matched is one sentence on what lined
-                   up. findings[] are {severity,what,baselineShows,buildShows,
-                   evidence}, severity BLOCKER | HIGH only — a spacing delta
-                   against the baseline is not a finding. The baseline renders
-                   beside the first frame, both opening in the modal.
+       visualMatch {baseline,build,width,fidelity,matched,specRules[],findings[]}
+                   — the screen read against the design that defines it.
+                   baseline is the reference image's path, or null for a
+                   screen nobody drew; build is the screen re-shot at the
+                   design's width, and width that width, both absent when no
+                   re-shoot was needed. fidelity is derived (100, less 25 a
+                   BLOCKER and 8 a HIGH), null when baseline is. matched is one
+                   sentence on what lined up. specRules[] are
+                   {rule,held,evidence}, one per design/spec.md rule a plan
+                   step cites. findings[] are {severity,what,baselineShows,
+                   buildShows,evidence}, severity BLOCKER | HIGH only — a
+                   spacing delta against the baseline is not a finding. The
+                   baseline renders beside build, or the first frame when there
+                   is no build, both opening in the modal.
        proofs[]    {tag,heading,body,capture} — what a frame cannot show.
                    capture is the verbatim exchange, inline and whole: the
                    request as sent, the status, the response as it came back.
@@ -169,8 +174,13 @@
       ],
       "visualMatch": {
         "baseline": "<path to the design that defines this screen, or null if nobody drew it>",
+        "build": "screenshots/01_<slug>.design.png",
+        "width": 1440,
         "fidelity": 100,
         "matched": "<one sentence on what lined up>",
+        "specRules": [
+          { "rule": "<the spec rule as written>", "held": true, "evidence": "<the computed style that shows it>" }
+        ],
         "findings": [
           {
             "severity": "<BLOCKER | HIGH — never a spacing delta>",
@@ -518,6 +528,9 @@ a { color: var(--accent); }
 .vm__matched { min-width: 0; line-height: 1.5; }
 .vm__pair { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); max-width: 600px; }
 .vm__f { border: 1px solid var(--line); border-radius: 4px; padding: 9px 12px; margin-top: 8px; background: var(--rail); }
+.vm__spec { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6; color: var(--fg-2); }
+.vm__spec li.is-pass b { color: var(--pass); }
+.vm__spec li.is-hot b { color: var(--fail); }
 .vm__sev {
   font: 700 9px/1.6 var(--ui); letter-spacing: .1em; text-transform: uppercase;
   padding: 2px 6px; border-radius: 3px; color: #fff; margin-right: 8px;
@@ -705,10 +718,11 @@ code {
 .mo__cap { flex: none; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg-2); display: flex; gap: 10px; align-items: center; }
 
 @media (max-width: 900px) {
-  .shell { grid-template-columns: 1fr; height: auto; }
+  .shell { grid-template-columns: minmax(0, 1fr); height: auto; }
   .rail { border-right: 0; border-bottom: 1px solid var(--line); max-height: 260px; }
   .pane { overflow: visible; }
   .bar__title { display: none; }
+  .bar__counts { display: none; }
   .pane__in { padding: 16px 14px 60px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -1051,7 +1065,8 @@ code {
 
     if (vm.baseline) {
       const pair = [{ src: vm.baseline, cap: 'Design' }];
-      if (frames[0]) pair.push({ src: frames[0].src, cap: 'Built' });
+      if (vm.build) pair.push({ src: vm.build, cap: vm.width ? 'Built at ' + vm.width + 'px' : 'Built' });
+      else if (frames[0]) pair.push({ src: frames[0].src, cap: 'Built' });
       const grid = el('div', 'vm__pair');
       pair.forEach((p, j) => {
         const t = tile({ src: p.src, cap: p.cap, n: j ? '02' : '01' });
@@ -1059,6 +1074,18 @@ code {
         grid.appendChild(t);
       });
       sec.appendChild(grid);
+    }
+
+    if ((vm.specRules || []).length) {
+      const list = el('ul', 'vm__spec');
+      vm.specRules.forEach(r => {
+        const li = el('li', r.held ? 'is-pass' : 'is-hot');
+        li.appendChild(el('b', null, r.held ? 'held ' : 'broken '));
+        const sp = el('span'); sp.innerHTML = rich(r.rule + (r.evidence ? ' — ' + r.evidence : ''));
+        li.appendChild(sp);
+        list.appendChild(li);
+      });
+      sec.appendChild(list);
     }
 
     (vm.findings || []).forEach(f => {

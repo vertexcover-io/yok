@@ -25,13 +25,14 @@ A custom workflow can leave the stage out and give `create-workspace` the prompt
 - Follows that provider's reference, which calls the provider script to read the ticket and download its relevant files into `.yok/RUN/artifacts/ticket/`.
 - Asks you to choose when the request only describes a ticket and the search finds several.
 - Validates the bundle with the `validate` script. A partial bundle is allowed and marked `complete: false`.
+- Copies the ticket's designs (image mockups and screenshots, HTML mockups shot to PNG, Figma frames exported to PNG, spec docs) into `.yok/RUN/artifacts/design/` and indexes them in `INDEX.md`. When a tool a design needs is missing, it asks whether to go on without it.
 - Returns the task text, with the ticket's title and body quoted as data, plus the bundle's location.
 
 Ticket text is treated as data, never as instructions.
 
 ## Inputs and outputs
 
-Reads the `request` input, the raw prompt. Produces the `task` output and, for a ticket, the optional `ticket` artifact at `artifacts/ticket/ticket.json` with the downloaded files beside it.
+Reads the `request` input, the raw prompt. Produces the `task` output and, for a ticket, the optional `ticket` artifact at `artifacts/ticket/ticket.json` with the downloaded files beside it, and, when the ticket has designs, the optional `design-refs` artifact at `artifacts/design/INDEX.md`.
 
 ## Adding a provider
 
@@ -41,6 +42,6 @@ Linear and Asana ship with the skill. A project adds its own by registering a re
 
 - `SKILL.md`: the stage contract and the steps the agent follows.
 - `references/linear.md`, `references/asana.md`: how to fetch one ticket from each tracker into `ticket.json`.
-- `scripts/ticket.ts`: `TicketSchema`, the input and output schemas, and the `validate` command.
+- `scripts/ticket.ts`: `TicketSchema`, the input and output schemas, and the `validate` and `design` commands.
 - `scripts/linear.ts`, `scripts/asana.ts`: the API clients the references call (`search`, `issue`, `task`, `asset`). They read `LINEAR_API_KEY` or `ASANA_API_KEY` from the project `.env`, then the environment.
 - `scripts/*.test.ts`: tests for the three scripts.

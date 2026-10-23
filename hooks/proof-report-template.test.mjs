@@ -48,9 +48,22 @@ test("the renderer and the scaffold agree on the visualMatch key", () => {
   assert.ok(island().scenarios.some((s) => s.visualMatch));
 });
 
-test("the scaffold demonstrates every documented visualMatch field", () => {
+// The renderer reads the re-shoot and the spec rules off the same keys the
+// scaffold writes; a drift between them renders the first frame and no rules.
+test("SC23 (design): the scaffold demonstrates every documented visualMatch field, and the renderer reads build and specRules", () => {
   const vm = island().scenarios.find((s) => s.visualMatch).visualMatch;
-  assert.deepEqual(Object.keys(vm), ["baseline", "fidelity", "matched", "findings"]);
+  assert.deepEqual(Object.keys(vm), [
+    "baseline",
+    "build",
+    "width",
+    "fidelity",
+    "matched",
+    "specRules",
+    "findings",
+  ]);
+  assert.deepEqual(Object.keys(vm.specRules[0]), ["rule", "held", "evidence"]);
+  assert.match(TEMPLATE, /src: vm\.build/);
+  assert.match(TEMPLATE, /vm\.specRules\.forEach/);
   assert.deepEqual(Object.keys(vm.findings[0]), [
     "severity",
     "what",

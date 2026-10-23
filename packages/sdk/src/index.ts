@@ -126,6 +126,13 @@ export {
   type Workspace,
   WorkspaceSchema,
 } from "./contracts.ts";
+export {
+  type DesignFrame,
+  indexedFrames,
+  isBuiltTo,
+  isNotBuilt,
+  readPlanText,
+} from "./design-index.ts";
 export { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
 export {
   AgentResumedEvent,
