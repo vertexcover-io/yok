@@ -257,7 +257,7 @@ const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
     if (blocked === undefined) return undefined;
     return makeNotice(`⚠ Agent blocked at ${blocked.step} — Could not reach Claude's input box`, {
       mention: true,
-      body: "yok pressed Escape and Claude's input box still did not show, so it typed nothing. Open the session and close whatever covers the box.",
+      body: `Claude's input box did not show, so yok typed nothing. Open the session, close whatever covers Claude's input box, and type ${blocked.line}.`,
     });
   },
   "agent.stopped": (event, state) => {

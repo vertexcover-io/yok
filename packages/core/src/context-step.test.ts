@@ -546,7 +546,7 @@ describe("runContextStep: compact", () => {
       (event) => event.type === "agent.input.unreachable",
     );
     expect(unreachable.map((event) => event.payload)).toEqual([
-      { agent: "claude", sessionId: "A", step: "step" },
+      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
     ]);
     expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
     expect(stateOf(context.runDir).status).toBe("running");

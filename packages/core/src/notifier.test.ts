@@ -273,16 +273,17 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "an input box yok could not reach pings, naming the step in the title and what to do in the body",
+      "an input box yok could not reach pings, naming the step in the title and the line to type in the body",
       event("agent.input.unreachable", {
         agent: "claude",
         sessionId: "s-1",
         step: "compact-before-fix",
+        line: "/yok:orchestrate --resume feat-x",
       }),
       openDesign,
       notice("⚠ Agent blocked at compact-before-fix — Could not reach Claude's input box", {
         mention: true,
-        body: "yok pressed Escape and Claude's input box still did not show, so it typed nothing. Open the session and close whatever covers the box.",
+        body: "Claude's input box did not show, so yok typed nothing. Open the session, close whatever covers Claude's input box, and type /yok:orchestrate --resume feat-x.",
       }),
     ],
     [

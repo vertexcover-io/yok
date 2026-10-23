@@ -461,7 +461,7 @@ const resumeRun = async (target: LineTarget): Promise<void> => {
       ? {
           type: "agent.input.unreachable",
           source: "orchestrate",
-          payload: { agent: "claude", sessionId, step },
+          payload: { agent: "claude", sessionId, step, line },
         }
       : {
           type: "agent.line.lost",

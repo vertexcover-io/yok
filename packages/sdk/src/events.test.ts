@@ -930,7 +930,11 @@ describe("blocker", () => {
   });
 
   test("an input box yok could not reach leaves the run running with no blocker; only the notifier tells a person", () => {
-    const unreachable = runEvent(2, "agent.input.unreachable", { ...session, step: "design" });
+    const unreachable = runEvent(2, "agent.input.unreachable", {
+      ...session,
+      step: "design",
+      line: "/yok:orchestrate --resume r",
+    });
     unblockedState(project([designRunning, unreachable]));
   });
 
@@ -1192,7 +1196,14 @@ describe("emitEvent refusals", () => {
       "agent.input.unreachable with no step",
       "agent.input.unreachable",
       {},
-      session,
+      { ...session, line: "/yok:orchestrate --resume r" },
+      "agent.input.unreachable",
+    ],
+    [
+      "agent.input.unreachable with no line",
+      "agent.input.unreachable",
+      {},
+      { ...session, step: "design" },
       "agent.input.unreachable",
     ],
   ])(

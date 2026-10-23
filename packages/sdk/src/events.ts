@@ -298,13 +298,14 @@ export const LineLostEvent = z.object({
   }),
 });
 
-// yok sent Escapes to the agent's pane and its input box still did not show, so it typed nothing;
-// the notifier pings a person. step is the node the line was meant for.
+// The agent's input box did not show in its pane, so yok typed nothing; the notifier pings a
+// person to type line. step is the node the line was meant for.
 export const AgentInputUnreachableEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,
     sessionId: NonEmptyStringSchema,
     step: NonEmptyStringSchema,
+    line: NonEmptyStringSchema,
   }),
 });
 
