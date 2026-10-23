@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { runDirOf, type SavedPolicies, type WorkflowRun } from "@yok/sdk";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
-import { completeContextStep } from "./runs.ts";
 import {
   eventsOf,
   fileArtifact,
@@ -876,75 +875,5 @@ nodes:
     const late = orchestrate(repo, home, done, env, "{}");
     expect(late.code).toBe(1);
     expect(JSON.parse(late.stderr)).toMatchObject({ kind: "not-running", retryable: false });
-  });
-});
-
-describe("SC26: orchestrate next notes", () => {
-  const env = { YOK_SKILLS_DIR: STAGE_SKILLS };
-  const COMPACT_THEN_FIX = `name: compact-then-fix
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - { id: compact-before-fix, type: context, action: compact }
-  - { id: fix, type: agent, prompt: fix it, dependsOn: [compact-before-fix], input: {} }
-`;
-  const nextReply = (repo: string, home: string) =>
-    JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
-  const completedContext = async (output: Parameters<typeof completeContextStep>[2]) => {
-    const { repo, home } = startedRun(COMPACT_THEN_FIX);
-    const context = nextReply(repo, home);
-    expect(context).toMatchObject({ kind: "context", nodeId: "compact-before-fix" });
-    const run = { id: "r-1", cwd: repo, name: "feat-x" };
-    expect((await completeContextStep(run, context.nodeRunId, output)).ok).toBe(true);
-    return { repo, home };
-  };
-
-  test("SC22: the first next after a compact that did not happen carries its note and hands out fix, and the next one has no notes", async () => {
-    const reason = "Claude did not take /compact after 2 tries";
-    const { repo, home } = await completedContext({ action: "compact", applied: false, reason });
-
-    const first = nextReply(repo, home);
-    expect(first.notes).toEqual([`compact-before-fix was skipped: ${reason}`]);
-    expect(first.steps).toMatchObject([{ nodeId: "fix" }]);
-    expect(nextReply(repo, home)).not.toHaveProperty("notes");
-  });
-
-  test("SC26a: an agent node whose output looks like a skipped context step adds no note", () => {
-    const { repo, home } = startedRun(`name: agent-then-fix
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - { id: talk, type: agent, prompt: talk, input: {}, output: { zodSchema: Json } }
-  - { id: fix, type: agent, prompt: fix it, dependsOn: [talk], input: {} }
-`);
-    const [talk] = nextReply(repo, home).steps;
-    const lookalike = JSON.stringify({ action: "compact", applied: false, reason: "made up" });
-    const done = [
-      "done",
-      talk.nodeRunId,
-      "--run",
-      "feat-x",
-      "--summary",
-      "Talked.",
-      "--output",
-      "-",
-    ];
-    expect(orchestrate(repo, home, done, env, lookalike).code).toBe(0);
-
-    const reply = nextReply(repo, home);
-    expect(reply.steps).toMatchObject([{ nodeId: "fix" }]);
-    expect(reply).not.toHaveProperty("notes");
-  });
-
-  test("SC23: a next after a compact that happened has no notes field", async () => {
-    const { repo, home } = await completedContext({
-      action: "compact",
-      applied: true,
-      sessionId: "s1",
-    });
-
-    const reply = nextReply(repo, home);
-    expect(reply.steps).toMatchObject([{ nodeId: "fix" }]);
-    expect(reply).not.toHaveProperty("notes");
   });
 });

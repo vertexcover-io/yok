@@ -197,27 +197,24 @@ const tryLine = async (
 
 // Types a line Claude must take, where a popup may have opened: it counts once Claude's hook
 // reports it, or `checks.applied` finds its effect, and is typed at most LINE_ATTEMPTS times.
+// false: Claude took neither try.
 const sendLine = async (
   target: LineTarget,
   line: string,
   checks: LineChecks = {},
-): Promise<Result<void>> => {
+): Promise<Result<boolean>> => {
   const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
   const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
   for (let attempt = 1; attempt <= LINE_ATTEMPTS; attempt += 1) {
     const taken = await tryLine(target, store, line, checks, afterSeq);
-    if (!taken.ok) return taken;
-    if (taken.value) return { ok: true, value: undefined };
+    if (!taken.ok || taken.value) return taken;
     target.log.warn({ line, attempt }, "line not received");
   }
-  const { run, sessionId, step } = target;
-  await appendRunEvent(run, {
-    type: "agent.line.lost",
-    source: "orchestrate",
-    payload: { agent: "claude", sessionId, step, line },
-  });
-  return { ok: false, error: `Claude did not take ${line} after ${LINE_ATTEMPTS} tries` };
+  return { ok: true, value: false };
 };
+
+const lostReason = (line: string): string =>
+  `Claude did not take ${line} after ${LINE_ATTEMPTS} tries`;
 
 // A tmux call can throw (a hung tmux times out) and so can reading a half-written event line. The
 // helper runs detached, so a throw would end it silently and leave the node open for good: it
@@ -392,6 +389,8 @@ const compact = async (
     applied: async () => !(await findContextPlanNode(options.run, options.nodeRunId)).ok,
   });
   if (!sent.ok) return sent;
+  // A compaction that did not happen is no emergency: the run goes on in a fuller session.
+  if (!sent.value) return { ok: false, error: lostReason(command) };
   log.info({ command }, "compact received");
   const done = await watchForFailure(options, target.terminal, "compact");
   if (!done.ok) return done;
@@ -450,9 +449,20 @@ export const completeContextOnSessionStart = async (
 };
 
 // The session in the pane carries on: after its compaction, or after a step that did not happen.
+// A resume line Claude never takes leaves the run with nobody driving it, so a lost one blocks the
+// run and pings a person.
 const resumeRun = async (target: LineTarget): Promise<void> => {
-  const sent = await catchThrow(target.log, sendLine(target, resumePrompt(target.run)));
-  if (!sent.ok) target.log.error({ err: sent.error }, "resume prompt not taken");
+  const line = resumePrompt(target.run);
+  const sent = await catchThrow(target.log, sendLine(target, line));
+  if (!sent.ok) return target.log.error({ err: sent.error }, "resume prompt not taken");
+  if (sent.value) return;
+  const { run, sessionId, step, log } = target;
+  log.error({ line }, lostReason(line));
+  await appendRunEvent(run, {
+    type: "agent.line.lost",
+    source: "orchestrate",
+    payload: { agent: "claude", sessionId, step, line },
+  });
 };
 
 // A context step that did not happen still completes, and the session in the pane carries on.

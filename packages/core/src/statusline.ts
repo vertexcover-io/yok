@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import {
   type Blocker,
-  ContextOutputSchema,
   type NodeRun,
   parseJson,
   parseYaml,
@@ -102,21 +101,6 @@ const elapsed = (startedAt: string, now: number): string => {
 const clockOf = (iso: string): string =>
   new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 
-const listNodeRuns = (runs: Readonly<Record<string, NodeRun>>): readonly NodeRun[] =>
-  Object.values(runs).flatMap((run) => [run, ...listNodeRuns(run.nodes ?? {})]);
-
-// Until another step ends, the line says the last one, a context step, did not happen.
-const skipPart = (state: State): string[] => {
-  const last = listNodeRuns(state.nodeRuns)
-    .filter((run) => run.completedAt != null)
-    .toSorted((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)))
-    .at(-1);
-  if (last?.nodeType !== "context") return [];
-  const output = ContextOutputSchema.safeParse(last.output).data;
-  if (output === undefined || output.applied) return [];
-  return [paint(YELLOW, `${output.action} skipped: ${output.reason}`)];
-};
-
 const FINISHED: Readonly<Record<string, string>> = {
   completed: paint(GREEN, "✓ completed"),
   failed: paint(RED, "✗ failed"),
@@ -178,8 +162,6 @@ export const renderStatusline = async (stdin: string, run: RunRef | undefined): 
   const done = Object.values(state.nodeRuns).filter((node) => node.status !== "running").length;
   const total = workflow?.total ?? 0;
   const progress = total === 0 ? [] : [progressBar(done, total)];
-  const first = [head, ...runPart(state, running, workflow), ...progress, ...skipPart(state)].join(
-    " ",
-  );
+  const first = [head, ...runPart(state, running, workflow), ...progress].join(" ");
   return [first, ...trailing(state, running, parseInput(stdin), Date.now())].join(" · ");
 };

@@ -171,13 +171,6 @@ export const ContextOutputSchema = z.discriminatedUnion("applied", [
 ]);
 export type ContextOutput = z.infer<typeof ContextOutputSchema>;
 
-// Why a context step's action did not happen; undefined when it happened or the output is another
-// node's.
-export const readContextSkip = (output: unknown): string | undefined => {
-  const parsed = ContextOutputSchema.safeParse(output);
-  return parsed.success && !parsed.data.applied ? parsed.data.reason : undefined;
-};
-
 // A node's current run: state.json is the graph as it stands now, not its history (that is
 // event.jsonl). A loop, switch or include holds its children in `nodes`, keyed by the ids
 // workflow.yaml gives them; a loop holds only its current pass, numbered by `iteration`, with the

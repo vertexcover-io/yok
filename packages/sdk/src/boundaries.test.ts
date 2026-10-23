@@ -154,7 +154,6 @@ const PUBLIC_RUNTIME_NAMES = [
   "parseTime",
   "parseYaml",
   "pickRun",
-  "readContextSkip",
   "readEvents",
   "readIfExists",
   "readPolicies",

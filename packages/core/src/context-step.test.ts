@@ -556,7 +556,7 @@ describe("runContextStep: compact", () => {
     expect(await completions(context.runDir)).toBe(1);
   });
 
-  test("SC3: a /compact lost on both tries completes the step unapplied, naming /compact and the two tries, and the resume line is still typed and taken", async () => {
+  test("SC3: a /compact lost on both tries completes the step unapplied, naming /compact and the two tries, records no lost line, and the resume line is still typed and taken", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(context, (line) => line === RESUME);
 
@@ -575,6 +575,8 @@ describe("runContextStep: compact", () => {
       },
     });
     expect(await typesIn(context.runDir)).toContain("hooks.prompt-received.called");
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(stateOf(context.runDir).status).toBe("running");
   });
 
   test("SC4: while Claude stays busy the pane gets no Escape and no line, and the node completes unapplied", async () => {
@@ -593,7 +595,7 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test("a Claude busy through both tries of /compact gets no keys, the /compact is recorded lost for step and session A, and the step ends unapplied naming the two tries", async () => {
+  test("a Claude busy through both tries of /compact gets no keys and the step ends unapplied naming the two tries; only the resume line, busy too, is recorded lost", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -607,12 +609,9 @@ describe("runContextStep: compact", () => {
     const lost = (await eventsOf(context.runDir)).filter(
       (event) => event.type === "agent.line.lost",
     );
-    expect(lost.map((event) => event.payload)).toContainEqual({
-      agent: "claude",
-      sessionId: "A",
-      step: "step",
-      line: "/compact",
-    });
+    expect(lost.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
+    ]);
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: {
         action: "compact",
