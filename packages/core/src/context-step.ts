@@ -52,8 +52,8 @@ const IDLE_POLL_MS = 100;
 const DONE_POLL_MS = 250;
 // how long a new session may take to start, and a compact to finish, before the step fails
 const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
-// How long a typed resume line may take to show as the run's `orchestrate resume`, counted once
-// Claude is free, and how long at most while it stays busy; and how many times it is typed.
+// How long a typed resume line may take to show as the run's `orchestrate resume`, counted over
+// continuous time Claude is free, and how long at most in all; and how many times it is typed.
 const RESUME_TIMEOUT_MS = 30_000;
 const RESUME_CAP_MS = 180_000;
 const RESUME_ATTEMPTS = 2;
@@ -156,22 +156,24 @@ const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean
 const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
   (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
 
-// Claude holds a line typed while it finishes a turn, so the wait only counts from when Claude is
-// free; a line retyped while it is held would run twice.
+// Claude holds a line typed while it finishes a turn, and may not draw its spinner until a moment
+// after Enter, so the wait counts only while Claude stays free; a line retyped while it is held or
+// worked on would run twice.
 const waitForResumed = async (
   terminal: ITerminal,
   store: IEventStore,
   afterSeq: number,
 ): Promise<boolean> => {
   const cap = Date.now() + RESUME_CAP_MS;
-  let freeAt: number | undefined;
+  let freeSince: number | undefined;
   for (;;) {
     if (await isResumed(store, afterSeq)) return true;
     const now = Date.now();
-    if (now >= cap || (freeAt !== undefined && now >= freeAt + RESUME_TIMEOUT_MS)) return false;
-    if (freeAt === undefined) {
-      const screen = await terminal.capture();
-      if (screen.ok && !isClaudeBusy(screen.value)) freeAt = now;
+    const screen = await terminal.capture();
+    const free = screen.ok && !isClaudeBusy(screen.value);
+    freeSince = free ? (freeSince ?? now) : undefined;
+    if (now >= cap || (freeSince !== undefined && now >= freeSince + RESUME_TIMEOUT_MS)) {
+      return false;
     }
     await Bun.sleep(DONE_POLL_MS);
   }

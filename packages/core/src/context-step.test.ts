@@ -640,6 +640,40 @@ describe("runContextStep: compact", () => {
     expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
   }, 20_000);
 
+  test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    let capturesSinceTyped = 0;
+    const busyFor = 40_000;
+    const fake = fakeTerminal(
+      () => {
+        if (typedAt === undefined) return IDLE;
+        capturesSinceTyped += 1;
+        return capturesSinceTyped === 1 || Date.now() >= typedAt + busyFor ? IDLE : BUSY;
+      },
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+    let took = false;
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (!took && typedAt !== undefined && Date.now() >= typedAt + busyFor) {
+          took = true;
+          await resumed(context.run);
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+  }, 20_000);
+
   test("SC13: a resume line lost on both tries after a compaction that worked records agent.line.lost for step, session A and the line, leaves the run running with no blocker, and leaves the node applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(context, (line) => line !== RESUME);
@@ -909,7 +943,7 @@ describe("runModelStep", () => {
       };
       return { ...pane.terminal, capture };
     };
-    const { provider, relaunches } = fakeProvider();
+    const { provider, relaunches } = resumingProvider(context);
 
     await Promise.all([
       modelHelper(context, slowPane(), provider),
