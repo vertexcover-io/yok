@@ -18,6 +18,7 @@ import {
   hasClaudeInputBox,
   interpretOutput,
   isClaudeBusy,
+  isClaudeChoicePending,
 } from "./claude.ts";
 import { claudeSettings } from "./claude-hooks.ts";
 
@@ -577,6 +578,49 @@ describe("canTypeComment", () => {
   });
 });
 
+// What Claude 2.1.309 shows at the bottom of its pane for a permission asked mid-turn: no spinner
+// and no input box.
+const PERMISSION_PROMPT = [
+  RULE,
+  " Bash command",
+  ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+  " Create empty perm-probe.txt file",
+  "╌".repeat(40),
+  " │ touch /tmp/perm-probe.txt",
+  "╌".repeat(40),
+  " Do you want to proceed?",
+  " ❯ 1. Yes",
+  "   2. Yes, and always allow access to /tmp from this project",
+  "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+  "   4. No",
+  " Esc to cancel · Tab to amend",
+].join("\n");
+const QUESTION = [
+  RULE,
+  " Which colour?",
+  " ❯ 1. Red",
+  "   2. Blue",
+  " Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\n");
+
+describe("isClaudeChoicePending", () => {
+  test.each([
+    ["a permission prompt", `● Creating the file.\n${PERMISSION_PROMPT}`, true],
+    ["a question", QUESTION, true],
+    ["a permission option between rules", `${box("❯ 1. Yes")}\n  2. No`, true],
+    [
+      "an answered prompt left in scrollback above the box",
+      `${PERMISSION_PROMPT}\n● Created the file.\n${PROMPT}`,
+      false,
+    ],
+    ["the /config popup", "  Theme  Dark\nEnter/Space to change · / to search · Esc to close", false],
+    ["a box under a spinner", `· Ionizing… (6s)\n${box("❯ ")}`, false],
+    ["a numbered list in Claude's reply above the box", `1. Fixed it\n2. Tested it\n${PROMPT}`, false],
+  ])("%s -> %p", (_name, screen, expected) => {
+    expect(isClaudeChoicePending(screen)).toBe(expected);
+  });
+});
+
 describe("hasClaudeInputBox", () => {
   test.each([
     ["an empty box", PROMPT, true],
@@ -620,6 +664,12 @@ describe("hasClaudeInputBox", () => {
       true,
     ],
     ["a box with Claude's shortcuts hint under it", `${box("❯ ")}\n  ? for shortcuts`, true],
+    [
+      "a permission dialog whose ❯ 1. Yes sits between rules above a footer yok does not know",
+      `${box("❯ 1. Yes")}\n  2. No\n  Tab to amend`,
+      false,
+    ],
+    ["a box holding a cancelled /compact", box("❯ /compact keep the plan"), true],
     [
       "a dialog whose footer reads Enter to select with no Esc to cancel",
       `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,

@@ -247,6 +247,10 @@ const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to ta
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
 // A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
 const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
+// The shape of what Claude 2.1.309 shows for a permission asked mid-turn and for a question: no
+// spinner and no input box. An Escape rejects the permission or declines the question.
+const PERMISSION_PROMPT = `${RULE}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
+const QUESTION = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · ↑/↓ to navigate · Esc to cancel`;
 // An Escape here would reject the permission Claude asked for mid-turn.
 const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION}`;
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
@@ -484,17 +488,40 @@ describe("runContextStep: compact", () => {
     expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
   });
 
-  test("a permission dialog whose ❯ 1. Yes sits between rules is not taken for the input box: it gets an Escape, and the line goes in only once the real box shows", async () => {
+  test.each([
+    ["a permission prompt", PERMISSION_PROMPT],
+    ["a question", QUESTION],
+    ["a permission dialog whose ❯ 1. Yes sits between rules", PERMISSION],
+  ])("%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable", async (_, screen) => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
       () => true,
-      (_, typed) => (escapesIn(typed) === 0 ? PERMISSION : IDLE),
+      () => screen,
+    );
+    const startedAt = Date.now();
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed).toEqual([]);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+  });
+
+  test("a permission prompt with no spinner gets no Escape: yok waits for a person to answer it and types /compact once the box shows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (captures) => (captures < 5 ? PERMISSION_PROMPT : IDLE),
     );
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
   });
 
   test("a permission dialog raised while Claude works gets no Escape: yok waits for the busy sign to go, and types /compact once the box shows", async () => {
@@ -700,6 +727,34 @@ describe("runContextStep: compact", () => {
 
     expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
     expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  }, 20_000);
+
+  test("a resume line whose orchestrate resume waits 100 seconds on a permission prompt, which draws no spinner, is not typed again", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    const heldFor = 100_000;
+    const fake = fakeTerminal(
+      () => (typedAt === undefined || Date.now() >= typedAt + heldFor ? IDLE : PERMISSION_PROMPT),
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+    let took = false;
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (!took && typedAt !== undefined && Date.now() >= typedAt + heldFor) {
+          took = true;
+          await resumed(context.run);
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
   }, 20_000);
 
   test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {

@@ -48,24 +48,37 @@ export const isClaudeBusy = (screen: string): boolean =>
 
 const RULE = /^\s*─{10,}\s*$/;
 const INPUT_LINE = /^❯(?:\s|$)/;
+const MENU_OPTION = /^❯\s*\d+\.\s/;
 const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;
 
-// The text in Claude's input box, the lowest ❯ line between two rules, or undefined when no box
-// shows. A popup or dialog replaces the box, so seeing it is the sign that Enter submits a message.
-// A dialog draws its own ❯ cursor, maybe between rules, where Enter would pick an option such as
-// approving a permission, and a popup such as /config can sit under a box left in scrollback, so
-// a popup footer below that ❯ means no box. Only below: the capture holds scrollback, where the
-// transcript can quote a footer above a real box.
-const readInputBox = (screen: string): string | undefined => {
-  const lines = screen.split("\n");
-  const at = lines.findLastIndex(
+// The lowest line shaped like Claude's input box: a ❯ line between two rules. A menu option's
+// ❯ cursor (`❯ 1. Yes`) can sit between rules too, where Enter would pick it.
+const findInputBoxLine = (lines: readonly string[]): number =>
+  lines.findLastIndex(
     (line, i) =>
       INPUT_LINE.test(line.trim()) &&
+      !MENU_OPTION.test(line.trim()) &&
       RULE.test(lines[i - 1] ?? "") &&
       RULE.test(lines[i + 1] ?? ""),
   );
+
+// The text in Claude's input box, or undefined when no box shows. A popup or dialog replaces the
+// box, so seeing it is the sign that Enter submits a message. A dialog, or a popup such as /config
+// under a box left in scrollback, shows its footer below that line, which then means no box. Only
+// below: the capture holds scrollback, where the transcript can quote a footer above a real box.
+const readInputBox = (screen: string): string | undefined => {
+  const lines = screen.split("\n");
+  const at = findInputBoxLine(lines);
   if (at === -1 || DIALOG_FOOTER.test(lines.slice(at + 1).join("\n"))) return undefined;
   return lines[at]?.trim().slice(1).trim();
+};
+
+// A permission prompt or a question waits on a person's pick and draws no spinner; an Escape would
+// reject or decline it. Only an option below the lowest box-shaped line counts: an answered prompt
+// can linger in the capture's scrollback above the box that replaced it.
+export const isClaudeChoicePending = (screen: string): boolean => {
+  const lines = screen.split("\n");
+  return lines.slice(findInputBoxLine(lines) + 1).some((line) => MENU_OPTION.test(line.trim()));
 };
 
 export const hasClaudeInputBox = (screen: string): boolean => readInputBox(screen) !== undefined;

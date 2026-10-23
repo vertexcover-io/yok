@@ -42,6 +42,7 @@ import {
   CLAUDE_NOTHING_TO_COMPACT,
   hasClaudeInputBox,
   isClaudeBusy,
+  isClaudeChoicePending,
 } from "./agents/claude.ts";
 import { typeLine } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
@@ -112,6 +113,10 @@ const waitForIdle = (terminal: ITerminal): Promise<Result<true>> =>
     },
   );
 
+// Claude is at work, or waits on a person's answer to a permission prompt or question.
+const isClaudeHeld = (screen: string): boolean =>
+  isClaudeBusy(screen) || isClaudeChoicePending(screen);
+
 const resumePrompt = (run: RunRef): string => `/yok:orchestrate --resume ${run.name}`;
 
 // The session a line goes to, and the step it is typed for.
@@ -125,10 +130,11 @@ type LineTarget = Readonly<{
 
 type RevealBudget = Readonly<{ escapesLeft: number; busyUntil: number }>;
 
-// Sends an Escape while Claude's input box is hidden and Claude shows no busy sign, up to
-// `escapesLeft` of them. None goes to a box on screen, where it could interrupt Claude's turn or
-// open its Rewind menu, nor while Claude is busy, where it could reject a permission Claude asked
-// for or cancel a compaction; then it waits, until `busyUntil`. false: never shown.
+// Sends an Escape while Claude's input box is hidden and Claude is neither busy nor waiting on a
+// person's choice, up to `escapesLeft` of them. None goes to a box on screen, where it could
+// interrupt Claude's turn or open its Rewind menu, nor while Claude is held, where it could cancel
+// a compaction, reject a permission or decline a question; then it waits, until `busyUntil`.
+// false: never shown.
 const revealInputBox = async (
   terminal: ITerminal,
   budget: RevealBudget,
@@ -136,7 +142,7 @@ const revealInputBox = async (
   const screen = await terminal.capture();
   if (!screen.ok) return screen;
   if (hasClaudeInputBox(screen.value)) return { ok: true, value: true };
-  if (isClaudeBusy(screen.value)) {
+  if (isClaudeHeld(screen.value)) {
     if (Date.now() >= budget.busyUntil) return { ok: true, value: false };
     await Bun.sleep(IDLE_POLL_MS);
     return revealInputBox(terminal, budget);
@@ -171,9 +177,9 @@ const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean
 const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
   (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
 
-// Claude holds a line typed while it finishes a turn, and may not draw its spinner until a moment
-// after Enter, so the wait counts only while Claude stays free; a line retyped while it is held or
-// worked on would run twice.
+// Claude holds a line typed while it finishes a turn or waits on a person's choice, and may not
+// draw its spinner until a moment after Enter, so the wait counts only while Claude stays free; a
+// line retyped while it is held or worked on would run twice.
 const waitForResumed = async (
   terminal: ITerminal,
   store: IEventStore,
@@ -185,7 +191,7 @@ const waitForResumed = async (
     if (await isResumed(store, afterSeq)) return true;
     const now = Date.now();
     const screen = await terminal.capture();
-    const free = screen.ok && !isClaudeBusy(screen.value);
+    const free = screen.ok && !isClaudeHeld(screen.value);
     freeSince = free ? (freeSince ?? now) : undefined;
     if (now >= cap || (freeSince !== undefined && now >= freeSince + RESUME_TIMEOUT_MS)) {
       return false;
