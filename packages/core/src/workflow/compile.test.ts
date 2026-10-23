@@ -265,6 +265,17 @@ ${script("b", "\n    dependsOn: [a]").slice(1)}`);
     );
     expect(plan.nodes.map((node) => node.id)).toEqual(["a", "b", "c"]);
   });
+
+  test("SC13: the order edge comes from run order, not written order: b written above a waits on nothing extra, and c waits for b", async () => {
+    const plan = await compile(
+      workflow(script("b", "\n    dependsOn: [a]") + script("a") + script("c")),
+    );
+    expect(plan.nodes.map(({ id, after }) => ({ id, after }))).toEqual([
+      { id: "a", after: [] },
+      { id: "b", after: [] },
+      { id: "c", after: ["b"] },
+    ]);
+  });
 });
 
 describe("evaluate", () => {

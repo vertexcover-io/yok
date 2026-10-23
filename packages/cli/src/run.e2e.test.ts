@@ -812,4 +812,111 @@ describe("yok run", () => {
     },
     TIMEOUT_MS,
   );
+
+  test(
+    "SC611: yok run --no-attach --no-open prints three lines: the run id, yok-dev attach --run-id ID, and view: URL",
+    () => {
+      const repo = makeRepo();
+      const { env } = makeEnv();
+
+      const run = yok(repo, env, "run", "ok.yaml", "--prompt", "go", "--no-attach", "--no-open");
+
+      expect(run.code).toBe(0);
+      const [runId = "", ...rest] = run.stdout.trim().split("\n");
+      expect(runId).toMatch(/^r-[0-9a-f]{8}$/);
+      expect(rest).toEqual([
+        `yok-dev attach --run-id ${runId}`,
+        expect.stringMatching(/^view: http/),
+      ]);
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("yok resume", () => {
+  test(
+    "yok resume --run-id for a run that never ran orchestrate init tells the person to start it again with yok run",
+    () => {
+      const repo = makeRepo();
+      const { env } = makeEnv();
+      const started = yok(
+        repo,
+        env,
+        "run",
+        "ok.yaml",
+        "--prompt",
+        "go",
+        "--no-attach",
+        "--no-open",
+      );
+      expect(started.code).toBe(0);
+      const runId = started.stdout.trim().split("\n")[0] ?? "";
+
+      const resumed = yok(repo, env, "resume", "--run-id", runId, "--no-attach", "--no-open");
+
+      expect(resumed.code).toBe(1);
+      expect(resumed.stderr).toContain(
+        `run ${runId} never started its agent session; start it again with yok run`,
+      );
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC610: after its tmux server is killed, yok resume demo relaunches claude --resume s-1 with the resume prompt, and a second resume is told to attach",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut, socket } = makeEnv();
+      const launches = () => readLines(fakeOut).filter(isLaunch);
+      const started = yok(
+        repo,
+        env,
+        "run",
+        "ok.yaml",
+        "--name",
+        "demo",
+        "--prompt",
+        "go",
+        "--no-attach",
+        "--no-open",
+      );
+      expect(started.code).toBe(0);
+      const runId = started.stdout.trim().split("\n")[0] ?? "";
+      waitFor(() => launches().length === 1);
+      // what the agent would run inside its session: init names the run, the hook links s-1
+      const sessionEnv = launches()[0]?.env as NodeJS.ProcessEnv;
+      const orchestrate = (...args: string[]) =>
+        spawnSync("bun", [NO_DOTENV, ...ORCHESTRATE, ...args], {
+          cwd: repo,
+          env: sessionEnv,
+          encoding: "utf8",
+        });
+      expect(orchestrate("init", "demo").status).toBe(0);
+      expect(orchestrate("link-session", "--agent", "claude", "--session-id", "s-1").status).toBe(
+        0,
+      );
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+
+      const resumed = yok(repo, env, "resume", "demo", "--no-attach", "--no-open");
+
+      expect(resumed.code).toBe(0);
+      expect(resumed.stdout.trim().split("\n")).toEqual([
+        runId,
+        `yok-dev attach --run-id ${runId}`,
+        expect.stringMatching(/^view: http/),
+      ]);
+      waitFor(() => launches().length === 2);
+      const argv = (launches()[1]?.argv ?? []) as string[];
+      expect(argv.slice(0, 2)).toEqual(["--resume", "s-1"]);
+      expect(argv.at(-1)).toBe("/yok:orchestrate --resume demo");
+
+      const again = yok(repo, env, "resume", "demo", "--no-attach", "--no-open");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toContain("use yok attach demo");
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
 });

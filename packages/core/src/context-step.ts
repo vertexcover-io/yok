@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { uptime } from "node:os";
+import { dirname, join } from "node:path";
 import {
   ContextStartedEvent,
+  type Event,
   type IAgentProvider,
   type ILogger,
   type ITerminal,
@@ -14,6 +16,7 @@ import {
   readState,
   runDirOf,
   SessionStartCalledEvent,
+  type State,
   sessionEnv,
   type TierModel,
   tierLaunch,
@@ -22,6 +25,7 @@ import {
   appendRunEvent,
   foldModelSwitch,
   type IEventStore,
+  isProcessAlive,
   jsonlEventStore,
   pickTierModel,
   type Registry,
@@ -110,16 +114,66 @@ const catchThrow = <T>(log: ILogger, step: Promise<Result<T>>): Promise<Result<T
   });
 
 // The Stop hook starts a helper on every stop while its step is pending; only the first one to
-// create the step's lock file goes ahead.
+// create the step's lock file goes ahead. The file holds the helper's pid, so yok resume can
+// tell a lock whose helper died from one still in use.
 const claimLock = async (run: RunRef, name: string): Promise<boolean> => {
   const lock = runLockPath(runDirOf(run.cwd, run.name), name);
-  try {
-    await mkdir(dirname(lock), { recursive: true });
-    await (await open(lock, "wx")).close();
-    return true;
-  } catch {
-    return false;
-  }
+  const file = await mkdir(dirname(lock), { recursive: true })
+    .then(() => open(lock, "wx"))
+    .catch(() => null);
+  if (file === null) return false;
+  // The lock is claimed once the file exists; a pid that fails to write only leaves yok resume
+  // treating the lock as dead.
+  await file.writeFile(String(process.pid)).catch(() => {});
+  await file.close().catch(() => {});
+  return true;
+};
+
+const SWITCH_LOCK = /^(model|context)-.+\.lock$/;
+
+// A lock written before the last boot is dead even when its pid is alive: the reboot can have
+// handed that pid to another process.
+const hasLiveOwner = async (path: string): Promise<boolean> => {
+  const [text, info] = await Promise.all([
+    readFile(path, "utf8").catch(() => ""),
+    stat(path).catch(() => null),
+  ]);
+  const pid = Number(text.trim());
+  const bootedAt = Date.now() - uptime() * 1000;
+  if (info === null || info.mtimeMs < bootedAt) return false;
+  return Number.isInteger(pid) && pid > 0 && isProcessAlive(pid);
+};
+
+// A helper keeps its lock after its step ends, so only the lock of a step still open can belong
+// to a helper at work: the unanswered model request's, and the running context node's.
+const openSwitchLocks = (state: State, events: readonly Event[]): ReadonlySet<string> => {
+  const { pending } = foldModelSwitch(events, state.tiers);
+  const context = findOpenContextRun(state.nodeRuns);
+  return new Set([
+    ...(pending === null ? [] : [`model-${pending.seq}.lock`]),
+    ...(context === undefined ? [] : [`context-${context.nodeRunId}.lock`]),
+  ]);
+};
+
+// For yok resume, once the run's session is gone: a model or context lock whose helper died
+// would keep the retried step from ever running. Locks of an open step whose helper is alive are
+// returned as held.
+export const clearDeadSwitchLocks = async (
+  runDir: string,
+  state: State,
+  events: readonly Event[],
+): Promise<Readonly<{ removed: readonly string[]; held: readonly string[] }>> => {
+  const dir = join(runDir, "locks");
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const locks = entries.filter((entry) => entry.isFile() && SWITCH_LOCK.test(entry.name));
+  const open = openSwitchLocks(state, events);
+  const owned = await Promise.all(
+    locks.map((entry) => open.has(entry.name) && hasLiveOwner(join(dir, entry.name))),
+  );
+  const names = locks.map((entry) => entry.name);
+  const removed = names.filter((_, index) => !owned[index]);
+  await Promise.all(removed.map((name) => rm(join(dir, name), { force: true })));
+  return { removed, held: names.filter((_, index) => owned[index]) };
 };
 
 const complete = async (options: ContextStepOptions, output: JsonValue): Promise<Result<void>> => {

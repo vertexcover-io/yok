@@ -211,6 +211,35 @@ describe("claudeProvider.launch", () => {
       ["kill", "s1"],
     ]);
   });
+
+  test("SC601: with a session to continue it runs claude --resume s-1 --model opus-x under the given terminal name, never minting an id", async () => {
+    const host = fakeHost();
+    const minted: string[] = [];
+    const provider = claudeProvider({
+      host,
+      binary: "claude",
+      newId: () => {
+        minted.push("id");
+        return "fresh";
+      },
+    });
+
+    const launched = await provider.launch({
+      cwd: "/repo",
+      model: "opus-x",
+      prompt: "/yok:orchestrate --resume demo",
+      continueSession: { id: "s-1", terminalName: "claude-demo-3c4d" },
+    });
+
+    if (!launched.ok) throw new Error(launched.error);
+    expect(launched.value.terminalName).toBe("claude-demo-3c4d");
+    const [call] = host.calls;
+    const spec = call?.method === "create" ? call.spec : undefined;
+    expect(spec?.name).toBe("claude-demo-3c4d");
+    expect(spec?.argv.slice(0, 5)).toEqual(["claude", "--resume", "s-1", "--model", "opus-x"]);
+    expect(spec?.argv.at(-1)).toBe("/yok:orchestrate --resume demo");
+    expect(minted).toEqual([]);
+  });
 });
 
 describe("claudeProvider.relaunch", () => {

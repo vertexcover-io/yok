@@ -4,19 +4,29 @@ import {
   accessSync,
   constants,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { captureLogger } from "@yok/core";
-import type { IAgentProvider, ITerminal, LaunchOptions, Result, SavedPolicies } from "@yok/sdk";
-import { noopLogger, WorkflowRunSchema } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { addComments, captureLogger } from "@yok/core";
+import type {
+  IAgentProvider,
+  ITerminal,
+  LaunchOptions,
+  Result,
+  SavedPolicies,
+  State,
+  WorkflowRun,
+} from "@yok/sdk";
+import { noopLogger, runDirOf, WorkflowRunSchema } from "@yok/sdk";
+import { createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
 import * as z from "zod";
 import { createApp } from "./app.ts";
 import { createYokClient } from "./client.ts";
+import { fakeHost, seedState } from "./fake-host.ts";
 import { socketPath } from "./protocol.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
@@ -78,6 +88,8 @@ const buildDeps = async (
       asked.push(agent);
       return fakeProvider(agent, launch);
     },
+    // the run's tmux session is gone unless a test says otherwise
+    host: fakeHost("", false).host,
     log,
     home: mkdtempSync(join(tmpdir(), "yok-home-")),
     viewerOrigin: "http://localhost:1",
@@ -602,5 +614,368 @@ describe("run page URL", () => {
     const missing = await app.request("/runs/r-missing/view");
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not-found");
+  });
+});
+
+const TIERS = {
+  default: "fast",
+  models: { fast: { model: "haiku-x" }, deep: { model: "opus-x" } },
+};
+
+type Seed = Readonly<{
+  status?: State["status"];
+  // false leaves the switch to opus-x requested with no applied event
+  applied?: boolean;
+  run?: Partial<WorkflowRun>;
+}>;
+
+const modelEvent = (
+  type: "workflow.model.requested" | "workflow.model.applied",
+  payload: object,
+) => ({
+  id: `e-${type}`,
+  ts: "2026-01-01T00:00:01.000Z",
+  type,
+  source: "workflow",
+  runId: "r-1a2b3c4d",
+  payload: { node: "think", model: "opus-x", ...payload },
+});
+
+// A run named demo on sessions s-0 then s-1, whose state and event log say it switched to opus-x.
+const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun> => {
+  const cwd = mkdtempSync(join(tmpdir(), "yok-resume-"));
+  const run: WorkflowRun = {
+    id: "r-1a2b3c4d",
+    workflow: "ok",
+    workflowPath: join(cwd, "ok.yaml"),
+    inputs: {},
+    cwd,
+    sessions: [
+      { agent: "claude", sessionId: "s-0" },
+      { agent: "claude", sessionId: "s-1" },
+    ],
+    name: "demo",
+    terminal: "claude-demo-3c4d",
+    config: null,
+    tiers: TIERS,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...seed.run,
+  };
+  await registry.addRun(run);
+  const runDir = runDirOf(cwd, "demo");
+  mkdirSync(runDir, { recursive: true });
+  const status = seed.status ?? "running";
+  const blocker =
+    status === "blocked"
+      ? {
+          blocker: {
+            reason: "stuck",
+            since: "2026-01-01T00:00:02.000Z",
+            details: { message: null },
+          },
+        }
+      : {};
+  const state = { ...seedState(runDir, {}), status, tiers: TIERS, ...blocker };
+  writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+  const store = jsonlEventStore(runDir);
+  const requested = await store.append(modelEvent("workflow.model.requested", {}));
+  if (!requested.ok) throw new Error(requested.error);
+  if (seed.applied === false) return run;
+  await store.append(
+    modelEvent("workflow.model.applied", { requestSeq: requested.value.seq, applied: true }),
+  );
+  return run;
+};
+
+// A deps whose provider records every launch and answers with pane %9.
+const resumeDeps = async () => {
+  const launches: LaunchOptions[] = [];
+  const deps = await buildDeps((options) => {
+    launches.push(options);
+    return Promise.resolve({
+      ok: true,
+      value: { terminalName: "claude-demo-3c4d", terminal: fakePane("%9") },
+    });
+  });
+  return { deps, launches };
+};
+
+const resume = (deps: Parameters<typeof createApp>[0], runId: string, env = {}) =>
+  createApp(deps).request(`/runs/${runId}/resume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ env }),
+  });
+
+describe("POST /runs/:id/resume", () => {
+  test("SC602: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+
+    const res = await resume(deps, run.id, { FOO: "bar" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      run,
+      attach: ["tmux", "attach-session", "-t", "%9"],
+      view: `http://localhost:1/runs/${run.id}`,
+    });
+    expect(launches).toHaveLength(1);
+    const [options] = launches;
+    expect(options?.continueSession).toEqual({ id: "s-1", terminalName: "claude-demo-3c4d" });
+    expect(options?.model).toBe("opus-x");
+    expect(options?.prompt).toBe("/orchestrate --resume demo");
+    expect(options?.cwd).toBe(run.cwd);
+    expect(options?.env).toMatchObject({ FOO: "bar", YOK_RUN_ID: run.id, YOK_HOME: deps.home });
+    expect(await deps.registry.findRun(run.id)).toEqual(run);
+  });
+
+  test("a run whose last linked session s-2 never started continues s-1, the last session whose SessionStart was logged", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, {
+      run: {
+        sessions: [
+          { agent: "claude", sessionId: "s-1" },
+          { agent: "claude", sessionId: "s-2" },
+        ],
+      },
+    });
+    const store = jsonlEventStore(runDirOf(run.cwd, "demo"));
+    await store.append({
+      id: "e-start",
+      ts: "2026-01-01T00:00:02.000Z",
+      type: "hooks.session-start.called",
+      source: "hooks",
+      runId: run.id,
+      payload: { agent: "claude", sessionId: "s-1", source: "startup" },
+    });
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(launches.map((options) => options.continueSession?.id)).toEqual(["s-1"]);
+  });
+
+  test.each(["running", "blocked"] as const)(
+    "SC603: a %s run resumes with one launch",
+    async (status) => {
+      const { deps, launches } = await resumeDeps();
+      const run = await seedRun(deps.registry, { status });
+
+      const res = await resume(deps, run.id);
+
+      expect(res.status).toBe(200);
+      expect(launches).toHaveLength(1);
+    },
+  );
+
+  test.each(["completed", "failed", "cancelled"] as const)(
+    "SC603: a %s run is 409 conflict naming its status and telling the person to start a new run with yok run, and nothing launches",
+    async (status) => {
+      const { deps, launches } = await resumeDeps();
+      const run = await seedRun(deps.registry, { status });
+
+      const res = await resume(deps, run.id);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "conflict",
+          message: `run demo is ${status}; there is nothing to resume, so start a new run with yok run`,
+        },
+      });
+      expect(launches).toEqual([]);
+    },
+  );
+
+  test("SC604: a switch to opus-x requested but never applied launches on haiku-x, the default tier's model", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { applied: false });
+
+    await resume(deps, run.id);
+
+    expect(launches.map((options) => options.model)).toEqual(["haiku-x"]);
+  });
+
+  test("SC605: an unknown run id r-nope is 404 not-found and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+
+    const res = await resume(deps, "r-nope");
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: { code: "not-found", message: "no run with id r-nope" },
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test.each<[string, Partial<WorkflowRun>]>([
+    ["no name", { name: null }],
+    ["no linked session", { sessions: [] }],
+  ])(
+    "SC606: a run with %s is 409 conflict telling the person to start it again with yok run",
+    async (_label, overrides) => {
+      const { deps, launches } = await resumeDeps();
+      const run = await seedRun(deps.registry, { run: overrides });
+
+      const res = await resume(deps, run.id);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "conflict",
+          message: `run ${run.id} never started its agent session; start it again with yok run`,
+        },
+      });
+      expect(launches).toEqual([]);
+    },
+  );
+
+  test.each<[string, Partial<WorkflowRun>, (runDir: string) => void, (runDir: string) => string]>([
+    [
+      "a last session on pi",
+      { sessions: [{ agent: "pi", sessionId: "s-1" }] },
+      () => {},
+      () => "run demo ran on pi, which yok cannot resume",
+    ],
+    [
+      "a state.json that does not parse",
+      {},
+      (runDir) => writeFileSync(join(runDir, "state.json"), "garbage"),
+      (runDir) => `run demo has no readable state in ${runDir}`,
+    ],
+  ])(
+    "a run with %s is 409 conflict and nothing launches",
+    async (_label, overrides, spoil, message) => {
+      const { deps, launches } = await resumeDeps();
+      const run = await seedRun(deps.registry, { run: overrides });
+      const runDir = runDirOf(run.cwd, "demo");
+      spoil(runDir);
+
+      const res = await resume(deps, run.id);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: { code: "conflict", message: message(runDir) } });
+      expect(launches).toEqual([]);
+    },
+  );
+
+  test("SC608: a launch that fails with boom is 502 agent-failed and leaves the run in the registry unchanged", async () => {
+    const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
+    const run = await seedRun(deps.registry);
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: { code: "agent-failed", message: "boom" } });
+    expect(await deps.registry.findRun(run.id)).toEqual(run);
+  });
+
+  test("SC609: a run whose last session is codex asks for the codex provider and prompts $orchestrate --resume demo", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, {
+      run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },
+    });
+
+    await resume(deps, run.id);
+
+    expect(deps.asked).toEqual(["codex"]);
+    expect(launches.map((options) => options.prompt)).toEqual(["$orchestrate --resume demo"]);
+  });
+
+  test("SC607: a run whose tmux session is still alive is 409 conflict pointing at yok attach demo, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = { ...base, host: fakeHost("", true).host };
+    const run = await seedRun(deps.registry);
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo still has its agent session; use yok attach demo",
+      },
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test("SC633: a model-2.lock whose helper is dead is gone once resume returns 200", async () => {
+    const { deps } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    const helper = Bun.spawn(["true"]);
+    await helper.exited;
+    const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-2.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, String(helper.pid));
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a comment posted while the session was down is typed into the resumed session once resume returns 200", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const typed: string[] = [];
+    const pane = { ...fakePane("%9"), isAlive: () => Promise.resolve(launches.length > 0) };
+    const deps = {
+      ...base,
+      host: { ...base.host, find: () => pane },
+      providerFor: (agent: IAgentProvider["type"]) => ({
+        ...base.providerFor(agent),
+        promptWhenReady: (_pane: ITerminal, text: string) => {
+          typed.push(text);
+          return Promise.resolve({ ok: true as const, value: "sent" as const });
+        },
+      }),
+    };
+    const run = await seedRun(deps.registry);
+    await addComments(
+      runDirOf(run.cwd, "demo"),
+      [{ file: "artifacts/a.md", kind: "global", text: "while away" }],
+      new Date("2026-01-01T00:00:03.000Z"),
+    );
+
+    const res = await resume(deps, run.id);
+    for (let i = 0; i < 20 && typed.length === 0; i++) await Bun.sleep(25);
+
+    expect(res.status).toBe(200);
+    expect(typed).toHaveLength(1);
+    expect(typed[0]).toContain("while away");
+  });
+
+  test("a model-1.lock of a finished switch is gone once resume returns 200, though another live process now holds its pid", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-1.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, String(process.pid));
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(launches).toHaveLength(1);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a model-1.lock whose switch is still requested and whose helper is alive is 409 conflict asking to try again in a minute, and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { applied: false });
+    const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-1.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, String(process.pid));
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo is still switching its model or context; try again in a minute",
+      },
+    });
+    expect(launches).toEqual([]);
+    expect(existsSync(lock)).toBe(true);
   });
 });

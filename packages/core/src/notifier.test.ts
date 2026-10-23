@@ -190,6 +190,51 @@ describe("describeEvent", () => {
       }),
     ],
     [
+      "SC1: a design waiting for approval tags the user and says where to approve",
+      event("artifact.approval.requested", { path: "artifacts/design.md" }, "design"),
+      openDesign,
+      notice("Design ready for approval", {
+        mention: true,
+        body: "_Approve in the viewer, or type approve in the session._",
+      }),
+    ],
+    [
+      "SC2: a plan waiting for approval reads Plan",
+      event("artifact.approval.requested", { path: "artifacts/plan.md" }, "design"),
+      openDesign,
+      notice("Plan ready for approval", {
+        mention: true,
+        body: "_Approve in the viewer, or type approve in the session._",
+      }),
+    ],
+    [
+      "SC2: a plan.html waiting for approval also reads Plan, whatever the extension",
+      event("artifact.approval.requested", { path: "artifacts/plan.html" }, "design"),
+      openDesign,
+      notice("Plan ready for approval", {
+        mention: true,
+        body: "_Approve in the viewer, or type approve in the session._",
+      }),
+    ],
+    [
+      "SC3: any other file waiting for approval is named by its file name",
+      event("artifact.approval.requested", { path: "artifacts/factors.md" }, "design"),
+      openDesign,
+      notice("factors.md ready for approval", {
+        mention: true,
+        body: "_Approve in the viewer, or type approve in the session._",
+      }),
+    ],
+    [
+      "SC3: a file named after an Object property, constructor.md, is still named by its file name",
+      event("artifact.approval.requested", { path: "artifacts/constructor.md" }, "design"),
+      openDesign,
+      notice("constructor.md ready for approval", {
+        mention: true,
+        body: "_Approve in the viewer, or type approve in the session._",
+      }),
+    ],
+    [
       "the run's end shows the duration, the last summary and every link",
       event("workflow.completed"),
       finished,
@@ -322,6 +367,16 @@ describe("describeEvent", () => {
         error: { kind: "threw", message: "no token" },
       }),
       state,
+    ],
+    [
+      "SC4: an approval granted by the interaction policy",
+      event("policy.applied", {
+        policy: "interaction",
+        effect: "auto-approved",
+        nodeId: "design",
+        path: "artifacts/design.md",
+      }),
+      openDesign,
     ],
   ])("%s posts nothing", (_label, stored, at) => {
     expect(describeEvent(stored, at)).toBeUndefined();
@@ -588,11 +643,11 @@ describe("notify", () => {
     expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
   });
 
-  test("SC217: an orchestrate.next with a stage reply returns nothing and never opens the notifier", async () => {
+  test("SC217: an orchestrate.next with a steps reply returns nothing and never opens the notifier", async () => {
     const { calls, open } = fakeOpener();
     const next = event("orchestrate.next", {
       input: {},
-      output: { kind: "stage", nodeId: "plan" },
+      output: { kind: "steps", steps: [{ kind: "stage", nodeId: "plan" }] },
     });
 
     const result = await notify("slack", { event: next, state, run }, open, fakeRecorder().record);

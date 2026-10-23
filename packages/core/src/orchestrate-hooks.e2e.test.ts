@@ -8,6 +8,7 @@ import {
   type Env,
   eventsOf,
   orchestrate,
+  parseStep,
   readRegistry,
   STAGE_SKILLS,
   STAGES_WORKFLOW,
@@ -42,7 +43,7 @@ describe("SC26: orchestrate hook stop", () => {
     const run = startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
-    const next = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+    const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
     expect(next).toMatchObject({ kind: "agent", nodeId: "plan" });
     return run;
   };
@@ -102,6 +103,46 @@ describe("SC26: orchestrate hook stop", () => {
     writeFileSync(transcript, lines.map((line) => JSON.stringify(line)).join("\n"));
     return { run, input: JSON.stringify({ session_id: "s1", transcript_path: transcript }) };
   };
+
+  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and a stop while the review runs in the background sends the agent back to write's done once, then lets the turn end with no agent.stuck", async () => {
+    const run = startedRun(`name: mixed
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: a, type: exec, runtime: sh, script: printf a, input: {} }
+  - { id: review, type: agent, prompt: review it, mode: subagent, dependsOn: [a], input: {} }
+  - { id: write, type: agent, prompt: write it, dependsOn: [a], input: {} }
+`);
+    const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
+    expect(orchestrate(run.repo, run.home, link).code).toBe(0);
+    const a = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+    expect(orchestrate(run.repo, run.home, ["exec", a.nodeRunId, "--run", "feat-x"]).code).toBe(0);
+    const both = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+    expect(both.steps.map((step: { nodeId: string }) => step.nodeId)).toEqual(["review", "write"]);
+    const { review, write } = stateOf(run.repo).nodeRuns;
+    expect([review.mode, write.mode]).toEqual(["subagent", "inline"]);
+    const waiting = JSON.stringify({
+      session_id: "s1",
+      stop_hook_active: false,
+      background_tasks: [{ type: "subagent", status: "running" }],
+    });
+
+    const first = stop(run, waiting);
+    const second = stop(run, waiting);
+
+    expect(JSON.parse(first.stdout)).toEqual({
+      decision: "block",
+      reason: expect.stringContaining(`yok orchestrate done ${write.nodeRunId} --run feat-x`),
+    });
+    expect(second).toMatchObject({ code: 0, stdout: "" });
+    const events = await eventsOf(run.repo);
+    const stops = events.filter((event) => event.type === "hooks.stop.called");
+    expect(stops.map((event) => event.payload)).toEqual([
+      expect.objectContaining({ reason: "node-not-done" }),
+      expect.objectContaining({ reason: "background-task" }),
+    ]);
+    expect(events.map((event) => event.type)).not.toContain("agent.stuck");
+  });
 
   test("a turn that ran orchestrate but not next is sent back with the next command", () => {
     const { run, input } = betweenNodes("go", "yok orchestrate done n1 --run feat-x");
@@ -192,7 +233,7 @@ describe("SC26: orchestrate hook stop", () => {
         sources: { interaction: "cli" },
       };
       const run = startedRun(ONE_AGENT, undefined, { policies });
-      const next = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+      const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
       mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts"), { recursive: true });
       writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "design.md"), "# Design\n");
 
@@ -234,7 +275,7 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
     const run = startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
-    const next = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+    const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
     expect(next).toMatchObject({ kind: "agent", nodeId: "plan" });
     return run;
   };
@@ -300,7 +341,7 @@ describe("SC26: a question blocks the run", () => {
     const env = { YOK_SKILLS_DIR: stageSkills() };
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link, env).code).toBe(0);
-    const next = JSON.parse(
+    const next = parseStep(
       orchestrate(run.repo, run.home, ["next", "--run", "feat-x"], env).stdout,
     );
     expect(next).toMatchObject({ kind: "stage", nodeId: "make" });
@@ -446,7 +487,7 @@ const runInPane = async (
   };
   const step = (args: readonly string[], extra: Env = {}, input = "") =>
     orchestrate(run.repo, run.home, args, { YOK_RUN_ID: "r-1", ...env, ...extra }, input);
-  const next = () => JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+  const next = () => parseStep(step(["next", "--run", "feat-x"]).stdout);
   const records = (): Array<Record<string, unknown>> =>
     existsSync(out)
       ? readFileSync(out, "utf8")
@@ -723,7 +764,7 @@ describe("SC26: orchestrate hook --agent codex", () => {
       { agent: "codex", sessionId: "c1" },
     ]);
 
-    const next = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+    const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
     expect(next).toMatchObject({ kind: "agent", nodeId: "plan" });
 
     const denied = hook(run, "pre-tool-use", "record-guard", {

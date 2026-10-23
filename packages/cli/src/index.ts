@@ -8,7 +8,7 @@ import { fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { pluginCommand } from "./plugin.ts";
-import { runCommand } from "./run.ts";
+import { resumeCommand, runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
 import { typesCommand } from "./types.ts";
@@ -35,6 +35,7 @@ await new Command()
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())
   .addCommand(runCommand())
+  .addCommand(resumeCommand())
   .addCommand(serverCommand())
   .addCommand(typesCommand())
   .addCommand(uninstallCommand())

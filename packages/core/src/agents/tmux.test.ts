@@ -168,7 +168,7 @@ describe("tmuxHost against a real tmux", () => {
       `/shim-dir:${process.env.PATH}`,
     );
     await pane.kill();
-  }, 15_000);
+  });
 
   test("SC3: sendText then sendKeys(['Enter']) submits one line, keeping the word Enter literal", async () => {
     const { host } = makeTerminal();
@@ -186,7 +186,7 @@ describe("tmuxHost against a real tmux", () => {
 
     await waitFor(() => readLines(outFile).some((record) => record.line === "Enter hello"));
     await pane.kill();
-  }, 15_000);
+  });
 
   test("SC21: multi-line text lands in the pane in one piece and leaves no paste buffer behind", async () => {
     const { host, socketName } = makeTerminal();
@@ -207,7 +207,7 @@ describe("tmuxHost against a real tmux", () => {
     const buffers = await exec("tmux", ["-L", socketName, "list-buffers"], process.cwd());
     expect(buffers.stdout).not.toContain("yok-");
     await pane.kill();
-  }, 15_000);
+  });
 
   test("a pasted end-of-paste sequence cannot press keys: control characters never reach the pane", async () => {
     const { host } = makeTerminal();
@@ -228,7 +228,7 @@ describe("tmuxHost against a real tmux", () => {
     expect(received.split("\x1b").length - 1).toBe(2);
     expect(received).toContain("hello[201~INJECTAFTER");
     await pane.kill();
-  }, 15_000);
+  });
 
   test("SC4: a killed session is no longer alive or listed, whether reached by its pane or its name", async () => {
     const { host } = makeTerminal();
@@ -250,7 +250,7 @@ describe("tmuxHost against a real tmux", () => {
     expect(killed.ok).toBe(true);
     expect(await pane.isAlive()).toBe(false);
     expect(await host.list()).not.toContain(name);
-  }, 15_000);
+  });
 
   test("kill closes only its own pane, so a second pane in the same session keeps running", async () => {
     const { host, socketName } = makeTerminal();

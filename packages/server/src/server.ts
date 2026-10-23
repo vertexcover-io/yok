@@ -71,6 +71,7 @@ export const startServer = async ({
   const app = createApp({
     registry,
     providerFor,
+    host,
     log,
     home,
     viewerOrigin: viewer.origin,

@@ -103,6 +103,13 @@ Detach with `Ctrl-b d`. The session keeps running without you. Reattach any time
 yok-dev attach --run-id r-1a2b3c4d
 ```
 
+A reboot or an agent crash ends the session but not the run. Bring it back where it stopped,
+on the model and in the conversation it had:
+
+```bash
+yok-dev resume step-demo
+```
+
 You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
 
 Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.

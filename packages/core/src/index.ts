@@ -15,7 +15,7 @@ export {
   readComments,
   replyToComment,
 } from "./comments.ts";
-export { findOpenContextRun } from "./context-step.ts";
+export { clearDeadSwitchLocks, findOpenContextRun } from "./context-step.ts";
 export {
   buildNotifierCheck,
   builtInChecks,

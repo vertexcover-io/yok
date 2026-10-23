@@ -464,32 +464,29 @@ export const createWorkspace = async (
   return reported({ ...plan, repos }, [eventError]);
 };
 
-const addOne = async (
-  repo: RepoPlan,
+const emitAdded = (
+  run: RunRef | undefined,
   plan: Plan,
-  base: string | undefined,
-  options: WorkspaceOptions,
-  log: ILogger,
-) => {
-  const outcome = await createOne(repo, plan, base, options, log);
+  outcome: ReadyRepo | FailedRepo,
+): Promise<string | undefined> => {
   const { workspaceDir, branch } = plan;
-  const repoId = toRepoId(repo.name);
-  const eventError =
-    outcome.status === "ready"
-      ? await emit(options.run, "workspace.repository.added", {
-          workspaceDir,
-          branch,
-          repoId,
-          repository: repositoryEntry(outcome),
-        })
-      : await emit(options.run, "workspace.repository.add-failed", {
-          workspaceDir,
-          branch,
-          repoId,
-          ...dirsOf(repo),
-          error: outcome.error,
-        });
-  return { outcome, eventError };
+  const repoId = toRepoId(outcome.name);
+  return outcome.status === "ready"
+    ? emit(run, "workspace.repository.added", {
+        workspaceDir,
+        branch,
+        repoId,
+        repository: repositoryEntry(outcome),
+      })
+    : emit(run, "workspace.repository.add-failed", {
+        workspaceDir,
+        branch,
+        repoId,
+        name: outcome.name,
+        worktreeDir: outcome.worktreeDir,
+        checkoutDir: outcome.checkoutDir,
+        error: outcome.error,
+      });
 };
 
 export const addRepositories = async (
@@ -502,12 +499,13 @@ export const addRepositories = async (
   if (!planned.ok) return planned;
   const plan = planned.value;
   const { base } = located.value;
-  const added = await Promise.all(plan.repos.map((repo) => addOne(repo, plan, base, options, log)));
-  const repos = added.map((result) => result.outcome);
-  return reported(
-    { ...plan, repos },
-    added.map((result) => result.eventError),
+  const repos = await Promise.all(
+    plan.repos.map((repo) => createOne(repo, plan, base, options, log)),
   );
+  // Recorded one at a time once all are done, so the log follows the asked order, not finishing order.
+  const eventErrors: (string | undefined)[] = [];
+  for (const outcome of repos) eventErrors.push(await emitAdded(options.run, plan, outcome));
+  return reported({ ...plan, repos }, eventErrors);
 };
 
 // Branch names map to paths lossily (feat/a and feat-a share one), so trust git's own record.

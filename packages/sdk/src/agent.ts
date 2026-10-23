@@ -71,6 +71,10 @@ export type LaunchOptions = Readonly<{
   // relaunch only: continue the session's conversation (claude --resume) instead of starting
   // a new session on that id
   resume?: boolean;
+  // launch only: continue session `id`'s conversation in a new terminal named `terminalName`,
+  // for a run whose terminal is gone; without it, launch starts a new session under a fresh
+  // name
+  continueSession?: Readonly<{ id: string; terminalName: string }>;
   // argv that runs the orchestrate script; the provider registers the agent's hooks and status
   // line as its subcommands
   orchestrateArgv?: readonly string[];

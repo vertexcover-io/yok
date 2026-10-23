@@ -3,7 +3,13 @@ import type { ClientResponse } from "hono/client";
 import { hc } from "hono/client";
 import type { SuccessStatusCode } from "hono/utils/http-status";
 import type { AppType } from "./app.ts";
-import { type ApiError, ErrorBodySchema, type StartRunRequest, socketPath } from "./protocol.ts";
+import {
+  type ApiError,
+  ErrorBodySchema,
+  type ResumeRunBody,
+  type StartRunRequest,
+  socketPath,
+} from "./protocol.ts";
 
 export type YokClientOptions = Readonly<{ home?: string; log?: ILogger }>;
 
@@ -72,6 +78,8 @@ export const createYokClient = ({ home = yokHome(), log = noopLogger }: YokClien
   return {
     health: () => unwrap(api.health.$get()),
     run: (body: StartRunRequest) => unwrap(api.runs.$post({ json: body })),
+    resume: (runId: string, body: ResumeRunBody) =>
+      unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
   };

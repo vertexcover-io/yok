@@ -26,7 +26,7 @@ flowchart LR
 
 **Most nodes are stages, and a stage is a skill with a contract.** A skill is a folder with a `SKILL.md` the agent reads. The contract, in its frontmatter, says what the stage takes, what it must return, which files it must produce, and which checks must pass before it counts as done.
 
-**The agent asks for one step at a time.** It runs `yok orchestrate next`, gets one card back, does the work, and reports with `yok orchestrate done`. The engine decides what the next card is. The agent never sees the whole plan.
+**The agent asks what it can do now.** It runs `yok orchestrate next`, gets back a card for every node that can start, does the work (in the background where it can), and reports each with `yok orchestrate done`. The engine decides what the cards are. The agent never sees the whole plan.
 
 **Everything is written down as events.** Every start, finish, rejection, hook call, and comment is a line in `event.jsonl`. The run's current state is computed from that log, never edited by hand. Delete the state file and it comes back.
 

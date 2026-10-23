@@ -1,18 +1,31 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { orchestrateArgv, type WorkflowAgent } from "@yok/core";
 import {
+  clearDeadSwitchLocks,
+  orchestrateArgv,
+  type WorkflowAgent,
+  WorkflowAgentSchema,
+} from "@yok/core";
+import {
+  type Event,
   type IAgentProvider,
+  type ITerminalHost,
   loadStartConfig,
   type ResolvedTiers,
   type Result,
+  runDirOf,
   type SavedPolicies,
+  type SessionRef,
+  SessionStartCalledEvent,
   sessionEnv,
   tierLaunch,
   type WorkflowRun,
 } from "@yok/sdk";
 import {
   devPluginDir,
+  foldModelSwitch,
+  isRunLive,
+  jsonlEventStore,
   type Registry,
   resolvePolicies,
   resolveTiers,
@@ -22,11 +35,18 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
-import { type StartRunBody, StartRunBodySchema } from "./protocol.ts";
+import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+import {
+  type ResumeRunBody,
+  ResumeRunBodySchema,
+  type StartRunBody,
+  StartRunBodySchema,
+} from "./protocol.ts";
 
 export type RunDeps = Readonly<{
   registry: Registry;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
+  host: ITerminalHost;
   home: string;
   viewerOrigin: string;
 }>;
@@ -116,10 +136,109 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
   return c.json({ run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) }, 201);
 };
 
+const conflict = (c: Context<{ Variables: Vars }>, message: string) =>
+  errorResponse(c, 409, "conflict", message);
+
+// A context new step links its session before Claude starts on it and keeps the link when the
+// relaunch fails, so the registry's last session may never have started; the event log knows.
+const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
+  events
+    .flatMap((event) => {
+      if (event.type !== "hooks.session-start.called") return [];
+      const parsed = SessionStartCalledEvent.safeParse(event);
+      if (!parsed.success) return [];
+      const { agent, sessionId } = parsed.data.payload;
+      return [{ agent, sessionId }];
+    })
+    .at(-1);
+
+// Brings back a run whose agent session is gone: the last linked session continues on the
+// model the run was on, in a tmux session under the run's old name.
+const resumeRun = async (
+  c: Context<{ Variables: Vars }>,
+  deps: RunDeps,
+  id: string,
+  body: ResumeRunBody,
+) => {
+  const log = c.get("log").child({ component: "runs", runId: id });
+  const run = await deps.registry.findRun(id);
+  if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+  const linked = run.sessions.at(-1);
+  if (run.name === null || run.terminal === null || linked === undefined) {
+    return conflict(c, `run ${id} never started its agent session; start it again with yok run`);
+  }
+  const runDir = runDirOf(run.cwd, run.name);
+  const state = await readStateOrNull(runDir);
+  if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
+  if (!isRunLive(state.status)) {
+    return conflict(
+      c,
+      `run ${run.name} is ${state.status}; there is nothing to resume, so start a new run with yok run`,
+    );
+  }
+  if (await isAgentAlive(run, deps.host)) {
+    return conflict(c, `run ${run.name} still has its agent session; use yok attach ${run.name}`);
+  }
+  const events = await jsonlEventStore(runDir).read();
+  const session = lastStartedSession(events) ?? linked;
+  const agent = WorkflowAgentSchema.safeParse(session.agent);
+  if (!agent.success) {
+    return conflict(c, `run ${run.name} ran on ${session.agent}, which yok cannot resume`);
+  }
+
+  const { removed, held } = await clearDeadSwitchLocks(runDir, state, events);
+  if (removed.length > 0) log.info({ locks: removed }, "dead switch locks removed");
+  // A live helper would take the resumed session's SessionStart as its own switch's.
+  if (held.length > 0) {
+    return conflict(
+      c,
+      `run ${run.name} is still switching its model or context; try again in a minute`,
+    );
+  }
+
+  const provider = deps.providerFor(agent.data);
+  const { current } = foldModelSwitch(events, state.tiers);
+  const launched = await provider.launch({
+    cwd: run.cwd,
+    prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
+    env: sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
+    pluginDir: devPluginDir(),
+    orchestrateArgv: orchestrateArgv(),
+    continueSession: { id: session.sessionId, terminalName: run.terminal },
+    ...tierLaunch(current),
+  });
+  // The run is left as it was: removing it, as a failed start does, would lose it.
+  if (!launched.ok) {
+    log.error(
+      { err: String(launched.error) },
+      "run not resumed: the agent session failed to launch",
+    );
+    return errorResponse(c, 502, "agent-failed", String(launched.error));
+  }
+  log.info(
+    {
+      agent: agent.data,
+      sessionId: session.sessionId,
+      terminal: run.terminal,
+      model: current?.model,
+    },
+    "run resumed",
+  );
+  // Comments posted while the session was down; delivery waits until the agent is ready for them.
+  void scheduleDelivery(id, { ...deps, log, now: () => new Date() });
+  return c.json(
+    { run, attach: [...launched.value.terminal.attachCommand()], view: viewUrl(deps, id) },
+    200,
+  );
+};
+
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach AppType.
 export const runRoutes = (deps: RunDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(StartRunBodySchema), (c) => startRun(c, deps, c.req.valid("json")))
+    .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
+      resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
+    )
     .get("/view", (c) => c.json({ view: `${deps.viewerOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");

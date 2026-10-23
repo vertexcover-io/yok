@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,6 +68,14 @@ export const initializedRun = (home: string, cwd: string, name = "feat-x"): Work
 
 export const eventsOf = (cwd: string, name = "feat-x") =>
   jsonlEventStore(runDirOf(cwd, name)).read();
+
+// The one step a `next` reply hands out, or the reply itself when it hands out none.
+export const parseStep = (stdout: string) => {
+  const reply = JSON.parse(stdout);
+  if (reply.kind !== "steps") return reply;
+  expect(reply.steps).toHaveLength(1);
+  return reply.steps[0];
+};
 
 export type Env = Readonly<Record<string, string | undefined>>;
 

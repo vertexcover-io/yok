@@ -9,6 +9,7 @@ import {
   fileArtifact,
   initializedRun,
   orchestrate,
+  parseStep,
   readRegistry,
   STAGE_SKILLS,
   STAGES_WORKFLOW,
@@ -337,7 +338,7 @@ describe("SC26: a run started in a linked worktree", () => {
     expect(ref.stdout).toBe("worktree-only reference\n");
     expect(ref.code).toBe(0);
     expect(next.code).toBe(0);
-    const reply = JSON.parse(next.stdout);
+    const reply = parseStep(next.stdout);
     expect(reply.extension).toBe(join(worktree, "docs/producer-ext.md"));
     expect(reply.done).toBe(`yok orchestrate done ${reply.nodeRunId} --run feat-x`);
   });
@@ -350,7 +351,7 @@ describe("SC26: picking the run", () => {
     const next = orchestrate(tempDir(), home, ["next", "--run-id", "r-1"], env);
 
     expect(next.code).toBe(0);
-    expect(JSON.parse(next.stdout).nodeId).toBe("make");
+    expect(parseStep(next.stdout).nodeId).toBe("make");
   });
 
   test("SC11: next finds its run from $YOK_RUN_ID, a --run-id flag wins over it, and the old variable is not read", () => {
@@ -361,7 +362,7 @@ describe("SC26: picking the run", () => {
       savedRun(worktree, { id: "r-2", workflowPath }),
     ]);
     expect(orchestrate(worktree, home, ["init", "feat-y", "--run-id", "r-2"], env).code).toBe(0);
-    const runOf = (result: ReturnType<typeof orchestrate>) => JSON.parse(result.stdout).done;
+    const runOf = (result: ReturnType<typeof orchestrate>) => parseStep(result.stdout).done;
 
     const fromEnv = orchestrate(worktree, home, ["next"], { ...env, YOK_RUN_ID: "r-1" });
     const fromFlag = orchestrate(worktree, home, ["next", "--run-id", "r-2"], {
@@ -408,7 +409,7 @@ describe("SC26: orchestrate next and exec", () => {
     const handedOut = ["a", "w", "b"].map((nodeId) => {
       const next = orchestrate(repo, home, ["next", "--run", "feat-x"]);
       expect(next.code).toBe(0);
-      const reply = JSON.parse(next.stdout);
+      const reply = parseStep(next.stdout);
       expect(reply).toEqual({
         kind: "exec",
         nodeRunId: expect.stringMatching(/^nr-[0-9a-f]{16}$/),
@@ -428,7 +429,7 @@ describe("SC26: orchestrate next and exec", () => {
     });
 
     const last = orchestrate(repo, home, ["next", "--run", "feat-x"]);
-    expect(JSON.parse(last.stdout)).toEqual({ kind: "finished", status: "completed" });
+    expect(parseStep(last.stdout)).toEqual({ kind: "finished", status: "completed" });
     const state = stateOf(repo);
     expect(state).toMatchObject({ runId: "r-1", runName: "feat-x", status: "completed" });
     expect(state.nodeRuns.w.nodeRunId).toBe(handedOut[1]);
@@ -446,7 +447,7 @@ describe("SC26: orchestrate next and exec", () => {
 
   const execAll = (repo: string, home: string, count: number) =>
     Array.from({ length: count }, () => {
-      const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+      const reply = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
       const exec = orchestrate(repo, home, ["exec", reply.nodeRunId, "--run", "feat-x"]);
       expect(exec.stderr).toBe("");
       expect(exec.code).toBe(0);
@@ -514,7 +515,7 @@ nodes:
     retry: { maxAttempts: 2 }
     input: {}
 `);
-    const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    const reply = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
     const exec = orchestrate(repo, home, ["exec", reply.nodeRunId, "--run", "feat-x"]);
     expect(exec.code).toBe(1);
     expect(JSON.parse(exec.stdout)).toMatchObject({
@@ -531,12 +532,12 @@ nodes:
       message: `${reply.nodeRunId} exited with code 3`,
     });
     const next = orchestrate(repo, home, ["next", "--run", "feat-x"]);
-    expect(JSON.parse(next.stdout)).toEqual({ kind: "finished", status: "failed" });
+    expect(parseStep(next.stdout)).toEqual({ kind: "finished", status: "failed" });
   });
 
   test("IW12 — exec refuses a node run that already ended or does not exist, recording only the refused calls", async () => {
     const { repo, home } = startedRun(STEPS);
-    const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    const reply = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
     orchestrate(repo, home, ["exec", reply.nodeRunId, "--run", "feat-x"]);
     const before = (await eventsOf(repo)).length;
     const stateBefore = stateOf(repo);
@@ -563,6 +564,49 @@ nodes:
   });
 });
 
+const PARALLEL = `name: parallel
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: a, type: exec, runtime: sh, script: printf a, input: {} }
+  - { id: b, type: exec, runtime: sh, script: printf b, dependsOn: [a], input: {} }
+  - { id: c, type: exec, runtime: sh, script: printf c, dependsOn: [a], input: {} }
+`;
+
+describe("orchestrate next with parallel nodes", () => {
+  test("SC15: once a is done, next prints b and c as one steps list in the background; after b's exec, next prints waiting on c", async () => {
+    const { repo, home } = startedRun(PARALLEL);
+    const next = () => orchestrate(repo, home, ["next", "--run", "feat-x"]);
+    const a = parseStep(next().stdout);
+    expect(orchestrate(repo, home, ["exec", a.nodeRunId, "--run", "feat-x"]).code).toBe(0);
+
+    const both = next();
+    expect(both.code).toBe(0);
+    const reply = JSON.parse(both.stdout);
+    const handOut = (nodeId: string) => ({
+      kind: "exec",
+      nodeRunId: expect.stringMatching(/^nr-[0-9a-f]{16}$/),
+      nodeId,
+      mode: "background",
+      command: expect.stringMatching(/^yok orchestrate exec nr-[0-9a-f]{16} --run feat-x$/),
+    });
+    expect(reply).toEqual({ kind: "steps", steps: [handOut("b"), handOut("c")] });
+    const [b, c] = reply.steps;
+
+    const exec = orchestrate(repo, home, ["exec", b.nodeRunId, "--run", "feat-x"]);
+    expect(JSON.parse(exec.stdout)).toMatchObject({ nodeId: "b", status: "completed" });
+    const completed = (await eventsOf(repo))
+      .filter((event) => event.type === "workflow.node.completed")
+      .map((event) => event.nodeId);
+    expect(completed).toEqual(["a", "b"]);
+    expect(stateOf(repo).nodeRuns.c.status).toBe("running");
+    expect(JSON.parse(next().stdout)).toEqual({
+      kind: "waiting",
+      running: [{ nodeRunId: c.nodeRunId, nodeId: "c" }],
+    });
+  });
+});
+
 describe("SC26: subscribers", () => {
   test("SC116: a config subscriber on workflow.node.completed fires when done completes a node", async () => {
     const skills = stageSkills();
@@ -571,7 +615,7 @@ describe("SC26: subscribers", () => {
     });
     const step = (args: readonly string[]) =>
       orchestrate(repo, home, args, { YOK_SKILLS_DIR: skills });
-    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const make = parseStep(step(["next", "--run", "feat-x"]).stdout);
     writeFileSync(join(runDirOf(repo, "feat-x"), "artifacts", "plan.md"), "plan\n");
 
     const done = step([
@@ -627,7 +671,7 @@ describe("SC26: the samskara upload", () => {
     const { repo, home } = startedRun(STAGES_WORKFLOW, { samskara: {} }, { sessions });
     const step = (args: readonly string[]) =>
       orchestrate(repo, home, args, { YOK_SKILLS_DIR: STAGE_SKILLS, ...samskara.env });
-    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const make = parseStep(step(["next", "--run", "feat-x"]).stdout);
     const runDir = runDirOf(repo, "feat-x");
     writeFileSync(join(runDir, "artifacts", "plan.md"), "plan\n");
 
@@ -646,7 +690,7 @@ describe("SC26: the samskara upload", () => {
       ...["artifacts", "upload", "s1", join(realRunDir, "artifacts", "plan.md")],
       ...["--base-dir", realRunDir],
     ]);
-    expect(JSON.parse(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({ nodeId: "use" });
+    expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({ nodeId: "use" });
   }, 30_000);
 
   test("SC407: done on a node that ran in claude session s1 names s1 in its workflow.node.completed event", async () => {
@@ -654,7 +698,7 @@ describe("SC26: the samskara upload", () => {
     const { repo, home } = startedRun(STAGES_WORKFLOW, undefined, { sessions });
     const step = (args: readonly string[]) =>
       orchestrate(repo, home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
-    const make = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const make = parseStep(step(["next", "--run", "feat-x"]).stdout);
     writeFileSync(join(runDirOf(repo, "feat-x"), "artifacts", "plan.md"), "plan\n");
 
     step([
@@ -724,7 +768,7 @@ nodes:
   - { id: tidy, type: exec, runtime: sh, script: "true", dependsOn: [lint], input: {} }
 `);
     for (const nodeId of ["lint", "tidy"]) {
-      const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+      const reply = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
       expect(reply).toMatchObject({ kind: "exec", nodeId });
       orchestrate(repo, home, ["exec", reply.nodeRunId, "--run", "feat-x"]);
     }
@@ -737,14 +781,14 @@ nodes:
   test("IW28 — next and exec run a workflow mixing a loop, a switch and an include to finished", () => {
     const { repo, home } = startedRun(MIXED, undefined, {}, { files: { "child.yaml": CHILD } });
     const handedOut = ["test", "test", "test", "greet", "say", "last"].map((nodeId) => {
-      const reply = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+      const reply = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
       expect(reply).toMatchObject({ kind: "exec", nodeId });
       const exec = orchestrate(repo, home, ["exec", reply.nodeRunId, "--run", "feat-x"]);
       expect(JSON.parse(exec.stdout)).toMatchObject({ nodeId, status: "completed" });
       return reply.nodeRunId;
     });
     const last = orchestrate(repo, home, ["next", "--run", "feat-x"]);
-    expect(JSON.parse(last.stdout)).toEqual({ kind: "finished", status: "completed" });
+    expect(parseStep(last.stdout)).toEqual({ kind: "finished", status: "completed" });
     const nodes = stateOf(repo).nodeRuns;
     expect(nodes.decide.nodes.greet).toMatchObject({ nodeRunId: handedOut[3] });
     expect(nodes.decide).toMatchObject({
@@ -787,14 +831,15 @@ describe("SC26: orchestrate call log", () => {
     const { repo, home } = startedRun(ONE_EXEC);
     const step = (args: readonly string[]) => JSON.parse(orchestrate(repo, home, args).stdout);
 
-    const exec = step(["next", "--run", "feat-x"]);
+    const handed = step(["next", "--run", "feat-x"]);
+    const [exec] = handed.steps;
     const report = step(["exec", exec.nodeRunId, "--run", "feat-x"]);
     const finished = step(["next", "--run", "feat-x"]);
 
     expect(exec).toMatchObject({ kind: "exec", nodeId: "a" });
     expect(finished).toEqual({ kind: "finished", status: "completed" });
     expect(await callsOf(repo)).toEqual([
-      call("next", {}, exec),
+      call("next", {}, handed),
       call("exec", { nodeRunId: exec.nodeRunId }, report),
       call("next", {}, finished),
     ]);
@@ -813,7 +858,8 @@ describe("SC26: orchestrate call log", () => {
     const run = startedRun(STAGES_WORKFLOW);
     const env = { YOK_SKILLS_DIR: stageSkills() };
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args, env);
-    const stage = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const handed = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const [stage] = handed.steps;
     const done = ["done", stage.nodeRunId, "--run", "feat-x"];
 
     const refused = step([
@@ -837,14 +883,15 @@ describe("SC26: orchestrate call log", () => {
         fileArtifact("plan", "artifacts/plan.md"),
       ]).stdout,
     );
-    const following = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const handedNext = JSON.parse(step(["next", "--run", "feat-x"]).stdout);
+    const [following] = handedNext.steps;
 
     expect(refused.code).toBe(1);
     expect(stage).toMatchObject({ kind: "stage", nodeId: "make" });
     expect(following).toMatchObject({ kind: "stage", nodeId: "use" });
     const artifacts = [{ type: "plan", name: "plan", path: "artifacts/plan.md" }];
     expect(await callsOf(run.repo)).toEqual([
-      call("next", {}, stage),
+      call("next", {}, handed),
       call(
         "done",
         { nodeRunId: stage.nodeRunId, output: '{"ok":true}', summary: "Did the work.", artifacts },
@@ -857,13 +904,14 @@ describe("SC26: orchestrate call log", () => {
         report,
         "completed",
       ),
-      call("next", {}, following),
+      call("next", {}, handedNext),
     ]);
   });
 
   test("OL3 — an agent reply and a done --error log the error as the agent reported it", async () => {
     const { repo, home } = startedRun(AGENT);
-    const agent = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    const handed = JSON.parse(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    const [agent] = handed.steps;
     const failed = orchestrate(repo, home, [
       "done",
       agent.nodeRunId,
@@ -875,7 +923,7 @@ describe("SC26: orchestrate call log", () => {
 
     expect(agent).toMatchObject({ kind: "agent", prompt: "check it" });
     expect(await callsOf(repo)).toEqual([
-      call("next", {}, agent),
+      call("next", {}, handed),
       call(
         "done",
         { nodeRunId: agent.nodeRunId, error: "could not", artifacts: [] },

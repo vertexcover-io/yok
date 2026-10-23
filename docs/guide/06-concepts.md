@@ -4,7 +4,7 @@ Each section here is one idea: what it is, the shape it has in code, and where i
 
 ## Workflow
 
-A YAML file naming a graph of nodes. The engine walks it top to bottom, starting each node whose dependencies are done. [workflows/task.yaml](../../workflows/task.yaml) is the shipped one.
+A YAML file naming a graph of nodes. The engine walks it top to bottom and starts every node whose dependencies are done, so nodes that each name their dependency in `dependsOn` run side by side once those are done. [workflows/task.yaml](../../workflows/task.yaml) is the shipped one.
 
 ```yaml
 name: task
@@ -42,7 +42,7 @@ One step in the graph. Seven types. The schemas are in [workflow/types.ts](../..
 
 Every node has `id`, `input`, `dependsOn`, `allowFailure`, and `always`. All but `switch` also take `when`. The leaf types (`agent`, `exec`, `wait`, `context`) also take `cwd`, `timeoutMs`, and `retry`.
 
-- `dependsOn` lists node ids that must complete first. A dependency that was skipped skips this node too.
+- `dependsOn` lists node ids that must end first. A dependency that was skipped skips this node too. A node with no `dependsOn` waits for the node before it to end, but is not skipped with it. Two nodes run side by side only when each names its dependency.
 - `when` is an expression. False means skipped, with the reason recorded.
 - `allowFailure: true` means this node failing does not fail the run.
 - `always: true` means this node still starts after an earlier node in its scope failed. The retro node uses it. See [ADR 0008](../adr/0008-a-node-marked-always-still-starts-after-an-earlier-failure.md).
@@ -226,7 +226,6 @@ These show up in schemas or in conversation but have no behaviour behind them to
 
 | Thing | Where you see it | What it will mean |
 |---|---|---|
-| parallel nodes | two nodes with no `dependsOn` between them | they still run one at a time; `next` replies `waiting` while any step is open |
 | detached stages | conversation | a stage running as its own headless session |
 | `scopes` | a stage's frontmatter | a named level of rigour for a run, such as experiment or enterprise, that stages would read to decide how much to do |
 | `protocols` | a stage's frontmatter | shared rules, such as a writing style, loaded into a stage without the skill naming them |
