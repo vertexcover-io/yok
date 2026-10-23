@@ -21,6 +21,7 @@ import {
   TicketSchema,
   targetPath,
   validateTicketDir,
+  writeDesignIndex,
 } from "./ticket.ts";
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -160,6 +161,233 @@ describe("validateTicketDir", () => {
     expect((await validateTicketDir(dir)).ok).toBe(false);
     writeFileSync(join(dir, "ticket.json"), "{not json");
     expect((await validateTicketDir(dir)).ok).toBe(false);
+  });
+});
+
+// The 8-byte PNG signature and an IHDR chunk carrying WIDTH, all the index reads.
+const png = (width: number): Buffer => {
+  const head = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head);
+  head.writeUInt32BE(13, 8);
+  head.write("IHDR", 12);
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(100, 20);
+  return head;
+};
+
+// A whole IHDR chunk, then a pHYs chunk recording PIXELS_PER_METRE, as a 2x screenshot writes it.
+const densePng = (width: number, pixelsPerMetre: number): Buffer => {
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write("IHDR", 4);
+  ihdr.writeUInt32BE(width, 8);
+  ihdr.writeUInt32BE(100, 12);
+  const phys = Buffer.alloc(21);
+  phys.writeUInt32BE(9, 0);
+  phys.write("pHYs", 4);
+  phys.writeUInt32BE(pixelsPerMetre, 8);
+  phys.writeUInt32BE(pixelsPerMetre, 12);
+  phys.writeUInt8(1, 16);
+  return Buffer.concat([png(0).subarray(0, 8), ihdr, phys]);
+};
+
+const asset = (path: string, mimeType: string, type = "mockup") => ({
+  ...downloaded(path),
+  mimeType,
+  type,
+});
+
+describe("writeDesignIndex", () => {
+  let ticketDir: string;
+  let designDir: string;
+  beforeEach(() => {
+    const root = mkdtempSync(join(tmpdir(), "design-"));
+    ticketDir = join(root, "ticket");
+    designDir = join(root, "design");
+    mkdirSync(ticketDir);
+  });
+
+  const arrange = (files: Record<string, string | Buffer>, overrides: Record<string, unknown>) => {
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(ticketDir, name), body);
+    writeFileSync(join(ticketDir, "ticket.json"), JSON.stringify(ticket(overrides)));
+  };
+
+  const readIndex = () => readFileSync(join(designDir, "INDEX.md"), "utf8");
+  const tableRows = () =>
+    readIndex()
+      .split("\n")
+      .filter((line) => line.startsWith("|  |"));
+
+  const sc1Ticket = () =>
+    arrange(
+      { "list.png": png(1440), "invoices.html": "<html></html>" },
+      { assets: [asset("list.png", "image/png"), asset("invoices.html", "text/html")] },
+    );
+
+  test("SC1 (design): an image and an HTML mockup land in the design folder, and the index lists the image with its width", async () => {
+    sc1Ticket();
+
+    const result = await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(existsSync(join(designDir, "list.png"))).toBe(true);
+    expect(readFileSync(join(designDir, "invoices", "index.html"), "utf8")).toBe("<html></html>");
+    expect(tableRows()).toEqual(["|  | `design/list.png` | 1440 | attachment `list.png` |  |"]);
+    expect(result).toEqual({
+      index: join(designDir, "INDEX.md"),
+      mockups: [join(designDir, "invoices", "index.html")],
+      figma: [],
+      spec: null,
+    });
+  });
+
+  test("SC2 (design): a second run indexes the mockup shot and the Figma export the agent added, sorted by file name", async () => {
+    sc1Ticket();
+    await writeDesignIndex(ticketDir, designDir, []);
+    writeFileSync(join(designDir, "invoices--empty.png"), png(390));
+    writeFileSync(join(designDir, "figma--header.png"), png(800));
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(tableRows()).toEqual([
+      "|  | `design/figma--header.png` | 800 | Figma export |  |",
+      "|  | `design/invoices--empty.png` | 390 | HTML mockup `design/invoices/index.html` |  |",
+      "|  | `design/list.png` | 1440 | attachment `list.png` |  |",
+    ]);
+  });
+
+  test.each([
+    ["a 2x screenshot at 144 dpi", 2880, 5669, "1440"],
+    ["a 3x export at 216 dpi", 1170, 8504, "390"],
+    ["a 96 dpi export", 1440, 3780, "1440"],
+    ["a 300 dpi print export", 1440, 11811, "1440"],
+  ])("%s is indexed at the width it was drawn for", async (_, width, pixelsPerMetre, cell) => {
+    arrange(
+      { "list.png": densePng(width, pixelsPerMetre) },
+      { assets: [asset("list.png", "image/png")] },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(tableRows()).toEqual([
+      `|  | \`design/list.png\` | ${cell} | attachment \`list.png\` |  |`,
+    ]);
+  });
+
+  test("an extensionless image and an SVG mockup are each indexed, not only copied", async () => {
+    arrange(
+      { a1b2c3: png(1440), "logo.svg": "<svg/>" },
+      { assets: [asset("a1b2c3", "image/png"), asset("logo.svg", "image/svg+xml")] },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(tableRows()).toEqual([
+      "|  | `design/a1b2c3` | 1440 | attachment `a1b2c3` |  |",
+      "|  | `design/logo.svg` |  | attachment `logo.svg` |  |",
+    ]);
+  });
+
+  test("an HTML mockup's folder gets the ticket's other files beside it, so its relative links load", async () => {
+    arrange(
+      {
+        "invoices.html": "<link href=styles.css><img src=logo.png>",
+        "styles.css": "a{}",
+        "logo.png": png(64),
+      },
+      {
+        assets: [
+          asset("invoices.html", "text/html"),
+          asset("styles.css", "text/css", "code"),
+          asset("logo.png", "image/png"),
+        ],
+      },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(readFileSync(join(designDir, "invoices", "styles.css"), "utf8")).toBe("a{}");
+    expect(existsSync(join(designDir, "invoices", "logo.png"))).toBe(true);
+    expect(tableRows()).toEqual(["|  | `design/logo.png` | 64 | attachment `logo.png` |  |"]);
+  });
+
+  test("a ticket file named index.html beside a mockup never replaces the mockup's page", async () => {
+    arrange(
+      { "pricing.html": "<h1>Choose your plan</h1>", "index.html": "<h1>Release notes</h1>" },
+      {
+        assets: [asset("pricing.html", "text/html"), asset("index.html", "text/html", "document")],
+      },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(readFileSync(join(designDir, "pricing", "index.html"), "utf8")).toBe(
+      "<h1>Choose your plan</h1>",
+    );
+  });
+
+  test("an HTML log attached beside a mockup image is no mockup: it gets no folder and no frames", async () => {
+    arrange(
+      { "list.png": png(1440), "build.html": "<html>log</html>" },
+      { assets: [asset("list.png", "image/png"), asset("build.html", "text/html", "log")] },
+    );
+
+    const result = await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(result.mockups).toEqual([]);
+    expect(existsSync(join(designDir, "build"))).toBe(false);
+  });
+
+  test("SC3 (design): a ticket whose only files are a log and a diagram gets no design folder and a null index", async () => {
+    arrange(
+      { "run.log": "boom", "flow.png": png(600) },
+      {
+        assets: [asset("run.log", "text/plain", "log"), asset("flow.png", "image/png", "diagram")],
+      },
+    );
+
+    const result = await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(result).toEqual({ index: null, mockups: [], figma: [], spec: null });
+    expect(existsSync(designDir)).toBe(false);
+  });
+
+  test("SC4 (design): a markdown spec doc becomes spec.md under its name and adds no table row", async () => {
+    arrange(
+      { "list.png": png(1440), "spec.md": "Totals sit right." },
+      {
+        assets: [asset("list.png", "image/png"), asset("spec.md", "text/markdown", "document")],
+      },
+    );
+
+    const result = await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(readFileSync(join(designDir, "spec.md"), "utf8")).toBe(
+      "## spec.md\n\nTotals sit right.\n",
+    );
+    expect(tableRows()).toHaveLength(1);
+    expect(readIndex()).toContain("Spec: `design/spec.md`");
+    expect(result.spec).toBe(join(designDir, "spec.md"));
+  });
+
+  test("SC5 (design): an unfetched mockup and an unexported Figma link are listed as unavailable under an empty table", async () => {
+    arrange(
+      {},
+      {
+        assets: [{ ...unavailable, type: "mockup" }],
+        references: [{ url: "https://www.figma.com/file/x", kind: "design", context: "" }],
+        complete: false,
+      },
+    );
+
+    const result = await writeDesignIndex(ticketDir, designDir, [
+      "figma.com/file/x — no Figma MCP",
+    ]);
+
+    expect(result.figma).toEqual(["https://www.figma.com/file/x"]);
+    expect(tableRows()).toEqual([]);
+    expect(readIndex()).toContain(
+      "## Unavailable\n\n- x.png — 403\n- figma.com/file/x — no Figma MCP\n",
+    );
   });
 });
 
@@ -369,23 +597,48 @@ describe("runProviderCli", () => {
   });
 });
 
-describe("yok orchestrate skill run ticket-fetcher.validate", () => {
-  const CLI = join(import.meta.dir, "../../../packages/cli/src/index.ts");
-  const validate = (dir: string) =>
-    spawnSync(
-      "bun",
-      [
-        "--no-env-file",
-        CLI,
-        "orchestrate",
-        "skill",
-        "run",
-        "ticket-fetcher.validate",
-        "validate",
-        dir,
-      ],
-      { encoding: "utf8", env: { ...process.env, YOK_RUN_ID: undefined } },
+const CLI = join(import.meta.dir, "../../../packages/cli/src/index.ts");
+const runSkillScript = (script: string, args: readonly string[]) =>
+  spawnSync("bun", ["--no-env-file", CLI, "orchestrate", "skill", "run", script, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, YOK_RUN_ID: undefined },
+  });
+
+describe("yok orchestrate skill run ticket-fetcher.design", () => {
+  test("SC6 (design): design TICKET_DIR DESIGN_DIR prints the index JSON and exits 0, and a missing DESIGN_DIR prints the usage and exits 1", () => {
+    const root = mkdtempSync(join(tmpdir(), "design-cli-"));
+    const ticketDir = join(root, "ticket");
+    mkdirSync(ticketDir);
+    writeFileSync(join(ticketDir, "list.png"), png(1440));
+    writeFileSync(
+      join(ticketDir, "ticket.json"),
+      JSON.stringify(ticket({ assets: [asset("list.png", "image/png")] })),
     );
+    const designDir = join(root, "design");
+
+    const passed = runSkillScript("ticket-fetcher.design", [
+      "design",
+      ticketDir,
+      designDir,
+      "--unavailable",
+      "x — y",
+    ]);
+    const failed = runSkillScript("ticket-fetcher.design", ["design", ticketDir]);
+
+    expect(passed.status).toBe(0);
+    expect(JSON.parse(passed.stdout)).toEqual({
+      index: join(designDir, "INDEX.md"),
+      mockups: [],
+      figma: [],
+      spec: null,
+    });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain("usage:");
+  });
+});
+
+describe("yok orchestrate skill run ticket-fetcher.validate", () => {
+  const validate = (dir: string) => runSkillScript("ticket-fetcher.validate", ["validate", dir]);
 
   test("SC52: a valid bundle prints ok and exits 0, and one listing a missing asset prints its issues and exits 1", () => {
     const good = mkdtempSync(join(tmpdir(), "ticket-"));
