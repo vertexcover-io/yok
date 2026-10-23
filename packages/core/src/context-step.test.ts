@@ -757,6 +757,24 @@ describe("runContextStep: compact", () => {
     expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
   }, 20_000);
 
+  test("a resume line typed while Claude finishes a turn that outlasts the 180-second cap is typed once and records no event", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    const busyFor = 200_000;
+    const fake = fakeTerminal(
+      () => (typedAt === undefined || Date.now() >= typedAt + busyFor ? IDLE : BUSY),
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  }, 20_000);
+
   test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {
     const context = await setUp("type: context, action: compact");
     let typedAt: number | undefined;

@@ -177,6 +177,10 @@ const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean
 const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
   (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
 
+// How a wait for a typed resume line ended: taken; lost, at a free Claude; or held, the cap reached
+// while Claude still worked or waited on a person's choice.
+type ResumeWait = "taken" | "lost" | "held";
+
 // Claude holds a line typed while it finishes a turn or waits on a person's choice, and may not
 // draw its spinner until a moment after Enter, so the wait counts only while Claude stays free; a
 // line retyped while it is held or worked on would run twice.
@@ -184,25 +188,24 @@ const waitForResumed = async (
   terminal: ITerminal,
   store: IEventStore,
   afterSeq: number,
-): Promise<boolean> => {
+): Promise<ResumeWait> => {
   const cap = Date.now() + RESUME_CAP_MS;
   let freeSince: number | undefined;
   for (;;) {
-    if (await isResumed(store, afterSeq)) return true;
+    if (await isResumed(store, afterSeq)) return "taken";
     const now = Date.now();
     const screen = await terminal.capture();
-    const free = screen.ok && !isClaudeHeld(screen.value);
-    freeSince = free ? (freeSince ?? now) : undefined;
-    if (now >= cap || (freeSince !== undefined && now >= freeSince + RESUME_TIMEOUT_MS)) {
-      return false;
-    }
+    const held = screen.ok && isClaudeHeld(screen.value);
+    freeSince = screen.ok && !held ? (freeSince ?? now) : undefined;
+    if (freeSince !== undefined && now >= freeSince + RESUME_TIMEOUT_MS) return "lost";
+    if (now >= cap) return held ? "held" : "lost";
     await Bun.sleep(DONE_POLL_MS);
   }
 };
 
-// How the resume line ended: taken, never typed because the input box never showed, or typed and
-// never taken.
-type ResumeOutcome = "taken" | "unreachable" | "not-taken";
+// How the resume line ended: taken; held by a Claude still at work on it, so not typed again;
+// never typed because the input box never showed; or typed and never taken.
+type ResumeOutcome = "taken" | "held" | "unreachable" | "not-taken";
 
 // Types the resume line until the run's `orchestrate resume`, which the --resume skill runs first,
 // shows Claude took it; the outcome is the last try's.
@@ -213,9 +216,8 @@ const sendResume = async (target: LineTarget, line: string): Promise<Result<Resu
   for (let attempt = 1; attempt <= RESUME_ATTEMPTS; attempt += 1) {
     const typed = await tryLine(target, line);
     if (!typed.ok) return typed;
-    if (typed.value && (await waitForResumed(target.terminal, store, afterSeq))) {
-      return { ok: true, value: "taken" };
-    }
+    const wait = typed.value ? await waitForResumed(target.terminal, store, afterSeq) : undefined;
+    if (wait === "taken" || wait === "held") return { ok: true, value: wait };
     outcome = typed.value ? "not-taken" : "unreachable";
     target.log.warn({ line, attempt }, "resume line not taken");
   }
@@ -461,6 +463,7 @@ const resumeRun = async (target: LineTarget): Promise<void> => {
   if (!sent.ok) return target.log.error({ err: sent.error }, "resume prompt not taken");
   if (sent.value === "taken") return;
   const { run, sessionId, step, log } = target;
+  if (sent.value === "held") return log.warn({ line }, `Claude still holds ${line}`);
   log.error({ line, outcome: sent.value }, `Claude did not take ${line}`);
   if (sent.value !== "unreachable") return;
   await appendRunEvent(run, {
