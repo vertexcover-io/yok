@@ -287,7 +287,7 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
-// The agent's input box did not show in its pane on any try at the resume line, so yok typed
+// The agent's input box showed in its pane on no try at the resume line, so yok typed
 // nothing and nobody drives the run; the notifier pings a person to type line. step is the node
 // the line was meant for.
 export const AgentInputUnreachableEvent = z.object({

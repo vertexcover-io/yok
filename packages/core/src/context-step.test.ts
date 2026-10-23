@@ -829,6 +829,24 @@ describe("runContextStep: compact", () => {
     });
   });
 
+  test("a resume line typed and not taken on the first try, whose input box never shows on the second, records no event: a line was typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      (line) => line !== RESUME,
+      (_, typed) => (typed.includes(RESUME) ? CONFIG_LIST_FOOTER : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+      ...Array(3).fill("Escape"),
+    ]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
   test("SC14: a /compact Claude refuses with nothing to compact, then a resume line it takes, records no notice and leaves the run running", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
