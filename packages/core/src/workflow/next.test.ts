@@ -1632,10 +1632,33 @@ describe("the shipped task workflow's qa and review loops", () => {
         variables: { environment: "default" },
       },
       { id: "commit", input: { workspace } },
-      { id: "pr", input: { workspace, task } },
+      { id: "pr", input: { workspace, task, qa: VERDICTS.PASS } },
       { id: "retro", input: {} },
     ]);
+    expect(handed.find(({ id }) => id === "pr")?.input).toEqual({
+      workspace,
+      task,
+      qa: VERDICTS.PASS ?? null,
+    });
     expect(findRun(state, "qa-loop")).toMatchObject({ status: "completed", output: VERDICTS.PASS });
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC3: a qa loop that ends PARTIAL after a FAIL hands pr the PARTIAL verdict as its qa input", async () => {
+    const { stop, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { qa: ["FAIL", "PARTIAL"] },
+    );
+
+    const ids = handed.map(({ id }) => id);
+    expect(ids.indexOf("pr")).toBeGreaterThan(ids.indexOf("commit"));
+    expect(ids.indexOf("commit")).toBeGreaterThan(-1);
+    expect(handed.find(({ id }) => id === "pr")?.input).toEqual({
+      workspace,
+      task: "do X",
+      qa: VERDICTS.PARTIAL ?? null,
+    });
     expect(stop).toEqual({ kind: "finished", status: "completed" });
   });
 

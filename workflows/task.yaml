@@ -172,6 +172,7 @@ nodes:
     input:
       workspace: "{{ nodes.create-workspace.output }}"
       task: "{{ nodes.ticket-fetcher.output.task }}"
+      qa: "{{ nodes.qa-loop.output }}"
 
   # Audits the run for yok defects. always: it runs after a failed node too; allowFailure:
   # its own failure never changes the run's status.

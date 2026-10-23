@@ -35,7 +35,9 @@ and pushes belong to the caller; this skill works with a branch that is already 
 ## In a run
 
 RUN below is the run's spec name. The input holds `workspace`, the create-workspace stage's
-output, and `task`, the request or ticket text. Do every step once per repo in the workspace,
+output, and `task`, the request or ticket text. It may also hold `qa`, the QA stage's output:
+its verdict in `status`, its `reason`, its `report` path and one `gaps[]` entry per requirement
+it could not verify, each with `req` and `mechanism` (what blocked it). Do every step once per repo in the workspace,
 inside its `worktreeDir`, and skip a repo whose branch has no commit past its base. The base
 branch is `workspace.repositories.NAME.git.baseBranch` in `.yok/RUN/state.json`.
 
@@ -86,6 +88,7 @@ message lists every `pull-request` link. The stage's output is the result below 
 3. Read the complete PR diff and enough surrounding code to explain the final behavior.
    For a new PR, compare the pushed head against the base. Use the ticket, plan, verification
    reports, and existing PR description when available. Local unpushed work is not part of the PR.
+   When the input holds `qa`, the body's QA section is written from it, never from memory of the run.
 4. Before writing, read [pr-description-template.md](references/pr-description-template.md)
    and [pr-visual-guide.md](references/pr-visual-guide.md). Write a concise title naming the
    concrete change. Follow the template for the body; preserve relevant human-added context
