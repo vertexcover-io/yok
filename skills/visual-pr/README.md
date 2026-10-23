@@ -21,7 +21,7 @@ It does not merge PRs or change labels, reviewers or milestones.
 
 ## Inputs and outputs
 
-Reads the `workspace` and `task` inputs, and the optional `plan` and `proof-report` artifacts. Produces the optional `pr-description` artifact, `artifacts/pr-description.md` (one per repo when the workspace has several).
+Reads the `workspace` and `task` inputs, the optional `qa` input (the QA stage's output, which fills the body's QA section), and the optional `plan` and `proof-report` artifacts. Produces the optional `pr-description` artifact, `artifacts/pr-description.md` (one per repo when the workspace has several).
 
 ## Files
 
