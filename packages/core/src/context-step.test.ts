@@ -506,6 +506,25 @@ describe("runContextStep: compact", () => {
     expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
   });
 
+  test("a compaction whose receipt never comes but whose SessionStart completes the node is not typed again, and records no lost line", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = fakeTerminal(
+      () => IDLE,
+      async (text) => {
+        if (text === "/compact") return completeContextOnSessionStart(context.run, "A", "compact");
+        await receive(context.run, text);
+      },
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true, sessionId: "A" },
+    });
+  });
+
   test("SC2: a resume line lost after a compaction that worked is typed again, and the node stays applied with one completion", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(context, (line, attempt) => line !== RESUME || attempt === 2);

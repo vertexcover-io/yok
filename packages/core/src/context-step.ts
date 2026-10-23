@@ -144,19 +144,32 @@ const closePopup = async (terminal: ITerminal, left: number): Promise<Result<voi
   return closePopup(terminal, left - 1);
 };
 
+// refusal: screen text saying Claude took the line and refused it. applied: whether the line's
+// effect is already recorded, which proves Claude took it when its receipt never came.
+type LineChecks = Readonly<{ refusal?: string; applied?: () => Promise<boolean> }>;
+
+const isTaken = async (
+  store: IEventStore,
+  sessionId: string,
+  digest: string,
+  afterSeq: number,
+  applied: LineChecks["applied"],
+): Promise<boolean> =>
+  (await isReceived(store, sessionId, digest, afterSeq)) || ((await applied?.()) ?? false);
+
 // One try at a line. Claude must be idle first, so the Escapes that close a popup never
 // interrupt its work; C-u then empties the box, where a cancelled line may be left. false: lost.
 const tryLine = async (
   target: LineTarget,
   store: IEventStore,
   line: string,
-  refusal: string | undefined,
+  { refusal, applied }: LineChecks,
   afterSeq: number,
 ): Promise<Result<boolean>> => {
   const { terminal, sessionId } = target;
   const digest = digestLine(line);
   const idle = await waitForIdle(terminal);
-  const early = await isReceived(store, sessionId, digest, afterSeq);
+  const early = await isTaken(store, sessionId, digest, afterSeq, applied);
   if (early || !idle.ok) return { ok: true, value: early };
   const closed = await closePopup(terminal, CLAUDE_MAX_ESCAPES);
   if (!closed.ok) return closed;
@@ -168,7 +181,9 @@ const tryLine = async (
   const answer = await pollUntil(
     { everyMs: DONE_POLL_MS, timeoutMs: RECEIPT_TIMEOUT_MS, timeoutError: "not received" },
     async (): Promise<Result<true | string | undefined>> => {
-      if (await isReceived(store, sessionId, digest, afterSeq)) return { ok: true, value: true };
+      if (await isTaken(store, sessionId, digest, afterSeq, applied)) {
+        return { ok: true, value: true };
+      }
       if (refusal === undefined) return { ok: true, value: undefined };
       const screen = await terminal.capture();
       const refused = screen.ok && screen.value.includes(refusal);
@@ -180,17 +195,16 @@ const tryLine = async (
 };
 
 // Types a line Claude must take, where a popup may have opened: it counts once Claude's hook
-// reports it, and is typed at most LINE_ATTEMPTS times. refusal: screen text saying Claude took
-// the line and refused it.
+// reports it, or `checks.applied` finds its effect, and is typed at most LINE_ATTEMPTS times.
 const sendLine = async (
   target: LineTarget,
   line: string,
-  refusal?: string,
+  checks: LineChecks = {},
 ): Promise<Result<void>> => {
   const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
   const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
   for (let attempt = 1; attempt <= LINE_ATTEMPTS; attempt += 1) {
-    const taken = await tryLine(target, store, line, refusal, afterSeq);
+    const taken = await tryLine(target, store, line, checks, afterSeq);
     if (!taken.ok) return taken;
     if (taken.value) return { ok: true, value: undefined };
     target.log.warn({ line, attempt }, "line not received");
@@ -371,7 +385,11 @@ const compact = async (
   const { log } = target;
   await recordStarted(options, "compact", target.sessionId);
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
-  const sent = await sendLine(target, command, CLAUDE_NOTHING_TO_COMPACT);
+  // The compact's SessionStart completes the node, so a closed node means Claude took the line.
+  const sent = await sendLine(target, command, {
+    refusal: CLAUDE_NOTHING_TO_COMPACT,
+    applied: async () => !(await findContextPlanNode(options.run, options.nodeRunId)).ok,
+  });
   if (!sent.ok) return sent;
   log.info({ command }, "compact received");
   const done = await watchForFailure(options, target.terminal, "compact");
