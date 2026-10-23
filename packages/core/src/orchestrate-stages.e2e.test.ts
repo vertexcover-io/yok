@@ -909,6 +909,24 @@ nodes:
     expect(nextReply(repo, home)).not.toHaveProperty("notes");
   });
 
+  test("SC26a: an agent node whose output looks like a skipped context step adds no note", () => {
+    const { repo, home } = startedRun(`name: agent-then-fix
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: talk, type: agent, prompt: talk, input: {}, output: { zodSchema: Json } }
+  - { id: fix, type: agent, prompt: fix it, dependsOn: [talk], input: {} }
+`);
+    const [talk] = nextReply(repo, home).steps;
+    const lookalike = JSON.stringify({ action: "compact", applied: false, reason: "made up" });
+    const done = ["done", talk.nodeRunId, "--run", "feat-x", "--summary", "Talked.", "--output", "-"];
+    expect(orchestrate(repo, home, done, env, lookalike).code).toBe(0);
+
+    const reply = nextReply(repo, home);
+    expect(reply.steps).toMatchObject([{ nodeId: "fix" }]);
+    expect(reply).not.toHaveProperty("notes");
+  });
+
   test("SC23: a next after a compact that happened has no notes field", async () => {
     const { repo, home } = await completedContext({
       action: "compact",

@@ -599,8 +599,10 @@ const listSkipNotes = (events: readonly Event[]): readonly string[] => {
   const since = events.findLast((event) => event.type === "orchestrate.next")?.seq ?? 0;
   return events.flatMap((event) => {
     if (event.seq <= since || event.type !== "workflow.node.completed") return [];
-    const output = z.looseObject({ output: z.unknown() }).safeParse(event.payload).data?.output;
-    const reason = readContextSkip(output);
+    const ended = z
+      .looseObject({ nodeType: z.literal("context"), output: z.unknown() })
+      .safeParse(event.payload).data;
+    const reason = ended === undefined ? undefined : readContextSkip(ended.output);
     return reason === undefined ? [] : [`${event.nodeId} was skipped: ${reason}`];
   });
 };
