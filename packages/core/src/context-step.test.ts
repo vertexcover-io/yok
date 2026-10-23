@@ -247,6 +247,8 @@ const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to ta
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
 // A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
 const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
+// An Escape here would reject the permission Claude asked for mid-turn.
+const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION}`;
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
@@ -477,6 +479,38 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal);
 
     expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
+  test("a permission dialog raised while Claude works gets no Escape: yok waits for the busy sign to go, and types /compact once the box shows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (captures) => (captures < 5 ? BUSY_DIALOG : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
+  test("a hidden input box under a busy sign that never goes gets no Escape and no line in 30 seconds per try: the compaction ends unreachable and the resume line's notice is agent.input.unreachable", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => BUSY_DIALOG,
+    );
+    const startedAt = Date.now();
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed).toEqual([]);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
   });
 
   test("a dialog footer quoted in the transcript above a real input box does not hide the box: /compact is typed with no Escape", async () => {

@@ -123,17 +123,29 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-// Sends an Escape while Claude's input box is hidden, up to `left` of them. None goes to a box on
-// screen: there it could interrupt Claude's turn or open its Rewind menu. false: never shown.
-const revealInputBox = async (terminal: ITerminal, left: number): Promise<Result<boolean>> => {
+type RevealBudget = Readonly<{ escapesLeft: number; busyUntil: number }>;
+
+// Sends an Escape while Claude's input box is hidden and Claude shows no busy sign, up to
+// `escapesLeft` of them. None goes to a box on screen, where it could interrupt Claude's turn or
+// open its Rewind menu, nor while Claude is busy, where it could reject a permission Claude asked
+// for or cancel a compaction; then it waits, until `busyUntil`. false: never shown.
+const revealInputBox = async (
+  terminal: ITerminal,
+  budget: RevealBudget,
+): Promise<Result<boolean>> => {
   const screen = await terminal.capture();
   if (!screen.ok) return screen;
   if (hasClaudeInputBox(screen.value)) return { ok: true, value: true };
-  if (left === 0) return { ok: true, value: false };
+  if (isClaudeBusy(screen.value)) {
+    if (Date.now() >= budget.busyUntil) return { ok: true, value: false };
+    await Bun.sleep(IDLE_POLL_MS);
+    return revealInputBox(terminal, budget);
+  }
+  if (budget.escapesLeft === 0) return { ok: true, value: false };
   const sent = await terminal.sendKeys(["Escape"]);
   if (!sent.ok) return sent;
   await Bun.sleep(CLAUDE_ESCAPE_PAUSE_MS);
-  return revealInputBox(terminal, left - 1);
+  return revealInputBox(terminal, { ...budget, escapesLeft: budget.escapesLeft - 1 });
 };
 
 // One try at a line, typed once the input box shows, even while Claude finishes its turn: Claude
@@ -141,7 +153,10 @@ const revealInputBox = async (terminal: ITerminal, left: number): Promise<Result
 // box never showed, so nothing was typed.
 const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
   const { terminal, log } = target;
-  const shown = await revealInputBox(terminal, CLAUDE_MAX_ESCAPES);
+  const shown = await revealInputBox(terminal, {
+    escapesLeft: CLAUDE_MAX_ESCAPES,
+    busyUntil: Date.now() + IDLE_TIMEOUT_MS,
+  });
   if (!shown.ok) return shown;
   if (!shown.value) {
     log.warn({ line }, INPUT_UNREACHABLE);
