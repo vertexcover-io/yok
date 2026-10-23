@@ -41,8 +41,11 @@ import {
 } from "./context-step.ts";
 
 const RESUME = "/yok:orchestrate --resume feat-x";
-const IDLE = "❯ ";
-const BUSY = "· Vibing… (3s)";
+// Claude's input box: a ❯ line between two rules. Claude keeps it on screen while it works.
+const RULE = "─".repeat(40);
+const IDLE = `${RULE}\n❯ \n${RULE}`;
+const BUSY = `· Vibing… (3s)\n${IDLE}`;
+const REFUSED = `⎿  Not enough messages to compact.\n${IDLE}`;
 
 const seed = (runDir: string): State => ({
   schemaVersion: 1,
@@ -236,13 +239,12 @@ const resumed = (run: RunRef) =>
     payload: { input: {}, output: { interrupted: [] } },
   });
 
-const typedLine = (line: string) => ["Escape", "C-u", line, "Enter"];
+const typedLine = (line: string) => ["C-u", line, "Enter"];
 
 // What Claude 2.1.309 shows under its /config popup, with the search box focused and after
-// leaving it, and under the Rewind menu that two Escapes open on a bare prompt.
+// leaving it; the popup hides the input box.
 const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear";
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
-const REWIND_FOOTER = "Enter to continue · Esc to cancel";
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
@@ -399,7 +401,7 @@ const completions = async (runDir: string) =>
   (await typesIn(runDir)).filter((type) => type === "workflow.node.completed").length;
 
 describe("runContextStep: compact", () => {
-  test("records the start and types /compact with the prompt once; the compact's SessionStart completes the node, and the resume line follows and is confirmed by the run's orchestrate resume", async () => {
+  test("records the start and, with the input box on screen, types /compact with the prompt once and no Escape; the compact's SessionStart completes the node, and the resume line follows and is confirmed by the run's orchestrate resume", async () => {
     const context = await setUp('type: context, action: compact, prompt: "keep the plan"');
     const fake = losingTerminal(context, () => true);
 
@@ -421,7 +423,11 @@ describe("runContextStep: compact", () => {
 
   test("C-u follows the Escape only after Claude's 50 ms escape timeout, so Claude reads a lone Escape and not Alt+C-u", async () => {
     const context = await setUp("type: context, action: compact");
-    const fake = losingTerminal(context, () => true);
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => (escapesIn(typed) === 0 ? CONFIG_LIST_FOOTER : IDLE),
+    );
     const sentAt: Readonly<{ key: string; at: number }>[] = [];
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -437,7 +443,7 @@ describe("runContextStep: compact", () => {
     expect(at("C-u") - at("Escape")).toBeGreaterThan(50);
   });
 
-  test("a /config popup with its search box focused gets a second Escape, and none once the prompt shows, before /compact is typed", async () => {
+  test("a /config popup hiding the input box, with its search box focused, gets exactly 2 Escapes, then /compact is typed", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -447,13 +453,18 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(["Escape", ...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(typesOf(fake.typed)).toEqual([
+      "Escape",
+      "Escape",
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+    ]);
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true },
     });
   });
 
-  test("a popup that stays open gets at most 3 Escapes before the line is typed", async () => {
+  test("an input box that never shows gets exactly 3 Escapes and no line, records agent.input.unreachable for step and session A, and ends the compaction unapplied with that reason", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -463,27 +474,19 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual([
-      "Escape",
-      "Escape",
-      ...typedLine("/compact"),
-      "Escape",
-      "Escape",
-      ...typedLine(RESUME),
-    ]);
-  });
-
-  test("a bare prompt gets one Escape, never the second that would open Claude's Rewind menu", async () => {
-    const context = await setUp("type: context, action: compact");
-    const fake = losingTerminal(
-      context,
-      () => true,
-      (_, typed) => (typed.slice(-2).every(isEscape) && typed.length >= 2 ? REWIND_FOOTER : IDLE),
+    // 3 for /compact, then 3 for each of the resume line's two tries
+    expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
     );
-
-    await helper(context, fake.terminal);
-
-    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(unreachable.map((event) => event.payload)).toEqual(
+      Array(3).fill({ agent: "claude", sessionId: "A", step: "step" }),
+    );
+    expect(await typesIn(context.runDir)).toContain("agent.line.lost");
+    expect(stateOf(context.runDir).status).toBe("running");
   });
 
   test("SC2: a resume line lost after a compaction that worked is typed again, and the node stays applied with one completion", async () => {
@@ -525,7 +528,7 @@ describe("runContextStep: compact", () => {
     // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
   }, 20_000);
 
-  test("SC4: while Claude stays busy the pane gets no Escape and no line, the node completes unapplied, and only the resume line is recorded lost", async () => {
+  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact at once, and the compaction completes applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -535,16 +538,10 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal);
 
-    expect(fake.typed).toEqual([]);
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
     expect(await stepOutput(context.runDir)).toMatchObject({
-      output: { action: "compact", applied: false, reason: "Claude did not go idle" },
+      output: { action: "compact", applied: true, sessionId: "A" },
     });
-    const lost = (await eventsOf(context.runDir)).filter(
-      (event) => event.type === "agent.line.lost",
-    );
-    expect(lost.map((event) => event.payload)).toEqual([
-      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
-    ]);
   });
 
   test("SC7: Claude saying there is nothing to compact ends the step at once with that reason, not after the 180-second wait, and the resume line is typed", async () => {
@@ -552,7 +549,7 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      (captures) => (captures < 2 ? IDLE : "⎿  Not enough messages to compact.\n❯ "),
+      (captures) => (captures < 2 ? IDLE : REFUSED),
     );
     const startedAt = Date.now();
 
@@ -580,12 +577,12 @@ describe("runContextStep: compact", () => {
     expect(await typesIn(context.runDir)).toContain("agent.line.lost");
   });
 
-  test("a resume line Claude holds behind a turn it is finishing is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
+  test("a resume line typed while Claude finishes a turn is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
     const context = await setUp("type: context, action: compact");
     let typedAt: number | undefined;
     const busyFor = 100_000;
     const fake = fakeTerminal(
-      () => (typedAt !== undefined && Date.now() < typedAt + busyFor ? BUSY : IDLE),
+      () => (typedAt === undefined || Date.now() < typedAt + busyFor ? BUSY : IDLE),
       async (text) => {
         if (text === RESUME) typedAt = Date.now();
         else await completeContextOnSessionStart(context.run, "A", "compact");
@@ -638,7 +635,7 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      (captures) => (captures < 2 ? IDLE : "⎿  Not enough messages to compact.\n❯ "),
+      (captures) => (captures < 2 ? IDLE : REFUSED),
     );
 
     await helper(context, fake.terminal);
@@ -825,7 +822,7 @@ describe("runModelStep", () => {
     expect(relaunches[0]?.options).not.toHaveProperty("effort");
   });
 
-  test("SC9, SC27: a relaunch that fails with respawn failed is recorded as failed, and the resume prompt is typed once after Escape and C-u and taken", async () => {
+  test("SC9, SC27: a relaunch that fails with respawn failed is recorded as failed, and the resume prompt is typed once at the input box and taken", async () => {
     const context = await setUpSwitch("high");
     const pane = resumingTerminal(context.run);
     const provider: IAgentProvider = {

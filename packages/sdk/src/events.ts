@@ -298,6 +298,16 @@ export const LineLostEvent = z.object({
   }),
 });
 
+// yok sent Escapes to the agent's pane and its input box still did not show, so it typed nothing;
+// the notifier pings a person. step is the node the line was meant for.
+export const AgentInputUnreachableEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    step: NonEmptyStringSchema,
+  }),
+});
+
 // The agent is working again after a block of this reason; tool is the call that showed it.
 export const AgentResumedEvent = z.object({
   payload: z.strictObject({
@@ -555,6 +565,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
   "agent.line.lost": LineLostEvent,
+  "agent.input.unreachable": AgentInputUnreachableEvent,
   "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,
   "notification.thread.started": NotificationThreadStartedEvent,

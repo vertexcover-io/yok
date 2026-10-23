@@ -40,8 +40,8 @@ import {
   CLAUDE_ESCAPE_PAUSE_MS,
   CLAUDE_MAX_ESCAPES,
   CLAUDE_NOTHING_TO_COMPACT,
+  hasClaudeInputBox,
   isClaudeBusy,
-  isClaudePopupOpen,
 } from "./agents/claude.ts";
 import { typeLine } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
@@ -57,6 +57,7 @@ const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
 const RESUME_TIMEOUT_MS = 30_000;
 const RESUME_CAP_MS = 180_000;
 const RESUME_ATTEMPTS = 2;
+const INPUT_UNREACHABLE = "Could not reach Claude's input box";
 
 export const startModelStep = async (run: RunRef, sessionId: string, seq: number): Promise<void> =>
   spawnOrchestrateHelper({ command: "model", id: String(seq), run, sessionId });
@@ -122,26 +123,35 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-// Sends an Escape, and another while a popup's footer still shows, up to `left` in all.
-const closePopup = async (terminal: ITerminal, left: number): Promise<Result<void>> => {
+// Sends an Escape while Claude's input box is hidden, up to `left` of them. None goes to a box on
+// screen: there it could interrupt Claude's turn or open its Rewind menu. false: never shown.
+const revealInputBox = async (terminal: ITerminal, left: number): Promise<Result<boolean>> => {
+  const screen = await terminal.capture();
+  if (!screen.ok) return screen;
+  if (hasClaudeInputBox(screen.value)) return { ok: true, value: true };
+  if (left === 0) return { ok: true, value: false };
   const sent = await terminal.sendKeys(["Escape"]);
   if (!sent.ok) return sent;
   await Bun.sleep(CLAUDE_ESCAPE_PAUSE_MS);
-  if (left <= 1) return { ok: true, value: undefined };
-  const screen = await terminal.capture();
-  if (!screen.ok) return screen;
-  if (!isClaudePopupOpen(screen.value)) return { ok: true, value: undefined };
-  return closePopup(terminal, left - 1);
+  return revealInputBox(terminal, left - 1);
 };
 
-// One try at a line. Claude must be idle first, so the Escapes that close a popup never
-// interrupt its work; C-u then empties the box, where a cancelled line may be left. false: Claude
-// never went idle, so nothing was typed.
-const tryLine = async ({ terminal }: LineTarget, line: string): Promise<Result<boolean>> => {
-  const idle = await waitForIdle(terminal);
-  if (!idle.ok) return { ok: true, value: false };
-  const closed = await closePopup(terminal, CLAUDE_MAX_ESCAPES);
-  if (!closed.ok) return closed;
+// One try at a line, typed once the input box shows, even while Claude finishes its turn: Claude
+// holds the line until then. C-u empties the box, where a cancelled line may be left. false: the
+// box never showed, so nothing was typed and a person is pinged.
+const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
+  const { run, sessionId, step, terminal, log } = target;
+  const shown = await revealInputBox(terminal, CLAUDE_MAX_ESCAPES);
+  if (!shown.ok) return shown;
+  if (!shown.value) {
+    log.error({ line }, INPUT_UNREACHABLE);
+    await appendRunEvent(run, {
+      type: "agent.input.unreachable",
+      source: "orchestrate",
+      payload: { agent: "claude", sessionId, step },
+    });
+    return { ok: true, value: false };
+  }
   const emptied = await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]);
   if (!emptied.ok) return emptied;
   const typed = await typeLine(terminal, line);
@@ -357,7 +367,7 @@ const compact = async (
   // that did not happen is no emergency: the run goes on in a fuller session.
   const typed = await tryLine(target, command);
   if (!typed.ok) return typed;
-  if (!typed.value) return { ok: false, error: "Claude did not go idle" };
+  if (!typed.value) return { ok: false, error: INPUT_UNREACHABLE };
   log.info({ command }, "compact typed");
   const done = await watchForFailure(options, target.terminal, "compact");
   if (!done.ok) return done;

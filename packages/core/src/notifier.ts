@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
+  AgentInputUnreachableEvent,
   AgentStoppedEvent,
   type ArtifactRef,
   type AskedQuestion,
@@ -249,6 +250,14 @@ const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
     return makeNotice(`⚠️ Line lost at ${lost.step}`, {
       mention: true,
       body: `yok typed ${lost.line} into Claude twice and Claude took neither. Open the session, close any popup, and type it.`,
+    });
+  },
+  "agent.input.unreachable": (event) => {
+    const blocked = parsePayload(event, AgentInputUnreachableEvent.shape.payload);
+    if (blocked === undefined) return undefined;
+    return makeNotice(`⚠ Agent blocked at ${blocked.step} — Could not reach Claude's input box`, {
+      mention: true,
+      body: "yok pressed Escape and Claude's input box still did not show, so it typed nothing. Open the session and close whatever covers the box.",
     });
   },
   "agent.stopped": (event, state) => {

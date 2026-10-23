@@ -40,27 +40,32 @@ export const CLAUDE_CLEAR_INPUT_KEY = "C-u";
 export const CLAUDE_ESCAPE_PAUSE_MS = 300;
 // One Escape may not close a popup: /config opens with focus in its search box, where the first
 // Escape only leaves the box. Two Escapes on a bare prompt open the Rewind menu, so another is
-// sent only while a popup's footer shows, up to this many in all.
+// sent only while the input box stays hidden, up to this many in all.
 export const CLAUDE_MAX_ESCAPES = 3;
-const POPUP_FOOTER = /esc to (?:close|clear|cancel)/i;
-
-export const isClaudePopupOpen = (screen: string): boolean => POPUP_FOOTER.test(screen);
 
 export const isClaudeBusy = (screen: string): boolean =>
   screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
 
 const RULE = /^\s*─{10,}\s*$/;
+const INPUT_LINE = /^❯(?:\s|$)/;
 const DIALOG_FOOTER = /enter to confirm|esc to cancel/i;
 
-// Claude's empty input box: a bare ❯ between two rules. A dialog replaces the box, so seeing it
-// is the positive sign that Enter submits a message.
-const hasEmptyInputBox = (screen: string): boolean =>
-  screen
-    .split("\n")
-    .some(
-      (line, i, lines) =>
-        line.trim() === "❯" && RULE.test(lines[i - 1] ?? "") && RULE.test(lines[i + 1] ?? ""),
-    );
+// The text in Claude's input box, the lowest ❯ line between two rules, or undefined when no box
+// shows. A popup or dialog replaces the box, so seeing it is the sign that Enter submits a message.
+const readInputBox = (screen: string): string | undefined => {
+  const lines = screen.split("\n");
+  const at = lines.findLastIndex(
+    (line, i) =>
+      INPUT_LINE.test(line.trim()) &&
+      RULE.test(lines[i - 1] ?? "") &&
+      RULE.test(lines[i + 1] ?? ""),
+  );
+  return lines[at]?.trim().slice(1).trim();
+};
+
+export const hasClaudeInputBox = (screen: string): boolean => readInputBox(screen) !== undefined;
+
+const hasEmptyInputBox = (screen: string): boolean => readInputBox(screen) === "";
 
 const isAwaitingInput = (screen: string): boolean =>
   hasEmptyInputBox(screen) && !isClaudeBusy(screen) && !DIALOG_FOOTER.test(screen);

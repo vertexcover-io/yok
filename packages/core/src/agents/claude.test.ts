@@ -15,6 +15,7 @@ import {
   claudeArgs,
   claudeProvider,
   claudeRunArgs,
+  hasClaudeInputBox,
   interpretOutput,
   isClaudeBusy,
 } from "./claude.ts";
@@ -471,6 +472,7 @@ describe("isClaudeBusy", () => {
 });
 
 const RULE = "─".repeat(40);
+const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
 // Claude 2.1.286's empty input box, with its status line below.
 const PROMPT = `${RULE}\n❯\n${RULE}\n  Model: Opus | Ctx Used: 8.0%`;
 const LIMIT_MENU = [
@@ -555,7 +557,6 @@ describe("claudeProvider.promptWhenReady", () => {
 });
 
 describe("canTypeComment", () => {
-  const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
   test.each([
     ["idle empty box", PROMPT, true],
     [
@@ -568,5 +569,22 @@ describe("canTypeComment", () => {
     ["queued-messages hint", box("❯ Press up to edit queued messages"), false],
   ])("SC14: %s -> %p", (_name, screen, expected) => {
     expect(canTypeComment(screen)).toBe(expected);
+  });
+});
+
+describe("hasClaudeInputBox", () => {
+  test.each([
+    ["an empty box", PROMPT, true],
+    ["a box holding text", box("❯ half a sentence"), true],
+    ["a box under a spinner", `· Ionizing… (6s · ↓ 359 tokens)\n${box("❯ ")}`, true],
+    [
+      "the /config popup",
+      "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
+      false,
+    ],
+    ["the limit menu", LIMIT_MENU, false],
+    ["a ❯ with no rules around it", "❯ ", false],
+  ])("%s -> %p", (_name, screen, expected) => {
+    expect(hasClaudeInputBox(screen)).toBe(expected);
   });
 });
