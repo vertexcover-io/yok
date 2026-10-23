@@ -211,7 +211,12 @@ contract instead of as the block you meant; the token opens `reason` instead —
 `no-agent-browser: …`, `no-ffmpeg: …`. `BLOCKED` enters no fix round, so that one line is all the
 workflow gets: what was missing, and what you tried.
 
-`gaps[]` carries one entry per `NOT VERIFIED` scenario, `bugs[]` one per bug, whatever the verdict.
+`gaps[]` carries one entry per requirement the report's `coverage[]` marks `NOT VERIFIED`, so a
+scenario that left two requirements unproven gives two entries naming that scenario, each with its
+own `req`; the PR description and the Asana comment list every entry, and the schema refuses two
+entries sharing a `req`. `bugs[]` carries one entry per bug, and only on a `FAIL`: a bug's scenario
+is a `FAILURE`, which makes the derived verdict `FAIL`, so the schema refuses a `PASS`, `PARTIAL` or
+`BLOCKED` that names one, because no fix round would ever see it.
 Every `FAILURE` scenario has at least one bug: a `FAIL` with an empty `bugs[]` hands the fix round
 nothing, and the schema rejects it. Each bug is a fix request, the shape every stage hands the fix stage:
 `id` is the scenario number, with `.2`, `.3` for a second and third bug in one scenario, and `done`
