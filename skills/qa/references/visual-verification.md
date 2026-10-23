@@ -10,11 +10,11 @@ replay is already a real device — `set device "iPhone 14"`, not a narrowed win
 `driving-the-browser.md` gives: an app that branches on user-agent serves its desktop layout to a resized viewport
 and photographs a mobile pass that never happened — and it is the only second width there is.
 
-**The one re-shoot.** `driving-the-browser.md`'s *frame that proves it* resizes the viewport freely to fit the
-evidence, and a frame shot at 1600 wide cannot be read against a mockup drawn at 1440 without every layout question
-failing for nobody's fault. Where that is the case, re-shoot that one screen in the session already open — one
-`set viewport`, one `screenshot`, not a walk — and say in `matched` that the comparison ran at a width the scenario
-did not drive at.
+**The one re-shoot.** Read each frame at the width the plan's step gives it (`build to design/FILE at WIDTHpx`);
+a step that gives no width is read at the width the scenario was shot at. When the step's width differs from the
+scenario's, re-shoot that one screen in the session already open: one `set viewport`, one `screenshot` to
+`screenshots/NN_SLUG.design.png`, a name the scenario's video leaves out. Record the path as `visualMatch.build`
+and the width as `visualMatch.width`, and say in `matched` that the comparison ran at that width.
 
 **It is one pass, not two.** You look at each frame once and ask every question below of it. Some questions have
 an answer only where the plan supplies a design; the rest are asked of every screen, drawn or not. Running them
@@ -33,8 +33,9 @@ wrong-footed by, a bug that routes through Step 4.
 
 ## The baseline, and what it is authoritative about
 
-Where `plan.md`'s `## Design References` names an image for the screen — a mockup, a Figma export, a photo of a
-whiteboard — **that image is the baseline**, and the questions marked *(design)* below have an answer.
+Where `plan.md`'s `## Design References` names an image for the screen, **that image is the baseline**. It sits in
+`.yok/RUN/artifacts/design/` and the report names it `../design/FILE`. The questions marked *(design)* below
+have an answer.
 
 **It is authoritative about intent, not about measurement.** A supplied image routinely carries spacing nobody
 decided: padding off the grid, gaps that differ between two rows of the same list, a margin that is wherever the
@@ -76,12 +77,12 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   **BLOCKER**, not a style difference.
 
 **3. Copy**
-- *(design)* Text differing in **meaning** rather than casing or punctuation → **BLOCKER**.
+- *(design)* Read the baseline's text for where copy sits only; its words are placeholders.
 - *(always)* Nothing reads `lorem`, `TODO`, `xxx`, `{{…}}`, `undefined`, `NaN`, or `[object Object]`.
 
 **4. Colour and type**
-- *(design)* Colour roles hold — a primary action rendered with a secondary's weight, or the reverse, is a
-  **HIGH**. The type hierarchy separates the levels the baseline separates.
+- *(design)* Colour roles and the type hierarchy hold as the baseline draws them. A swapped role, or two levels
+  merged or reordered, is a **BLOCKER**.
 - *(always)* Body text and interactive labels clear 4.5:1 against their real background. Compute it from
   `getComputedStyle()`; never estimate contrast off a screenshot.
 
@@ -98,9 +99,10 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
      report what broke and the measurement that shows it, and say the baseline is not the authority for what the
      value should become. Proving the break is your job; choosing the new number belongs to whoever owns the
      design.
-  2. **It changed what the screen says.** A gap so much wider that one group now reads as two; an element so
-     much smaller that it drops out of the hierarchy it was drawn into. That is a **HIGH**, graded by what the
-     screen now communicates and never by the pixel count — which is the number you were told not to trust.
+  2. **It changed what the screen says.** A gap so much wider that one group now reads as two is a **HIGH**,
+     graded by what the screen now communicates and never by the pixel count — which is the number you were told
+     not to trust. An element so much smaller that it drops out of the hierarchy it was drawn into is question 4's
+     merged level, a **BLOCKER**.
 
   Neither test has a threshold, and do not invent one. *Did something break?* and *does the screen say something
   different now?* Two noes means drop it and say nothing.
@@ -110,6 +112,11 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   disabled. One the build never renders → **BLOCKER**.
 - *(always)* Loading, empty and error each render something deliberate. A blank region, a bare spinner where
   content belongs, or a raw stack trace on screen is a finding.
+
+**7. Spec rules**
+- *(design)* Each `design/spec.md` rule a plan step quotes for this screen holds. Compute it from
+  `getComputedStyle()` or a measurement, and record every quoted rule in `visualMatch.specRules`, held or not. A
+  broken rule is a finding, graded by the question above that it belongs to.
 
 **One question needs driving, and Step 4 owns it.** Content longer than the fixture — a long name, a long label,
 a number with more digits — is the check most worth having, because a layout that survives seeded data and
@@ -143,6 +150,6 @@ Then route what you found:
 - **Everything else, and the fidelity** — the scenario's `visualMatch`.
 - **Cosmetic drift nobody would be wrong-footed by** — a note in `extra[]`, as it always was.
 
-**Done when** every frame has been through all six questions with each answer evidenced or called clean; every
+**Done when** every frame has been through all seven questions with each answer evidenced or called clean; every
 scenario carries a `visualMatch` whose fidelity is derived from graded findings, or names the absent baseline;
 no finding rests on a number alone; and every BLOCKER has become a bug with a repro.
