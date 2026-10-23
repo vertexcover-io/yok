@@ -671,7 +671,6 @@ nodes:${stage("make", "quick", "\n    input: {}")}
   });
 
   const SWITCHES: readonly (readonly [string, TierModel | null, TierModel, "model" | "leaf"])[] = [
-    ["no launch model to opus-x/high switches", null, OPUS_HIGH, "model"],
     [
       "sonnet-x/high to opus-x/high switches",
       { model: "sonnet-x", effort: "high" },

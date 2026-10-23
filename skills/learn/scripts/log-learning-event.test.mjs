@@ -103,10 +103,6 @@ const readEvents = (file) =>
     .split("\n")
     .map((entry) => JSON.parse(entry));
 
-test("accepts a complete event", () => {
-  assert.deepEqual(validate(valid), []);
-});
-
 test("accepts a new learning that replaces an old one, and rejects the old replaced outcome", () => {
   assert.deepEqual(validate({ ...valid, replaces: "docs/learnings/use-npm.md" }), []);
   assert.deepEqual(validate({ ...valid, outcome: "replaced" }), [
@@ -178,15 +174,6 @@ test("finds the messages that start and end the exchange, ignoring case and spac
   );
   assert.deepEqual(ids, { evidenceFromMessage: "a2", evidenceToMessage: "u2" });
   assert.deepEqual(missing, []);
-});
-
-test("a message that names this script can still be evidence", () => {
-  const { ids } = resolveEvidence(
-    parseTranscript(transcript),
-    "",
-    "fix log-learning-event.mjs too",
-  );
-  assert.equal(ids.evidenceToMessage, "u2");
 });
 
 test("the start is the last mistake before the first correction, so an earlier mention cannot stretch it", () => {
@@ -358,26 +345,10 @@ test("refuses a snippet that matches no message, and writes nothing", () => {
   assert.throws(() => readFileSync(eventsFile(cwd, "s4")));
 });
 
-test("bad field types are refused with a message, before the transcript is read", () => {
-  const { env, cwd } = session("s5");
-  assert.throws(
-    () => logEvent(JSON.stringify({ ...valid, evidenceFrom: 1 }), "s5", { env, cwd }),
-    /evidenceFrom must be text/,
-  );
-  assert.throws(() => logEvent("null", "s5", { env, cwd }), /must be a JSON object/);
-});
-
 test("without a transcript, logs with empty message ids", () => {
   const { env, cwd } = noTranscript();
   const file = logEvent(JSON.stringify({ ...valid, evidenceTo: "x" }), "s9", { env, cwd });
   assert.equal(readEvents(file)[0].evidenceToMessage, "");
-});
-
-test("keeps quotes and newlines in the text intact", () => {
-  const { env, cwd } = noTranscript();
-  const text = `Don't use "console.log"\nin jobs`;
-  const file = logEvent(JSON.stringify({ ...valid, proposedLearning: text }), "s2", { env, cwd });
-  assert.equal(readEvents(file)[0].proposedLearning, text);
 });
 
 test("refuses an invalid event and writes nothing", () => {

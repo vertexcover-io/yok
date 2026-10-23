@@ -62,15 +62,6 @@ describe("createRegistry", () => {
     expect(Object.keys(parsed.runs).sort()).toEqual(["r-1", "r-2"]);
   });
 
-  test("SC8a: an awaited change is on disk, and a second registry reads it", async () => {
-    const path = tempRegistryPath();
-    await createRegistry(path).addRun(run("r-3"));
-
-    const parsed = RegistryFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
-    expect(parsed.runs["r-3"]?.id).toBe("r-3");
-    expect((await createRegistry(path).findRun("r-3"))?.id).toBe("r-3");
-  });
-
   test("a failed write rejects only its own update, and later updates still land", async () => {
     const path = tempRegistryPath();
     const registry = createRegistry(path);

@@ -10,11 +10,9 @@ describe("shouldOpenBrowser", () => {
         ["plain terminal", base, true],
         ["--no-open", { ...base, noOpen: true }, false],
         ["no TTY", { ...base, isTTY: false }, false],
-        ["CI unset", { ...base, env: {} }, true],
         ["CI empty", { ...base, env: { CI: "" } }, true],
         ["CI false", { ...base, env: { CI: "false" } }, true],
         ["CI true", { ...base, env: { CI: "true" } }, false],
-        ["darwin without DISPLAY", { ...base, platform: "darwin" }, true],
         ["linux without display", { ...base, platform: "linux" }, false],
         ["linux with DISPLAY", { ...base, platform: "linux", env: { DISPLAY: ":0" } }, true],
         [

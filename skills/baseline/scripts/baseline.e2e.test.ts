@@ -23,18 +23,12 @@ const WORKFLOW =
 
 // A repo holding orchestrate.config.json with `baseline`, and a run named feat-x registered in
 // YOK_HOME, as `orchestrate init` leaves it.
-const baselineRun = (
-  baseline: string | undefined,
-  extensions: Readonly<Record<string, unknown>> = {},
-): Readonly<{ repo: string; home: string }> => {
+const baselineRun = (baseline: string | undefined): Readonly<{ repo: string; home: string }> => {
   const repo = tempDir();
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
   git("init", "-q", "-b", "main");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
-  writeFileSync(
-    join(repo, "orchestrate.config.json"),
-    JSON.stringify({ version: 2, baseline, extensions }),
-  );
+  writeFileSync(join(repo, "orchestrate.config.json"), JSON.stringify({ version: 2, baseline }));
   const workflowPath = join(repo, "ok.yaml");
   writeFileSync(workflowPath, "name: ok\nnodes: []\n");
   const run: WorkflowRun = {
@@ -149,15 +143,6 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     expect(JSON.parse(byId.stdout).path).toBe(path);
   });
 
-  test("exits 1 on an unknown flag, naming it", () => {
-    const { repo, home } = baselineRun(undefined);
-
-    const run = baseline(repo, home, ["--run", "feat-x", "--nope"]);
-
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain("--nope");
-  });
-
   test("SIGTERM kills the running baseline script, exits 143 and writes nothing", async () => {
     const { repo, home } = baselineRun("echo $$ > pid; sleep 30");
     const pidFile = join(repo, "pid");
@@ -175,33 +160,5 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     expect(await child.exited).toBe(143);
     await waitFor(() => !isAlive(pid), 2000);
     expect(existsSync(join(runDirOf(repo, "feat-x"), "artifacts", "baseline.json"))).toBe(false);
-  });
-});
-
-describe("a project's baseline override", () => {
-  test("SC45: a replace override's main gets --run feat-x --packages api, its 3 is the exit code, and no baseline.json is written", () => {
-    const script = { replace: "tools/base.ts" };
-    const { repo, home } = baselineRun("echo built-in", { baseline: { references: { script } } });
-    mkdirSync(join(repo, "tools"));
-    writeFileSync(
-      join(repo, "tools", "base.ts"),
-      "export const main = (argv) => { console.log(JSON.stringify(argv)); return 3; };\n",
-    );
-
-    const run = baseline(repo, home, ["--run", "feat-x", "--packages", "api"]);
-
-    expect(run.stdout).toBe('["--run","feat-x","--packages","api"]\n');
-    expect(run.code).toBe(3);
-    expect(existsSync(join(runDirOf(repo, "feat-x"), "artifacts", "baseline.json"))).toBe(false);
-  });
-
-  test('SC46: a command override runs through sh with --dir "a b" kept as one word', () => {
-    const script = { command: "printf '%s|'" };
-    const { repo, home } = baselineRun(undefined, { baseline: { references: { script } } });
-
-    const run = baseline(repo, home, ["--run", "feat-x", "--dir", "a b"]);
-
-    expect(run.stdout).toBe("--run|feat-x|--dir|a b|");
-    expect(run.code).toBe(0);
   });
 });

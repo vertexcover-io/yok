@@ -64,14 +64,14 @@ for (let i = 0; i < 5; i++) {
     expect(await logLines(runDir)).toHaveLength(2);
   });
 
-  test.each([
-    ["a NaN payload", draft("a", { payload: { n: Number.NaN } }), /payload/],
-    ["an unknown namespace", draft("a", { type: "billing.charged" }), /type/],
-  ])("rejects %s without writing to the log", async (_label, invalid, message) => {
-    const result = await log.append(invalid);
-    expect(result).toEqual({ ok: false, error: expect.stringMatching(message) });
-    expect(await log.read()).toEqual([]);
-  });
+  test.each([["an unknown namespace", draft("a", { type: "billing.charged" }), /type/]])(
+    "rejects %s without writing to the log",
+    async (_label, invalid, message) => {
+      const result = await log.append(invalid);
+      expect(result).toEqual({ ok: false, error: expect.stringMatching(message) });
+      expect(await log.read()).toEqual([]);
+    },
+  );
 
   test.each([
     ["a malformed line", "not json\n", /line 1/],

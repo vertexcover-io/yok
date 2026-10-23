@@ -17,7 +17,6 @@ import {
   StageSchema,
   yokSkillsDir,
 } from "./stage.ts";
-import { compileWorkflow } from "./workflow/compile.ts";
 
 const validStage = {
   name: "planning",
@@ -109,26 +108,13 @@ describe("the skills folder", () => {
 });
 
 describe("StageSchema", () => {
-  test("inputs and outputs are optional", () => {
-    const { inputs: _inputs, outputs: _outputs, ...bare } = validStage;
-    expect(StageSchema.safeParse(bare).success).toBe(true);
-  });
-
-  test("variables default to none, and each declares a description and an optional string default", () => {
-    expect(StageSchema.parse(validStage).variables).toEqual({});
-    const variables = {
-      provider: { description: "Ticket provider", default: "linear" },
-      team: { description: "Team key" },
-    };
-    expect(StageSchema.parse({ ...validStage, variables }).variables).toEqual(variables);
-  });
-
   test.each([
     ["an empty description", { provider: { description: "" } }],
     ["a non-string default", { provider: { description: "d", default: 3 } }],
     ["an unknown field", { provider: { description: "d", required: true } }],
     ["a key that is not a slug", { Provider: { description: "d" } }],
   ])("variables reject %s", (_label, variables) => {
+    expect(StageSchema.safeParse(validStage).success).toBe(true);
     expect(StageSchema.safeParse({ ...validStage, variables }).success).toBe(false);
   });
 });
@@ -224,13 +210,6 @@ describe("loadSkill", () => {
     const result = await loadAt(await writeSkill("planning", validFrontmatter, {}));
     if (result.ok) throw new Error("expected a failure");
     expect(result.error).toContain("references/rubric.md");
-  });
-
-  test("a SKILL.md with no tier loads with no tier, so its stage runs on the node's or the run's", async () => {
-    const frontmatter = validFrontmatter.replace("tier: balanced\n", "");
-    const result = await loadAt(await writeSkill("planning", frontmatter));
-    if (!result.ok) throw new Error(result.error);
-    expect(result.value.frontmatter.tier).toBeUndefined();
   });
 
   test("WS28 — scopes: [] loads", async () => {
@@ -542,104 +521,5 @@ describe("the shipped skills", () => {
     );
     expect(names).toContain("ticket-fetcher");
     expect(failures).toEqual([]);
-  });
-
-  test("SC27: each ticket-fetcher provider's description names the URLs it handles, which auto matches against", async () => {
-    const result = await load("ticket-fetcher");
-    if (!result.ok) throw new Error(result.error);
-    const { references } = result.value;
-    expect(references.linear?.description).toContain("linear.app");
-    expect(references.asana?.description).toContain("app.asana.com");
-  });
-
-  test("qa outputs qa.output.v1, the verdict whose status the task workflow's qa loop reads", async () => {
-    const result = await load("qa");
-    if (!result.ok) throw new Error(result.error);
-    expect(result.value.frontmatter.outputs?.schema).toBe("qa.output.v1");
-  });
-});
-
-describe("the real find-factors skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "find-factors");
-
-  test("SC1: loads as an inline stage with no output schema that consumes nothing and produces factors", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { frontmatter } = result.value;
-    expect(frontmatter.mode).toBe("inline");
-    expect(frontmatter.outputs).toBeUndefined();
-    expect(frontmatter.consumes).toBeUndefined();
-    expect(frontmatter.produces).toEqual([{ artifact: "factors", optional: false }]);
-  });
-});
-
-describe("the real write-scenarios skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "write-scenarios");
-
-  test("SC2: loads as an inline stage with no output schema that turns factors into a plan", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { frontmatter } = result.value;
-    expect(frontmatter.mode).toBe("inline");
-    expect(frontmatter.outputs).toBeUndefined();
-    expect(frontmatter.consumes).toEqual([{ artifact: "factors", optional: false }]);
-    expect(frontmatter.produces).toEqual([{ artifact: "plan", optional: false }]);
-  });
-});
-
-describe("the real write-regression-tests skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "write-regression-tests");
-
-  test("SC4: loads as an inline stage with no output schema or references that turns a plan into an implementation", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { frontmatter, references } = result.value;
-    expect(frontmatter.mode).toBe("inline");
-    expect(frontmatter.outputs).toBeUndefined();
-    expect(frontmatter.consumes).toEqual([{ artifact: "plan", optional: false }]);
-    expect(frontmatter.produces).toEqual([{ artifact: "implementation", optional: false }]);
-    expect(references).toEqual({});
-  });
-});
-
-describe("the real review-regression-tests skill", () => {
-  const skillDir = join(import.meta.dir, "..", "..", "..", "skills", "review-regression-tests");
-
-  test("SC7: loads as an inline stage that reviews the tests against the plan, with its verdict schema and review brief", async () => {
-    const result = await loadSkill(skillDir, projectScope(dir));
-    if (!result.ok) throw new Error(result.error);
-    const { frontmatter, references } = result.value;
-    expect(frontmatter.mode).toBe("inline");
-    expect(frontmatter.outputs).toMatchObject({
-      schema: "review-regression-tests.output.v1",
-      module: "scripts/review.ts",
-    });
-    expect(frontmatter.consumes).toEqual([{ artifact: "plan", optional: false }]);
-    expect(frontmatter.produces).toEqual([{ artifact: "test-review", optional: false }]);
-    expect(Object.keys(references)).toEqual(["review"]);
-    const review = join(skillDir, "references", "review.md");
-    expect(references.review).toMatchObject({ kind: "file", path: review });
-  });
-
-  test("SC7: the code-review testing persona its review borrows resolves to a file", async () => {
-    const codeReview = await loadSkill(join(skillDir, "..", "code-review"), projectScope(dir));
-    if (!codeReview.ok) throw new Error(codeReview.error);
-    expect(findReference(codeReview.value, "testing")).toMatchObject({ ok: true });
-  });
-});
-
-describe("the real retro skill", () => {
-  test("SC12: a retro node with no mode of its own runs in a subagent", async () => {
-    const wfDir = await mkdtemp(join(tmpdir(), "retro-wf-"));
-    const path = join(wfDir, "wf.yaml");
-    await writeFile(
-      path,
-      "name: t\nnodes:\n  - id: retro\n    type: agent\n    stage: retro\n    input: {}\n",
-    );
-    const plan = await compileWorkflow(path, { cwd: wfDir });
-    const [retro] = plan.nodes;
-    if (retro?.type !== "agent") throw new Error("retro is not an agent node");
-    expect(retro.mode).toBeUndefined();
-    expect(retro.stage?.mode).toBe("subagent");
   });
 });

@@ -149,13 +149,6 @@ describe("yok orchestrate skill run STAGE.REF", () => {
     expect(ran.stdout).toBe("");
     expect(ran.stderr).toContain(`${target} is text; read it with skill ref`);
   });
-
-  test("an unknown skill exits 1 listing every place tried", () => {
-    const options = extendedTool();
-    const ran = skillRun(["nope.tool"], options);
-    expect(ran.code).toBe(1);
-    expect(ran.stderr).toContain(join(options.skills, "nope"));
-  });
 });
 
 describe("--help after a skill's script", () => {

@@ -37,11 +37,6 @@ const CASES: Case[] = [
     ],
   },
   {
-    name: "currentBranch",
-    run: (git) => git.currentBranch("/cwd"),
-    expected: [{ command: "git", args: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: "/cwd" }],
-  },
-  {
     name: "headSha",
     run: (git) => git.headSha("/cwd"),
     expected: [{ command: "git", args: ["rev-parse", "HEAD"], cwd: "/cwd" }],

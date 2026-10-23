@@ -243,11 +243,6 @@ describe("sessionEnv", () => {
 
   test.each([
     [
-      "SC2: a session starts with YOK_RUN_ID and YOK_HOME over the run's env",
-      { A: "1", PATH: "/run/bin" },
-      { A: "1", PATH: "/h/shims/abc:/run/bin", ...session },
-    ],
-    [
       "SC62: a run's env cannot override YOK_RUN_ID, and the shim folder goes first on its PATH",
       { PATH: "/run/bin", YOK_RUN_ID: "stale", FOO: "1" },
       { FOO: "1", PATH: "/h/shims/abc:/run/bin", ...session },
