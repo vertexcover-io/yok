@@ -287,8 +287,8 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
-// yok typed the resume line into the agent's pane twice and the agent took neither, so nobody
-// drives the run; the notifier pings a person. step is the node the line was typed for.
+// yok typed the resume line into the agent's pane and the agent did not take it, so nobody drives
+// the run; the notifier pings a person. step is the node the line was typed for.
 export const LineLostEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,

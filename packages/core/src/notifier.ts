@@ -249,7 +249,7 @@ const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
     if (lost === undefined) return undefined;
     return makeNotice(`⚠️ Line lost at ${lost.step}`, {
       mention: true,
-      body: `yok typed ${lost.line} into Claude twice and Claude took neither. Open the session, close any popup, and type it.`,
+      body: `yok typed ${lost.line} into Claude and Claude did not take it. Open the session and type it.`,
     });
   },
   "agent.input.unreachable": (event) => {

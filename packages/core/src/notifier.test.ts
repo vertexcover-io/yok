@@ -269,7 +269,7 @@ describe("describeEvent", () => {
       openDesign,
       notice("⚠️ Line lost at compact-before-fix", {
         mention: true,
-        body: "yok typed /compact into Claude twice and Claude took neither. Open the session, close any popup, and type it.",
+        body: "yok typed /compact into Claude and Claude did not take it. Open the session and type it.",
       }),
     ],
     [
