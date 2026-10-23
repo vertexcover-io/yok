@@ -287,19 +287,9 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
-// yok typed the resume line into the agent's pane and the agent did not take it, so nobody drives
-// the run; the notifier pings a person. step is the node the line was typed for.
-export const LineLostEvent = z.object({
-  payload: z.strictObject({
-    agent: AgentTypeSchema,
-    sessionId: NonEmptyStringSchema,
-    step: NonEmptyStringSchema,
-    line: NonEmptyStringSchema,
-  }),
-});
-
-// The agent's input box did not show in its pane, so yok typed nothing; the notifier pings a
-// person to type line. step is the node the line was meant for.
+// The agent's input box did not show in its pane on any try at the resume line, so yok typed
+// nothing and nobody drives the run; the notifier pings a person to type line. step is the node
+// the line was meant for.
 export const AgentInputUnreachableEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,
@@ -565,7 +555,6 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
-  "agent.line.lost": LineLostEvent,
   "agent.input.unreachable": AgentInputUnreachableEvent,
   "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,

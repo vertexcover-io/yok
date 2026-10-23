@@ -363,18 +363,18 @@ describe("runContextStep: new", () => {
     });
   });
 
-  test("after a relaunch with no SessionStart, a resume line lost twice is recorded against the new session in the pane", async () => {
+  test("after a relaunch with no SessionStart, a resume line whose input box never shows is recorded unreachable against the new session in the pane", async () => {
     const context = await setUp("type: context, action: new");
     const { provider, relaunches } = fakeProvider();
-    const fake = fakeTerminal(() => IDLE);
+    const fake = fakeTerminal(() => CONFIG_LIST_FOOTER);
 
     await helper(context, fake.terminal, provider);
 
-    expect(typesOf(fake.typed)).toEqual([...typedLine(RESUME), ...typedLine(RESUME)]);
-    const lost = (await eventsOf(context.runDir)).filter(
-      (event) => event.type === "agent.line.lost",
+    expect(typesOf(fake.typed)).toEqual(Array(6).fill("Escape"));
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
     );
-    expect(lost.map((event) => event.payload)).toEqual([
+    expect(unreachable.map((event) => event.payload)).toEqual([
       { agent: "claude", sessionId: relaunches[0]?.sessionId ?? "", step: "step", line: RESUME },
     ]);
   });
@@ -548,7 +548,6 @@ describe("runContextStep: compact", () => {
     expect(unreachable.map((event) => event.payload)).toEqual([
       { agent: "claude", sessionId: "A", step: "step", line: RESUME },
     ]);
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
     expect(stateOf(context.runDir).status).toBe("running");
   });
 
@@ -568,7 +567,7 @@ describe("runContextStep: compact", () => {
       output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
     });
     expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
   });
 
   test("SC2: a resume line lost after a compaction that worked is typed again, and the node stays applied with one completion", async () => {
@@ -586,7 +585,7 @@ describe("runContextStep: compact", () => {
       output: { action: "compact", applied: true, sessionId: "A" },
     });
     expect(await completions(context.runDir)).toBe(1);
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
   });
 
   test("SC3: a /compact Claude never takes is typed once; with no SessionStart in 180 seconds the step completes unapplied, records no lost line, and the resume line is still typed and taken", async () => {
@@ -605,7 +604,7 @@ describe("runContextStep: compact", () => {
         reason: "no SessionStart for the compact within 180 seconds",
       },
     });
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
     expect(stateOf(context.runDir).status).toBe("running");
     // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
   }, 20_000);
@@ -644,7 +643,7 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test("an orchestrate resume recorded before the helper started does not confirm the resume line, so it is typed again and recorded lost", async () => {
+  test("an orchestrate resume recorded before the helper started does not confirm the resume line, so it is typed again", async () => {
     const context = await setUp("type: context, action: compact");
     await resumed(context.run);
     const fake = losingTerminal(context, (line) => line !== RESUME);
@@ -656,7 +655,6 @@ describe("runContextStep: compact", () => {
       ...typedLine(RESUME),
       ...typedLine(RESUME),
     ]);
-    expect(await typesIn(context.runDir)).toContain("agent.line.lost");
   });
 
   test("a resume line typed while Claude finishes a turn is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
@@ -685,7 +683,7 @@ describe("runContextStep: compact", () => {
     await helper(context, terminal);
 
     expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
   }, 20_000);
 
   test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {
@@ -719,10 +717,10 @@ describe("runContextStep: compact", () => {
     await helper(context, terminal);
 
     expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
   }, 20_000);
 
-  test("SC13: a resume line lost on both tries after a compaction that worked records agent.line.lost for step, session A and the line, leaves the run running with no blocker, and leaves the node applied", async () => {
+  test("SC13: a resume line typed on both tries and never taken records no event, leaves the run running with no blocker, and leaves the node applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(context, (line) => line !== RESUME);
 
@@ -733,12 +731,8 @@ describe("runContextStep: compact", () => {
       ...typedLine(RESUME),
       ...typedLine(RESUME),
     ]);
-    const lost = (await eventsOf(context.runDir)).filter(
-      (event) => event.type === "agent.line.lost",
-    );
-    expect(lost.map((event) => event.payload)).toEqual([
-      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
-    ]);
+    const agentEvents = (await typesIn(context.runDir)).filter((type) => type.startsWith("agent."));
+    expect(agentEvents).toEqual([]);
     expect(stateOf(context.runDir).status).toBe("running");
     expect(stateOf(context.runDir).blocker).toBeUndefined();
     expect(await stepOutput(context.runDir)).toMatchObject({
@@ -746,7 +740,7 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test("SC14: a /compact Claude refuses with nothing to compact, then a resume line it takes, records no agent.line.lost and leaves the run running", async () => {
+  test("SC14: a /compact Claude refuses with nothing to compact, then a resume line it takes, records no notice and leaves the run running", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -756,7 +750,7 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal);
 
-    expect(await typesIn(context.runDir)).not.toContain("agent.line.lost");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
     expect(stateOf(context.runDir).status).toBe("running");
   });
 });

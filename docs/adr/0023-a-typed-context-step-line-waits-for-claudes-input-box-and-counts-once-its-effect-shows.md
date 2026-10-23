@@ -5,7 +5,7 @@ source: docs/prd-lost-compact-recovery.md
 tags: [agent-plugin, harness-server-to-session, workflow-engine, event-store]
 ---
 
-# A line yok types into Claude's pane for a context step waits for Claude's input box and counts once its effect shows; a resume line Claude cannot take pings Slack once
+# A line yok types into Claude's pane for a context step waits for Claude's input box and counts once its effect shows; a resume line that cannot reach Claude's input box pings Slack once
 
 ## Context and Problem Statement
 
@@ -13,7 +13,7 @@ yok drives a compaction by typing `/compact` and then the resume line into the C
 
 ## Considered Options
 
-- Type at Claude's input box and confirm by effect: send Escape only while the box is hidden and Claude shows no busy sign, at most 3; type `/compact` once and count it by the compaction's SessionStart; count the resume line by the run's `orchestrate.resume`, retyped once; ping Slack when the box never shows or the resume line is lost twice
+- Type at Claude's input box and confirm by effect: send Escape only while the box is hidden and Claude shows no busy sign, at most 3; type `/compact` once and count it by the compaction's SessionStart; count the resume line by the run's `orchestrate.resume`, retyped once; ping Slack only when the resume line's input box never shows on any try
 - Checked typing confirmed by a receipt hook: PreCompact (manual) and UserPromptSubmit record a hash of each line Claude takes, and a line with no receipt within seconds is retyped
 - Escape then type, with no check
 - Wait for idle before typing, and Escape until no popup footer shows
@@ -24,7 +24,7 @@ Chosen: type at the input box and confirm by effect. The input box (a `❯` line
 
 Each line counts by what it causes, not by a receipt. A compaction's SessionStart closes its step; `/compact` is typed once, because a compaction can take minutes and a retype could start a second one. The `--resume` skill runs `yok orchestrate resume` first, so an `orchestrate.resume` recorded after the line was typed shows Claude took it. Its window is 30 seconds of continuous idle: every screen that shows Claude busy starts it again, and 180 seconds caps the whole wait. Claude may not draw its spinner until a moment after Enter, so a line Claude holds behind a finishing turn, or works on before it runs `orchestrate resume`, is never typed twice. A receipt hook added two hooks to every session and a record to every prompt, and still could not tell a line Claude held from one it lost.
 
-Only the resume line needs a person, since without it the run has nobody driving it, and it sends at most one Slack notice, with a mention, from how its last try ended: `agent.input.unreachable` (titled `Agent blocked at STEP — Could not reach Claude's input box`) when the input box did not show, after 3 Escapes or 30 seconds of Claude busy, or `agent.line.lost` when the typed line was never confirmed. Both notices name the resume line and ask the person to type it; the unreachable one first asks them to close whatever covers Claude's input box. The run's status does not change, so no blocker, runs-page banner or status line text repeats it. A `/compact` whose input box does not show is not typed and pings nobody: the step ends `applied: false` with reason `Could not reach Claude's input box` (0024), and the resume line is still tried, so a popup that clears by then costs nothing.
+Only the resume line needs a person, since without it the run has nobody driving it. When its last try could not reach the input box (3 Escapes, or 30 seconds of Claude busy), yok records one `agent.input.unreachable`, and the Slack notifier posts it with a mention, titled `Agent blocked at STEP — Could not reach Claude's input box` and asking the person to close whatever covers the box and type the resume line. A line yok typed at a visible box that Claude still did not take is not reported: it needs a popup to open in the instant between the check and the Enter, or a person typing at that moment, and the retry rescues it; the helper logs it. The run's status does not change, so no blocker, runs-page banner or status line text repeats it. A `/compact` whose input box does not show is not typed and pings nobody: the step ends `applied: false` with reason `Could not reach Claude's input box` (0024), and the resume line is still tried, so a popup that clears by then costs nothing.
 
 ## Consequences
 

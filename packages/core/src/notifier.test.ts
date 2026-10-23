@@ -259,20 +259,6 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "SC15: a lost line pings, naming the step in the title and the line and what to do in the body",
-      event("agent.line.lost", {
-        agent: "claude",
-        sessionId: "s-1",
-        step: "compact-before-fix",
-        line: "/compact",
-      }),
-      openDesign,
-      notice("⚠️ Line lost at compact-before-fix", {
-        mention: true,
-        body: "yok typed /compact into Claude and Claude did not take it. Open the session and type it.",
-      }),
-    ],
-    [
       "an input box yok could not reach pings, naming the step in the title and the line to type in the body",
       event("agent.input.unreachable", {
         agent: "claude",

@@ -8,7 +8,6 @@ import {
   type Event,
   emitRunEvent,
   LimitWaitingEvent,
-  LineLostEvent,
   type LinkArtifact,
   NOTIFIER_SUBSCRIBER,
   type NodeRun,
@@ -244,14 +243,6 @@ const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
       mention: true,
       body: "The agent stopped twice with the node still open. Open the session and tell it to go on.",
     }),
-  "agent.line.lost": (event) => {
-    const lost = parsePayload(event, LineLostEvent.shape.payload);
-    if (lost === undefined) return undefined;
-    return makeNotice(`⚠️ Line lost at ${lost.step}`, {
-      mention: true,
-      body: `yok typed ${lost.line} into Claude and Claude did not take it. Open the session and type it.`,
-    });
-  },
   "agent.input.unreachable": (event) => {
     const blocked = parsePayload(event, AgentInputUnreachableEvent.shape.payload);
     if (blocked === undefined) return undefined;

@@ -196,21 +196,21 @@ const waitForResumed = async (
 
 // How the resume line ended: taken, never typed because the input box never showed, or typed and
 // never taken.
-type ResumeOutcome = "taken" | "unreachable" | "lost";
+type ResumeOutcome = "taken" | "unreachable" | "not-taken";
 
 // Types the resume line until the run's `orchestrate resume`, which the --resume skill runs first,
 // shows Claude took it; the outcome is the last try's.
 const sendResume = async (target: LineTarget, line: string): Promise<Result<ResumeOutcome>> => {
   const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
   const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
-  let outcome: ResumeOutcome = "lost";
+  let outcome: ResumeOutcome = "not-taken";
   for (let attempt = 1; attempt <= RESUME_ATTEMPTS; attempt += 1) {
     const typed = await tryLine(target, line);
     if (!typed.ok) return typed;
     if (typed.value && (await waitForResumed(target.terminal, store, afterSeq))) {
       return { ok: true, value: "taken" };
     }
-    outcome = typed.value ? "lost" : "unreachable";
+    outcome = typed.value ? "not-taken" : "unreachable";
     target.log.warn({ line, attempt }, "resume line not taken");
   }
   return { ok: true, value: outcome };
@@ -446,8 +446,9 @@ export const completeContextOnSessionStart = async (
 };
 
 // The session in the pane carries on: after its compaction, or after a step that did not happen.
-// A resume line Claude never takes leaves the run with nobody driving it, so it alone pings a
-// person, once, saying whether the input box never showed or the typed line was never taken.
+// A resume line that could not be typed because Claude's input box never showed leaves the run
+// with nobody driving it, so once both tries are spent that alone pings a person. A typed line
+// Claude did not take is rare enough to only log.
 const resumeRun = async (target: LineTarget): Promise<void> => {
   const line = resumePrompt(target.run);
   const sent = await catchThrow(target.log, sendResume(target, line));
@@ -455,20 +456,12 @@ const resumeRun = async (target: LineTarget): Promise<void> => {
   if (sent.value === "taken") return;
   const { run, sessionId, step, log } = target;
   log.error({ line, outcome: sent.value }, `Claude did not take ${line}`);
-  await appendRunEvent(
-    run,
-    sent.value === "unreachable"
-      ? {
-          type: "agent.input.unreachable",
-          source: "orchestrate",
-          payload: { agent: "claude", sessionId, step, line },
-        }
-      : {
-          type: "agent.line.lost",
-          source: "orchestrate",
-          payload: { agent: "claude", sessionId, step, line },
-        },
-  );
+  if (sent.value !== "unreachable") return;
+  await appendRunEvent(run, {
+    type: "agent.input.unreachable",
+    source: "orchestrate",
+    payload: { agent: "claude", sessionId, step, line },
+  });
 };
 
 // A context step that did not happen still completes, and the session in the pane carries on.

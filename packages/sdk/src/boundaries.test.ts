@@ -53,7 +53,6 @@ const PUBLIC_RUNTIME_NAMES = [
   "LimitReachedEvent",
   "LimitResumedEvent",
   "LimitWaitingEvent",
-  "LineLostEvent",
   "LinkArtifactSchema",
   "LogLevelSchema",
   "ModelAppliedEvent",

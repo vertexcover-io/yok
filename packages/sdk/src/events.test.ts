@@ -812,8 +812,8 @@ describe("blocker", () => {
       handler: "record-guard",
       decision: "allow",
     });
-  const lineLost = (seq: number) =>
-    runEvent(seq, "agent.line.lost", {
+  const inputUnreachable = (seq: number) =>
+    runEvent(seq, "agent.input.unreachable", {
       ...session,
       step: "design",
       line: "/yok:orchestrate --resume r",
@@ -925,8 +925,8 @@ describe("blocker", () => {
     },
   );
 
-  test("SC16: a lost resume line leaves the run running with no blocker; only the notifier tells a person", () => {
-    unblockedState(project([designRunning, lineLost(2)]));
+  test("SC16: an unreachable input box leaves the run running with no blocker; only the notifier tells a person", () => {
+    unblockedState(project([designRunning, inputUnreachable(2)]));
   });
 
   test("an input box yok could not reach leaves the run running with no blocker; only the notifier tells a person", () => {

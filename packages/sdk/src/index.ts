@@ -145,7 +145,6 @@ export {
   LimitReachedEvent,
   LimitResumedEvent,
   LimitWaitingEvent,
-  LineLostEvent,
   ModelAppliedEvent,
   ModelRequestedEvent,
   NodeIteratedEvent,
