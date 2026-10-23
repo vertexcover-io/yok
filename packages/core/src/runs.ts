@@ -7,6 +7,7 @@ import {
   type ArtifactRef,
   type CheckoutConfig,
   type Config,
+  type ContextOutput,
   createGit,
   type EmitInput,
   type EnvLayer,
@@ -28,6 +29,7 @@ import {
   type ResolvedTiers,
   type Result,
   type RunRef,
+  readContextSkip,
   readPolicies,
   runDirOf,
   type SessionRef,
@@ -399,6 +401,9 @@ export type StepReply =
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
   | Exclude<Decision, { kind: "steps" | "context" }>;
 
+// notes: what the agent must tell the user before acting on the reply.
+export type NextReply = StepReply & Readonly<{ notes?: readonly string[] }>;
+
 type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
 
 // Parsing gives the reply the type an event payload needs.
@@ -589,10 +594,21 @@ export type AgentAbilities = Readonly<
   Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents" | "parallelSteps">>
 >;
 
+// Context steps that ended since the last next without their action happening.
+const listSkipNotes = (events: readonly Event[]): readonly string[] => {
+  const since = events.findLast((event) => event.type === "orchestrate.next")?.seq ?? 0;
+  return events.flatMap((event) => {
+    if (event.seq <= since || event.type !== "workflow.node.completed") return [];
+    const output = z.looseObject({ output: z.unknown() }).safeParse(event.payload).data?.output;
+    const reason = readContextSkip(output);
+    return reason === undefined ? [] : [`${event.nodeId} was skipped: ${reason}`];
+  });
+};
+
 const walkToNextStep = async (
   run: RunRef,
   abilities: AgentAbilities,
-): Promise<Result<StepReply>> => {
+): Promise<Result<NextReply>> => {
   const runDir = runDirOf(run.cwd, run.name);
   const [state, events] = await Promise.all([readRunState(runDir), jsonlEventStore(runDir).read()]);
   const config = await loadRecordedConfig(state.config, run.cwd);
@@ -610,10 +626,12 @@ const walkToNextStep = async (
   const models = { tiers, switching, subagents, parallel: parallelSteps };
   const { decision } = await decideNext(plan, state, emit, models);
   const policies = readPolicies(state.policies);
-  return { ok: true, value: buildReply(decision, run, config.value, policies) };
+  const reply = buildReply(decision, run, config.value, policies);
+  const notes = listSkipNotes(events);
+  return { ok: true, value: notes.length === 0 ? reply : { ...reply, notes } };
 };
 
-export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
+export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<NextReply>> =>
   logCall(run, { command: "next", input: {} }, walkToNextStep(run, abilities));
 
 export type ResumeReport = Readonly<{
@@ -813,7 +831,7 @@ export const findContextPlanNode = async (
 export const completeContextStep = async (
   run: RunRef,
   nodeRunId: string,
-  output: JsonValue,
+  output: ContextOutput,
 ): Promise<Result<StepReport>> => {
   const leaf = await loadContextLeaf(run, nodeRunId);
   if (!leaf.ok) return leaf;

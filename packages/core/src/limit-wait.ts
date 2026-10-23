@@ -39,8 +39,10 @@ const sessionOf = (event: Event): string | undefined =>
   z.looseObject({ payload: z.looseObject({ sessionId: z.string() }) }).safeParse(event).data
     ?.payload.sessionId;
 
+// A receipt only says the agent took a line yok typed, such as the limit wait's own continue.
 const isActivity = (event: Event): boolean =>
-  event.type.startsWith("hooks.") || event.type === "agent.limit.reached";
+  (event.type.startsWith("hooks.") && event.type !== "hooks.prompt-received.called") ||
+  event.type === "agent.limit.reached";
 
 // The session's hook calls and limit hits, in order.
 const sessionActivity = (events: readonly Event[], sessionId: string): readonly Event[] =>

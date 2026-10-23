@@ -113,6 +113,11 @@ export const BlockerSchema = z.discriminatedUnion("reason", [
     reason: z.literal("agent-error"),
     details: z.strictObject({ error: NonEmptyStringSchema, message: z.string().nullable() }),
   }),
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("line-lost"),
+    details: z.strictObject({ step: NonEmptyStringSchema, line: NonEmptyStringSchema }),
+  }),
 ]);
 export type Blocker = z.infer<typeof BlockerSchema>;
 
@@ -150,6 +155,28 @@ export const SkipOutputSchema = z.discriminatedUnion("reason", [
     proof: z.strictObject({ expression: NonEmptyStringSchema, value: z.json() }),
   }),
 ]);
+
+// What a context step ends with: the action it took, or why the action did not happen.
+export const ContextOutputSchema = z.discriminatedUnion("applied", [
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(true),
+    sessionId: NonEmptyStringSchema,
+  }),
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(false),
+    reason: NonEmptyStringSchema,
+  }),
+]);
+export type ContextOutput = z.infer<typeof ContextOutputSchema>;
+
+// Why a context step's action did not happen; undefined when it happened or the output is another
+// node's.
+export const readContextSkip = (output: unknown): string | undefined => {
+  const parsed = ContextOutputSchema.safeParse(output);
+  return parsed.success && !parsed.data.applied ? parsed.data.reason : undefined;
+};
 
 // A node's current run: state.json is the graph as it stands now, not its history (that is
 // event.jsonl). A loop, switch or include holds its children in `nodes`, keyed by the ids

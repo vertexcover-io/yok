@@ -45,7 +45,8 @@ exit, show the command's error output and stop — do not retry with a different
 Tell the user the run folder `init` printed (`dir`). Then repeat:
 
 1. Run `yok orchestrate next --run NAME`. It prints one JSON reply. Never run two `next`
-   commands at the same time.
+   commands at the same time. When the reply has `notes`, tell the user each note as written,
+   then act on the reply.
 2. Act on the reply's `kind`. A `steps` reply lists every node that can start now. Start
    each entry in the order given, by its own `kind` below: exec entries and `mode: subagent`
    entries run in the background, and at most one entry, the last, is `mode: inline`, which

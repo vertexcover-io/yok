@@ -1,0 +1,27 @@
+---
+status: active
+date: 2026-10-23
+source: docs/prd-lost-compact-recovery.md
+tags: [agent-plugin, harness-server-to-session, workflow-engine, event-store]
+---
+
+# A line yok types into Claude's pane for a context step counts only once a Claude hook reports it; a line lost twice blocks the run
+
+## Context and Problem Statement
+
+yok drives a compaction by typing `/compact` and then the resume line into the Claude Code pane. On REF-26671 a settings popup swallowed both, yok marked the step complete anyway, and the run sat idle for 37 minutes with a status saying the compaction happened; an unattended run would never finish.
+
+## Considered Options
+
+- Checked typing confirmed by Claude hooks: wait for idle, Escape until no popup shows, C-u, type; PreCompact (manual) and UserPromptSubmit record `hooks.prompt-received.called`; retype once; a second loss records `agent.line.lost`
+- Escape then type, with no receipt check
+- Read the screen after typing for a sign the line arrived
+- Wait only for the compaction's SessionStart, with a shorter timeout
+
+## Decision Outcome
+
+Chosen: checked typing confirmed by Claude hooks, because it is the only option that sees a lost line within seconds whatever the screen shows: Escape alone misses a popup that opens after it or ignores it, screen text changes between Claude Code versions, and a compaction can take minutes, so SessionStart reports a loss late. This amends 0013: `agent.line.lost` opens a `line-lost` blocker, which `agent.resumed` clears like the others, and the Slack notifier posts it with a mention.
+
+## Consequences
+
+Every Claude session registers two more hooks, and each prompt writes one receipt holding only the line's sha256, which the rate-limit wait does not count as activity. Any new line yok types at an idle Claude goes through `sendLine`, with Escape sent only once Claude is idle. One Escape does not always close a popup: Claude's /config popup opens with focus in its search box, and the first Escape only leaves the box. So after each Escape yok pauses 300 ms (Claude reads an Escape followed within 50 ms by another key as one Alt key), reads the screen, and sends another Escape while a popup footer (`Esc to close`, `Esc to clear`, `Esc to cancel`) still shows, at most 3 in all. It never sends a second Escape to a bare prompt, because two Escapes there open Claude's Rewind menu, which would swallow the line too.

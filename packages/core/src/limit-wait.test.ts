@@ -221,6 +221,23 @@ describe("runLimitWait", () => {
     expect(await payloadOf(runDir, "agent.limit.waiting")).toBeUndefined();
   });
 
+  test("SC10: after 20 limits each followed by the receipt of the continue typed for it, the receipts do not break the run of limits, so it still gives up", async () => {
+    const { run, runDir } = setUp();
+    for (const _ of Array.from({ length: 20 })) {
+      await limitReached(run, "credits");
+      await appendRunEvent(run, {
+        type: "hooks.prompt-received.called",
+        source: "hooks",
+        payload: { agent: "claude", sessionId: "s1", digest: "d" },
+      });
+    }
+    const limitEventId = await limitReached(run, "credits");
+    const { agent, seen } = fakeAgent(null);
+    await waitWith(run, limitEventId, agent);
+    expect(seen.prompts).toEqual([]);
+    expect(await payloadOf(runDir, "agent.limit.waiting")).toBeUndefined();
+  });
+
   test("an agent with no provider, or no terminal to reach, gets no wait", async () => {
     const { run, runDir } = setUp();
     const { agent, seen } = fakeAgent({ ms: HOUR, from: "message" });

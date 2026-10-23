@@ -210,8 +210,9 @@ describe("renderStatusline", () => {
     ["usage-limit", { resumeAt: new Date(2026, 8, 26, 14, 0).toISOString() }, "paused until 14:00"],
     ["stuck", { message: null }, "stuck"],
     ["agent-error", { error: "authentication_failed", message: null }, "agent error"],
+    ["line-lost", { step: "design", line: "/compact" }, "line lost"],
   ])(
-    "SC135: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
+    "SC135, SC17: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
     async (reason, details, phrase) => {
       const blocker = { reason, node: "design", since: ago(MINUTE), details };
       const run = makeRun({ status: "blocked", blocker, nodeRuns: { design: node("running") } });
@@ -222,4 +223,24 @@ describe("renderStatusline", () => {
       for (const word of FORBIDDEN) expect(line).not.toContain(word);
     },
   );
+});
+
+describe("renderStatusline context skips", () => {
+  const unapplied = node("completed", {
+    nodeType: "context",
+    completedAt: ago(10 * SECOND),
+    output: { action: "compact", applied: false, reason: "Not enough messages to compact." },
+  });
+
+  test("SC20: an unapplied compact that is the last step to end shows compact skipped with its reason", async () => {
+    const run = makeRun({ nodeRuns: { compact: unapplied, fix: node("running") } });
+    expect(await lineOf(run)).toContain("compact skipped: Not enough messages to compact.");
+  });
+
+  test("SC21: an agent step ending after an unapplied compact drops the skipped text", async () => {
+    const run = makeRun({
+      nodeRuns: { compact: unapplied, fix: node("completed", { completedAt: ago(SECOND) }) },
+    });
+    expect(await lineOf(run)).not.toContain("skipped");
+  });
 });

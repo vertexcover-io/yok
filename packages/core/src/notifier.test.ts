@@ -259,6 +259,20 @@ describe("describeEvent", () => {
       }),
     ],
     [
+      "SC15: a lost line pings, naming the step in the title and the line and what to do in the body",
+      event("agent.line.lost", {
+        agent: "claude",
+        sessionId: "s-1",
+        step: "compact-before-fix",
+        line: "/compact",
+      }),
+      openDesign,
+      notice("⚠️ Line lost at compact-before-fix", {
+        mention: true,
+        body: "yok typed /compact into Claude twice and Claude took neither. Open the session, close any popup, and type it.",
+      }),
+    ],
+    [
       "an API stop names the node, the error and what to do",
       event("agent.stopped", {
         agent: "claude",

@@ -35,6 +35,16 @@ const SPINNER = /^[·✢✳✶✻✽*] \S.*…/;
 export const CLAUDE_NOTHING_TO_COMPACT = "Not enough messages to compact.";
 // Empties the input line; C-c would exit Claude when the box is already empty.
 export const CLAUDE_CLEAR_INPUT_KEY = "C-u";
+// Claude reads an Escape followed within 50 ms by another key as one Alt key, so the Escape is
+// lost; after this pause it counts as a lone Escape (300 ms was proven on a live pane).
+export const CLAUDE_ESCAPE_PAUSE_MS = 300;
+// One Escape may not close a popup: /config opens with focus in its search box, where the first
+// Escape only leaves the box. Two Escapes on a bare prompt open the Rewind menu, so another is
+// sent only while a popup's footer shows, up to this many in all.
+export const CLAUDE_MAX_ESCAPES = 3;
+const POPUP_FOOTER = /esc to (?:close|clear|cancel)/i;
+
+export const isClaudePopupOpen = (screen: string): boolean => POPUP_FOOTER.test(screen);
 
 export const isClaudeBusy = (screen: string): boolean =>
   screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));

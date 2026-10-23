@@ -165,7 +165,7 @@ An event is one line in `event.jsonl`: `seq`, `ts`, `type`, `source`, `runId`, o
 
 `state.json` is the fold of every event through [applyEvent](../../packages/sdk/src/state.ts#L33). Its fields: `status`, `blocker`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is rewritten atomically after every event. Nobody edits it.
 
-A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, got stuck, or stopped on an agent error. `blocker` says which (`question`, `usage-limit`, `stuck`, `agent-error`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, or the error. A question's answer clears a `question` blocker and the limit resuming clears a `usage-limit` one. When the main agent makes its next Bash call or file edit on a blocked run, the PreToolUse hook records `agent.resumed` with the blocker's reason (a sub-agent's call never does), which clears it and puts the run back to `running`; this also closes a question the person dismissed without answering. The workflow completing or failing drops any blocker. Nothing else clears one; the agent moves the workflow only through `yok orchestrate` Bash calls, which the hook hears first. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
+A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, got stuck, stopped on an agent error, or did not take a line yok typed twice. `blocker` says which (`question`, `usage-limit`, `stuck`, `agent-error`, `line-lost`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, the error, or the step and the line Claude did not take. A question's answer clears a `question` blocker and the limit resuming clears a `usage-limit` one. When the main agent makes its next Bash call or file edit on a blocked run, the PreToolUse hook records `agent.resumed` with the blocker's reason (a sub-agent's call never does), which clears it and puts the run back to `running`; this also closes a question the person dismissed without answering. The workflow completing or failing drops any blocker. Nothing else clears one; the agent moves the workflow only through `yok orchestrate` Bash calls, which the hook hears first. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
 
 ## Subscriber
 
@@ -182,7 +182,7 @@ A module subscriber is an exported function. A command subscriber reads the JSON
 
 ## Agent hook
 
-A point in the agent's own session where it calls out and waits for an answer. Yok registers five for Claude through `--settings` at launch, each answered by `yok orchestrate hook NAME --handler HANDLER`:
+A point in the agent's own session where it calls out and waits for an answer. Yok registers six for Claude through `--settings` at launch, each answered by `yok orchestrate hook NAME --handler HANDLER`:
 
 | Hook | Handler | What it does |
 |---|---|---|
@@ -191,12 +191,13 @@ A point in the agent's own session where it calls out and waits for an answer. Y
 | StopFailure | `resume-after-limit`, `record-agent-error` | on an API error that is a usage limit, pauses and resumes the run; otherwise records the error |
 | PreToolUse | `record-guard`, `record-resumed`, `bash-antipatterns`, `question-notice` | refuses writes to the run's records, records `agent.resumed` for the main agent's Bash call or file edit on a blocked run, flags risky shell, records a question being asked |
 | PostToolUse | `answer-notice` | records the person's answers to questions |
+| PreCompact (manual), UserPromptSubmit | `record-prompt-received` | records that Claude took a line yok typed, as a hash of the line, so the context-step helper can retype a lost one |
 
 Agent hooks are about the session. Subscribers are about the run. They are different things with the same English word. The handlers live in [packages/core/src/hooks](../../packages/core/src/hooks).
 
 ## Context step and model switch
 
-A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
+A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. Before typing a line, yok waits for Claude to go idle, then sends Escape to close any popup, again while a popup footer still shows (at most three), and clears the input line. Each line yok types for a compaction waits for that receipt and is retyped once when it does not come. A context step whose action did not happen still completes, so the steps after it run; the viewer shows it as skipped with its reason, the status line shows it until another step ends, and the next `next` reply carries it under `notes`. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
 
 ## Limit wait
 

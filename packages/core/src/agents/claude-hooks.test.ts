@@ -154,7 +154,7 @@ describe("claudeAdapter.stop background_tasks", () => {
 });
 
 describe("claudeSettings", () => {
-  test("SC8, SC13, SC18, SC303 — the status line and every hook run the orchestrate argv with each argument quoted", () => {
+  test("SC8, SC13, SC18, SC303 — the status line and every hook run the orchestrate argv with each argument quoted; a manual PreCompact and every UserPromptSubmit run prompt-received without Claude waiting on it", () => {
     const argv = "'/usr/bin/bun' '/opt/it'\\''s here/orchestrate.ts'";
     const entry = (event: string, handler: string) => ({
       type: "command",
@@ -166,6 +166,15 @@ describe("claudeSettings", () => {
       statusLine: { type: "command", command: `${argv} 'statusline'`, refreshInterval: 5 },
       hooks: {
         SessionStart: [{ hooks: [entry("session-start", "link-session")] }],
+        PreCompact: [
+          {
+            matcher: "manual",
+            hooks: [{ ...entry("prompt-received", "record-prompt-received"), async: true }],
+          },
+        ],
+        UserPromptSubmit: [
+          { hooks: [{ ...entry("prompt-received", "record-prompt-received"), async: true }] },
+        ],
         Stop: [{ hooks: [entry("stop", "continue-workflow"), entry("stop", "offer-learn")] }],
         StopFailure: [
           { matcher: "rate_limit", hooks: [entry("stop-failure", "resume-after-limit")] },

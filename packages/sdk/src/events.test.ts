@@ -812,6 +812,8 @@ describe("blocker", () => {
       handler: "record-guard",
       decision: "allow",
     });
+  const lineLost = (seq: number) =>
+    runEvent(seq, "agent.line.lost", { ...session, step: "design", line: "/compact" });
   const onDesign = { node: "design", since: at(2) };
   const openings: readonly (readonly [string, Event, Blocker])[] = [
     [
@@ -846,6 +848,11 @@ describe("blocker", () => {
         reason: "agent-error",
         details: { error: "authentication_failed", message: "Invalid API key" },
       },
+    ],
+    [
+      "agent.line.lost",
+      lineLost(2),
+      { ...onDesign, reason: "line-lost", details: { step: "design", line: "/compact" } },
     ],
   ];
   // Tool calls and step moves only log what happened; only the blocker's own closing event,
@@ -918,6 +925,11 @@ describe("blocker", () => {
       expect(state.blocker).toEqual(expected);
     },
   );
+
+  test("SC16: a run blocked on line-lost goes back to running with no blocker once agent.resumed with reason line-lost is applied", () => {
+    expect(project([designRunning, lineLost(2)]).status).toBe("blocked");
+    unblockedState(project([designRunning, lineLost(2), resumed(3, "line-lost")]));
+  });
 
   test("SC142: agent.resumed on a running run leaves it running with no blocker", () => {
     unblockedState(project([designRunning, resumed(2, "usage-limit")]));

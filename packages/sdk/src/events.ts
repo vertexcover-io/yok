@@ -165,6 +165,16 @@ export const SessionStartCalledEvent = z.object({
   }),
 });
 
+// The agent took a line: a typed /compact or a prompt. digest is the line's sha256, so the log
+// never holds a person's prompt.
+export const PromptReceivedCalledEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    digest: NonEmptyStringSchema,
+  }),
+});
+
 export const PreToolUseCalledEvent = z.object({
   payload: z.strictObject({
     agent: AgentTypeSchema,
@@ -284,6 +294,17 @@ export const AgentStuckEvent = z.object({
     agent: AgentTypeSchema,
     sessionId: NonEmptyStringSchema,
     message: z.string().optional(),
+  }),
+});
+
+// yok typed a line into the agent's pane twice and the agent took neither; the run waits on a
+// person. step is the node the line was typed for.
+export const LineLostEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    step: NonEmptyStringSchema,
+    line: NonEmptyStringSchema,
   }),
 });
 
@@ -536,6 +557,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "hooks.stop.called": StopCalledEvent,
   "hooks.pre-tool-use.called": PreToolUseCalledEvent,
   "hooks.session-start.called": SessionStartCalledEvent,
+  "hooks.prompt-received.called": PromptReceivedCalledEvent,
   "agent.limit.reached": LimitReachedEvent,
   "agent.limit.waiting": LimitWaitingEvent,
   "agent.limit.resumed": LimitResumedEvent,
@@ -543,6 +565,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
+  "agent.line.lost": LineLostEvent,
   "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,
   "notification.thread.started": NotificationThreadStartedEvent,
@@ -997,6 +1020,17 @@ const onAgentStopped: EventHandler = (state, event) => {
   return block(state, { ...blockerBase(state, event), reason: "agent-error", details });
 };
 
+const onLineLost: EventHandler = (state, event) => {
+  const parsed = LineLostEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { step, line } = parsed.data.payload;
+  return block(state, {
+    ...blockerBase(state, event),
+    reason: "line-lost",
+    details: { step, line },
+  });
+};
+
 const onAgentResumed: EventHandler = (state, event) => {
   const parsed = AgentResumedEvent.safeParse(event);
   return parsed.success ? unblock(state, parsed.data.payload.reason) : state;
@@ -1019,6 +1053,7 @@ export const builtInHandlers: EventHandlers = {
   "agent.limit.resumed": (state) => unblock(state, "usage-limit"),
   "agent.stuck": onAgentStuck,
   "agent.stopped": onAgentStopped,
+  "agent.line.lost": onLineLost,
   "agent.resumed": onAgentResumed,
   "workspace.created": onWorkspaceCreated,
   "workspace.repository.added": onRepositoryAdded,
