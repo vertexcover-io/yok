@@ -1062,6 +1062,21 @@ describe("runModelStep", () => {
     expect(typesOf(pane.typed)).toEqual(typedLine(RESUME));
   });
 
+  test("after a failed switch, a resume line whose input box never shows is recorded unreachable for the switch's node and the session it was to resume", async () => {
+    const context = await setUpSwitch();
+    const pane = fakeTerminal(() => CONFIG_LIST_FOOTER);
+
+    await modelHelper(context, pane.terminal, fakeProvider(false).provider);
+
+    expect(typesOf(pane.typed)).toEqual(Array(6).fill("Escape"));
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
+    );
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "s-1", step: "think", line: RESUME },
+    ]);
+  });
+
   test("a resumed session with no SessionStart within 60 seconds, counting none from before the relaunch, is recorded as failed and the run resumed", async () => {
     const context = await setUpSwitch();
     await sessionStarted(context.run, "s-1", "resume");
