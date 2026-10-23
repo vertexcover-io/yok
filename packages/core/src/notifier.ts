@@ -50,6 +50,7 @@ const parsePayload = <T extends z.ZodType>(event: Event, schema: T): z.infer<T> 
 const MessageSchema = z.looseObject({ message: z.string() });
 const PlacementPayload = z.looseObject({ parents: z.array(z.string()).optional() });
 const StartedPayload = z.looseObject({ notify: z.boolean().optional() });
+const ApprovalPayload = z.looseObject({ path: z.string() });
 const FailedCallPayload = z.looseObject({
   subscriber: z.string(),
   eventType: z.string(),
@@ -166,6 +167,23 @@ const describeQuestion = (event: Event, state: State): Notice => {
   });
 };
 
+// Keyed by the file's name without its extension, so plan.md and plan.html both read "Plan".
+const APPROVAL_FILE_NAMES: ReadonlyMap<string, string> = new Map([
+  ["design", "Design"],
+  ["plan", "Plan"],
+]);
+
+const describeApproval = (event: Event): Notice | undefined => {
+  const path = parsePayload(event, ApprovalPayload)?.path;
+  if (path === undefined) return undefined;
+  const file = basename(path);
+  const name = APPROVAL_FILE_NAMES.get(file.replace(/\.[^.]*$/, "")) ?? file;
+  return makeNotice(`${name} ready for approval`, {
+    mention: true,
+    body: "_Approve in the viewer, or type approve in the session._",
+  });
+};
+
 const describeNodeStart = (event: Event, state: State): Notice | undefined =>
   parsePayload(event, StartedPayload)?.notify === true
     ? makeNotice(`▶ ${labelOf(state, eventPath(event))} · started`)
@@ -216,6 +234,7 @@ const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
   "workflow.node.started": describeNodeStart,
   "workflow.node.completed": describeNodeEnd,
   "agent.question.asked": describeQuestion,
+  "artifact.approval.requested": describeApproval,
   "workflow.completed": describeCompleted,
   "workflow.failed": describeFailed,
   "agent.stuck": (_, state) =>
