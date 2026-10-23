@@ -721,7 +721,8 @@ describe("addRepositories", () => {
       workspace: { layout: "multi" },
       packages: {
         api: { path: "api" },
-        serana: { path: "serana" },
+        // serana finishes last, so the events can follow the asked order only on purpose.
+        serana: { path: "serana", commands: { workspaceSetup: "sleep 0.5" } },
         courier: { path: "courier", commands: { workspaceSetup: "exit 1" } },
       },
     });
