@@ -604,6 +604,11 @@ describe("hasClaudeInputBox", () => {
       `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
       false,
     ],
+    [
+      "a dialog whose footer reads Enter to select with no Esc to cancel",
+      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,
+      false,
+    ],
   ])("%s -> %p", (_name, screen, expected) => {
     expect(hasClaudeInputBox(screen)).toBe(expected);
   });
