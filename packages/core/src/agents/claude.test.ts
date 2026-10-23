@@ -613,9 +613,17 @@ describe("isClaudeChoicePending", () => {
       `${PERMISSION_PROMPT}\n● Created the file.\n${PROMPT}`,
       false,
     ],
-    ["the /config popup", "  Theme  Dark\nEnter/Space to change · / to search · Esc to close", false],
+    [
+      "the /config popup",
+      "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
+      false,
+    ],
     ["a box under a spinner", `· Ionizing… (6s)\n${box("❯ ")}`, false],
-    ["a numbered list in Claude's reply above the box", `1. Fixed it\n2. Tested it\n${PROMPT}`, false],
+    [
+      "a numbered list in Claude's reply above the box",
+      `1. Fixed it\n2. Tested it\n${PROMPT}`,
+      false,
+    ],
   ])("%s -> %p", (_name, screen, expected) => {
     expect(isClaudeChoicePending(screen)).toBe(expected);
   });

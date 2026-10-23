@@ -472,44 +472,47 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test.each([
-    CONFIG_SEARCH_FOOTER,
-    CONFIG_LIST_FOOTER,
-  ])("an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed", async (footer) => {
-    const context = await setUp("type: context, action: compact");
-    const fake = losingTerminal(
-      context,
-      () => true,
-      () => `${IDLE}\n  Theme  Dark\n${footer}`,
-    );
+  test.each([CONFIG_SEARCH_FOOTER, CONFIG_LIST_FOOTER])(
+    "an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed",
+    async (footer) => {
+      const context = await setUp("type: context, action: compact");
+      const fake = losingTerminal(
+        context,
+        () => true,
+        () => `${IDLE}\n  Theme  Dark\n${footer}`,
+      );
 
-    await helper(context, fake.terminal);
+      await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
-  });
+      expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
+    },
+  );
 
   test.each([
     ["a permission prompt", PERMISSION_PROMPT],
     ["a question", QUESTION],
     ["a permission dialog whose ❯ 1. Yes sits between rules", PERMISSION],
-  ])("%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable", async (_, screen) => {
-    const context = await setUp("type: context, action: compact");
-    const fake = losingTerminal(
-      context,
-      () => true,
-      () => screen,
-    );
-    const startedAt = Date.now();
+  ])(
+    "%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable",
+    async (_, screen) => {
+      const context = await setUp("type: context, action: compact");
+      const fake = losingTerminal(
+        context,
+        () => true,
+        () => screen,
+      );
+      const startedAt = Date.now();
 
-    await helper(context, fake.terminal);
+      await helper(context, fake.terminal);
 
-    expect(fake.typed).toEqual([]);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
-    expect(await stepOutput(context.runDir)).toMatchObject({
-      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
-    });
-    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
-  });
+      expect(fake.typed).toEqual([]);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
+      expect(await stepOutput(context.runDir)).toMatchObject({
+        output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+      });
+      expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+    },
+  );
 
   test("a permission prompt with no spinner gets no Escape: yok waits for a person to answer it and types /compact once the box shows", async () => {
     const context = await setUp("type: context, action: compact");
