@@ -919,7 +919,16 @@ nodes:
 `);
     const [talk] = nextReply(repo, home).steps;
     const lookalike = JSON.stringify({ action: "compact", applied: false, reason: "made up" });
-    const done = ["done", talk.nodeRunId, "--run", "feat-x", "--summary", "Talked.", "--output", "-"];
+    const done = [
+      "done",
+      talk.nodeRunId,
+      "--run",
+      "feat-x",
+      "--summary",
+      "Talked.",
+      "--output",
+      "-",
+    ];
     expect(orchestrate(repo, home, done, env, lookalike).code).toBe(0);
 
     const reply = nextReply(repo, home);
