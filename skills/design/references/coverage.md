@@ -2,10 +2,6 @@
 
 ## Coverage map — what the design must know
 
-Mark each area **clear**, **partial** or **missing** for this task. Only a partial or missing
-area whose answer would change what gets built becomes a decision node. Rank nodes by impact
-times uncertainty: a wrong guess that forces a rebuild outranks one that changes a label.
-
 | Area | Clear when you can state |
 |---|---|
 | Purpose | why the task exists, and what happens if it is never built |
@@ -22,11 +18,11 @@ times uncertainty: a wrong guess that forces a rebuild outranks one that changes
 | Terms | one name per concept, matching the name the code already uses |
 | Done | how the user will judge that it works |
 
-## Lenses — where an approach breaks
+Put the biggest decisions first. A decision is big when a wrong guess would be expensive to
+fix and you are not sure of the answer. One that could force a rebuild comes before one that
+could only change a label.
 
-Walk the list twice: against the problem in step 2, to find forks the user did not raise, and
-against the chosen approach in step 4, to find where it breaks. Most lenses will not fire; skip
-those with no note.
+## Lenses — where an approach breaks
 
 | Lens | Fires when | Ask |
 |---|---|---|

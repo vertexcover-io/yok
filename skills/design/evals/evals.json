@@ -22,12 +22,12 @@
       "id": 2,
       "name": "stops-at-the-design",
       "prompt": "design and build a CSV export for the runs list. Just do it end to end.",
-      "expected_output": "The stage produces an approved one-page design.md with a decisions table and at most one diagram, and stops. It edits no source file, cuts no phases, and writes no file-by-file steps, even though the prompt asks for a build.",
+      "expected_output": "The stage produces an approved one-page design.md with a numbered approach, a decisions list and at most one diagram, and stops. It edits no source file, cuts no phases, and writes no file-by-file steps, even though the prompt asks for a build.",
       "files": [],
       "expectations": [
         "The only file written is .yok/RUN/artifacts/design.md.",
         "design.md holds at most one fenced mermaid block.",
-        "design.md has a ## Decisions table with What we do, Instead of and Because columns, and a ## Hard to undo section."
+        "design.md has a numbered Approach, a Decisions list where every line says what we do, instead of what, and why, tagged (user) or (agent), and a Done when list."
       ],
       "anti_expectations": [
         "Edits or creates a file under packages/ or skills/",
@@ -57,13 +57,13 @@
       "id": 4,
       "name": "one-page-cap-holds",
       "prompt": "design this: add a second agent (Codex) next to Claude Code and let a workflow pick which one runs it.",
-      "expected_output": "A large task still yields a one-page design.md: body under 500 words, one diagram, at most 3 decisions and 3 risks, a What changes table by area with no file paths, and a Hard to undo line naming the changed launch contract. Code-level forks are left for planning.",
+      "expected_output": "A large task still yields a one-page design.md: one or two sentences per line, one diagram, at most 3 decisions and 3 risks, a numbered approach with no file paths, every decision tagged user or agent, a Hard to undo line naming the changed launch contract, and a Done when list. Code-level forks are left for planning.",
       "files": [],
       "expectations": [
-        "The body of design.md, front matter and mermaid excluded, is under 500 words.",
-        "## Decisions has at most 3 rows and ## Risks at most 3 bullets.",
-        "## What changes has one row per area and no file paths.",
-        "## Hard to undo is present and names what the change locks in."
+        "Every approach point, decision, risk and done-when check in design.md is one or two sentences.",
+        "Decisions has at most 3 lines and Risks at most 3 bullets.",
+        "Approach has at most 6 numbered points and no file paths.",
+        "Hard to undo names the changed launch contract, and Done when has 3 to 5 checks."
       ],
       "anti_expectations": [
         "Writes a ## Components table, a ## Data and contracts block or a ## Failure behavior table",

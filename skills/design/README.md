@@ -17,7 +17,7 @@ Standalone, it uses a short kebab-case topic name where a run would use the run 
 2. Map what is unknown: walks the coverage map (purpose, actors, scope, data, interfaces, integrations, failure and so on) and turns each gap that would change the shape into a decision with its blockers.
 3. Grill in rounds: asks up to four unblocked questions at a time with a recommended option first, records every answer in `design.md` at once, and checks answers against each other for clashes. Low-impact decisions are inferred, not asked.
 4. Choose the approach: offers two or three only when real alternatives exist, framed as reuse, extend or build new, and asks the user.
-5. Write and check the page against hard caps: 500 words, one diagram, six "what changes" rows, three decisions, three risks.
+5. Write and check the page against hard caps: one diagram, six approach points, three decisions, three risks, five done-when checks, and one or two sentences per line. Every decision says whether the user or the agent made it.
 6. Review and confirm: a self-review, then a fresh-eyes sub-agent that verifies every claim about the code against the code. The whole page is pasted in the reply and the user approves or revises.
 
 ## Inputs and outputs
@@ -27,7 +27,7 @@ Standalone, it uses a short kebab-case topic name where a run would use the run 
 
 ## Files
 
-- `SKILL.md`: the eight steps, the "would the plan look different" test, and the list of excuses the skill refuses.
+- `SKILL.md`: the eight steps and the "would the plan look different" test.
 - `references/coverage.md`: the coverage map and the lenses that find the questions worth asking.
-- `references/design-doc.md`: the `design.md` format, its caps, and the one diagram it may draw.
+- `references/design-doc.md`: the `design.md` blocks, their caps, the decision tags, and the one diagram it may draw.
 - `evals/evals.json`: eval cases for the skill.

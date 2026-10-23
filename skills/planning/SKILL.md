@@ -93,7 +93,7 @@ step 2. Load the `writing-style` skill before you write the plan: a person appro
 When the design's front matter says `route: atomic`, the plan is one phase with one step. Skip
 step 2's cut and write it.
 
-**Done when:** for every row of the design's `What changes` and every decision, you can name the
+**Done when:** for every point of the design's `Approach` and every decision, you can name the
 code it lands in, each cited with `file:line`.
 
 ## Step 2 — Cut the phases
@@ -145,8 +145,8 @@ Three rules bind every step:
 **Self-review.** Each check is a lookup. Fix what fails:
 
 - **Inputs.** Every decision in `design.md` appears in a step · every design correction is
-  applied in `design.md` ·
-  every row of its `What changes` is built by a phase · every row in `## ADRs` points to an
+  applied in `design.md` · every point of its `Approach` is built by a phase · every `Done
+  when` check is proved by a phase's scenarios · every row in `## ADRs` points to an
   active ADR · every path in `## Project Docs` exists.
 - **Phasing.** No two phases change the same file unless ordered · every phase is provable by
   its own scenarios the moment it lands · a phase that uses what another builds depends on it.
