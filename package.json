@@ -11,7 +11,7 @@
     "bun": ">=1.3.3"
   },
   "scripts": {
-    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro && tsc -p skills/fix && tsc -p skills/code-review && tsc -p skills/review-regression-tests && tsc -p skills/learn",
+    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro && tsc -p skills/fix && tsc -p skills/code-review && tsc -p skills/review-regression-tests && tsc -p skills/learn && tsc -p skills/skill-author && tsc -p skills/skill-audit",
     "test": "bun test --parallel --timeout 20000 ./packages ./skills",
     "lint": "biome check",
     "check": "bun scripts/check.ts",
@@ -23,7 +23,7 @@
     "test:scripts": "node --test scripts/*.test.ts",
     "test:scripts:bun": "bun test ./scripts/",
     "test:hooks": "node --test hooks/*.test.mjs",
-    "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py'"
+    "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py' && python3 -B skills/skill-audit/scripts/test_check.py"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
