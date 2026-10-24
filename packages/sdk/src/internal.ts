@@ -60,4 +60,16 @@ export {
   syncState,
 } from "./state.ts";
 export { callMode, runMode } from "./subscribers.ts";
+export {
+  createTriggerStore,
+  type Fire,
+  FireSchema,
+  type Trigger,
+  type TriggerDraft,
+  TriggerSchema,
+  type TriggerStore,
+  TriggersFileSchema,
+  triggerFiresPath,
+  triggersPath,
+} from "./triggers.ts";
 export { VERSION } from "./version.ts";

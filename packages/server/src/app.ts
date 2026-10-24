@@ -4,7 +4,8 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
-import { type RunDeps, runRoutes } from "./run.ts";
+import { runRoutes } from "./run.ts";
+import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 const requestLogger =
   (log: ILogger): MiddlewareHandler<{ Variables: Vars }> =>
@@ -23,7 +24,7 @@ const requestLogger =
     else reqLog.info(fields, "request finished");
   };
 
-export type AppDeps = RunDeps &
+export type AppDeps = TriggerRouteDeps &
   Readonly<{
     log: ILogger;
     pid: number;
@@ -46,6 +47,7 @@ export const createApp = (deps: AppDeps) =>
     .get("/health", (c) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
-    .route("/runs", runRoutes(deps));
+    .route("/runs", runRoutes(deps))
+    .route("/triggers", triggerRoutes(deps));
 
 export type AppType = ReturnType<typeof createApp>;

@@ -2,6 +2,7 @@ import { isAbsolute, join } from "node:path";
 import { WorkflowAgentSchema } from "@yok/core";
 import {
   JsonObjectSchema,
+  PermissionModeSchema,
   PolicyLayerSchema,
   SlugSchema,
   TiersConfigSchema,
@@ -46,10 +47,24 @@ export const StartRunBodySchema = z.strictObject({
   env: z.record(z.string(), z.string()),
   // the config file yok run --config named; the run reads it instead of its checkout's
   config: AbsolutePathSchema.optional(),
+  // a trigger's runs start in auto, so nobody is needed to answer a permission menu
+  permissionMode: PermissionModeSchema.optional(),
 });
 export type StartRunBody = z.infer<typeof StartRunBodySchema>;
 // What a caller sends: agent may be left out
 export type StartRunRequest = z.input<typeof StartRunBodySchema>;
+
+export const AddTriggerBodySchema = z.strictObject({
+  workflowPath: AbsolutePathSchema,
+  // the repo root the trigger's runs start in
+  cwd: AbsolutePathSchema,
+  config: AbsolutePathSchema.optional(),
+});
+export type AddTriggerBody = z.infer<typeof AddTriggerBodySchema>;
+
+// A trigger's name is unique within its repo.
+export const TriggerRefSchema = z.strictObject({ cwd: AbsolutePathSchema, name: SlugSchema });
+export type TriggerRef = z.infer<typeof TriggerRefSchema>;
 
 // The env the resumed session starts with, which yok resume builds the way yok run does
 export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });

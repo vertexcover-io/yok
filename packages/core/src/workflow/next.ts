@@ -23,7 +23,6 @@ import {
   type Scope,
 } from "./evaluate.ts";
 import {
-  type InputDeclarations,
   NodeFailure,
   type PlanAgentNode,
   type PlanContextNode,
@@ -34,6 +33,7 @@ import {
   type PlanStage,
   type PlanSwitchNode,
   type PlanWaitNode,
+  resolveWorkflowInputs,
   type WorkflowAgent,
   WorkflowError,
   type WorkflowPlan,
@@ -136,32 +136,6 @@ const pickChildren = (node: Container, nodeRun: NodeRun): readonly PlanNode[] =>
   if (node.type === "include") return node.plan.nodes;
   if (nodeRun.branch === "default") return node.default ?? [];
   return node.cases.find((c) => c.id === nodeRun.branch)?.nodes ?? [];
-};
-
-const INPUT_TYPES: Record<InputDeclarations[string]["type"], z.ZodType<JsonValue>> = {
-  string: z.string(),
-  number: z.number(),
-  boolean: z.boolean(),
-  object: z.record(z.string(), z.json()),
-  array: z.array(z.json()),
-};
-
-// The workflow's inputs with their defaults filled in; an input that breaks its declaration throws.
-const resolveWorkflowInputs = (
-  declarations: InputDeclarations,
-  given: Readonly<Record<string, JsonValue>>,
-): Record<string, JsonValue> => {
-  const fields = Object.entries(declarations).map(([name, declaration]) => {
-    const base = INPUT_TYPES[declaration.type];
-    if (declaration.default !== undefined) return [name, base.prefault(declaration.default)];
-    return [name, declaration.required ? base : base.optional()];
-  });
-  const parsed = z.strictObject(Object.fromEntries(fields)).safeParse(given);
-  if (parsed.success) return parsed.data as Record<string, JsonValue>;
-  const [issue] = parsed.error.issues;
-  const where =
-    issue === undefined || issue.path.length === 0 ? "inputs" : `inputs.${issue.path.join(".")}`;
-  throw new WorkflowError("input", `${where}: ${issue?.message ?? "invalid inputs"}`);
 };
 
 // An include's input with the included workflow's defaults filled in, or why it does not fit.

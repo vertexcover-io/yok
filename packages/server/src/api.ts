@@ -21,3 +21,10 @@ export const jsonBody = <T extends z.ZodType>(schema: T) =>
       ? undefined
       : errorResponse(c, 400, "bad-request", z.prettifyError(result.error)),
   );
+
+export const queryParams = <T extends z.ZodType>(schema: T) =>
+  zValidator("query", schema, (result, c) =>
+    result.success
+      ? undefined
+      : errorResponse(c, 400, "bad-request", z.prettifyError(result.error)),
+  );

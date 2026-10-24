@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { type CheckoutConfig, type JsonValue, runDirOf } from "@yok/sdk";
 import { parseDocument } from "yaml";
 import { z } from "zod";
-import { loadSkill, noProjectConfig, own } from "../stage.ts";
+import { loadProjectConfig, loadSkill, noProjectConfig, own } from "../stage.ts";
 import { expressionPaths, expressionsIn, isWholeExpression } from "./evaluate.ts";
 import { importModule } from "./executors.ts";
 import {
@@ -14,6 +14,7 @@ import {
   NodeFailure,
   type PlanNode,
   type PlanStage,
+  resolveWorkflowInputs,
   type SwitchNode,
   type Workflow,
   WorkflowError,
@@ -427,8 +428,29 @@ const uniqueDeclarations = (
   return [...seen.values()];
 };
 
+const checkTrigger = (workflow: Workflow): void => {
+  if (workflow.trigger === undefined) return;
+  // An unattended run needs its permission mode, and the Codex provider has none to launch in.
+  if (workflow.agent !== "claude") {
+    throw new WorkflowError(
+      "schema",
+      "trigger: a trigger runs its workflow unattended in permissionMode, which only agent: claude supports",
+      "trigger",
+    );
+  }
+  try {
+    resolveWorkflowInputs(workflow.inputs, workflow.trigger.inputs);
+  } catch (error) {
+    if (!(error instanceof WorkflowError)) throw error;
+    throw new WorkflowError("input", `trigger.${error.message}`, "trigger.inputs", {
+      cause: error,
+    });
+  }
+};
+
 async function compileFile(path: string, at: Compiling): Promise<WorkflowPlan> {
   const workflow = await readWorkflowFile(path);
+  checkTrigger(workflow);
   const nodes = await compileNodes(validateScope(workflow.nodes, ""), at);
   const size = countNodes(nodes);
   if (size > MAX_EXPANDED_NODES) {
@@ -446,6 +468,7 @@ async function compileFile(path: string, at: Compiling): Promise<WorkflowPlan> {
     doctor,
     notifier: workflow.notifier,
     samskara: workflow.samskara,
+    trigger: workflow.trigger,
     nodes,
   });
 }
@@ -556,6 +579,18 @@ export const compileWorkflow = async (
   const plan = await compileFile(absolute, { chain: [absolute], cwd, parents: [], config });
   checkArtifacts(plan.nodes, new Set(), "");
   return plan;
+};
+
+// An explicit config file must load. A broken checkout config is the doctor's to report, so
+// compile goes on without it, as `yok run` does.
+export const compileWithProjectConfig = async (
+  path: string,
+  cwd: string,
+  configFile: string | null,
+): Promise<WorkflowPlan> => {
+  const config = await loadProjectConfig(configFile, cwd);
+  if (!config.ok && configFile !== null) throw new Error(config.error);
+  return compileWorkflow(path, config.ok ? { cwd, config: config.value } : { cwd });
 };
 
 // The workflow `orchestrate init` copied into the run's folder, compiled with the run's config.

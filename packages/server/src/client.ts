@@ -4,11 +4,13 @@ import { hc } from "hono/client";
 import type { SuccessStatusCode } from "hono/utils/http-status";
 import type { AppType } from "./app.ts";
 import {
+  type AddTriggerBody,
   type ApiError,
   ErrorBodySchema,
   type ResumeRunBody,
   type StartRunRequest,
   socketPath,
+  type TriggerRef,
 } from "./protocol.ts";
 
 export type YokClientOptions = Readonly<{ home?: string; log?: ILogger }>;
@@ -82,6 +84,11 @@ export const createYokClient = ({ home = yokHome(), log = noopLogger }: YokClien
       unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
+    addTrigger: (body: AddTriggerBody) => unwrap(api.triggers.$post({ json: body })),
+    listTriggers: () => unwrap(api.triggers.$get()),
+    fireTrigger: (ref: TriggerRef) => unwrap(api.triggers.fire.$post({ json: ref })),
+    triggerLog: (ref: TriggerRef) => unwrap(api.triggers.log.$get({ query: ref })),
+    removeTrigger: (ref: TriggerRef) => unwrap(api.triggers.$delete({ query: ref })),
   };
 };
 

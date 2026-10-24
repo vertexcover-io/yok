@@ -22,7 +22,7 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 ```
 
-Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
+Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, `envFile`, and `trigger` (see [Trigger](#trigger)). A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
 
 `yok verify workflows/task.yaml` compiles a workflow and prints the first error, so you can check a change without starting a run.
 
@@ -219,6 +219,28 @@ The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has
 ## Doctor
 
 `yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. `yok run` runs the same checks first and stops on any failure. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
+
+## Trigger
+
+A cron schedule that starts a workflow by itself, with nobody attached. The workflow declares it:
+
+```yaml
+name: daily-digest
+trigger:
+  cron: "0 9 * * 1-5"          # 5 fields, no seconds
+  timezone: Asia/Kolkata       # optional; default is the server's zone
+  permissionMode: auto         # optional; default auto, so no run waits on a permission menu
+  inputs:
+    prompt: "Summarise yesterday's merged PRs"
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - ...
+```
+
+Compile checks the block: the cron must parse and fire, the zone must be real, `trigger.inputs` must fit the workflow's `inputs`, and the workflow's `agent` must be `claude`, since Codex has no permission mode to launch in. `yok trigger add PATH` registers it for the repo you are in; adding the same file again updates it, and a second file with the same workflow `name` is refused. `list`, `fire NAME` (run it now), `log NAME` (last 20 firings) and `rm NAME` do the rest. The trigger's name is the workflow's `name`, unique per repo.
+
+The server keeps only the schedule, in `triggers.json` in the yok home, so an edited `cron` or `timezone` takes effect only after you run `yok trigger add` again, while edited `inputs` or `permissionMode` apply at the next firing. Every 15 seconds it starts each trigger whose `nextFireAt` has passed, the same way `yok run` would: compile the workflow file again, run the doctor, build the env, then launch a run named `NAME-YYYYMMDD-HHMMSS`. Each firing is one line in `trigger-fires.jsonl`: `started` with the run id, `skipped` (the previous run's agent is still working, or started under 5 minutes ago and has not named its run yet; the slot is over 6h old; or earlier slots were slept through), or `failed` with the reason, such as a doctor check. After a sleep, only the latest missed slot fires. Triggers fire only while the server is up. [ADR 0023](../adr/0023-the-yok-server-fires-cron-triggers-from-a-15-second-tick.md).
 
 ## Not built yet
 

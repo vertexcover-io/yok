@@ -1,15 +1,28 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  builtInChecks,
   clearDeadSwitchLocks,
+  type DoctorReport,
+  loadStartEnv,
   orchestrateArgv,
+  resolveWorkflowInputs,
+  runDoctor,
+  verdict,
   type WorkflowAgent,
   WorkflowAgentSchema,
+  WorkflowError,
+  type WorkflowPlan,
+  workflowChecks,
 } from "@yok/core";
 import {
+  type Check,
+  createGit,
   type Event,
   type IAgentProvider,
+  type ILogger,
   type ITerminalHost,
+  type JsonObject,
   loadStartConfig,
   type ResolvedTiers,
   type Result,
@@ -41,6 +54,7 @@ import {
   ResumeRunBodySchema,
   type StartRunBody,
   StartRunBodySchema,
+  type StartRunRequest,
 } from "./protocol.ts";
 
 export type RunDeps = Readonly<{
@@ -50,6 +64,77 @@ export type RunDeps = Readonly<{
   home: string;
   viewerOrigin: string;
 }>;
+
+export const blockedText = (report: DoctorReport): string =>
+  [
+    verdict(report),
+    ...report.results
+      .filter((row) => row.status === "fail")
+      .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
+  ].join("\n");
+
+const checkInputs = (plan: WorkflowPlan, inputs: JsonObject): Result<null> => {
+  try {
+    resolveWorkflowInputs(plan.inputs, inputs);
+    return { ok: true, value: null };
+  } catch (error) {
+    if (error instanceof WorkflowError)
+      return { ok: false, error: `${error.code}: ${error.message}` };
+    throw error;
+  }
+};
+
+export type PrepareRunOptions = Readonly<{
+  plan: WorkflowPlan;
+  workflowPath: string;
+  cwd: string;
+  config: string | null;
+  inputs: JsonObject;
+  // the agent's own checks, which only the caller's runtime knows
+  checks: readonly Check[];
+  log: ILogger;
+}>;
+
+// Everything `yok run` checks before it asks the server for a run: the inputs, the doctor and the
+// session's env. The reply is the request to send, or why the run cannot start.
+export const prepareRun = async ({
+  plan,
+  workflowPath,
+  cwd,
+  config,
+  inputs,
+  checks,
+  log,
+}: PrepareRunOptions): Promise<Result<StartRunRequest & { cwd: string }, string>> => {
+  const checked = checkInputs(plan, inputs);
+  if (!checked.ok) return checked;
+  // Built once: the doctor's env checks and the session see the same values.
+  const env = await loadStartEnv(config, cwd, plan);
+  const report = await runDoctor({
+    cwd,
+    config: config ?? undefined,
+    extraChecks: [...checks, ...workflowChecks(plan.doctor, env), ...builtInChecks(plan, env)],
+    log,
+  });
+  if (verdict(report).startsWith("BLOCKED")) return { ok: false, error: blockedText(report) };
+  const repoRoot = await createGit().repoRoot(cwd);
+  if (repoRoot === null) return { ok: false, error: "not inside a git repository" };
+  if (!env.ok) return { ok: false, error: env.error };
+  return {
+    ok: true,
+    value: {
+      workflow: plan.name,
+      workflowPath,
+      inputs,
+      cwd: repoRoot,
+      agent: plan.agent,
+      env: env.value,
+      tiers: plan.tiers,
+      policies: { workflow: plan.policies },
+      ...(config === null ? {} : { config }),
+    },
+  };
+};
 
 const viewUrl = (deps: RunDeps, runId: string): string => `${deps.viewerOrigin}/runs/${runId}`;
 
@@ -66,12 +151,30 @@ const resolveRunSettings = async (
   return { ok: true, value: { tiers: tiers.value, policies } };
 };
 
-const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
-  const log = c.get("log").child({ component: "runs" });
-  const { workflow, workflowPath, inputs, cwd, name, agent, config } = body;
+export type LaunchReply = Readonly<{
+  run: WorkflowRun;
+  attach: readonly string[];
+  view: string;
+}>;
+export type LaunchError = Readonly<{
+  status: 400 | 502;
+  code: "bad-request" | "agent-failed";
+  message: string;
+}>;
+
+// Starts the run's agent session; the /runs route and the trigger scheduler both call it.
+export const launchRun = async (
+  body: StartRunBody,
+  deps: RunDeps,
+  log: ILogger,
+): Promise<Result<LaunchReply, LaunchError>> => {
+  const { workflow, workflowPath, inputs, cwd, name, agent, config, permissionMode } = body;
 
   if (!existsSync(workflowPath) || !existsSync(cwd)) {
-    return errorResponse(c, 400, "bad-request", "workflowPath and cwd must exist");
+    return {
+      ok: false,
+      error: { status: 400, code: "bad-request", message: "workflowPath and cwd must exist" },
+    };
   }
 
   const resolved = await resolveRunSettings(body);
@@ -80,7 +183,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
       { err: resolved.error, workflow, agent },
       "run not started: its tiers do not resolve",
     );
-    return errorResponse(c, 400, "bad-request", resolved.error);
+    return { ok: false, error: { status: 400, code: "bad-request", message: resolved.error } };
   }
   const { tiers, policies } = resolved.value;
 
@@ -101,6 +204,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     config: config ?? null,
     tiers,
     policies,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
     createdAt: new Date().toISOString(),
   };
   await deps.registry.addRun(pending);
@@ -115,6 +219,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
       ...tierLaunch(tiers === null ? null : (tiers.models[tiers.default] ?? null)),
+      ...(permissionMode === undefined ? {} : { permissionMode }),
     })
     .catch(async (error: unknown) => {
       await deps.registry.removeRun(id);
@@ -126,14 +231,29 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
       { err: String(launched.error) },
       "run not started: the agent session failed to launch",
     );
-    return errorResponse(c, 502, "agent-failed", String(launched.error));
+    return {
+      ok: false,
+      error: { status: 502, code: "agent-failed", message: String(launched.error) },
+    };
   }
 
   const { terminalName, terminal } = launched.value;
   await deps.registry.setTerminal(id, terminalName);
   const run = (await deps.registry.findRun(id)) ?? { ...pending, terminal: terminalName };
   runLog.info({ workflow, cwd, agent, terminalName }, "run started");
-  return c.json({ run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) }, 201);
+  return {
+    ok: true,
+    value: { run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) },
+  };
+};
+
+const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
+  const launched = await launchRun(body, deps, c.get("log").child({ component: "runs" }));
+  if (!launched.ok) {
+    const { status, code, message } = launched.error;
+    return errorResponse(c, status, code, message);
+  }
+  return c.json(launched.value, 201);
 };
 
 const conflict = (c: Context<{ Variables: Vars }>, message: string) =>
@@ -206,6 +326,7 @@ const resumeRun = async (
     orchestrateArgv: orchestrateArgv(),
     continueSession: { id: session.sessionId, terminalName: run.terminal },
     ...tierLaunch(current),
+    ...(run.permissionMode === undefined ? {} : { permissionMode: run.permissionMode }),
   });
   // The run is left as it was: removing it, as a failed start does, would lose it.
   if (!launched.ok) {

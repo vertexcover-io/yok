@@ -452,7 +452,7 @@ esac
     const cwd = tempRepo({
       "orchestrate.config.json": '{ "version": 2 }\n',
       "ok.yaml":
-        'name: ok\nnodes:\n  - id: a\n    type: exec\n    runtime: sh\n    script: "true"\n    input: null\n',
+        'name: ok\ninputs:\n  prompt: { type: string }\nnodes:\n  - id: a\n    type: exec\n    runtime: sh\n    script: "true"\n    input: null\n',
     });
 
     const run = runBinary(["run", "ok.yaml", "--prompt", "hi", "--no-open"], {

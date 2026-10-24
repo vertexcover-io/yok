@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
+import { PermissionModeSchema } from "./agent.ts";
 import {
   AbsolutePathSchema,
   JsonObjectSchema,
@@ -11,7 +10,7 @@ import {
   SessionRefSchema,
   SlugSchema,
 } from "./contracts.ts";
-import { readIfExists, withLock } from "./files.ts";
+import { readIfExists, updateJsonFile } from "./files.ts";
 import { type ILogger, noopLogger } from "./logger.ts";
 import { SavedPoliciesSchema } from "./policies.ts";
 import { isCompiled } from "./process.ts";
@@ -42,6 +41,8 @@ export const WorkflowRunSchema = z.strictObject({
   tiers: ResolvedTiersSchema.nullable(),
   // the run's merged policies, resolved once by the server at launch; init copies them into state
   policies: SavedPoliciesSchema.optional(),
+  // set only for a trigger's run; every session the run starts later launches in it too
+  permissionMode: PermissionModeSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
@@ -139,20 +140,12 @@ export const createRegistryReader = (path: string): RegistryReader => ({
 export const createRegistry = (path: string, parentLog: ILogger = noopLogger): Registry => {
   const log = parentLog.child({ component: "registry", path });
 
-  // One change at a time: the lock is held from reading the file until the new one is renamed
-  // in, so two requests cannot both change the same old copy. The rename means the file is
-  // never half-written.
-  const update = (change: Change): Promise<boolean> =>
-    withLock(`${path}.lock`, async () => {
-      const current = await readRegistry(path);
-      const next = change(current);
-      if (next === current) return false;
-      const tempPath = `${path}.tmp-${randomUUID()}`;
-      await writeFile(tempPath, JSON.stringify(next, null, 2));
-      await rename(tempPath, path);
-      log.debug({ runs: Object.keys(next.runs).length }, "registry written");
-      return true;
-    });
+  const update = async (change: Change): Promise<boolean> => {
+    const { before, after } = await updateJsonFile(path, readRegistry, change);
+    if (after === before) return false;
+    log.debug({ runs: Object.keys(after.runs).length }, "registry written");
+    return true;
+  };
 
   return {
     ...createRegistryReader(path),

@@ -278,6 +278,78 @@ ${script("b", "\n    dependsOn: [a]").slice(1)}`);
   });
 });
 
+describe("workflow trigger", () => {
+  const PROMPT_INPUT = "inputs:\n  prompt: { type: string, required: true }\n";
+  const triggered = (trigger: string): string =>
+    `${PROMPT_INPUT}trigger:\n${trigger}${workflow(script("a"))}`;
+
+  test("a trigger with cron, timezone and inputs reaches the plan with permissionMode auto", async () => {
+    const plan = await compile(
+      triggered('  cron: "0 9 * * 1-5"\n  timezone: Asia/Kolkata\n  inputs: { prompt: digest }\n'),
+    );
+    expect(plan.trigger).toEqual({
+      cron: "0 9 * * 1-5",
+      timezone: "Asia/Kolkata",
+      permissionMode: "auto",
+      inputs: { prompt: "digest" },
+    });
+  });
+
+  test("a trigger on a codex workflow is a schema error at trigger, since Codex has no permission mode to run it in", async () => {
+    const error = await rejection(
+      `agent: codex\n${triggered('  cron: "0 9 * * *"\n  inputs: { prompt: x }\n')}`,
+    );
+    expect(error.code).toBe("schema");
+    expect(error.path).toBe("trigger");
+    expect(error.message).toContain("agent: claude");
+  });
+
+  test("a workflow with no trigger block compiles with no trigger", async () => {
+    expect((await compile(workflow(script("a")))).trigger).toBeUndefined();
+  });
+
+  test.each([
+    [
+      "a cron that does not parse",
+      '  cron: "every day"\n  inputs: { prompt: x }\n',
+      "trigger.cron",
+    ],
+    [
+      "a 6-part cron with seconds",
+      '  cron: "0 0 9 * * *"\n  inputs: { prompt: x }\n',
+      "trigger.cron",
+    ],
+    [
+      "a cron for February 30, which never comes",
+      '  cron: "0 9 30 2 *"\n  inputs: { prompt: x }\n',
+      "trigger.cron",
+    ],
+    [
+      "a timezone that is not a real zone",
+      '  cron: "0 9 * * *"\n  timezone: Mars/Olympus\n  inputs: { prompt: x }\n',
+      "trigger.timezone",
+    ],
+  ])("%s is a schema error at its field", async (_label, trigger, path) => {
+    const error = await rejection(triggered(trigger));
+    expect(error.code).toBe("schema");
+    expect(error.path).toBe(path);
+  });
+
+  test.each([
+    ["missing the required prompt", "  inputs: {}\n", "trigger.inputs.prompt"],
+    ["giving a number for the string prompt", "  inputs: { prompt: 3 }\n", "trigger.inputs.prompt"],
+    [
+      "giving an input the workflow does not declare",
+      "  inputs: { prompt: x, extra: y }\n",
+      "trigger.inputs",
+    ],
+  ])("trigger inputs %s is an input error naming the input", async (_label, inputs, where) => {
+    const error = await rejection(triggered(`  cron: "0 9 * * *"\n${inputs}`));
+    expect(error.code).toBe("input");
+    expect(error.message).toStartWith(`${where}:`);
+  });
+});
+
 describe("evaluate", () => {
   test("SC12 — a whole-value expression keeps its type; an embedded one becomes text", () => {
     const scope: Scope = { inputs: { count: 3, tags: ["a"] }, nodes: {} };
