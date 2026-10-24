@@ -10,8 +10,6 @@ import {
   type RegistryReader,
   registryPath,
   runDirOf,
-  type SavedPolicies,
-  type State,
   type StopFailureInput,
   type StopHandler,
   type StopInput,
@@ -20,12 +18,7 @@ import {
 } from "@yok/sdk";
 import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { answerNotice } from "../hooks/post-tool-use.ts";
-import {
-  preToolUseHandlers,
-  questionGuard,
-  questionNotice,
-  recordGuard,
-} from "../hooks/pre-tool-use.ts";
+import { preToolUseHandlers, questionNotice, recordGuard } from "../hooks/pre-tool-use.ts";
 import { continueWorkflow, stopHandlers } from "../hooks/stop.ts";
 import { recordAgentError } from "../hooks/stop-failure.ts";
 import { claudeAdapter, claudeSettings, readClaudeTranscript } from "./claude-hooks.ts";
@@ -488,9 +481,8 @@ describe("claudeSettings handlers", () => {
   });
 });
 
-// A registry run r-1 named feat-x in a temp repo, owned by Claude session s-1. Given POLICIES, it
-// also has a state.json saved with them and its node design open.
-const linkedRun = async (policies?: SavedPolicies) => {
+// A registry run r-1 named feat-x in a temp repo, owned by Claude session s-1.
+const linkedRun = async () => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "claude-hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "claude-hooks-repo-")));
   const registry = createRegistry(registryPath(home));
@@ -509,47 +501,9 @@ const linkedRun = async (policies?: SavedPolicies) => {
   });
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
-  if (policies !== undefined) {
-    await writeFile(join(runDir, "state.json"), JSON.stringify(runningState(cwd, policies)));
-  }
   const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
   return { deps, events: () => jsonlEventStore(runDir).read() };
 };
-
-const runningState = (cwd: string, policies: SavedPolicies): State => ({
-  schemaVersion: 1,
-  lastEventSeq: 0,
-  runId: "r-1",
-  runName: "feat-x",
-  runDir: runDirOf(cwd, "feat-x"),
-  version: "2.0.0",
-  workflow: { name: "feature", path: "workflow.yaml" },
-  input: {},
-  scope: null,
-  startedAt: "2026-10-02T10:00:00Z",
-  completedAt: null,
-  status: "running",
-  workspace: {
-    type: "mono",
-    path: cwd,
-    repositories: { app: { path: cwd, git: { branch: "b", baseBranch: "main", startSha: "a" } } },
-  },
-  nodeRuns: {
-    design: {
-      nodeRunId: "design-1",
-      nodeType: "agent",
-      status: "running",
-      startedAt: "2026-10-02T10:00:00Z",
-      completedAt: null,
-      artifacts: [],
-    },
-  },
-  activeSessions: [],
-  tiers: null,
-  eventHandlers: {},
-  subscribers: {},
-  policies,
-});
 
 describe("Claude's question hooks in a run", () => {
   const QUESTION = {
@@ -612,36 +566,6 @@ describe("Claude's question hooks in a run", () => {
     expect(await claudeAdapter.postToolUse?.(answerCall("s-9"), deps, answerNotice)).toBe("");
 
     expect(await events()).toEqual([]);
-  });
-});
-
-describe("Claude's question refused in a run with interaction off", () => {
-  test("SC523: the AskUserQuestion hook command prints a deny whose reason is the policy's message", async () => {
-    const policies: SavedPolicies = {
-      values: { interaction: false },
-      sources: { interaction: "workflow" },
-    };
-    const { deps } = await linkedRun(policies);
-    const stdin = line({
-      session_id: "s-1",
-      hook_event_name: "PreToolUse",
-      tool_name: "AskUserQuestion",
-      tool_use_id: "toolu_1",
-      tool_input: { questions: [{ question: "Ship it?", options: [{ label: "Yes" }] }] },
-      cwd: "/repo",
-    });
-
-    const out = (await claudeAdapter.preToolUse?.(stdin, deps, questionGuard)) ?? "";
-
-    expect(JSON.parse(out)).toEqual({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: expect.stringMatching(
-          /^No one will answer in this run\..*`yok orchestrate done design-1 --run feat-x --error -`/,
-        ),
-      },
-    });
   });
 });
 

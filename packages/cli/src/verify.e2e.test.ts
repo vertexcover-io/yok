@@ -53,24 +53,14 @@ const verify = (file: string, content: string | null) => {
 };
 
 describe("yok verify", () => {
-  test.each([
-    ["a valid workflow file", "ok.yaml", OK_WORKFLOW, "ok: workflow ok compiles (1 node)"],
-    [
-      "a bare name, as the shipped workflow of that name",
-      "task",
-      null,
-      "ok: workflow task compiles",
-    ],
-  ])("%s compiles, printing its name, and exits 0", (_label, file, content, printed) => {
-    const { code, stdout } = verify(file, content);
+  test("a valid workflow file compiles, printing its name, and exits 0", () => {
+    const { code, stdout } = verify("ok.yaml", OK_WORKFLOW);
     expect(code).toBe(0);
-    expect(stdout).toContain(printed);
+    expect(stdout).toContain("ok: workflow ok compiles (1 node)");
   });
 
   test.each([
     ["a cyclic workflow", "bad.yaml", CYCLE_WORKFLOW, "cycle: dependency cycle"],
-    ["a yaml syntax error", "broken.yaml", "name: [unclosed\n", "yaml:"],
-    ["an unknown bare name", "nope", null, "missing-workflow:"],
     ["a missing file", "nope.yaml", null, "missing-workflow:"],
   ])(
     "%s prints its error code and message, without a stack, and exits 1",

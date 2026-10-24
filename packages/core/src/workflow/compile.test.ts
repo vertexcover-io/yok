@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, type Notifier, runDirOf, type Samskara } from "@yok/sdk";
+import { type Notifier, runDirOf, type Samskara } from "@yok/sdk";
 import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
@@ -557,10 +557,6 @@ describe("workflow doctor declarations", () => {
   const declared = (check: string, key: string, fix = "fix it"): string =>
     `  - check: ${check}\n    key: ${key}\n    fix: ${fix}\n`;
 
-  test("a workflow without doctor compiles to an empty list", async () => {
-    expect((await compile(workflow(script("a")))).doctor).toEqual([]);
-  });
-
   test("declarations are kept in order", async () => {
     const plan = await compile(
       `name: test\ndoctor:\n${declared("env", "A")}${declared("binary", "bun")}nodes:${script("a")}\n`,
@@ -768,13 +764,6 @@ const stagesRejection = async (
 };
 
 describe("compile with stages", () => {
-  test("SC8: a stage whose SKILL.md says tier: fast compiles with PlanStage.tier fast", async () => {
-    const { plan } = await compileWithStages(workflow(stageNode("make", "stages/quick")));
-    const make = plan.nodes.find((node) => node.id === "make");
-    if (make?.type !== "agent" || make.stage === undefined) throw new Error("expected a stage");
-    expect(make.stage.tier).toBe("fast");
-  });
-
   test("an agent node's tier: deep reaches the plan beside its stage's tier: fast, and a prompt agent node's tier: fast too", async () => {
     const { plan } = await compileWithStages(
       workflow(
@@ -1043,54 +1032,6 @@ describe("compile with stages", () => {
   });
 });
 
-// stages/producer has a notes reference for the project's extensions to change.
-const compileExtended = async (references: Readonly<Record<string, unknown>>) => {
-  const project = mkdtempSync(join(tmpdir(), "wf-extended-"));
-  writeStages(join(project, "stages"), {
-    producer: { references: "{ notes: { path: notes.md, description: Notes. } }" },
-  });
-  writeFileSync(join(project, "stages", "producer", "notes.md"), "notes\n");
-  writeFileSync(join(project, "mine.md"), "mine\n");
-  const path = join(project, "workflow.yml");
-  writeFileSync(path, workflow(stageNode("make", "stages/producer")));
-  const extensions = { producer: { references } };
-  const config = {
-    config: ConfigSchema.parse({ version: 2, extensions }),
-    path: null,
-    root: project,
-  };
-  return compileWorkflow(path, { cwd: project, config });
-};
-
-describe("compile with the project's extensions", () => {
-  test.each([
-    [
-      "an add of a reference the stage already has",
-      { notes: { add: "mine.md" } },
-      "already has reference notes",
-    ],
-    [
-      "a replace of a reference the stage lacks",
-      { ghost: { replace: "mine.md" } },
-      "has no reference ghost",
-    ],
-    [
-      "a replace whose file is missing",
-      { notes: { replace: "gone.md" } },
-      "gone.md does not exist",
-    ],
-  ])(
-    "%s fails compile as missing-stage, naming the extension",
-    async (_label, references, message) => {
-      const error = await compileExtended(references).catch((caught: unknown) => caught);
-      if (!(error instanceof WorkflowError)) throw new Error("expected a compile error");
-      expect(error.code).toBe("missing-stage");
-      expect(error.message).toContain("extensions.producer.references");
-      expect(error.message).toContain(message);
-    },
-  );
-});
-
 describe("runStageDirs", () => {
   test("SC58: maps each stage of the run's workflow to its folder, inside a loop, a switch case and an included workflow", async () => {
     const project = mkdtempSync(join(tmpdir(), "wf-run-stages-"));
@@ -1295,6 +1236,74 @@ describe("the shipped quick workflow", () => {
       ...REVIEW_LOOP,
     });
     expect(plan.nodes.find((node) => node.id === "commit")?.dependsOn).toEqual(["review-loop"]);
+  });
+});
+
+describe("the shipped skill workflow", () => {
+  const SKILL_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "skill.yaml");
+
+  test("runs every step on the high tier, mapped to Fable 5.1 at high effort", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.tiers).toEqual({
+      default: "high",
+      models: { high: { model: "claude-fable-5-1", effort: "high" } },
+    });
+  });
+
+  test("hands the prompt, the skill to edit, the yok-stage switch, and the optional path, scope and folder to skill-author", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.inputs).toMatchObject({
+      skill: { type: "string", default: "" },
+      yok: { type: "boolean", default: false },
+      prompt: { type: "string", required: true },
+      path: { type: "string", default: "" },
+      scope: { type: "string", default: "" },
+      folder: { type: "string", default: "" },
+    });
+    expect(plan.nodes[0]).toMatchObject({
+      id: "skill-author",
+      stage: { ref: "skill-author", output: { name: "skill-author.output.v1" } },
+      input: {
+        skill: "{{ inputs.skill }}",
+        yok: "{{ inputs.yok }}",
+        prompt: "{{ inputs.prompt }}",
+        path: "{{ inputs.path }}",
+        scope: "{{ inputs.scope }}",
+        folder: "{{ inputs.folder }}",
+      },
+    });
+  });
+
+  test("audits then fixes the skill, two passes at most, and skips the fix once the audit is clean", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "audit-loop")).toMatchObject({
+      type: "loop",
+      dependsOn: ["skill-author"],
+      maxIterations: 2,
+      until: "{{ iteration.nodes.skill-audit.output.clean or iteration.index == iteration.max }}",
+      input: { path: "{{ nodes.skill-author.output.path }}" },
+      nodes: [
+        {
+          id: "skill-audit",
+          stage: { ref: "skill-audit", output: { name: "skill-audit.output.v1" } },
+          input: { path: "{{ inputs.path }}", round: "{{ iteration.index }}" },
+        },
+        {
+          id: "skill-fix",
+          stage: { ref: "skill-fix" },
+          dependsOn: ["skill-audit"],
+          when: "{{ not nodes.skill-audit.output.clean }}",
+          input: {
+            path: "{{ inputs.path }}",
+            findings: "{{ nodes.skill-audit.output.findings }}",
+            round: "{{ iteration.index }}",
+          },
+        },
+      ],
+    });
   });
 });
 

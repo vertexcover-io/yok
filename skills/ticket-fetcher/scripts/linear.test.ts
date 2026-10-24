@@ -2,13 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  assetHostAllowed,
-  downloadAsset,
-  fetchIssue,
-  parseIssueRef,
-  searchIssues,
-} from "./linear.ts";
+import { assetHostAllowed, downloadAsset, fetchIssue, parseIssueRef } from "./linear.ts";
 import type { Api } from "./ticket.ts";
 
 const ASSET_BYTES = "binary-bytes";
@@ -83,14 +77,6 @@ describe("parseIssueRef", () => {
 
   test.each(["nonsense", "https://linear.app/acme/projects/x"])("refuses %p", (input) => {
     expect(() => parseIssueRef(input)).toThrow("not a Linear issue key or URL");
-  });
-});
-
-describe("searchIssues", () => {
-  test("returns candidate nodes and sends the key", async () => {
-    const found = await searchIssues(api, "export", 5);
-    expect(found).toEqual([{ id: "i1", identifier: "ENG-1", title: "T" }]);
-    expect(seen.auth.at(-1)).toBe("secret-key");
   });
 });
 

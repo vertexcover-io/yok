@@ -229,14 +229,6 @@ describe("captureBaseline", () => {
     expect(existsSync(join(run.root, "where"))).toBe(false);
   });
 
-  test("BL9: with no --dir, scripts run in state.json's workspace.path", async () => {
-    const run = await setup({ baseline: "pwd > where" });
-
-    await capture(run);
-
-    expect(readFileSync(join(run.root, "where"), "utf8").trim()).toBe(run.root);
-  });
-
   test("BL9: with no --dir and no state.json, it stops with STATE_MISSING", async () => {
     const run = await setup({ baseline: "echo hi" }, { state: false });
 

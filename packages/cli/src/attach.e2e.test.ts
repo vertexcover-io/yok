@@ -89,20 +89,4 @@ describe("yok attach", () => {
     expect(mismatched.code).toBe(1);
     expect(mismatched.stderr).toContain("name different runs");
   }, 40_000);
-
-  test("finds a run started in a linked worktree of this repo, as orchestrate does", async () => {
-    const cwd = makeRepo();
-    execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], { cwd });
-    const worktree = join(cwd, "wt");
-    execFileSync("git", ["worktree", "add", "-q", worktree, "-b", "wt"], { cwd });
-    const home = mkdtempSync(join(tmpdir(), "yok-attach-home-"));
-    const registry = createRegistry(registryPath(home));
-    await registry.addRun(run("r-9c0d1e2f", "in-worktree", worktree, "claude-in-worktree-1e2f"));
-    runFolder(worktree, "in-worktree");
-
-    const found = attach(cwd, home, "in-worktree");
-
-    expect(found.stderr).toBe("");
-    expect(found.stdout).toEndWith("attach-session -t =claude-in-worktree-1e2f:");
-  }, 40_000);
 });

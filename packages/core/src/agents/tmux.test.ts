@@ -67,20 +67,6 @@ const readLines = (path: string): Array<Record<string, unknown>> =>
         .map((line) => JSON.parse(line) as Record<string, unknown>)
     : [];
 
-describe("tmux.conf", () => {
-  test("SC7a: holds the core settings, and pbcopy only where pbcopy exists", () => {
-    for (const line of [
-      "set -g prefix None",
-      "set -g status off",
-      "set -g allow-passthrough on",
-      "bind -n 'C-\\' detach-client",
-      'if-shell "command -v pbcopy" "set -s copy-command pbcopy"',
-    ]) {
-      expect(TMUX_CONFIG).toContain(line);
-    }
-  });
-});
-
 describe("tmuxTerminal.sendText logging", () => {
   test("SC38: the debug line has the text's length, not the text", async () => {
     const { log, lines } = captureLogger();
@@ -349,6 +335,7 @@ describe("tmuxHost against a real tmux", () => {
 
     expect(await show("prefix")).toBe("prefix None");
     expect(await show("status")).toBe("status off");
+    expect(await show("allow-passthrough")).toBe("allow-passthrough on");
 
     const rootKeys = (
       await exec("tmux", ["-L", socketName, "list-keys", "-T", "root"], process.cwd())

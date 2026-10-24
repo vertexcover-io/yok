@@ -6,13 +6,18 @@ export const QaOutputSchema = z
     status: z.enum(["PASS", "PARTIAL", "FAIL", "BLOCKED"]),
     reason: NonEmptyStringSchema.optional(),
     report: NonEmptyStringSchema.nullable(),
-    gaps: z.array(
-      z.strictObject({
-        scenario: NonEmptyStringSchema,
-        req: NonEmptyStringSchema,
-        mechanism: NonEmptyStringSchema,
+    // one entry per requirement the coverage table marks NOT VERIFIED, so the PR and Asana list each
+    gaps: z
+      .array(
+        z.strictObject({
+          scenario: NonEmptyStringSchema,
+          req: NonEmptyStringSchema,
+          mechanism: NonEmptyStringSchema,
+        }),
+      )
+      .refine((gaps) => new Set(gaps.map((gap) => gap.req)).size === gaps.length, {
+        message: "each gap req appears once",
       }),
-    ),
     // the fix stage records one result per id, so two bugs sharing one could never both be closed
     bugs: z
       .array(FixRequestSchema.extend({ askUser: z.boolean() }))
@@ -33,6 +38,16 @@ export const QaOutputSchema = z
   .refine((output) => output.status !== "FAIL" || output.bugs.length > 0, {
     path: ["bugs"],
     message: "a FAIL names at least one bug for the fix round",
+  })
+  // A bug's scenario is a FAILURE, which makes the derived verdict FAIL; any other verdict that
+  // carries one would ship it unfixed, since only a FAIL enters the fix round.
+  .refine((output) => output.status === "FAIL" || output.bugs.length === 0, {
+    path: ["bugs"],
+    message: "only a FAIL names bugs: a bug makes the derived verdict FAIL",
+  })
+  .refine((output) => output.status !== "PARTIAL" || output.gaps.length > 0, {
+    path: ["gaps"],
+    message: "a PARTIAL names at least one gap it could not verify",
   });
 
 export const schemas = { "qa.output.v1": QaOutputSchema };

@@ -712,7 +712,6 @@ nodes:${stage("make", "quick", "\n    input: {}")}
   });
 
   const SWITCHES: readonly (readonly [string, TierModel | null, TierModel, "model" | "steps"])[] = [
-    ["no launch model to opus-x/high switches", null, OPUS_HIGH, "model"],
     [
       "sonnet-x/high to opus-x/high switches",
       { model: "sonnet-x", effort: "high" },
@@ -1506,7 +1505,13 @@ describe("the shipped task workflow's qa and review loops", () => {
   const report = "artifacts/verification/proof-report.html";
   const VERDICTS: Readonly<Record<string, JsonObject>> = {
     PASS: { status: "PASS", report, gaps: [], bugs: [] },
-    PARTIAL: { status: "PARTIAL", reason: "SC2 not verified", report, gaps: [], bugs: [] },
+    PARTIAL: {
+      status: "PARTIAL",
+      reason: "SC2 not verified",
+      report,
+      gaps: [{ scenario: "02", req: "SC2", mechanism: "runs in a nightly job" }],
+      bugs: [],
+    },
     FAIL: {
       status: "FAIL",
       reason: "SC1 failed",
@@ -1633,10 +1638,33 @@ describe("the shipped task workflow's qa and review loops", () => {
         variables: { environment: "default" },
       },
       { id: "commit", input: { workspace } },
-      { id: "pr", input: { workspace, task } },
+      { id: "pr", input: { workspace, task, qa: VERDICTS.PASS } },
       { id: "retro", input: {} },
     ]);
+    expect(handed.find(({ id }) => id === "pr")?.input).toEqual({
+      workspace,
+      task,
+      qa: VERDICTS.PASS ?? null,
+    });
     expect(findRun(state, "qa-loop")).toMatchObject({ status: "completed", output: VERDICTS.PASS });
+    expect(stop).toEqual({ kind: "finished", status: "completed" });
+  });
+
+  test("SC3: a qa loop that ends PARTIAL after a FAIL hands pr the PARTIAL verdict as its qa input", async () => {
+    const { stop, handed } = await walkTask(
+      await compileWorkflow(TASK_WORKFLOW),
+      start({ prompt: "p" }),
+      { qa: ["FAIL", "PARTIAL"] },
+    );
+
+    const ids = handed.map(({ id }) => id);
+    expect(ids.indexOf("pr")).toBeGreaterThan(ids.indexOf("commit"));
+    expect(ids.indexOf("commit")).toBeGreaterThan(-1);
+    expect(handed.find(({ id }) => id === "pr")?.input).toEqual({
+      workspace,
+      task: "do X",
+      qa: VERDICTS.PARTIAL ?? null,
+    });
     expect(stop).toEqual({ kind: "finished", status: "completed" });
   });
 

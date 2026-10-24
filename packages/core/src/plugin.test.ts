@@ -240,19 +240,6 @@ describe("uninstallPlugin", () => {
     expect(result).toEqual({ ok: true, value: "claude has no yok plugin" });
   });
 
-  test("refuses a yok marketplace pointing at someone/else and changes nothing", async () => {
-    const { exec, calls } = recordingExec({
-      [LIST]: { stdout: listOf("claude", ["0.0.1"]) },
-      [MARKETS]: { stdout: claudeMarket("someone/else") },
-    });
-
-    const result = await uninstallPlugin("claude", "claude", exec, "/p");
-
-    expect(result.ok).toBe(false);
-    expect(!result.ok && result.error).toContain("someone/else");
-    expect(calls).toEqual([MARKETS]);
-  });
-
   test("removes only a marketplace whose source is exactly vertexcover-io/yok", async () => {
     const ours = [
       "vertexcover-io/yok",

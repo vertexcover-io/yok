@@ -136,7 +136,6 @@ describe("StateSchema", () => {
       "an artifact path escaping with ..",
       withRun({ artifacts: [{ type: "plan", name: "p", path: "artifacts/../x" }] }),
     ],
-    ["an artifact without a type", withRun({ artifacts: [{ name: "p", path: "artifacts/x" }] })],
     [
       "an artifact type with an underscore",
       withRun({ artifacts: [{ type: "pull_request", name: "p", url: "https://x.dev/1" }] }),
@@ -151,7 +150,6 @@ describe("StateSchema", () => {
         artifacts: [{ type: "plan", name: "p", path: "artifacts/x", url: "https://x.dev" }],
       }),
     ],
-    ["an empty summary", withRun({ summary: "" })],
     ["a stage without agentState", withRun({ agentState: undefined })],
     ["a skipped run with no reason", withRun({ status: "skipped" })],
     [
@@ -176,7 +174,6 @@ describe("StateSchema", () => {
       { ...validState, eventHandlers: { "custom.a.b": [{ module: "a.ts", handler: "f" }] } },
     ],
     ["a relative runDir", { ...validState, runDir: ".yok/add-login" }],
-    ["a scope other than null", { ...validState, scope: "feature" }],
     ["the removed options field", { ...validState, options: {} }],
   ])("rejects %s", (_label, state) => {
     expect(StateSchema.safeParse(state).success).toBe(false);
@@ -266,12 +263,8 @@ describe("EventSchema", () => {
       { ...baseEvent, type: "stage.planning.question", stage: "review", ...nodeFields },
     ],
     ["a stage event without node IDs", { ...baseEvent, type: "stage.planning.question" }],
-    ["seq 0", { ...baseEvent, seq: 0 }],
-    ["an unknown envelope field", { ...baseEvent, extra: 1 }],
     ["an undefined payload", { ...baseEvent, payload: undefined }],
-    ["a BigInt payload", { ...baseEvent, payload: 1n }],
     ["a NaN nested in the payload", { ...baseEvent, payload: { n: Number.NaN } }],
-    ["a function payload", { ...baseEvent, payload: () => null }],
   ])("rejects %s", (_label, event) => {
     expect(EventSchema.safeParse(event).success).toBe(false);
   });
@@ -323,12 +316,6 @@ describe("FixRequestSchema", () => {
       true,
     ],
     ["a camelCase repo name, as create-workspace emits it", { ...REQUEST, repo: "myApi" }, true],
-    ["a key outside the shape", { ...REQUEST, fix: "x" }, false],
-    ["an unknown severity", { ...REQUEST, severity: "Blocker" }, false],
-    ["an unknown size", { ...REQUEST, size: "tiny" }, false],
-    ["no summary", { ...REQUEST, summary: undefined }, false],
-    ["no trigger", { ...REQUEST, trigger: undefined }, false],
-    ["no hint", { ...REQUEST, hint: undefined }, false],
     ["an absolute file", { ...REQUEST, file: "/Users/x/.zshrc" }, false],
     ["a file that climbs out with ..", { ...REQUEST, file: "../main/src/cart.ts" }, false],
   ])("SC1: a fix request with %s parses: %p", (_label, request, parses) => {

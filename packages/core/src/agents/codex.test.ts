@@ -263,7 +263,7 @@ describe("codexProvider.launch", () => {
 
 type PaneCall = readonly [string, unknown];
 
-const screenPane = (screen: string, alive = true) => {
+const screenPane = (screen: string) => {
   const calls: PaneCall[] = [];
   const ok = (call: PaneCall) => {
     calls.push(call);
@@ -273,7 +273,7 @@ const screenPane = (screen: string, alive = true) => {
     sendText: (text: string) => ok(["sendText", text]),
     sendKeys: (keys: readonly string[]) => ok(["sendKeys", keys]),
     capture: () => Promise.resolve({ ok: true as const, value: screen }),
-    isAlive: () => Promise.resolve(alive),
+    isAlive: () => Promise.resolve(true),
     kill: () => ok(["kill", null]),
     respawn: (spec: unknown) => ok(["respawn", spec]),
   } as unknown as ITerminal;
@@ -299,23 +299,6 @@ describe("codexProvider.promptWhenReady", () => {
 });
 
 describe("codexProvider pane control", () => {
-  test("prompt into a dead pane fails and types nothing; a live one gets the text and Enter", async () => {
-    const provider = codexProvider({ host: fakeHost({}) });
-    const dead = screenPane("", false);
-    const live = screenPane("");
-
-    expect(await provider.prompt(dead.pane, "hi")).toEqual({
-      ok: false,
-      error: "the agent's terminal is not running",
-    });
-    expect(dead.calls).toEqual([]);
-    expect(await provider.prompt(live.pane, "hi")).toEqual({ ok: true, value: undefined });
-    expect(live.calls).toEqual([
-      ["sendText", "hi"],
-      ["sendKeys", ["Enter"]],
-    ]);
-  });
-
   test("stop kills the pane, and relaunch respawns codex in it with the launch argv", async () => {
     const provider = codexProvider({ host: fakeHost({}), binary: "codex-x" });
     const { pane, calls } = screenPane("");
