@@ -522,4 +522,17 @@ describe("the shipped skills", () => {
     expect(names).toContain("ticket-fetcher");
     expect(failures).toEqual([]);
   });
+
+  // skill-author converts skills to stages from this guide, so a contract field it never names
+  // is one no converted skill gets right.
+  test("skill-author's yok-stage guide names every field of the stage contract", () => {
+    const guide = readFileSync(
+      join(skillsDir, "skill-author", "references", "yok-stage.md"),
+      "utf8",
+    );
+
+    const missing = Object.keys(StageSchema.shape).filter((key) => !guide.includes(`\`${key}\``));
+
+    expect(missing).toEqual([]);
+  });
 });
