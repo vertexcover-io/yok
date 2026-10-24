@@ -580,25 +580,32 @@ describe("SC26: context node through a real tmux pane", () => {
 
   test.each([
     [
-      "with no switch made, on the default tier's model and effort",
-      { default: "deep", models: { deep: { model: "opus", effort: "high" as const } } },
+      "with no switch made, on the default tier's model and effort, and no permission mode",
+      { tiers: { default: "deep", models: { deep: { model: "opus", effort: "high" as const } } } },
       undefined,
       { "--model": "opus", "--effort": "high" },
-      undefined,
+      "--permission-mode",
     ],
     [
       "SC18: after a switch from the default fast tier's sonnet-x to opus-x is applied, with --model opus-x",
-      { default: "fast", models: { fast: { model: "sonnet-x" } } },
+      { tiers: { default: "fast", models: { fast: { model: "sonnet-x" } } } },
       "opus-x",
       { "--model": "opus-x" },
       "sonnet-x",
     ],
+    [
+      "for a trigger's run, in the permission mode saved on the run",
+      { tiers: null, permissionMode: "auto" as const },
+      undefined,
+      { "--permission-mode": "auto" },
+      undefined,
+    ],
   ])(
     "new: the restarted session launches %s",
-    async (_case, tiers, switchTo, flags, absent) => {
+    async (_case, overrides, switchTo, flags, absent) => {
       const socket = `yok-e2e-${crypto.randomUUID()}`;
       try {
-        const flow = await runToContextNode("action: new", socket, { tiers });
+        const flow = await runToContextNode("action: new", socket, overrides);
         if (switchTo !== undefined) {
           // emit refuses engine-owned events, so the switch is stored the way next and the helper do
           const run = { id: "r-1", cwd: flow.run.repo, name: "feat-x" };
@@ -627,7 +634,7 @@ describe("SC26: context node through a real tmux pane", () => {
     30_000,
   );
 
-  test("model: before a deep stage on a run launched on fast, next asks for opus-x; the stop's helper resumes session A on it, and its SessionStart records the switch", async () => {
+  test("model: before a deep stage on a trigger's run launched on fast in auto, next asks for opus-x; the stop's helper resumes session A on it in auto, and its SessionStart records the switch", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
     try {
       const flow = await runInPane(
@@ -643,6 +650,7 @@ nodes:
             default: "fast",
             models: { fast: { model: "sonnet-x" }, deep: { model: "opus-x" } },
           },
+          permissionMode: "auto",
         },
         { YOK_SKILLS_DIR: stageSkills() },
       );
@@ -653,6 +661,7 @@ nodes:
 
       const argv = flow.launches()[1]?.argv as string[];
       expect(argv.slice(0, 4)).toEqual(["--resume", "A", "--model", "opus-x"]);
+      expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("auto");
       expect(argv.at(-1)).toBe(RESUME);
       expect(flow.sessionStart("A", "resume")).toMatchObject({ code: 0, stdout: "" });
       const modelEvents = async () =>

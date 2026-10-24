@@ -9,11 +9,12 @@ import {
 } from "@yok/core";
 import type { Check, IAgentProvider, ILogger, ITerminalHost } from "@yok/sdk";
 import { noopLogger, registryPath } from "@yok/sdk";
-import { createRegistry, VERSION } from "@yok/sdk/internal";
+import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
 import prettyFactory from "pino-pretty";
 import { createApp } from "./app.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { pidPath, socketPath } from "./protocol.ts";
+import { startScheduler, stopScheduler } from "./trigger.ts";
 import { startViewer } from "./viewer.ts";
 export type Runtime = Readonly<{
   host: ITerminalHost;
@@ -68,8 +69,20 @@ export const startServer = async ({
   const viewerLog = log.child({ component: "viewer" });
   const viewer = await startViewer({ home, registry, providerFor, host, log: viewerLog });
   void resumeDeliveries({ registry, providerFor, host, log: viewerLog, now: () => new Date() });
+  const triggers = createTriggerStore(home, log);
+  startScheduler({
+    triggers,
+    registry,
+    providerFor,
+    host,
+    home,
+    viewerOrigin: viewer.origin,
+    log: log.child({ component: "triggers" }),
+    now: () => new Date(),
+  });
   const app = createApp({
     registry,
+    triggers,
     providerFor,
     host,
     log,
@@ -86,6 +99,7 @@ export const startServer = async ({
 
   const stop = async (): Promise<void> => {
     stopDeliveries();
+    await stopScheduler();
     // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
     await server.stop();
     await Promise.all([

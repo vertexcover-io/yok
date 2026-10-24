@@ -2,9 +2,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  compileWorkflow,
+  compileWithProjectConfig,
   createLogger,
-  loadProjectConfig,
   resolveLevel,
   WorkflowError,
   type WorkflowPlan,
@@ -68,14 +67,7 @@ export const compileOrFail = async (
   cwd: string,
   configFile: string | null = null,
 ): Promise<WorkflowPlan | null> => {
-  const config = await loadProjectConfig(configFile, cwd);
-  if (!config.ok && configFile !== null) {
-    fail(config.error);
-    return null;
-  }
-  // A broken checkout config is the doctor's to report, so compile goes on without it.
-  const options = config.ok ? { cwd, config: config.value } : { cwd };
-  return compileWorkflow(path, options).catch((error: unknown) => {
+  return compileWithProjectConfig(path, cwd, configFile).catch((error: unknown) => {
     fail(errorText(error));
     return null;
   });

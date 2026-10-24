@@ -658,7 +658,8 @@ const loadHelperRun = async (
     log.error({ sessionId: flags.sessionId }, "no provider for the session's agent");
     return undefined;
   }
-  return { run, log, provider };
+  const permissionMode = linked?.permissionMode;
+  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
 };
 
 const contextCommand = () =>
@@ -673,7 +674,7 @@ const contextCommand = () =>
     .action(async (nodeRunId, opts) => {
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
-      const { run, log, provider } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       const runDir = runDirOf(run.cwd, run.name);
       const [state, events] = await Promise.all([
         readState(runDir),
@@ -693,6 +694,7 @@ const contextCommand = () =>
           pluginDir: devPluginDir(),
           // a switched model outlives the session it was switched in
           ...tierLaunch(current),
+          ...modeLaunch,
         },
         home: yokHome(),
         log,
@@ -711,14 +713,19 @@ const modelCommand = () =>
     .action(async (seq, opts) => {
       const helper = await loadHelperRun(opts, "yok-model", "model.log");
       if (helper === undefined) return;
-      const { run, log, provider } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       await runModelStep({
         run,
         seq: Number(seq),
         sessionId: opts.sessionId,
         terminal: currentTerminal(process.env, log),
         provider,
-        launch: { cwd: run.cwd, orchestrateArgv: orchestrateArgv(), pluginDir: devPluginDir() },
+        launch: {
+          cwd: run.cwd,
+          orchestrateArgv: orchestrateArgv(),
+          pluginDir: devPluginDir(),
+          ...modeLaunch,
+        },
         home: yokHome(),
         log,
       });

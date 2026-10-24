@@ -22,11 +22,16 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { noopLogger, runDirOf, WorkflowRunSchema } from "@yok/sdk";
-import { createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
+import {
+  createRegistry,
+  createTriggerStore,
+  jsonlEventStore,
+  type Registry,
+} from "@yok/sdk/internal";
 import * as z from "zod";
 import { createApp } from "./app.ts";
 import { createYokClient } from "./client.ts";
-import { fakeHost, seedState } from "./fake-host.ts";
+import { fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { socketPath } from "./protocol.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
@@ -40,37 +45,6 @@ const tempWorkspace = (): Workspace => {
   return { workflowPath, cwd };
 };
 
-const done = () => Promise.resolve({ ok: true as const, value: undefined });
-
-const fakePane = (name: string): ITerminal => ({
-  sendText: done,
-  sendKeys: done,
-  capture: () => Promise.resolve({ ok: true, value: "" }),
-  isAlive: () => Promise.resolve(true),
-  rename: done,
-  respawn: done,
-  kill: done,
-  attachCommand: () => ["tmux", "attach-session", "-t", name],
-});
-
-const fakeProvider = (
-  type: IAgentProvider["type"],
-  launch: (
-    options: LaunchOptions,
-  ) => Promise<Result<{ terminalName: string; terminal: ITerminal }>>,
-): IAgentProvider => ({
-  type,
-  skillPrefix: type === "codex" ? "$" : "/",
-  checks: [],
-  launch,
-  relaunch: () => Promise.resolve({ ok: true, value: undefined }),
-  prompt: () => Promise.resolve({ ok: true, value: undefined }),
-  stop: () => Promise.resolve({ ok: true, value: undefined }),
-  run: () => Promise.resolve({ ok: false, error: new Error("not implemented") }),
-  limitResetWait: () => Promise.resolve(null),
-  promptWhenReady: () => Promise.resolve({ ok: true, value: "not-ready" }),
-});
-
 const buildDeps = async (
   launch: (
     options: LaunchOptions,
@@ -79,6 +53,7 @@ const buildDeps = async (
 ) => {
   const registryPath = join(mkdtempSync(join(tmpdir(), "yok-registry-")), "registry.json");
   const registry = createRegistry(registryPath, log);
+  const home = mkdtempSync(join(tmpdir(), "yok-home-"));
   const asked: string[] = [];
   return {
     registryPath,
@@ -91,7 +66,8 @@ const buildDeps = async (
     // the run's tmux session is gone unless a test says otherwise
     host: fakeHost("", false).host,
     log,
-    home: mkdtempSync(join(tmpdir(), "yok-home-")),
+    home,
+    triggers: createTriggerStore(home),
     viewerOrigin: "http://localhost:1",
     pid: 4242,
     version: "0.0.0-test",
@@ -203,6 +179,33 @@ describe("POST /runs", () => {
 
     expect(res.status).toBe(201);
     expect(prompt).toBe(`$orchestrate --workflow ${workflowPath} --inputs {}`);
+  });
+
+  test.each([
+    [
+      "permissionMode auto launches the session in auto and saves it on the run for later sessions",
+      { permissionMode: "auto" },
+      "auto",
+    ],
+    ["no permissionMode launches the session without one and saves none", {}, undefined],
+  ])("%s", async (_label, extra, expected) => {
+    const { workflowPath, cwd } = tempWorkspace();
+    const seen: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      seen.push(options);
+      return Promise.resolve({ ok: true, value: { terminalName: "s1", terminal: fakePane("s1") } });
+    });
+
+    const res = await createApp(deps).request("/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow: "ok", env: {}, workflowPath, inputs: {}, cwd, ...extra }),
+    });
+
+    expect(res.status).toBe(201);
+    expect<string | undefined>(seen[0]?.permissionMode).toBe(expected);
+    const [run] = await deps.registry.listRuns();
+    expect<string | undefined>(run?.permissionMode).toBe(expected);
   });
 
   test("the run is in the registry before its agent starts, so the agent's orchestrate init finds it", async () => {
@@ -728,6 +731,22 @@ describe("POST /runs/:id/resume", () => {
     expect(options?.cwd).toBe(run.cwd);
     expect(options?.env).toMatchObject({ FOO: "bar", YOK_RUN_ID: run.id, YOK_HOME: deps.home });
     expect(await deps.registry.findRun(run.id)).toEqual(run);
+  });
+
+  test.each([
+    [
+      "a trigger's run resumes in the permission mode saved on it",
+      { permissionMode: "auto" as const },
+      "auto",
+    ],
+    ["a yok run run resumes with no permission mode", {}, undefined],
+  ])("%s", async (_label, saved, expected) => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { run: saved });
+
+    await resume(deps, run.id);
+
+    expect<string | undefined>(launches[0]?.permissionMode).toBe(expected);
   });
 
   test("a run whose last linked session s-2 never started continues s-1, the last session whose SessionStart was logged", async () => {

@@ -35,6 +35,8 @@ const ORCHESTRATE = [CLI, "orchestrate"] as const;
 
 const OK_WORKFLOW = [
   "name: ok",
+  "inputs:",
+  "  prompt: { type: string }",
   "nodes:",
   "  - id: a",
   "    type: exec",
@@ -295,6 +297,27 @@ describe("yok run", () => {
       expect(launched.ANTHROPIC_BASE_URL).toBeUndefined();
 
       spawnSync(binary, ["server", "stop"], { cwd: repo, env });
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "a workflow whose required topic input is not given fails the run before any session starts",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+      writeFileSync(
+        join(repo, "topic.yaml"),
+        OK_WORKFLOW.replace("nodes:", "  topic: { type: string, required: true }\nnodes:"),
+      );
+
+      const result = yok(repo, env, "run", "topic.yaml", "--prompt", "hi", "--no-open");
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("inputs.topic");
+      expect(readLines(fakeOut).some(isLaunch)).toBe(false);
+
+      stopServer(repo, env);
     },
     TIMEOUT_MS,
   );

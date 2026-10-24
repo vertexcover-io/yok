@@ -11,6 +11,7 @@ export {
   StartRunBodySchema,
   socketPath,
 } from "./protocol.ts";
+export { blockedText, type PrepareRunOptions, prepareRun } from "./run.ts";
 export {
   defaultRuntime,
   type Runtime,

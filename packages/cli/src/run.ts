@@ -3,18 +3,14 @@ import { Command } from "@commander-js/extra-typings";
 import {
   builtInChecks,
   compileRunWorkflow,
-  type DoctorReport,
   findWorkflowPath,
-  loadStartEnv,
   runDoctor,
   verdict,
   type WorkflowPlan,
   workflowChecks,
 } from "@yok/core";
 import {
-  createGit,
   type ILogger,
-  type JsonObject,
   loadEnv,
   loadRunConfig,
   POLICY_NAMES,
@@ -25,7 +21,7 @@ import {
   spawnInteractive,
 } from "@yok/sdk";
 import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import { runtimeChecks } from "@yok/server";
+import { blockedText, prepareRun, runtimeChecks } from "@yok/server";
 import {
   apiErrorText,
   cliLog,
@@ -44,14 +40,6 @@ const collectInput = (pair: string, acc: Record<string, string>): Record<string,
   if (index === -1) throw new Error(`--input must be KEY=VALUE, got "${pair}"`);
   return { ...acc, [pair.slice(0, index)]: pair.slice(index + 1) };
 };
-
-const blockedText = (report: DoctorReport): string =>
-  [
-    verdict(report),
-    ...report.results
-      .filter((row) => row.status === "fail")
-      .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
-  ].join("\n");
 
 // The run's saved policies have no say here: an unattended run can still be watched.
 export const followUps = ({
@@ -138,30 +126,26 @@ export const runCommand = () => {
       if (plan === null) return;
       log.debug({ workflow: plan.name, path: workflowPath }, "workflow compiled");
 
-      // Built once: the doctor's env checks and the session see the same values.
-      const env = await loadStartEnv(config ?? null, cwd, plan);
-      const blocked = await checkBeforeStart(cwd, config, plan, env);
-      if (blocked !== null) return fail(blocked);
-
-      const repoRoot = await createGit().repoRoot(cwd);
-      if (repoRoot === null) return fail("not inside a git repository");
-      await writeProjectTypes(repoRoot, VERSION).catch((error: unknown) =>
+      const prepared = await prepareRun({
+        plan,
+        workflowPath,
+        cwd,
+        config: config ?? null,
+        inputs: { prompt: opts.prompt, ...opts.input },
+        checks: runtimeChecks(plan.agent),
+        log: cliLog(),
+      });
+      if (!prepared.ok) return fail(prepared.error);
+      const body = prepared.value;
+      await writeProjectTypes(body.cwd, VERSION).catch((error: unknown) =>
         log.warn({ err: error }, "could not write the SDK types to .yok/types"),
       );
-      if (!env.ok) return fail(env.error);
 
       await ensureServer();
       const result = await yokClient().run({
-        workflow: plan.name,
-        workflowPath,
-        inputs: { prompt: opts.prompt, ...opts.input } satisfies JsonObject,
-        cwd: repoRoot,
-        agent: plan.agent,
-        env: env.value,
-        tiers: plan.tiers,
+        ...body,
         policies: { workflow: plan.policies, cli: cliPolicies.value },
         ...(opts.name === undefined ? {} : { name: opts.name }),
-        ...(config === undefined ? {} : { config }),
       });
       if (!result.ok) return fail(apiErrorText(result.error));
       const { run } = result.value;

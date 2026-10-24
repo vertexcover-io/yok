@@ -139,6 +139,8 @@ tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine
 yok-dev verify path/to.yaml     # compile a workflow, print the first error
+yok-dev trigger list            # every cron trigger, its next and last fire
+yok-dev trigger log NAME        # a trigger's last 20 firings, with run ids
 LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 ```
 
