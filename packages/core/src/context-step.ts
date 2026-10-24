@@ -3,6 +3,7 @@ import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  type ContextOutput,
   ContextStartedEvent,
   type Event,
   type IAgentProvider,
@@ -15,6 +16,7 @@ import {
   type RunRef,
   readState,
   runDirOf,
+  SessionReplacedEvent,
   SessionStartCalledEvent,
   type State,
   sessionEnv,
@@ -35,11 +37,14 @@ import {
 } from "@yok/sdk/internal";
 import {
   CLAUDE_CLEAR_INPUT_KEY,
+  CLAUDE_ESCAPE_PAUSE_MS,
+  CLAUDE_MAX_ESCAPES,
   CLAUDE_NOTHING_TO_COMPACT,
+  hasClaudeInputBox,
   isClaudeBusy,
+  isClaudeChoicePending,
 } from "./agents/claude.ts";
 import { typeLine } from "./agents/common.ts";
-import { currentTerminal } from "./agents/tmux.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
 import { spawnOrchestrateHelper } from "./stage.ts";
 
@@ -48,6 +53,12 @@ const IDLE_POLL_MS = 100;
 const DONE_POLL_MS = 250;
 // how long a new session may take to start, and a compact to finish, before the step fails
 const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
+// How long a typed resume line may take to show as the run's `orchestrate resume`, counted over
+// continuous time Claude is free, and how long at most in all; and how many times it is typed.
+const RESUME_TIMEOUT_MS = 30_000;
+const RESUME_CAP_MS = 180_000;
+const RESUME_ATTEMPTS = 2;
+const INPUT_UNREACHABLE = "Could not reach Claude's input box";
 
 export const startModelStep = async (run: RunRef, sessionId: string, seq: number): Promise<void> =>
   spawnOrchestrateHelper({ command: "model", id: String(seq), run, sessionId });
@@ -102,7 +113,116 @@ const waitForIdle = (terminal: ITerminal): Promise<Result<true>> =>
     },
   );
 
+// Claude is at work, or waits on a person's answer to a permission prompt or question.
+const isClaudeHeld = (screen: string): boolean =>
+  isClaudeBusy(screen) || isClaudeChoicePending(screen);
+
 const resumePrompt = (run: RunRef): string => `/yok:orchestrate --resume ${run.name}`;
+
+// The session a line goes to, and the step it is typed for.
+type LineTarget = Readonly<{
+  run: RunRef;
+  sessionId: string;
+  step: string;
+  terminal: ITerminal;
+  log: ILogger;
+}>;
+
+type RevealBudget = Readonly<{ escapesLeft: number; busyUntil: number }>;
+
+// Sends an Escape while Claude's input box is hidden and Claude is neither busy nor waiting on a
+// person's choice, up to `escapesLeft` of them. None goes to a box on screen, where it could
+// interrupt Claude's turn or open its Rewind menu, nor while Claude is held, where it could cancel
+// a compaction, reject a permission or decline a question; then it waits, until `busyUntil`.
+// false: never shown.
+const revealInputBox = async (
+  terminal: ITerminal,
+  budget: RevealBudget,
+): Promise<Result<boolean>> => {
+  const screen = await terminal.capture();
+  if (!screen.ok) return screen;
+  if (hasClaudeInputBox(screen.value)) return { ok: true, value: true };
+  if (isClaudeHeld(screen.value)) {
+    if (Date.now() >= budget.busyUntil) return { ok: true, value: false };
+    await Bun.sleep(IDLE_POLL_MS);
+    return revealInputBox(terminal, budget);
+  }
+  if (budget.escapesLeft === 0) return { ok: true, value: false };
+  const sent = await terminal.sendKeys(["Escape"]);
+  if (!sent.ok) return sent;
+  await Bun.sleep(CLAUDE_ESCAPE_PAUSE_MS);
+  return revealInputBox(terminal, { ...budget, escapesLeft: budget.escapesLeft - 1 });
+};
+
+// One try at a line, typed once the input box shows, even while Claude finishes its turn: Claude
+// holds the line until then. C-u empties the box, where a cancelled line may be left. false: the
+// box never showed, so nothing was typed.
+const tryLine = async (target: LineTarget, line: string): Promise<Result<boolean>> => {
+  const { terminal, log } = target;
+  const shown = await revealInputBox(terminal, {
+    escapesLeft: CLAUDE_MAX_ESCAPES,
+    busyUntil: Date.now() + IDLE_TIMEOUT_MS,
+  });
+  if (!shown.ok) return shown;
+  if (!shown.value) {
+    log.warn({ line }, INPUT_UNREACHABLE);
+    return { ok: true, value: false };
+  }
+  const emptied = await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]);
+  if (!emptied.ok) return emptied;
+  const typed = await typeLine(terminal, line);
+  return typed.ok ? { ok: true, value: true } : typed;
+};
+
+const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
+  (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
+
+// How a wait for a typed resume line ended: taken; lost, at a free Claude; or held, the cap reached
+// while Claude still worked or waited on a person's choice.
+type ResumeWait = "taken" | "lost" | "held";
+
+// Claude holds a line typed while it finishes a turn or waits on a person's choice, and may not
+// draw its spinner until a moment after Enter, so the wait counts only while Claude stays free; a
+// line retyped while it is held or worked on would run twice.
+const waitForResumed = async (
+  terminal: ITerminal,
+  store: IEventStore,
+  afterSeq: number,
+): Promise<ResumeWait> => {
+  const cap = Date.now() + RESUME_CAP_MS;
+  let freeSince: number | undefined;
+  for (;;) {
+    if (await isResumed(store, afterSeq)) return "taken";
+    const now = Date.now();
+    const screen = await terminal.capture();
+    const held = screen.ok && isClaudeHeld(screen.value);
+    freeSince = screen.ok && !held ? (freeSince ?? now) : undefined;
+    if (freeSince !== undefined && now >= freeSince + RESUME_TIMEOUT_MS) return "lost";
+    if (now >= cap) return held ? "held" : "lost";
+    await Bun.sleep(DONE_POLL_MS);
+  }
+};
+
+// How the resume line ended: taken; held by a Claude still at work on it, so not typed again;
+// never typed on any try because the input box never showed; or typed and never taken.
+type ResumeOutcome = "taken" | "held" | "unreachable" | "not-taken";
+
+// Types the resume line until the run's `orchestrate resume`, which the --resume skill runs first,
+// shows Claude took it. Unreachable only when no try typed it: a typed line may yet be taken.
+const sendResume = async (target: LineTarget, line: string): Promise<Result<ResumeOutcome>> => {
+  const store = jsonlEventStore(runDirOf(target.run.cwd, target.run.name));
+  const afterSeq = (await store.read()).at(-1)?.seq ?? 0;
+  let outcome: ResumeOutcome = "unreachable";
+  for (let attempt = 1; attempt <= RESUME_ATTEMPTS; attempt += 1) {
+    const typed = await tryLine(target, line);
+    if (!typed.ok) return typed;
+    const wait = typed.value ? await waitForResumed(target.terminal, store, afterSeq) : undefined;
+    if (wait === "taken" || wait === "held") return { ok: true, value: wait };
+    if (typed.value) outcome = "not-taken";
+    target.log.warn({ line, attempt }, "resume line not taken");
+  }
+  return { ok: true, value: outcome };
+};
 
 // A tmux call can throw (a hung tmux times out) and so can reading a half-written event line. The
 // helper runs detached, so a throw would end it silently and leave the node open for good: it
@@ -176,7 +296,10 @@ export const clearDeadSwitchLocks = async (
   return { removed, held: names.filter((_, index) => owned[index]) };
 };
 
-const complete = async (options: ContextStepOptions, output: JsonValue): Promise<Result<void>> => {
+const complete = async (
+  options: ContextStepOptions,
+  output: ContextOutput,
+): Promise<Result<void>> => {
   const completed = await completeContextStep(options.run, options.nodeRunId, output);
   return completed.ok ? { ok: true, value: undefined } : completed;
 };
@@ -262,20 +385,24 @@ const startNewSession = async (
 
 const compact = async (
   options: ContextStepOptions,
-  terminal: ITerminal,
+  target: LineTarget,
   prompt: string | undefined,
 ): Promise<Result<void>> => {
-  const { oldSessionId, log } = options;
-  const idle = await waitForIdle(terminal);
-  if (!idle.ok) return idle;
-  await recordStarted(options, "compact", oldSessionId);
+  const { log } = target;
+  await recordStarted(options, "compact", target.sessionId);
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
-  const typed = await typeLine(terminal, command);
+  // Typed once: a compaction can take minutes, so a retype could start a second one. A compaction
+  // that did not happen is no emergency: the run goes on in a fuller session.
+  const typed = await tryLine(target, command);
   if (!typed.ok) return typed;
+  if (!typed.value) return { ok: false, error: INPUT_UNREACHABLE };
   log.info({ command }, "compact typed");
-  const done = await watchForFailure(options, terminal, "compact");
+  const done = await watchForFailure(options, target.terminal, "compact");
   if (!done.ok) return done;
   log.info({}, "node completed by the compact's SessionStart");
+  // Typed here, not in the SessionStart hook: Claude holds a typed prompt until its SessionStart
+  // hooks end, so the hook could never see the prompt arrive.
+  await resumeRun(target);
   return { ok: true, value: undefined };
 };
 
@@ -303,12 +430,11 @@ const findStartedAction = async (runDir: string, nodeRunId: string) => {
 
 // Claude runs SessionStart hooks after a new session starts or a compact ends, before its next
 // prompt, so that is when the action is done; it counts only if it matches the action the helper
-// began. After a compact the resume prompt is typed here, and Claude queues it until its hooks end.
+// began.
 export const completeContextOnSessionStart = async (
   run: RunRef,
   sessionId: string,
   source: string,
-  terminal: ITerminal | undefined = currentTerminal(),
 ): Promise<void> => {
   const runDir = runDirOf(run.cwd, run.name);
   const state = await readState(runDir);
@@ -320,36 +446,45 @@ export const completeContextOnSessionStart = async (
     (started.action === "new" && source === "startup") ||
     (started.action === "compact" && source === "compact");
   if (!matches) return;
-  const output = { action: started.action, applied: true, sessionId };
-  const completed = await completeContextStep(run, open.nodeRunId, output);
-  if (!completed.ok || started.action !== "compact" || terminal === undefined) return;
-  await typeLine(terminal, resumePrompt(run));
+  await completeContextStep(run, open.nodeRunId, {
+    action: started.action,
+    applied: true,
+    sessionId,
+  });
 };
 
-// The session in the pane carries on after a step that did not happen: the input box is emptied
-// (a cancelled /compact stays in it and would swallow the prompt) and the run resumed.
-const resumeRun = async (run: RunRef, terminal: ITerminal, log: ILogger): Promise<void> => {
-  const emptied = await catchThrow(log, terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]));
-  if (!emptied.ok) log.warn({ err: emptied.error }, "input box not emptied");
-  const idle = await catchThrow(log, waitForIdle(terminal));
-  if (!idle.ok)
-    log.warn({ err: idle.error }, "typing the resume prompt although Claude looks busy");
-  const typed = await catchThrow(log, typeLine(terminal, resumePrompt(run)));
-  if (!typed.ok) log.error({ err: typed.error }, "resume prompt not typed");
+// The session in the pane carries on: after its compaction, or after a step that did not happen.
+// A resume line that could not be typed on any try because Claude's input box never showed leaves
+// the run with nobody driving it, so that alone pings a person. Once a try typed the line, a
+// notice telling the person to type it could start a second resume, so it is only logged.
+const resumeRun = async (target: LineTarget): Promise<void> => {
+  const line = resumePrompt(target.run);
+  const sent = await catchThrow(target.log, sendResume(target, line));
+  if (!sent.ok) return target.log.error({ err: sent.error }, "resume prompt not taken");
+  if (sent.value === "taken") return;
+  const { run, sessionId, step, log } = target;
+  if (sent.value === "held") return log.warn({ line }, `Claude still holds ${line}`);
+  log.error({ line, outcome: sent.value }, `Claude did not take ${line}`);
+  if (sent.value !== "unreachable") return;
+  await appendRunEvent(run, {
+    type: "agent.input.unreachable",
+    source: "orchestrate",
+    payload: { agent: "claude", sessionId, step, line },
+  });
 };
 
-// A context step that did not happen still completes, and the old session carries on.
+// A context step that did not happen still completes, and the session in the pane carries on.
 const recover = async (
   options: ContextStepOptions,
-  terminal: ITerminal,
-  action: string,
+  target: LineTarget,
+  action: ContextOutput["action"],
   reason: string,
 ): Promise<void> => {
-  const { run, log } = options;
+  const { log } = options;
   log.error({ action, reason }, "context step not applied");
   const completed = await catchThrow(log, complete(options, { action, applied: false, reason }));
   if (!completed.ok) log.error({ err: completed.error }, "context node not completed");
-  await resumeRun(run, terminal, log);
+  await resumeRun(target);
 };
 
 // Runs after the Stop hook that found a context node open: starts a new session in the agent's
@@ -361,7 +496,7 @@ export const runContextStep = async (options: ContextStepOptions): Promise<void>
   }
   const planNode = await findContextPlanNode(run, nodeRunId);
   if (!planNode.ok) return log.info({ nodeRunId, reason: planNode.error }, "no open context node");
-  const { action, prompt } = planNode.value;
+  const { action, prompt, id: step } = planNode.value;
   log.info({ nodeRunId, action }, "context step started");
   if (terminal === undefined) {
     const completed = await complete(options, {
@@ -372,11 +507,27 @@ export const runContextStep = async (options: ContextStepOptions): Promise<void>
     if (!completed.ok) log.error({ err: completed.error }, "context node not completed");
     return;
   }
+  const target = { run, sessionId: options.oldSessionId, step, terminal, log };
   const outcome = await catchThrow(
     log,
-    action === "new" ? startNewSession(options, terminal) : compact(options, terminal, prompt),
+    action === "new" ? startNewSession(options, terminal) : compact(options, target, prompt),
   );
-  if (!outcome.ok) await recover(options, terminal, action, outcome.error);
+  if (outcome.ok) return;
+  const sessionId = await sessionInPane(run, options.oldSessionId);
+  await recover(options, { ...target, sessionId }, action, outcome.error);
+};
+
+// The session in the pane after a step that began with OLD there: a new session's relaunch swaps
+// it in, and a relaunch that fails swaps OLD back, so the last swap involving OLD says which.
+const sessionInPane = async (run: RunRef, oldSessionId: string): Promise<string> => {
+  const swap = (await jsonlEventStore(runDirOf(run.cwd, run.name)).read())
+    .filter((event) => event.type === "workflow.session.replaced")
+    .map((event) => SessionReplacedEvent.safeParse(event).data?.payload)
+    .findLast(
+      (payload) =>
+        payload?.previousSessionId === oldSessionId || payload?.sessionId === oldSessionId,
+    );
+  return swap?.sessionId ?? oldSessionId;
 };
 
 export type ModelStepOptions = Readonly<{
@@ -482,5 +633,7 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
     return log.info({ target, sessionId: options.sessionId }, "session resumed on the new model");
   }
   log.error({ err: switched.error, target }, "model switch failed");
-  if (terminal !== undefined) await resumeRun(run, terminal, log);
+  if (terminal !== undefined) {
+    await resumeRun({ run, sessionId: options.sessionId, step: pending.node, terminal, log });
+  }
 };

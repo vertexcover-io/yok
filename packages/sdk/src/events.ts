@@ -287,6 +287,18 @@ export const AgentStuckEvent = z.object({
   }),
 });
 
+// The agent's input box showed in its pane on no try at the resume line, so yok typed
+// nothing and nobody drives the run; the notifier pings a person to type line. step is the node
+// the line was meant for.
+export const AgentInputUnreachableEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    step: NonEmptyStringSchema,
+    line: NonEmptyStringSchema,
+  }),
+});
+
 // The agent is working again after a block of this reason; tool is the call that showed it.
 export const AgentResumedEvent = z.object({
   payload: z.strictObject({
@@ -543,6 +555,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
+  "agent.input.unreachable": AgentInputUnreachableEvent,
   "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,
   "notification.thread.started": NotificationThreadStartedEvent,

@@ -812,6 +812,12 @@ describe("blocker", () => {
       handler: "record-guard",
       decision: "allow",
     });
+  const inputUnreachable = (seq: number) =>
+    runEvent(seq, "agent.input.unreachable", {
+      ...session,
+      step: "design",
+      line: "/yok:orchestrate --resume r",
+    });
   const onDesign = { node: "design", since: at(2) };
   const openings: readonly (readonly [string, Event, Blocker])[] = [
     [
@@ -918,6 +924,19 @@ describe("blocker", () => {
       expect(state.blocker).toEqual(expected);
     },
   );
+
+  test("SC16: an unreachable input box leaves the run running with no blocker; only the notifier tells a person", () => {
+    unblockedState(project([designRunning, inputUnreachable(2)]));
+  });
+
+  test("an input box yok could not reach leaves the run running with no blocker; only the notifier tells a person", () => {
+    const unreachable = runEvent(2, "agent.input.unreachable", {
+      ...session,
+      step: "design",
+      line: "/yok:orchestrate --resume r",
+    });
+    unblockedState(project([designRunning, unreachable]));
+  });
 
   test("SC142: agent.resumed on a running run leaves it running with no blocker", () => {
     unblockedState(project([designRunning, resumed(2, "usage-limit")]));
@@ -1172,6 +1191,20 @@ describe("emitEvent refusals", () => {
       {},
       { sessionId: "s1" },
       "agent.limit.resumed",
+    ],
+    [
+      "agent.input.unreachable with no step",
+      "agent.input.unreachable",
+      {},
+      { ...session, line: "/yok:orchestrate --resume r" },
+      "agent.input.unreachable",
+    ],
+    [
+      "agent.input.unreachable with no line",
+      "agent.input.unreachable",
+      {},
+      { ...session, step: "design" },
+      "agent.input.unreachable",
     ],
   ])(
     "%s is refused, naming why, and nothing is stored",
