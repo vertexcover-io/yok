@@ -30,7 +30,7 @@ AI coding tools are fast and careless: no design, no tests, no proof the change 
 Ticket → Workspace → Baseline → Design → Plan → Implement → Review → QA → Commit → PR → Retro
 ```
 
-You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships three, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
+You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships four, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
 
 Yok is a private repository. Installing it needs a GitHub account that can see `vertexcover-io/yok`.
 
@@ -180,7 +180,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships three, `task`, `quick` and `regression`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
 
 ### task: the full pipeline
 
@@ -222,6 +222,24 @@ yok run regression --prompt "Signing up with an email invite"
 ```
 
 Pick `regression` when the code already does the right thing and you want tests that keep it that way. It changes no product code.
+
+### skill: write or edit an agent skill
+
+[workflows/skill.yaml](./workflows/skill.yaml) runs `skill-author → audit loop (skill-audit, skill-fix)` on the `high` tier, which it maps to `claude-fable-5-1` at high effort. `skill-author` plans the skill from Anthropic's skill-creator steps and Matt Pocock's writing-for-agents rules, shows you the plan, and writes the skill so any agent can run it. Each audit pass checks it against a rubric; while blockers or majors remain, `skill-fix` fixes them, at most twice.
+
+```bash
+yok run skill --prompt "Pull every table out of a PDF into CSV files"
+yok run skill --prompt "..." --input scope=user --input folder=.agents
+yok run skill --prompt "..." --input path=~/tools/skills
+yok run skill --prompt "Also handle scanned PDFs" --input skill=pdf-tables
+yok run skill --prompt "Make it a yok stage" --input skill=pdf-tables --input yok=true
+```
+
+To edit, pass `skill` as the skill's folder or name, or name the skill in the prompt. A name is looked up in `.agents/skills` and `.claude/skills`, in the repo and then in your home folder; if it matches more than one, `skill-author` asks which. An edit changes only what the prompt asks for. Skills inside a plugin cache are never edited.
+
+With `yok=true`, or a prompt that asks for it, the skill becomes a yok stage: `skill-author` works out its contract (`outputs`, `produces`, `consumes`, `verifiers` and the rest) from what the skill does, writes the schema and verifier modules with their tests, and runs `yok verify` on a one-node workflow until the contract loads. A skill that already is a stage stays one, and the audit checks its contract too.
+
+A new skill with no `path` goes to `FOLDER/skills/NAME` in the repo (`scope=project`) or in your home folder (`scope=user`), where `FOLDER` is `.agents` or `.claude`. Whatever you leave out, `skill-author` asks in the same question as the plan. A `path` overrides both. The workflow writes evals but never runs them.
 
 ### Write your own
 

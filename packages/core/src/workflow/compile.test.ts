@@ -1167,6 +1167,74 @@ describe("the shipped quick workflow", () => {
   });
 });
 
+describe("the shipped skill workflow", () => {
+  const SKILL_WORKFLOW = join(import.meta.dir, "..", "..", "..", "..", "workflows", "skill.yaml");
+
+  test("runs every step on the high tier, mapped to Fable 5.1 at high effort", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.tiers).toEqual({
+      default: "high",
+      models: { high: { model: "claude-fable-5-1", effort: "high" } },
+    });
+  });
+
+  test("hands the prompt, the skill to edit, the yok-stage switch, and the optional path, scope and folder to skill-author", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.inputs).toMatchObject({
+      skill: { type: "string", default: "" },
+      yok: { type: "boolean", default: false },
+      prompt: { type: "string", required: true },
+      path: { type: "string", default: "" },
+      scope: { type: "string", default: "" },
+      folder: { type: "string", default: "" },
+    });
+    expect(plan.nodes[0]).toMatchObject({
+      id: "skill-author",
+      stage: { ref: "skill-author", output: { name: "skill-author.output.v1" } },
+      input: {
+        skill: "{{ inputs.skill }}",
+        yok: "{{ inputs.yok }}",
+        prompt: "{{ inputs.prompt }}",
+        path: "{{ inputs.path }}",
+        scope: "{{ inputs.scope }}",
+        folder: "{{ inputs.folder }}",
+      },
+    });
+  });
+
+  test("audits then fixes the skill, two passes at most, and skips the fix once the audit is clean", async () => {
+    const plan = await compileWorkflow(SKILL_WORKFLOW);
+
+    expect(plan.nodes.find((node) => node.id === "audit-loop")).toMatchObject({
+      type: "loop",
+      dependsOn: ["skill-author"],
+      maxIterations: 2,
+      until: "{{ iteration.nodes.skill-audit.output.clean or iteration.index == iteration.max }}",
+      input: { path: "{{ nodes.skill-author.output.path }}" },
+      nodes: [
+        {
+          id: "skill-audit",
+          stage: { ref: "skill-audit", output: { name: "skill-audit.output.v1" } },
+          input: { path: "{{ inputs.path }}", round: "{{ iteration.index }}" },
+        },
+        {
+          id: "skill-fix",
+          stage: { ref: "skill-fix" },
+          dependsOn: ["skill-audit"],
+          when: "{{ not nodes.skill-audit.output.clean }}",
+          input: {
+            path: "{{ inputs.path }}",
+            findings: "{{ nodes.skill-audit.output.findings }}",
+            round: "{{ iteration.index }}",
+          },
+        },
+      ],
+    });
+  });
+});
+
 describe("the shipped task workflow", () => {
   test("declares the Linear key, bun and gh as its doctor checks", async () => {
     const plan = await compileWorkflow(
