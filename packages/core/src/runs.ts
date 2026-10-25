@@ -7,6 +7,7 @@ import {
   type ArtifactRef,
   type CheckoutConfig,
   type Config,
+  type ContextOutput,
   createGit,
   type EmitInput,
   type EnvLayer,
@@ -813,7 +814,7 @@ export const findContextPlanNode = async (
 export const completeContextStep = async (
   run: RunRef,
   nodeRunId: string,
-  output: JsonValue,
+  output: ContextOutput,
 ): Promise<Result<StepReport>> => {
   const leaf = await loadContextLeaf(run, nodeRunId);
   if (!leaf.ok) return leaf;

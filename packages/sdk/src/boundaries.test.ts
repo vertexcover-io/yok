@@ -20,6 +20,7 @@ const filesContaining = (
 
 const PUBLIC_RUNTIME_NAMES = [
   "AbsolutePathSchema",
+  "AgentInputUnreachableEvent",
   "AgentResumedEvent",
   "AgentStateSchema",
   "AgentStoppedEvent",
@@ -31,6 +32,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "BlockerSchema",
   "CheckStatusSchema",
   "ConfigSchema",
+  "ContextOutputSchema",
   "ContextStartedEvent",
   "CustomStateUpdatedEvent",
   "ERROR_MESSAGE_LIMIT",

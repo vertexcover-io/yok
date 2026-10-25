@@ -151,6 +151,21 @@ export const SkipOutputSchema = z.discriminatedUnion("reason", [
   }),
 ]);
 
+// What a context step ends with: the action it took, or why the action did not happen.
+export const ContextOutputSchema = z.discriminatedUnion("applied", [
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(true),
+    sessionId: NonEmptyStringSchema,
+  }),
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(false),
+    reason: NonEmptyStringSchema,
+  }),
+]);
+export type ContextOutput = z.infer<typeof ContextOutputSchema>;
+
 // A node's current run: state.json is the graph as it stands now, not its history (that is
 // event.jsonl). A loop, switch or include holds its children in `nodes`, keyed by the ids
 // workflow.yaml gives them; a loop holds only its current pass, numbered by `iteration`, with the
