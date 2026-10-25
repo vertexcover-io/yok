@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -41,8 +42,12 @@ import {
 } from "./context-step.ts";
 
 const RESUME = "/yok:orchestrate --resume feat-x";
-const IDLE = "❯ ";
-const BUSY = "· Vibing… (3s)";
+// Claude's input box: a ❯ line between two rules. Claude keeps it on screen while it works.
+const RULE = "─".repeat(40);
+const IDLE = `${RULE}\n❯ \n${RULE}`;
+const BUSY = `· Vibing… (3s)\n${IDLE}`;
+const REFUSED = `⎿  Not enough messages to compact.\n${IDLE}`;
+const COMPACTING = `✻ Compacting conversation… (42s)\n${IDLE}`;
 
 const seed = (runDir: string): State => ({
   schemaVersion: 1,
@@ -112,9 +117,10 @@ const setUp = async (node: string, header = "") => {
 
 type Typed = string | readonly string[];
 
-// A terminal whose screen comes from `screen(captures)`; `onSubmit` runs when Enter follows text.
+// A terminal whose screen comes from `screen(captures, typed)`; `onSubmit` runs when Enter follows
+// text.
 const fakeTerminal = (
-  screen: (captures: number) => string,
+  screen: (captures: number, typed: readonly Typed[]) => string,
   onSubmit: (text: string) => Promise<void> = async () => {},
 ) => {
   const typed: Typed[] = [];
@@ -131,7 +137,7 @@ const fakeTerminal = (
       if (keys[0] === "Enter" && typeof text === "string") await onSubmit(text);
       return done();
     },
-    capture: async () => ({ ok: true, value: screen(captures++) }),
+    capture: async () => ({ ok: true, value: screen(captures++, typed) }),
     isAlive: async () => true,
     kill: done,
     rename: done,
@@ -208,6 +214,8 @@ const eventsOf = (runDir: string) => jsonlEventStore(runDir).read();
 const typesOf = (log: readonly Typed[]) =>
   log.map((entry) => (typeof entry === "string" ? entry : entry[0]));
 const typesIn = async (runDir: string) => (await eventsOf(runDir)).map((event) => event.type);
+const stateOf = (runDir: string): State =>
+  JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
 const stepOutput = async (runDir: string) =>
   (await eventsOf(runDir)).find((event) => event.type === "workflow.node.completed")?.payload;
 
@@ -218,12 +226,46 @@ const startingProvider = (context: Context) => {
     ...fake.provider,
     relaunch: async (terminal, sessionId, options) => {
       const relaunched = await fake.provider.relaunch(terminal, sessionId, options);
-      await completeContextOnSessionStart(context.run, sessionId, "startup", undefined);
+      await completeContextOnSessionStart(context.run, sessionId, "startup");
       return relaunched;
     },
   };
   return { provider, relaunches: fake.relaunches };
 };
+
+// What the --resume skill records first, once Claude takes the resume line.
+const resumed = (run: RunRef) =>
+  appendRunEvent(run, {
+    type: "orchestrate.resume",
+    source: "orchestrate",
+    payload: { input: {}, output: { interrupted: [] } },
+  });
+
+const typedLine = (line: string) => ["C-u", line, "Enter"];
+
+// What Claude 2.1.309 shows under its /config popup, with the search box focused and after
+// leaving it; the popup hides the input box.
+const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear";
+const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
+// A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
+const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
+// The shape of what Claude 2.1.309 shows for a permission asked mid-turn and for a question: no
+// spinner and no input box. An Escape rejects the permission or declines the question.
+const PERMISSION_PROMPT = `${RULE}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
+const QUESTION = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · ↑/↓ to navigate · Esc to cancel`;
+// An Escape here would reject the permission Claude asked for mid-turn.
+const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION}`;
+const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
+const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
+
+// An idle Claude that runs the --resume skill when the resume line is typed.
+const resumingTerminal = (run: RunRef) =>
+  fakeTerminal(
+    () => IDLE,
+    async (text) => {
+      if (text === RESUME) await resumed(run);
+    },
+  );
 
 describe("runContextStep: new", () => {
   test("records the start, relaunches Claude on a new session, and the new session's SessionStart completes the node", async () => {
@@ -266,7 +308,7 @@ describe("runContextStep: new", () => {
 
   test("a relaunch that fails undoes the swap, completes unapplied and resumes the old session", async () => {
     const context = await setUp("type: context, action: new");
-    const fake = fakeTerminal(() => IDLE);
+    const fake = resumingTerminal(context.run);
 
     await helper(context, fake.terminal, fakeProvider(false).provider);
 
@@ -279,7 +321,7 @@ describe("runContextStep: new", () => {
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "new", applied: false, reason: "no pane" },
     });
-    expect(typesOf(fake.typed)).toEqual(["C-u", RESUME, "Enter"]);
+    expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
   });
 
   test("the new session launches with the run's .env and workflow env, under yok's own", async () => {
@@ -300,7 +342,7 @@ describe("runContextStep: new", () => {
 
   test("a run env that fails to load completes unapplied and resumes the old session, launching nothing", async () => {
     const context = await setUp("type: context, action: new", "envFile: gone.env\n");
-    const fake = fakeTerminal(() => IDLE);
+    const fake = resumingTerminal(context.run);
     const { provider, relaunches } = fakeProvider();
 
     await helper(context, fake.terminal, provider);
@@ -310,7 +352,7 @@ describe("runContextStep: new", () => {
       output: { action: "new", applied: false },
     });
     expect(JSON.stringify(await stepOutput(context.runDir))).toContain("gone.env");
-    expect(typesOf(fake.typed)).toEqual(["C-u", RESUME, "Enter"]);
+    expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
     expect((await context.registry.findRun("r-1"))?.sessions).toEqual([
       { agent: "claude", sessionId: "A" },
     ]);
@@ -326,57 +368,661 @@ describe("runContextStep: new", () => {
       output: { action: "new", applied: false, reason: expect.stringContaining("SessionStart") },
     });
   });
+
+  test("after a relaunch with no SessionStart, the new session already holds the resume line as its prompt: nothing is typed, and a session that sits idle without running it is recorded unreachable", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider, relaunches } = fakeProvider();
+    const fake = fakeTerminal(() => IDLE);
+
+    await helper(context, fake.terminal, provider);
+
+    expect(fake.typed).toEqual([]);
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
+    );
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: relaunches[0]?.sessionId ?? "", step: "step", line: RESUME },
+    ]);
+  });
+
+  test("after a relaunch whose SessionStart is late, the new session's own prompt resumes the run: nothing is typed and no notice is sent", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider } = fakeProvider();
+    const fake = fakeTerminal(() => IDLE);
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async () => {
+        // the slow session runs its prompt once the helper has given up on its SessionStart
+        if (fake.captureCount() === 3) await resumed(context.run);
+        return fake.terminal.capture();
+      },
+    };
+
+    await helper(context, terminal, provider);
+
+    expect(fake.typed).toEqual([]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "new", applied: false },
+    });
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
+  test("a run log that cannot be read after a failed step still ends the helper, with the old session assumed", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider } = fakeProvider(false);
+    const fake = fakeTerminal(() => IDLE);
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async () => {
+        if (fake.captureCount() === 0) {
+          appendFileSync(join(context.runDir, "event.jsonl"), "{not json\n");
+        }
+        return fake.terminal.capture();
+      },
+    };
+
+    await expect(helper(context, terminal, provider)).resolves.toBeUndefined();
+  });
 });
 
+// A terminal where Claude takes a typed line only when TAKES says it took that try of it (1 for
+// the first time the line is typed): a taken /compact completes the compaction, and a taken
+// resume line runs the --resume skill.
+const losingTerminal = (
+  context: Context,
+  takes: (line: string, attempt: number) => boolean,
+  screen: (captures: number, typed: readonly Typed[]) => string = () => IDLE,
+) => {
+  const attempts = new Map<string, number>();
+  const fake = fakeTerminal(screen, async (text) => {
+    const attempt = (attempts.get(text) ?? 0) + 1;
+    attempts.set(text, attempt);
+    if (!takes(text, attempt)) return;
+    if (text === RESUME) await resumed(context.run);
+    if (text.startsWith("/compact")) {
+      await completeContextOnSessionStart(context.run, "A", "compact");
+    }
+  });
+  return { ...fake, attempts };
+};
+
+const completions = async (runDir: string) =>
+  (await typesIn(runDir)).filter((type) => type === "workflow.node.completed").length;
+
 describe("runContextStep: compact", () => {
-  test("records the start, types /compact with the prompt; the compact's SessionStart completes the node and types the resume prompt", async () => {
+  test("records the start and, with the input box on screen, types /compact with the prompt once and no Escape; the compact's SessionStart completes the node, and the resume line follows and is confirmed by the run's orchestrate resume", async () => {
     const context = await setUp('type: context, action: compact, prompt: "keep the plan"');
-    const fake = fakeTerminal(
-      () => IDLE,
-      async (text) => {
-        if (!text.startsWith("/compact")) return;
-        await completeContextOnSessionStart(context.run, "A", "compact", fake.terminal);
-      },
-    );
+    const fake = losingTerminal(context, () => true);
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(["/compact keep the plan", "Enter", RESUME, "Enter"]);
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact keep the plan"),
+      ...typedLine(RESUME),
+    ]);
     expect(await typesIn(context.runDir)).toEqual([
       "workflow.context.started",
       "workflow.node.completed",
+      "orchestrate.resume",
     ]);
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
   });
 
-  test("a compact with too little to compact completes unapplied, empties the input and resumes", async () => {
+  test("C-u follows the Escape only after Claude's 50 ms escape timeout, so Claude reads a lone Escape and not Alt+C-u", async () => {
     const context = await setUp("type: context, action: compact");
-    const fake = fakeTerminal((captures) =>
-      captures < 1 ? IDLE : "⎿  Not enough messages to compact.\n❯ ",
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => (escapesIn(typed) === 0 ? CONFIG_LIST_FOOTER : IDLE),
+    );
+    const sentAt: Readonly<{ key: string; at: number }>[] = [];
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      sendKeys: async (keys) => {
+        sentAt.push({ key: keys[0] ?? "", at: Date.now() });
+        return fake.terminal.sendKeys(keys);
+      },
+    };
+
+    await helper(context, terminal);
+
+    const at = (key: string) => sentAt.find((sent) => sent.key === key)?.at ?? Number.NaN;
+    expect(at("C-u") - at("Escape")).toBeGreaterThan(50);
+  });
+
+  test("a /config popup hiding the input box, with its search box focused, gets exactly 2 Escapes, then /compact is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => [CONFIG_SEARCH_FOOTER, CONFIG_LIST_FOOTER][escapesIn(typed)] ?? IDLE,
     );
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(["/compact", "Enter", "C-u", RESUME, "Enter"]);
+    expect(typesOf(fake.typed)).toEqual([
+      "Escape",
+      "Escape",
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+    ]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true },
+    });
+  });
+
+  test.each([CONFIG_SEARCH_FOOTER, CONFIG_LIST_FOOTER])(
+    "an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed",
+    async (footer) => {
+      const context = await setUp("type: context, action: compact");
+      const fake = losingTerminal(
+        context,
+        () => true,
+        () => `${IDLE}\n  Theme  Dark\n${footer}`,
+      );
+
+      await helper(context, fake.terminal);
+
+      expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
+    },
+  );
+
+  test.each([
+    ["a permission prompt", PERMISSION_PROMPT],
+    ["a question", QUESTION],
+    ["a permission dialog whose ❯ 1. Yes sits between rules", PERMISSION],
+  ])(
+    "%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable",
+    async (_, screen) => {
+      const context = await setUp("type: context, action: compact");
+      const fake = losingTerminal(
+        context,
+        () => true,
+        () => screen,
+      );
+      const startedAt = Date.now();
+
+      await helper(context, fake.terminal);
+
+      expect(fake.typed).toEqual([]);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
+      expect(await stepOutput(context.runDir)).toMatchObject({
+        output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+      });
+      expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+    },
+  );
+
+  test("a permission prompt with no spinner gets no Escape: yok waits for a person to answer it and types /compact once the box shows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (captures) => (captures < 5 ? PERMISSION_PROMPT : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
+  test("a permission dialog raised while Claude works gets no Escape: yok waits for the busy sign to go, and types /compact once the box shows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (captures) => (captures < 5 ? BUSY_DIALOG : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
+  test("a hidden input box under a busy sign that never goes gets no Escape and no line in 30 seconds per try: the compaction ends unreachable and the resume line's notice is agent.input.unreachable", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => BUSY_DIALOG,
+    );
+    const startedAt = Date.now();
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed).toEqual([]);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+  });
+
+  test("a dialog footer quoted in the transcript above a real input box does not hide the box: /compact is typed with no Escape", async () => {
+    const context = await setUp("type: context, action: compact");
+    const quoted = `● The picker shows "Enter to select · Esc to cancel" under its list.\n${IDLE}`;
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => quoted,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  });
+
+  test("an input box that never shows gets exactly 3 Escapes per try and no line, ends the compaction unapplied with that reason, and sends one notice: agent.input.unreachable for the resume line", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => CONFIG_LIST_FOOTER,
+    );
+
+    await helper(context, fake.terminal);
+
+    // 3 for /compact, then 3 for each of the resume line's two tries
+    expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
+    );
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
+    ]);
+    expect(stateOf(context.runDir).status).toBe("running");
+  });
+
+  test("a permission prompt with an unknown footer under a box left in scrollback gets no line and no Escape: Enter there would approve it", async () => {
+    const context = await setUp("type: context, action: compact");
+    const stale = `${IDLE}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Tab to amend`;
+    const fake = fakeTerminal(() => stale);
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed).toEqual([]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+  });
+
+  test("a tmux that fails before any line is typed ends the compaction unapplied with the failure and sends one notice: nobody drives the run", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = fakeTerminal(() => IDLE);
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async () => ({ ok: false, error: "tmux hung" }),
+    };
+
+    await helper(context, terminal);
+
+    expect(fake.typed).toEqual([]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "tmux hung" },
+    });
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
+    );
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "A", step: "step", line: RESUME },
+    ]);
+  });
+
+  test("a tmux that fails once the resume line is typed sends no notice: Claude may still take the line", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(context, (line) => line !== RESUME);
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async () =>
+        fake.typed.includes(RESUME) ? { ok: false, error: "tmux hung" } : fake.terminal.capture(),
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed).filter((entry) => entry === RESUME)).toEqual([RESUME]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
+  test("a popup that hides the input box for /compact but is gone by the resume line sends no notice", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      // hidden through /compact's 3 Escapes, gone after the resume line's first Escape
+      (_, typed) => (escapesIn(typed) <= 3 ? CONFIG_LIST_FOOTER : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...Array(4).fill("Escape"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: false, reason: "Could not reach Claude's input box" },
+    });
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
+  test("SC2: a resume line lost after a compaction that worked is typed again, and the node stays applied with one completion", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(context, (line, attempt) => line !== RESUME || attempt === 2);
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+      ...typedLine(RESUME),
+    ]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true, sessionId: "A" },
+    });
+    expect(await completions(context.runDir)).toBe(1);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
+  test("SC3: a /compact Claude never takes is typed once; with no SessionStart in 180 seconds the step completes unapplied, records no lost line, and the resume line is still typed and taken", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(context, (line) => line === RESUME);
+    const startedAt = Date.now();
+
+    await helper(context, fake.terminal);
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180_000);
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: {
+        action: "compact",
+        applied: false,
+        reason:
+          "no SessionStart for the compact within 180 seconds, and Claude no longer looks busy",
+      },
+    });
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(stateOf(context.runDir).status).toBe("running");
+    // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
+  }, 20_000);
+
+  test("a compact Claude still shows as busy past 180 seconds completes applied once its SessionStart comes, and the resume line follows", async () => {
+    const context = await setUp("type: context, action: compact");
+    const startedAt = Date.now();
+    const fake = losingTerminal(
+      context,
+      (line) => line === RESUME,
+      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
+    );
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (Date.now() - startedAt >= 300_000) {
+          await completeContextOnSessionStart(context.run, "A", "compact");
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true, sessionId: "A" },
+    });
+  }, 30_000);
+
+  test("a compact whose spinner goes away with no SessionStart fails 30 seconds after Claude last looked busy, and the resume line is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const startedAt = Date.now();
+    const fake = losingTerminal(
+      context,
+      (line) => line === RESUME,
+      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: {
+        action: "compact",
+        applied: false,
+        reason:
+          "no SessionStart for the compact within 330 seconds, and Claude no longer looks busy",
+      },
+    });
+  }, 30_000);
+
+  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      (line) => line === RESUME,
+      () => COMPACTING,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: {
+        action: "compact",
+        applied: false,
+        reason: "no SessionStart for the compact within 600 seconds",
+      },
+    });
+  }, 60_000);
+
+  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact at once, and the compaction completes applied", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => BUSY,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true, sessionId: "A" },
+    });
+  });
+
+  test("SC7: Claude saying there is nothing to compact ends the step at once with that reason, not after the 180-second wait, and the resume line is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      (line) => line === RESUME,
+      (captures) => (captures < 2 ? IDLE : REFUSED),
+    );
+    const startedAt = Date.now();
+
+    await helper(context, fake.terminal);
+
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: false, reason: "Not enough messages to compact." },
     });
   });
 
-  test("no SessionStart before the timeout completes unapplied and resumes", async () => {
+  test("an orchestrate resume recorded before the helper started does not confirm the resume line, so it is typed again", async () => {
     const context = await setUp("type: context, action: compact");
-    const fake = fakeTerminal(() => IDLE);
+    await resumed(context.run);
+    const fake = losingTerminal(context, (line) => line !== RESUME);
 
     await helper(context, fake.terminal);
 
-    expect(await stepOutput(context.runDir)).toMatchObject({
-      output: { action: "compact", applied: false },
-    });
-    expect(typesOf(fake.typed).slice(-2)).toEqual([RESUME, "Enter"]);
-    // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+      ...typedLine(RESUME),
+    ]);
+  });
+
+  test("a resume line typed while Claude finishes a turn is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    const busyFor = 100_000;
+    const fake = fakeTerminal(
+      () => (typedAt === undefined || Date.now() < typedAt + busyFor ? BUSY : IDLE),
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+    let took = false;
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (!took && typedAt !== undefined && Date.now() >= typedAt + busyFor) {
+          took = true;
+          await resumed(context.run);
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
   }, 20_000);
+
+  test("a resume line whose orchestrate resume waits 100 seconds on a permission prompt, which draws no spinner, is not typed again", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    const heldFor = 100_000;
+    const fake = fakeTerminal(
+      () => (typedAt === undefined || Date.now() >= typedAt + heldFor ? IDLE : PERMISSION_PROMPT),
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+    let took = false;
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (!took && typedAt !== undefined && Date.now() >= typedAt + heldFor) {
+          took = true;
+          await resumed(context.run);
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+  }, 20_000);
+
+  test("a resume line typed while Claude finishes a turn that outlasts the 180-second cap is typed once and records no event", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    const busyFor = 200_000;
+    const fake = fakeTerminal(
+      () => (typedAt === undefined || Date.now() >= typedAt + busyFor ? IDLE : BUSY),
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  }, 20_000);
+
+  test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {
+    const context = await setUp("type: context, action: compact");
+    let typedAt: number | undefined;
+    let capturesSinceTyped = 0;
+    const busyFor = 40_000;
+    const fake = fakeTerminal(
+      () => {
+        if (typedAt === undefined) return IDLE;
+        capturesSinceTyped += 1;
+        return capturesSinceTyped === 1 || Date.now() >= typedAt + busyFor ? IDLE : BUSY;
+      },
+      async (text) => {
+        if (text === RESUME) typedAt = Date.now();
+        else await completeContextOnSessionStart(context.run, "A", "compact");
+      },
+    );
+    let took = false;
+    const terminal: ITerminal = {
+      ...fake.terminal,
+      capture: async (lines) => {
+        if (!took && typedAt !== undefined && Date.now() >= typedAt + busyFor) {
+          took = true;
+          await resumed(context.run);
+        }
+        return fake.terminal.capture(lines);
+      },
+    };
+
+    await helper(context, terminal);
+
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  }, 20_000);
+
+  test("SC13: a resume line typed on both tries and never taken records no event, leaves the run running with no blocker, and leaves the node applied", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(context, (line) => line !== RESUME);
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+      ...typedLine(RESUME),
+    ]);
+    const agentEvents = (await typesIn(context.runDir)).filter((type) => type.startsWith("agent."));
+    expect(agentEvents).toEqual([]);
+    expect(stateOf(context.runDir).status).toBe("running");
+    expect(stateOf(context.runDir).blocker).toBeUndefined();
+    expect(await stepOutput(context.runDir)).toMatchObject({
+      output: { action: "compact", applied: true, sessionId: "A" },
+    });
+  });
+
+  test("a resume line typed and not taken on the first try, whose input box never shows on the second, records no event: a line was typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      (line) => line !== RESUME,
+      (_, typed) => (typed.includes(RESUME) ? CONFIG_LIST_FOOTER : IDLE),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(typesOf(fake.typed)).toEqual([
+      ...typedLine("/compact"),
+      ...typedLine(RESUME),
+      ...Array(3).fill("Escape"),
+    ]);
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+  });
+
+  test("SC14: a /compact Claude refuses with nothing to compact, then a resume line it takes, records no notice and leaves the run running", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      (line) => line === RESUME,
+      (captures) => (captures < 2 ? IDLE : REFUSED),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(stateOf(context.runDir).status).toBe("running");
+  });
 });
 
 describe("completeContextOnSessionStart", () => {
@@ -389,21 +1035,18 @@ describe("completeContextOnSessionStart", () => {
 
   test("only a session start that matches the started action completes the node", async () => {
     const context = await setUp("type: context, action: new");
-    const typed = fakeTerminal(() => IDLE);
-
-    await completeContextOnSessionStart(context.run, "s-new", "startup", typed.terminal);
+    await completeContextOnSessionStart(context.run, "s-new", "startup");
     expect(await stepOutput(context.runDir)).toBeUndefined();
 
     await started(context, "new", "s-new");
-    await completeContextOnSessionStart(context.run, "s-other", "startup", typed.terminal);
-    await completeContextOnSessionStart(context.run, "s-new", "compact", typed.terminal);
+    await completeContextOnSessionStart(context.run, "s-other", "startup");
+    await completeContextOnSessionStart(context.run, "s-new", "compact");
     expect(await stepOutput(context.runDir)).toBeUndefined();
 
-    await completeContextOnSessionStart(context.run, "s-new", "startup", typed.terminal);
+    await completeContextOnSessionStart(context.run, "s-new", "startup");
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "new", applied: true, sessionId: "s-new" },
     });
-    expect(typed.typed).toEqual([]);
   });
 });
 
@@ -452,7 +1095,7 @@ describe("runContextStep: guards", () => {
 
   test("a tmux call that throws completes the node unapplied and still resumes the run", async () => {
     const context = await setUp("type: context, action: compact");
-    const fake = fakeTerminal(() => IDLE);
+    const fake = resumingTerminal(context.run);
     let captures = 0;
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -468,7 +1111,7 @@ describe("runContextStep: guards", () => {
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: false, reason: "tmux timed out after 10s" },
     });
-    expect(typesOf(fake.typed)).toEqual(["C-u", RESUME, "Enter"]);
+    expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
   });
 });
 
@@ -559,9 +1202,9 @@ describe("runModelStep", () => {
     expect(relaunches[0]?.options).not.toHaveProperty("effort");
   });
 
-  test("SC27: a relaunch that fails with respawn failed is recorded as failed, the input emptied, and the resume prompt typed", async () => {
+  test("SC9, SC27: a relaunch that fails with respawn failed is recorded as failed, and the resume prompt is typed once at the input box and taken", async () => {
     const context = await setUpSwitch("high");
-    const pane = fakeTerminal(() => IDLE);
+    const pane = resumingTerminal(context.run);
     const provider: IAgentProvider = {
       ...fakeProvider().provider,
       relaunch: async () => ({ ok: false, error: "respawn failed" }),
@@ -579,13 +1222,28 @@ describe("runModelStep", () => {
         reason: "respawn failed",
       },
     ]);
-    expect(typesOf(pane.typed)).toEqual(["C-u", RESUME, "Enter"]);
+    expect(typesOf(pane.typed)).toEqual(typedLine(RESUME));
+  });
+
+  test("after a failed switch, a resume line whose input box never shows is recorded unreachable for the switch's node and the session it was to resume", async () => {
+    const context = await setUpSwitch();
+    const pane = fakeTerminal(() => CONFIG_LIST_FOOTER);
+
+    await modelHelper(context, pane.terminal, fakeProvider(false).provider);
+
+    expect(typesOf(pane.typed)).toEqual(Array(6).fill("Escape"));
+    const unreachable = (await eventsOf(context.runDir)).filter(
+      (event) => event.type === "agent.input.unreachable",
+    );
+    expect(unreachable.map((event) => event.payload)).toEqual([
+      { agent: "claude", sessionId: "s-1", step: "think", line: RESUME },
+    ]);
   });
 
   test("a resumed session with no SessionStart within 60 seconds, counting none from before the relaunch, is recorded as failed and the run resumed", async () => {
     const context = await setUpSwitch();
     await sessionStarted(context.run, "s-1", "resume");
-    const pane = fakeTerminal(() => IDLE);
+    const pane = resumingTerminal(context.run);
 
     await modelHelper(context, pane.terminal);
 
@@ -598,7 +1256,7 @@ describe("runModelStep", () => {
         reason: "no SessionStart within 60 seconds after resuming on opus-x",
       },
     ]);
-    expect(typesOf(pane.typed)).toEqual(["C-u", RESUME, "Enter"]);
+    expect(typesOf(pane.typed)).toEqual(typedLine(RESUME));
   });
 
   test("SC15: of two helpers started for the same switch, only one relaunches and stores the result", async () => {
@@ -612,7 +1270,7 @@ describe("runModelStep", () => {
       };
       return { ...pane.terminal, capture };
     };
-    const { provider, relaunches } = fakeProvider();
+    const { provider, relaunches } = resumingProvider(context);
 
     await Promise.all([
       modelHelper(context, slowPane(), provider),

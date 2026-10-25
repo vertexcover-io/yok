@@ -15,8 +15,10 @@ import {
   claudeArgs,
   claudeProvider,
   claudeRunArgs,
+  hasClaudeInputBox,
   interpretOutput,
   isClaudeBusy,
+  isClaudeChoicePending,
 } from "./claude.ts";
 import { claudeSettings } from "./claude-hooks.ts";
 
@@ -471,6 +473,7 @@ describe("isClaudeBusy", () => {
 });
 
 const RULE = "─".repeat(40);
+const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
 // Claude 2.1.286's empty input box, with its status line below.
 const PROMPT = `${RULE}\n❯\n${RULE}\n  Model: Opus | Ctx Used: 8.0%`;
 const LIMIT_MENU = [
@@ -555,7 +558,6 @@ describe("claudeProvider.promptWhenReady", () => {
 });
 
 describe("canTypeComment", () => {
-  const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
   test.each([
     ["idle empty box", PROMPT, true],
     [
@@ -566,7 +568,122 @@ describe("canTypeComment", () => {
     ["menu footer", `${PROMPT}\nEnter to select · ↑/↓ to navigate · Esc to cancel`, false],
     ["half-typed text", box("❯ half a sentence"), false],
     ["queued-messages hint", box("❯ Press up to edit queued messages"), false],
+    [
+      "an empty ❯ between rules above the bottom box, which holds text",
+      `${box("❯")}\n${box("❯ half")}`,
+      false,
+    ],
   ])("SC14: %s -> %p", (_name, screen, expected) => {
     expect(canTypeComment(screen)).toBe(expected);
+  });
+});
+
+// What Claude 2.1.309 shows at the bottom of its pane for a permission asked mid-turn: no spinner
+// and no input box.
+const PERMISSION_PROMPT = [
+  RULE,
+  " Bash command",
+  ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+  " Create empty perm-probe.txt file",
+  "╌".repeat(40),
+  " │ touch /tmp/perm-probe.txt",
+  "╌".repeat(40),
+  " Do you want to proceed?",
+  " ❯ 1. Yes",
+  "   2. Yes, and always allow access to /tmp from this project",
+  "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+  "   4. No",
+  " Esc to cancel · Tab to amend",
+].join("\n");
+const QUESTION = [
+  RULE,
+  " Which colour?",
+  " ❯ 1. Red",
+  "   2. Blue",
+  " Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\n");
+
+describe("isClaudeChoicePending", () => {
+  test.each([
+    ["a permission prompt", `● Creating the file.\n${PERMISSION_PROMPT}`, true],
+    ["a question", QUESTION, true],
+    ["a permission option between rules", `${box("❯ 1. Yes")}\n  2. No`, true],
+    [
+      "an answered prompt left in scrollback above the box",
+      `${PERMISSION_PROMPT}\n● Created the file.\n${PROMPT}`,
+      false,
+    ],
+    [
+      "the /config popup",
+      "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
+      false,
+    ],
+    ["a box under a spinner", `· Ionizing… (6s)\n${box("❯ ")}`, false],
+    [
+      "a numbered list in Claude's reply above the box",
+      `1. Fixed it\n2. Tested it\n${PROMPT}`,
+      false,
+    ],
+  ])("%s -> %p", (_name, screen, expected) => {
+    expect(isClaudeChoicePending(screen)).toBe(expected);
+  });
+});
+
+describe("hasClaudeInputBox", () => {
+  test.each([
+    ["an empty box", PROMPT, true],
+    ["a box holding text", box("❯ half a sentence"), true],
+    ["a box under a spinner", `· Ionizing… (6s · ↓ 359 tokens)\n${box("❯ ")}`, true],
+    [
+      "the /config popup",
+      "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
+      false,
+    ],
+    ["the limit menu", LIMIT_MENU, false],
+    ["a ❯ with no rules around it", "❯ ", false],
+    [
+      "a box under transcript text quoting a dialog footer",
+      `● Its footer reads Enter to select · Esc to cancel.\n${PROMPT}`,
+      true,
+    ],
+    [
+      "a permission dialog whose ❯ 1. Yes sits between rules",
+      `${box("❯ 1. Yes")}\n  2. No\nEsc to cancel · Tab to amend`,
+      false,
+    ],
+    [
+      "an AskUserQuestion dialog",
+      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
+      false,
+    ],
+    [
+      "a box left in scrollback above the /config popup with its search box focused",
+      `${PROMPT}\n  Search settings\nType to filter · Enter/↓ to select · ↑ to tabs · Esc to clear`,
+      false,
+    ],
+    [
+      "a box left in scrollback above the /config popup's list",
+      `${PROMPT}\n  Theme  Dark\nEnter/Space to change · / to search · Esc to close`,
+      false,
+    ],
+    [
+      "a box with Claude's interrupt hint under it while it works",
+      `${box("❯ ")}\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt`,
+      true,
+    ],
+    ["a box with Claude's shortcuts hint under it", `${box("❯ ")}\n  ? for shortcuts`, true],
+    [
+      "a permission dialog whose ❯ 1. Yes sits between rules above a footer yok does not know",
+      `${box("❯ 1. Yes")}\n  2. No\n  Tab to amend`,
+      false,
+    ],
+    ["a box holding a cancelled /compact", box("❯ /compact keep the plan"), true],
+    [
+      "a dialog whose footer reads Enter to select with no Esc to cancel",
+      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,
+      false,
+    ],
+  ])("%s -> %p", (_name, screen, expected) => {
+    expect(hasClaudeInputBox(screen)).toBe(expected);
   });
 });

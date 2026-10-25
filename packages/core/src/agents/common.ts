@@ -16,6 +16,12 @@ const SUBMIT_DELAY_MS = 150;
 
 export const shellQuote = (arg: string): string => `'${arg.replaceAll("'", `'\\''`)}'`;
 
+// A Result's value, or its error thrown: for a path that handles every failure in one catch.
+export const unwrap = <T>(result: Result<T, unknown>): T => {
+  if (result.ok) return result.value;
+  throw result.error instanceof Error ? result.error : new Error(String(result.error));
+};
+
 export const typeLine = async (
   terminal: ITerminal,
   text: string,

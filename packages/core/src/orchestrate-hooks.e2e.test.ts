@@ -681,19 +681,22 @@ nodes:
     }
   }, 30_000);
 
-  test("compact: the helper types /compact; the compact's SessionStart completes the node and types the resume prompt", async () => {
+  test("SC12: compact: /compact is typed once; its SessionStart completes the node, the resume line is typed once and the run's orchestrate resume confirms it, and next moves on", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
+    const COMPACT = "/compact keep the plan";
     try {
       const flow = await runToContextNode('action: compact, prompt: "keep the plan"', socket);
       expect(flow.context).toMatchObject({ kind: "context", action: "compact" });
       const sessionsBefore = stateOf(flow.run.repo).activeSessions;
 
       expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.typed().includes("/compact keep the plan"));
+      await waitFor(() => flow.typed().includes(COMPACT));
       expect(flow.sessionStart("A", "compact")).toMatchObject({ code: 0, stdout: "" });
       await waitFor(() => flow.typed().includes(RESUME));
+      // what the --resume skill runs first
+      expect(flow.step(["resume", "--run", "feat-x"]).code).toBe(0);
 
-      expect(flow.typed()).toEqual(["/compact keep the plan", RESUME]);
+      expect(flow.typed()).toEqual([COMPACT, RESUME]);
       expect(stateOf(flow.run.repo).activeSessions).toEqual(sessionsBefore);
       expect(await contextOutput(flow.run.repo)).toMatchObject({
         output: { action: "compact", applied: true, sessionId: "A" },
