@@ -3,8 +3,9 @@ name: planning
 description: >
   Turn the approved design into a plan a coder can build from: phases cut as vertical slices,
   every change written as a diff, and the test scenarios that prove each phase. Writes plan.md and
-  one file per phase, and gets the user's approval. Runs as the pipeline's planning stage, after
-  design; also use it for "plan this" or "how should we implement" once a design is approved.
+  one file per phase, and gets the user's approval on the generated plan page. Runs as the
+  pipeline's planning stage, after design; also use it for "plan this" or "how should we
+  implement" once a design is approved.
 summary: Say how many phases the plan has and what each one builds.
 mode: inline
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Skill, WebSearch, WebFetch]
@@ -15,6 +16,7 @@ consumes:
     optional: true
 produces:
   - artifact: plan
+  - artifact: plan-page
 protocols: []
 scopes: []
 verifiers:
@@ -120,7 +122,7 @@ Write each `phases/phase-N.md` first, then `plan.md`, per the `plan-format` and 
 references. The test: **a coder who has the task but not the codebase can follow every step
 without opening a file.**
 
-Three rules bind every step:
+Four rules bind every step:
 
 - **Open before you write.** Write a step against the file's current content, never against a
   sweep pointer or memory.
@@ -129,12 +131,14 @@ Three rules bind every step:
   answer, fix that line in `design.md`, within its caps, so it stays true, and record the
   change in plan.md's `## Design corrections`.
 - **Every frame gets a step.** A step that builds a surface a frame defines names it, `build to
-  design/FILE at WIDTHpx` with the width the index gives, carries that frame's style facts, and
-  quotes each `design/spec.md` rule the surface must keep. A frame the index gives no width is
-  named `build to design/FILE`. A `design/spec.md` rule about a screen, viewport or state no
-  frame draws is quoted on the step that builds that surface, so every rule has a step.
-  A screen no step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done`
-  checks that every frame has one or the other.
+  design/FILE at WIDTHpx` with the width the index gives, and carries that frame's style
+  facts. A frame the index gives no width is named `build to design/FILE`. A screen no step
+  builds is recorded in plan.md as `design/FILE — not built: REASON`. `done` checks that every
+  frame has one or the other.
+- **Every spec rule gets a pointer.** A step that builds a surface `design/spec.md` governs
+  says where its rules are on one line of its own, `Spec: design/spec.md — WHICH PART`, naming
+  the part in the spec's own words. The rule text stays in spec.md. A rule about a screen,
+  viewport or state no frame draws is pointed to from the step that builds that surface.
 
 **Done when:** every phase file and `plan.md` exist, and every file a step edits was opened.
 
@@ -176,30 +180,38 @@ In the reply:
 2. The test matrix as counts per level.
 3. Every design correction, ADR written, deferred item and repo added to the workspace, one
    line each.
-4. The paths to `plan.md` and each phase file as `file://` links.
+4. The paths to `plan.html`, `plan.md` and each phase file as `file://` links.
 
-Then ask for approval without a menu, so the viewer's comments reach you. In a yok run, run
-`yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.md`, where
-NODE_RUN_ID is the id in the stage's `done` command, and end the turn with one line: approve
-with the Approve button in the viewer, or type approve here. While you wait, comments arrive as
-`[review]` messages: reply to each, apply what they change, and end the turn again. An `approve`
-entry in a `[review]` message, or the user typing approve, is the approval; reply to that
-comment as `answered`. Outside a run, ask with `AskUserQuestion`: header `Approve?`, options
-`Approve the plan (Recommended)` and `Revise`.
+Then ask for approval:
 
-If `await-approval` says the plan was approved automatically, go to step 6.
-
-A revision is not an approval: apply it to the files, re-run step 4's self-review, say what
-changed and ask again. Phase numbers never change in a revision, since commits will reference
-them; a deleted phase leaves a gap. When a revision changes a decision an ADR from this run
-records, delete that ADR and its INDEX.md line, and record the new decision.
+- **In a yok run, ask through the viewer, without a menu,** so the viewer's comments reach you.
+  Run `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.html`, where
+  NODE_RUN_ID is the id in the stage's `done` command. It builds `plan.html` from the plan files
+  before it waits, so the reviewer sees each phase with its frames and spec in place. When it
+  fails, fix what it names and run it again. End the turn with one line: approve with the
+  Approve button in the viewer, or type approve here.
+- **Outside a run, ask with `AskUserQuestion`:** header `Approve?`, options
+  `Approve the plan (Recommended)` and `Revise`.
+- **Reply to each comment.** Comments arrive as `[review]` messages: reply to each, apply what
+  they change to the markdown files, run the same `await-approval` again so the page shows the
+  change, and end the turn again.
+- **Take only an approve as approval.** An `approve` entry in a `[review]` message, or the user
+  typing approve, is the approval; reply to that comment as `answered`. When `await-approval`
+  says the plan was approved automatically, go to step 6.
+- **Treat a revision as a new round.** Apply it to the markdown files, re-run step 4's
+  self-review, say what changed and ask again the same way. Phase numbers stay as they are,
+  since commits will reference them; a deleted phase leaves a gap. When a revision changes a
+  decision an ADR from this run records, delete that ADR and its INDEX.md line, and record the
+  new decision.
 
 **Done when:** the user approved.
 
 ## Step 6 — Finish
 
 The stage has no output: the plan files are all it hands on. Finish it with
-`--artifact '{"type":"plan","name":"plan","path":"artifacts/plan.md"}'` and an empty output.
+`--artifact '{"type":"plan","name":"plan","path":"artifacts/plan.md"}'`,
+`--artifact '{"type":"plan-page","name":"plan-page","path":"artifacts/plan.html"}'` and an
+empty output.
 
 ## Rationalizations
 

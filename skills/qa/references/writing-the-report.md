@@ -215,6 +215,13 @@ walk. One id proven by more than one walk — a desktop scenario and its phone r
 `scenario` names them both (`"01, 09"`), carrying `FAILURE` if either failed and `NOT VERIFIED` if either went
 unproven. What is not allowed is an id in the docs with no row here.
 
+**Every rule in `design/spec.md` is a requirement too.** When the run has a spec, read it top to bottom, whether or
+not a plan step points at the part a rule sits in, and give each rule it states its own row, `req` set to
+`SPEC: <the rule in a few words>`. Its verdict comes from the scenario that checked it, through that scenario's
+`visualMatch.specRules`: `SUCCESS` when it held, `FAILURE` when it broke. A rule no scenario reached is
+`NOT VERIFIED` with a `gaps[]` entry, and a rule that does not apply to this build is `INVALID` with why. The
+spec has no fixed format, so read rules as the spec writes them: a sentence, a bullet or a table row each count.
+
 **`verdict` is derived from that table, never chosen:** any scenario `FAILURE` → `FAIL`; else any requirement
 `NOT VERIFIED` → `PARTIAL`; only an all-covered, all-`SUCCESS` run is `PASS`. Compute it after the table is
 complete and write what it says, including when the run you just did feels like a pass.
@@ -288,6 +295,8 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
   this done.
 - `coverage[]` has a row for every requirement id the docs list, and `verdict` is what the derivation rule computes
   from it. Grep the docs for their id pattern and diff that set against the table before you call this done.
+- When the run has `design/spec.md`, `coverage[]` has a `SPEC:` row for every rule it states. Read the spec once more
+  against the table before you call this done.
 - Every `NOT VERIFIED` scenario has a `gaps[]` entry whose `mechanism` names a line, condition, credential or
   absent datum, with `attempted` listing distinct approaches and `wouldClose` naming the concrete unblock.
 - Every `bugs[]` entry carries a `reachedBy` naming a real actor and the surface they used, and an `origin` of

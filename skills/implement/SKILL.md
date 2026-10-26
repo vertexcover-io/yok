@@ -81,18 +81,18 @@ The node's mode decides who builds each phase:
 
 For each phase:
 
-- Use `tdd` one behavior at a time. Use the phase's scenarios and levels as written.
-- A scenario is done when a test **at its assigned level** ran green. "Already covered by a
-  unit test" does not satisfy an integration or E2E scenario; moving one to a cheaper level is
-  `BLOCKED`, not a pass.
-- Run affected tests and typecheck while iterating. Once the phase is built, run the full
-  tests, typecheck and lint. Documentation-only changes need the artifact checked, not
-  invented tests.
-- When building a screen, open the frame the step names first. When the step cites
-  `design/spec.md`, check the finished screen against each rule it cites before the full
-  tests.
-- Commit the phase with its `## Commit` message. Stage only this phase's changes and leave
-  unrelated edits alone. Commit without asking.
+- **Read the design first.** When a step names a frame or a `Spec: design/spec.md` part, open
+  both before the step's first test and build to them; qa checks the running screen.
+- **Build one behavior at a time** with `tdd`, at each scenario's assigned level.
+- **Count a scenario done** only when a test at its assigned level is green. Moving it to a
+  cheaper level is `BLOCKED`, not a pass.
+- **Test as you go:** affected tests and typecheck while iterating; full tests, typecheck and
+  lint once the phase is built. Docs-only changes need the artifact checked, not invented tests.
+- **Account for every spec rule.** In `implementation.md`, list each rule the phase's steps point
+  at with its test, or `visual, for qa`. Build any rule with neither; one the code cannot meet
+  is `BLOCKED` with the reason.
+- **Commit the phase** with its `## Commit` message, staging only its changes. Commit without
+  asking.
 
 ### The E2E leg
 
@@ -131,6 +131,7 @@ Load `writing-style`, then write `.yok/RUN/artifacts/implementation.md`:
 - each scenario id and the test that proves it
 - each check run, with pass and fail counts, and every justified skip
 - the E2E report or skip note per phase
+- per phase, each spec.md rule its steps point at, with the test that covers it or `visual, for qa`
 
 Finish the stage with `--artifact '{"type":"implementation","name":"implementation","path":"artifacts/implementation.md"}'` and one line as
 the output: how many phases were built and the pushed head. `COMPLETED` means the assignment

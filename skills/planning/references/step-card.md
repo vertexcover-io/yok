@@ -11,7 +11,7 @@ governs where things go and what they are called. It never governs how much a st
 | **What it does**: the contract, or the ordered logic with the branch and the error path | always | prose under the title |
 | **Diff**: the change | the step writes or changes code | a line naming the file and range, then a ```` ```diff ```` block |
 | **Pattern**: existing code to imitate | the step copies a shape from elsewhere rather than changing that code | a fenced block, with the reason it is shown on the line above |
-| **Design**: the frame this step builds to, and the spec rules it keeps | the step builds a surface a design defines | `build to design/FILE at WIDTHpx`, then each `design/spec.md` rule the surface keeps, quoted |
+| **Design**: the frame this step builds to, and where its spec rules are | the step builds a surface a design defines | `build to design/FILE at WIDTHpx`, then one line `Spec: design/spec.md — WHICH PART` |
 | **Why this way**: the rejected alternative, or the constraint | the location or shape had a plausible alternative | closing sentence |
 | **Trap**: what breaks if the developer does the obvious thing | code that looks safe to change and is not | its own paragraph |
 
@@ -56,9 +56,10 @@ asks them to fetch what the step could have handed them.
 ## Designs
 
 A step that builds to a design names the frame and the width `design/INDEX.md` gives it, with
-one line saying what it settles, and quotes each `design/spec.md` rule that surface must keep.
-Implement and qa check only the rules a step quotes. Prose is not a substitute: the ticket states
-the rule, and the frame settles what the rule leaves open.
+one line saying what it settles. On a line of its own it points at the part of `design/spec.md`
+that surface must keep, `Spec: design/spec.md — WHICH PART`, in the spec's own words. The rule
+text stays in spec.md: implement and qa read that part there and check those rules. Prose is
+not a substitute: the ticket states the rule, and the frame settles what the rule leaves open.
 
 **The style facts a frame settles**, to read off it and carry in the step's contract: element
 order · spacing · type scale and weight · colour role · component variant · divider placement ·

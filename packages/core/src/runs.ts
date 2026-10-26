@@ -61,6 +61,7 @@ import {
 } from "@yok/sdk/internal";
 import * as z from "zod";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
+import { PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { type AgentMode, extensionPath } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
@@ -765,6 +766,15 @@ export const requestApproval = async (
 ): Promise<Result<Readonly<{ nodeRunId: string; path: string; autoApproved?: true }>>> => {
   const step = await loadRunningLeaf(run, nodeRunId);
   if (!step.ok) return step;
+  // The plan page is generated, never edited: build it from the markdown each time it is shown.
+  if (path === PLAN_PAGE_PATH) {
+    try {
+      await writePlanPage(run);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `${PLAN_PAGE_PATH} was not rebuilt: ${reason}` };
+    }
+  }
   const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
   if (issue !== undefined) return { ok: false, error: issue.message };
   // No one reviews in this run: the file counts as approved, and nothing waits.

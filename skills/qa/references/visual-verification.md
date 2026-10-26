@@ -114,9 +114,10 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   content belongs, or a raw stack trace on screen is a finding.
 
 **7. Spec rules**
-- *(design)* Each `design/spec.md` rule a plan step quotes for this screen holds. Compute it from
-  `getComputedStyle()` or a measurement, and record every quoted rule in `visualMatch.specRules`, held or not. A
-  broken rule is a finding, graded by the question above that it belongs to.
+- *(design)* Each rule in the part of `design/spec.md` a plan step's `Spec:` line points at for this screen
+  holds. Read that part in spec.md, check each rule from `getComputedStyle()` or a measurement, and record every
+  rule in `visualMatch.specRules`, held or not. A broken rule is a finding, graded by the question above that it
+  belongs to.
 
 **One question needs driving, and Step 4 owns it.** Content longer than the fixture — a long name, a long label,
 a number with more digits — is the check most worth having, because a layout that survives seeded data and
