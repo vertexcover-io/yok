@@ -17,6 +17,7 @@ import {
   emitRunEvent,
   findRoot,
   type ITerminal,
+  type ITerminalHost,
   noopLogger,
   type ResolvedTiers,
   type RunRef,
@@ -27,7 +28,7 @@ import {
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
 import corePackage from "../package.json";
-import { agentAdapters } from "./agents/index.ts";
+import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
 import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
@@ -671,37 +672,54 @@ describe("terminal naming", () => {
     }
   });
 
+  const rule = "─".repeat(40);
+  const claudeBox = (text: string) => `· Working… (3s)\n${rule}\n❯ ${text}\n${rule}`;
+  // Codex keeps colors in its capture: a dim hint in an empty box, plain typed text
+  const codexBox = (text: string) =>
+    `• Working (3s • esc to interrupt)\n\x1b[1m›\x1b[0m ${text || "\x1b[2mAsk Codex to do anything\x1b[0m"}`;
   test.each<[string, "claude" | "codex", string, boolean, (string | readonly string[])[]]>([
     [
-      "a Claude pane with an empty input box gets /name fix-login typed and submitted",
+      "a Claude pane with an empty input box gets /rename fix-login typed and submitted",
       "claude",
-      "",
+      claudeBox(""),
       false,
-      ["/name fix-login", ["Enter"]],
+      ["/rename fix-login", ["Enter"]],
     ],
     [
       "a Claude pane whose box holds the user's text gets nothing typed",
       "claude",
-      "half a th",
+      claudeBox("half a th"),
       false,
       [],
     ],
-    ["a Codex pane gets nothing typed", "codex", "", false, []],
     [
-      "a Claude pane that refuses the typed /name gets no Enter",
-      "claude",
-      "",
-      true,
-      ["/name fix-login"],
+      "a Codex pane whose box shows only its hint gets /rename fix-login typed and submitted",
+      "codex",
+      codexBox(""),
+      false,
+      ["/rename fix-login", ["Enter"]],
     ],
-  ])("%s at init", async (_label, agent, boxText, typingFails, expected) => {
-    const rule = "─".repeat(40);
+    [
+      "a Codex pane whose box holds the user's text gets nothing typed",
+      "codex",
+      codexBox("half a th"),
+      false,
+      [],
+    ],
+    [
+      "a Claude pane that refuses the typed /rename gets no Enter",
+      "claude",
+      claudeBox(""),
+      true,
+      ["/rename fix-login"],
+    ],
+  ])("%s at init", async (_label, agent, screen, typingFails, expected) => {
     const typed: (string | readonly string[])[] = [];
     const ok = async () => ({ ok: true as const, value: undefined });
     const terminal: ITerminal = {
       ...({} as ITerminal),
       rename: ok,
-      capture: async () => ({ ok: true, value: `· Working… (3s)\n${rule}\n❯ ${boxText}\n${rule}` }),
+      capture: async () => ({ ok: true, value: screen }),
       sendText: async (text) => {
         typed.push(text);
         return typingFails ? { ok: false, error: "pane closed" } : ok();
@@ -711,9 +729,15 @@ describe("terminal naming", () => {
         return ok();
       },
     };
+    const provider = agentProvider({
+      agent,
+      host: {} as ITerminalHost,
+      env: {},
+      log: noopLogger,
+    });
     const { run, init } = await savedRun({ sessions: [{ agent, sessionId: "s1" }] });
 
-    const result = await init("fix-login", run.id, { terminal });
+    const result = await init("fix-login", run.id, { terminal, provider });
 
     expect(result.ok).toBe(true);
     expect(typed).toEqual(expected);

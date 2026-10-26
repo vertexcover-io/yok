@@ -14,6 +14,7 @@ import {
   type Event,
   type EventHandlerRefs,
   eventError,
+  type IAgentProvider,
   type IGit,
   type ILogger,
   type ITerminal,
@@ -60,7 +61,6 @@ import {
   VERSION,
 } from "@yok/sdk/internal";
 import * as z from "zod";
-import { nameClaudeSession } from "./agents/claude.ts";
 import { unwrap } from "./agents/common.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
@@ -108,6 +108,8 @@ export type InitOptions = Readonly<{
   log: ILogger;
   // the agent's terminal, when init runs inside one
   terminal?: ITerminal | undefined;
+  // the provider of the agent in that terminal
+  provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
 }>;
@@ -134,16 +136,19 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
   }
 };
 
-// Like the tmux name, a Claude session left unnamed is only logged.
+// Claude (where /name is an alias) and Codex both run /rename at once, even mid-turn, instead of
+// queueing it. Like the tmux name, a session left unnamed is only logged.
 const nameSession = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
-  const { terminal, name, log } = options;
-  if (terminal === undefined || firstAgent(run) !== "claude") return;
+  const { terminal, provider, name, log } = options;
+  if (terminal === undefined || provider === undefined) return;
   try {
-    const named = unwrap(await nameClaudeSession(terminal, name));
+    const named = unwrap(
+      await provider.promptWhenReady(terminal, `/rename ${name}`, { whileBusy: true }),
+    );
     if (named === "not-ready")
-      log.warn({ runId: run.id }, "Claude session not named: its input box is not free");
+      log.warn({ runId: run.id }, "session not named: its input box is not free");
   } catch (error) {
-    log.warn({ runId: run.id, err: error }, "Claude session not named");
+    log.warn({ runId: run.id, err: error }, "session not named");
   }
 };
 

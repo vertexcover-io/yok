@@ -280,17 +280,27 @@ const screenPane = (screen: string) => {
   return { pane, calls };
 };
 
+// What Codex 0.164 draws for its input box, colors kept: a bold ›, then a dim hint when it is empty.
+const HINT_BOX = "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m";
+const WORKING = "• Working (3s • esc to interrupt)";
+
 describe("codexProvider.promptWhenReady", () => {
-  const cases: readonly (readonly [string, string, "sent" | "not-ready"])[] = [
-    ["an empty input marker", "header\n›\nfooter", "sent"],
-    ["a marker with hint text after it", "› Ask Codex to do anything", "not-ready"],
-    ["an empty marker while Codex works", "• Working (3s • esc to interrupt)\n›", "not-ready"],
-    ["no input marker at all", "Select an option\n1. Yes", "not-ready"],
+  const cases: readonly (readonly [string, string, boolean, "sent" | "not-ready"])[] = [
+    ["an empty input marker", "header\n›\nfooter", false, "sent"],
+    ["a box showing only Codex's dim hint", HINT_BOX, false, "sent"],
+    ["a box holding typed text", "\x1b[1m›\x1b[0m half typed", false, "not-ready"],
+    ["undimmed text after the marker", "› Ask Codex to do anything", false, "not-ready"],
+    ["an empty marker while Codex works", `${WORKING}\n${HINT_BOX}`, false, "not-ready"],
+    ["an empty marker while Codex works, sent while busy", `${WORKING}\n${HINT_BOX}`, true, "sent"],
+    ["typed text while Codex works, sent while busy", `${WORKING}\n› half`, true, "not-ready"],
+    ["no input marker at all", "Select an option\n1. Yes", false, "not-ready"],
   ];
-  for (const [name, screen, expected] of cases) {
+  for (const [name, screen, whileBusy, expected] of cases) {
     test(`${name} is ${expected}`, async () => {
       const { pane, calls } = screenPane(screen);
-      const result = await codexProvider({ host: fakeHost({}) }).promptWhenReady(pane, "continue");
+      const result = await codexProvider({ host: fakeHost({}) }).promptWhenReady(pane, "continue", {
+        whileBusy,
+      });
 
       expect(result).toEqual({ ok: true, value: expected });
       expect(calls.length > 0).toBe(expected === "sent");
