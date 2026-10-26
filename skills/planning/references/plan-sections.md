@@ -123,8 +123,8 @@ Flat, one row per screen, copied from `design/INDEX.md` without its source colum
 coder building one phase in isolation which screens are already drawn, where, and at what
 width.
 
-The step that builds the surface carries the instruction, `build to design/FILE at WIDTHpx`,
-and its `Spec: design/spec.md` pointer; the index carries the paths. A screen here that no step builds is a finding, as in the
+The step that builds the surface carries the instruction on its Design line, `build to
+design/FILE at WIDTHpx`, and the spec parts on its Spec line; the index carries the paths. A screen here that no step builds is a finding, as in the
 signature index; where that is deliberate, the row records it as
 `design/FILE — not built: REASON`.
 

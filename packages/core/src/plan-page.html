@@ -46,12 +46,6 @@ body { display: block; overflow: auto; background: var(--bg); }
 .doc .gallery figure.frame img { height: 180px; }
 .frame-missing { color: var(--del); font-size: 12.5px; }
 
-/* ---- spec block: the cited spec.md sections, closed until the reviewer opens it ---- */
-.doc details.spec { margin: 10px 0 20px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
-.doc details.spec > summary { cursor: pointer; padding: 8px 12px; color: var(--accent); font-size: 13px; font-weight: 600; }
-.doc details.spec[open] > summary { border-bottom: 1px solid var(--line); }
-.doc .spec-body { padding: 4px 16px 8px; max-height: 480px; overflow: auto; }
-
 /* ---- lightbox: any frame at full size. Click, Enter or Space opens; ✕, backdrop or Esc closes ---- */
 img[data-img] { cursor: zoom-in; }
 img[data-img]:focus-visible, .lb-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -85,12 +79,6 @@ img[data-img]:focus-visible, .lb-close:focus-visible { outline: 2px solid var(--
 </div>
 <script type="application/json" id="plan-images">"{{IMAGES_JSON}}"</script>
 <script type="application/json" id="plan-sources">"{{SOURCES_JSON}}"</script>
-<template id="plan-spec">{{SPEC}}</template>
-<script>
-/* ---- spec: the one rendered copy of design/spec.md goes into every step's spec block ---- */
-const specCopy = document.getElementById("plan-spec").content;
-for (const body of document.querySelectorAll("[data-spec]")) body.append(specCopy.cloneNode(true));
-</script>
 <script>
 /* ---- code blocks, as in yok view: Copy on every block, a fold over 40 lines, and ↑/↓ context
    on each placed diff hunk. The viewer fetches context from the server; the page reads the

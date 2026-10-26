@@ -122,7 +122,7 @@ Write each `phases/phase-N.md` first, then `plan.md`, per the `plan-format` and 
 references. The test: **a coder who has the task but not the codebase can follow every step
 without opening a file.**
 
-Four rules bind every step:
+These rules bind every step:
 
 - **Open before you write.** Write a step against the file's current content, never against a
   sweep pointer or memory.
@@ -130,15 +130,19 @@ Four rules bind every step:
   evidence and recommend the new decision. With `interaction` off, it is a blocker. On the
   answer, fix that line in `design.md`, within its caps, so it stays true, and record the
   change in plan.md's `## Design corrections`.
-- **Every frame gets a step.** A step that builds a surface a frame defines names it, `build to
-  design/FILE at WIDTHpx` with the width the index gives, and carries that frame's style
-  facts. A frame the index gives no width is named `build to design/FILE`. A screen no step
-  builds is recorded in plan.md as `design/FILE — not built: REASON`. `done` checks that every
-  frame has one or the other.
+- **Open each step with a summary.** Two or three lines of plain English say what changes in
+  the file and why, so the developer has the gist before reading the code.
+- **Show every code change as a diff.** A step that writes or changes code carries its diff,
+  a step that builds to a frame included. The logic lives in the diff, not in prose.
+- **Every frame gets a step.** A step that builds a surface a frame defines names it on its
+  Design line, `build to design/FILE at WIDTHpx` with the width the index gives, or `build to
+  design/FILE` when the index gives none, and its diff builds what the frame shows. A screen no
+  step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done` checks that
+  every frame has one or the other, and that every step that builds to a frame has a diff.
 - **Every spec rule gets a pointer.** A step that builds a surface `design/spec.md` governs
-  says where its rules are on one line of its own, `Spec: design/spec.md — WHICH PART`, naming
-  the part in the spec's own words. The rule text stays in spec.md. A rule about a screen,
-  viewport or state no frame draws is pointed to from the step that builds that surface.
+  names the parts that hold its rules on its Spec line, `design/spec.md — PART · PART`, in the
+  spec's own words. The rule text stays in spec.md. A rule about a screen, viewport or state no
+  frame draws is pointed to from the step that builds that surface.
 
 **Done when:** every phase file and `plan.md` exist, and every file a step edits was opened.
 
@@ -152,8 +156,10 @@ Four rules bind every step:
   active ADR · every path in `## Project Docs` exists.
 - **Phasing.** No two phases change the same file unless ordered · every phase is provable by
   its own scenarios the moment it lands · a phase that uses what another builds depends on it.
-- **Steps.** Every step states a location, a contract or an algorithm · no step tells the coder
-  to discover something · every change is a diff · every title opens with an imperative verb.
+- **Steps.** Every step opens with a plain-English summary of what changes and why · every
+  step that changes code has a diff, a design step included · a step's Design and Spec lines
+  are list items, one per line · no step tells the coder to discover something · every title
+  opens with an imperative verb.
 - **Coverage.** Every requirement has a matrix row · every scenario appears once across the
   phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
   real-browser fact or a named Blocker · every frame in `design/INDEX.md` is built or recorded
@@ -187,7 +193,7 @@ Then ask for approval:
 - **In a yok run, ask through the viewer, without a menu,** so the viewer's comments reach you.
   Run `yok orchestrate await-approval NODE_RUN_ID --run RUN --file artifacts/plan.html`, where
   NODE_RUN_ID is the id in the stage's `done` command. It builds `plan.html` from the plan files
-  before it waits, so the reviewer sees each phase with its frames and spec in place. When it
+  before it waits, so the reviewer sees each phase with its frames and diffs in place. When it
   fails, fix what it names and run it again. End the turn with one line: approve with the
   Approve button in the viewer, or type approve here.
 - **Outside a run, ask with `AskUserQuestion`:** header `Approve?`, options

@@ -8,16 +8,18 @@ governs where things go and what they are called. It never governs how much a st
 | Part | Include when | How it is written |
 |---|---|---|
 | **Title**: the action and its file | always | `1. **Change \`src/x.ts:31-40\`**` |
-| **What it does**: the contract, or the ordered logic with the branch and the error path | always | prose under the title |
-| **Diff**: the change | the step writes or changes code | a line naming the file and range, then a ```` ```diff ```` block |
+| **Summary**: what changes in the file and why | always | two or three lines of plain English under the title, so the developer has the gist before reading the code |
+| **Design**: the frame this step builds to, and where its spec rules are | the step builds a surface a design defines | two list items under the summary, as **Designs** below shows |
+| **Diff**: the change | the step writes or changes code, a design step included | a line naming the file and range, then a ```` ```diff ```` block |
 | **Pattern**: existing code to imitate | the step copies a shape from elsewhere rather than changing that code | a fenced block, with the reason it is shown on the line above |
-| **Design**: the frame this step builds to, and where its spec rules are | the step builds a surface a design defines | `build to design/FILE at WIDTHpx`, then one line `Spec: design/spec.md — WHICH PART` |
 | **Why this way**: the rejected alternative, or the constraint | the location or shape had a plausible alternative | closing sentence |
 | **Trap**: what breaks if the developer does the obvious thing | code that looks safe to change and is not | its own paragraph |
 
 Parts are triggered, not filled. An omitted part costs nothing; a padded part states
-"considered, nothing found". The one part that is owed: where `design/INDEX.md` names a frame
-for the surface a step builds, that step's Design part is required.
+"considered, nothing found". Two parts are owed: a step that changes code carries its Diff, and
+a step that builds a surface `design/INDEX.md` names a frame for carries its Design part. The
+summary says what and why in words; the logic, its branches and its error paths live in the
+diff's code.
 
 A step can also say something that is none of these. An environment warning, or a note on how
 to see the change, is plain prose.
@@ -55,17 +57,23 @@ asks them to fetch what the step could have handed them.
 
 ## Designs
 
-A step that builds to a design names the frame and the width `design/INDEX.md` gives it, with
-one line saying what it settles. On a line of its own it points at the part of `design/spec.md`
-that surface must keep, `Spec: design/spec.md — WHICH PART`, in the spec's own words. The rule
-text stays in spec.md: implement and qa read that part there and check those rules. Prose is
-not a substitute: the ticket states the rule, and the frame settles what the rule leaves open.
+**A design step carries two list items between its summary and its diff**, each on its own
+line:
 
-**The style facts a frame settles**, to read off it and carry in the step's contract: element
-order · spacing · type scale and weight · colour role · component variant · divider placement ·
-icon · empty-state copy word for word.
+```markdown
+   - **Design:** build to design/FILE at WIDTHpx
+   - **Spec:** design/spec.md — PART · PART
+```
 
-Where no design exists, say so in the step. A surface with no design is one the developer is
+The Design line names the frame and the width `design/INDEX.md` gives it. The Spec line names
+every part of `design/spec.md` the surface must keep, in the spec's own words, on that one line.
+The rule text stays in spec.md: implement and qa read those parts there and check them.
+
+**The frame shows the screen; the diff builds it.** What the frame settles, its element order,
+spacing, type, colour roles, component variants and copy, lands in the diff's code, never in a
+prose description of the screen.
+
+Where no design exists, say so in the summary. A surface with no design is one the developer is
 authorized to invent.
 
 ## Register
@@ -87,15 +95,16 @@ finished when a developer who was not in this conversation can act on it after o
 
 A step carries a new function's design, a new file's location, a change to an existing type or
 signature, or an algorithm whose correctness is not obvious. A step that is only "modify X to do
-Y" is mechanical: reduce it to a one-line note, or cut it. Steps are not a change list.
+Y" is mechanical: fold its diff into the step it serves. Steps are not a change list.
 
 ## One step
 
 ````markdown
 2. **Reject duplicate emails in `src/services/user.ts:31 — createUser`**
 
-   Look up the address before inserting. When the lookup returns a row, throw
-   `DuplicateError(email)`. The happy path does not change.
+   Stops a second account being created for an email that is already registered. `createUser`
+   now checks for the address first and refuses with `DuplicateError`, so the caller can tell
+   the user the email is taken. Sign-up with a new email works as before.
 
    `src/services/user.ts:31-33`
 

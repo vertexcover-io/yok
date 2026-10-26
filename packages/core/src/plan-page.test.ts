@@ -164,7 +164,7 @@ describe("buildPlanPage", () => {
     });
   });
 
-  test("a step written as a tight list item gets its frame card and spec block inside the item, and a loose item gets them once", async () => {
+  test("a step written as a tight list item gets its frame card inside the item, and a loose item gets it once", async () => {
     const artifacts = tempDir("plan-artifacts");
     put(
       artifacts,
@@ -174,7 +174,6 @@ describe("buildPlanPage", () => {
         "",
         "1. Build to design/a.png.",
         "2. Build the modal.",
-        "   Spec: design/spec.md — the modal part",
         "   - a nested note",
         "",
         "- Loose build to design/a.png.",
@@ -184,16 +183,11 @@ describe("buildPlanPage", () => {
       ].join("\n"),
     );
     put(artifacts, "design/a.png", pngBytes(1200, 1000));
-    put(artifacts, "design/spec.md", "The modal is 420px wide.\n");
 
     const page = await build(artifacts);
 
     expect(page).toMatch(/<li[^>]*>Build to design\/a\.png\.<div class="frames">/);
-    expect(page).toMatch(
-      /Spec: design\/spec\.md — the modal part\n?<details class="spec"><summary>Spec · design\/spec\.md — the modal part<\/summary>[\s\S]*?<\/details>\n?<ul/,
-    );
     expect(page.match(/<div class="frames">/g)?.length).toBe(2);
-    expect(page.match(/<details class="spec">/g)?.length).toBe(1);
   });
 
   test("a phase keeps its own number when a revision left a gap, with no count beside it", async () => {
@@ -236,12 +230,11 @@ describe("buildPlanPage", () => {
     );
   });
 
-  test("a plan, phase, spec or design folder that links outside artifacts/ is not read", async () => {
+  test("a plan, phase or design folder that links outside artifacts/ is not read", async () => {
     const root = tempDir("plan-links");
     const artifacts = join(root, "run", "artifacts");
     const outside = join(root, "outside");
     put(outside, "notes.md", "# Phase 2\n\nOUTSIDE-PHASE\n");
-    put(outside, "spec.md", "OUTSIDE-SPEC\n");
     put(outside, "plan.md", "# Plan\n\nOUTSIDE-PLAN\n");
     put(outside, "design/x.png", pngBytes(1200, 1000));
     put(
@@ -249,16 +242,14 @@ describe("buildPlanPage", () => {
       "design/INDEX.md",
       "| Screen | Local file | Width | Source | Truth |\n|---|---|---|---|---|\n| Home | `design/x.png` | 1200 | x | y |\n",
     );
-    put(artifacts, "plan.md", "# Plan\n\nSpec: design/spec.md — all\n\nBuild to design/x.png.\n");
+    put(artifacts, "plan.md", "# Plan\n\nBuild to design/x.png.\n");
     put(artifacts, "phases/phase-1.md", "# Phase 1\n");
     symlinkSync(join(outside, "notes.md"), join(artifacts, "phases", "phase-2.md"));
     symlinkSync(join(outside, "design"), join(artifacts, "design"));
-    symlinkSync(join(outside, "spec.md"), join(outside, "design", "spec.md"));
 
     const page = await build(artifacts);
 
     expect(page).not.toContain("OUTSIDE-PHASE");
-    expect(page).not.toContain("OUTSIDE-SPEC");
     expect(page).not.toContain('id="phase-2"');
     expect(Object.keys(scriptJson(page, "plan-images"))).toEqual([]);
 
@@ -297,17 +288,16 @@ describe("buildPlanPage", () => {
     expect(Object.keys(scriptJson(page, "plan-images"))).toEqual([]);
   });
 
-  test("every table, in a document or the spec, sits in a wrapper that scrolls it sideways, so a wide one cannot widen the page", async () => {
+  test("every table sits in a wrapper that scrolls it sideways, so a wide one cannot widen the page", async () => {
     const artifacts = tempDir("plan-tables");
     const table = "| Test | Strategy |\n|---|---|\n| one | unit |\n";
     put(artifacts, "plan.md", `# Plan\n\n${table}`);
     put(artifacts, "phases/phase-1.md", `# Phase 1\n\n${table}`);
-    put(artifacts, "design/spec.md", table);
 
     const page = await build(artifacts);
 
-    expect(page.match(/<table/g)?.length).toBe(3);
-    expect(page.match(/<div class="table-wrap"><table/g)?.length).toBe(3);
+    expect(page.match(/<table/g)?.length).toBe(2);
+    expect(page.match(/<div class="table-wrap"><table/g)?.length).toBe(2);
     expect(page).toMatch(/\.table-wrap > table \{[^}]*overflow-x: auto/);
   });
 
@@ -321,34 +311,45 @@ describe("buildPlanPage", () => {
     expect(page).toContain("link.textContent = h.textContent");
   });
 
-  test("SC705: each step pointing at spec.md gets a closed spec block under it, with the spec rendered once, or a missing line without one", async () => {
+  test("SC705: a step's Spec line, in its list form or its older line form, is left off the page, and design/spec.md is never embedded", async () => {
     const artifacts = tempDir("plan-artifacts");
-    const step = "Build the modal.\nSpec: design/spec.md — the New app modal and Modal shell parts";
     put(artifacts, "plan.md", "# Plan\n");
-    put(artifacts, "phases/phase-1.md", `# Phase 1\n\n${step}\n\nThen the shell.\n\n${step}\n`);
     put(
       artifacts,
-      "design/spec.md",
-      "The modal is **420px** wide, and the shell keeps it centred.\n",
+      "phases/phase-1.md",
+      [
+        "# Phase 1",
+        "",
+        "1. **Create `src/Modal.tsx`**",
+        "",
+        "   Adds the dialog.",
+        "",
+        "   - **Design:** build to design/a.png at 1200px",
+        "   - **Spec:** design/spec.md — 7. Modal · 2. Button",
+        "",
+        "2. **Change `src/List.tsx`**",
+        "   Spec: design/spec.md — the list part",
+        "",
+        "```markdown",
+        "Spec: design/spec.md — quoted in a code block",
+        "```",
+        "",
+      ].join("\n"),
     );
+    put(artifacts, "design/a.png", pngBytes(1200, 1000));
+    put(artifacts, "design/spec.md", "SPEC-TEXT: the modal is 420px wide.\n");
 
     const page = await build(artifacts);
 
-    const summary =
-      '<details class="spec"><summary>Spec · design/spec.md — the New app modal and Modal shell parts</summary><div class="spec-body" data-spec></div></details>';
-    expect(page.match(new RegExp(`</p>\n?${summary}`, "g"))?.length).toBe(2);
-    expect(page).not.toContain('<details class="spec" open');
+    expect(page).not.toContain("SPEC-TEXT");
+    expect(page).not.toContain("7. Modal");
+    expect(page).not.toContain("the list part");
+    expect(page).toContain("Spec: design/spec.md — quoted in a code block");
+    expect(page).not.toContain('class="spec"');
+    expect(page).not.toContain("plan-spec");
     expect(page).toMatch(
-      /<template id="plan-spec">[\s\S]*<strong>420px<\/strong>[\s\S]*<\/template>/,
+      /<li[^>]*><strong>Design:<\/strong> build to design\/a\.png at 1200px<div class="frames">/,
     );
-    expect(page.split("420px").length - 1).toBe(1);
-
-    rmSync(join(artifacts, "design"), { recursive: true });
-    const bare = await build(artifacts);
-    expect(bare).toContain(
-      '<details class="spec"><summary>Spec · design/spec.md — the New app modal and Modal shell parts</summary><p class="frame-missing">design/spec.md is not in artifacts/</p></details>',
-    );
-    expect(bare).toContain('<template id="plan-spec"></template>');
   });
 
   test("SC706: a diff of a repo file is placed as yok view places it, and the file's coloured lines are embedded, while a new file's are not", async () => {
@@ -531,15 +532,13 @@ describe("buildPlanPage", () => {
     ]);
   });
 
-  test("a plan whose text names a slot, such as {{SPEC}}, keeps that text, and the page's own slot still gets the spec", async () => {
+  test("a plan whose text names a slot, such as {{DOCUMENTS}}, keeps that text", async () => {
     const artifacts = tempDir("plan-artifacts");
-    put(artifacts, "plan.md", "# Plan\n\nThe page fills {{SPEC}} and {{DOCUMENTS}} once.\n");
-    put(artifacts, "design/spec.md", "The modal is **420px** wide.\n");
+    put(artifacts, "plan.md", "# Plan\n\nThe page fills {{TITLE}} and {{DOCUMENTS}} once.\n");
 
     const page = await build(artifacts);
 
-    expect(page).toContain("The page fills {{SPEC}} and {{DOCUMENTS}} once.");
-    expect(page).toMatch(/<template id="plan-spec"><p[^>]*>The modal is <strong>420px/);
+    expect(page).toContain("The page fills {{TITLE}} and {{DOCUMENTS}} once.");
   });
 
   test("SC708: artifacts with a phase but no plan.md build nothing, and the error names plan.md", async () => {

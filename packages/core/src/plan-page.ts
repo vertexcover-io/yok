@@ -12,9 +12,8 @@ import { isInsideDir } from "./workflow/done.ts";
 const TEMPLATE = String(TEMPLATE_IMPORT);
 
 // One self-contained artifacts/plan.html: plan.md and each phase as yok view renders them, with
-// each frame a step builds to shown under it and design/spec.md in a closed block under each step
-// that points at it. Only await-approval and `yok build-plan` write it, so it is never older than
-// the markdown.
+// each frame a step builds to shown under it. Only await-approval and `yok build-plan` write it, so
+// it is never older than the markdown.
 export const PLAN_PAGE_PATH = "artifacts/plan.html";
 
 type Doc = Readonly<{ id: string; label: string; path: string; markdown: string; phase?: number }>;
@@ -26,7 +25,6 @@ type Page = Readonly<{
   rows: ReadonlyMap<string, IndexRow>;
   frames: ReadonlyMap<string, Frame>;
   tooBig: ReadonlySet<string>;
-  hasSpec: boolean;
 }>;
 
 const THUMB_HEIGHT = 260;
@@ -51,8 +49,9 @@ const PARAGRAPH = /<p\b[^>]*>([\s\S]*?)<\/p>/g;
 const TIGHT_ITEM = /<li\b[^>]*>(?!\s*<p\b)((?:(?!<\/?(?:li|ul|ol|p)\b)[\s\S])+)/g;
 const HEADING = /<h([1-4])([^>]*)>([\s\S]*?)<\/h\1>/g;
 const TABLE = /<table\b[\s\S]*?<\/table>/g;
-// A step's pointer into design/spec.md: free text after the path, since the spec has no fixed format.
-const SPEC_LINE = /^[ \t]*(?:[-*][ \t]+)?Spec:[ \t]*design\/spec\.md\b(.*)$/m;
+// A step's pointer into design/spec.md, plain or bold, bulleted or not.
+const SPEC_LINE = /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?Spec:(?:\*\*)?[ \t]*`?design\/spec\.md\b/;
+const FENCE = /^[ \t]*(?:```|~~~)/;
 
 const escapeHtml = (text: string): string =>
   text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -167,23 +166,29 @@ const frameCard = (frame: string, page: Page): string => {
   return `<figure class="frame" style="width:${loaded.width}px"><img data-img="${name}" alt="${name}"><figcaption><span class="frame-name">${name}</span>${screen}${truth}</figcaption></figure>`;
 };
 
-const specBlock = (pointer: string, page: Page): string => {
-  const body = page.hasSpec
-    ? '<div class="spec-body" data-spec></div>'
-    : '<p class="frame-missing">design/spec.md is not in artifacts/</p>';
-  return `<details class="spec"><summary>Spec · design/spec.md ${escapeHtml(pointer.trim())}</summary>${body}</details>`;
-};
+// The page shows no spec: a step's Spec line stays in the markdown for implement and qa, and is
+// dropped here, outside code blocks.
+const withoutSpecLines = (markdown: string): string =>
+  markdown
+    .split("\n")
+    .reduce<Readonly<{ kept: readonly string[]; fenced: boolean }>>(
+      ({ kept, fenced }, line) => {
+        if (FENCE.test(line)) return { kept: [...kept, line], fenced: !fenced };
+        return !fenced && SPEC_LINE.test(line)
+          ? { kept, fenced }
+          : { kept: [...kept, line], fenced };
+      },
+      { kept: [], fenced: false },
+    )
+    .kept.join("\n");
 
-// Under a step that builds to frames, their cards; under one that points at spec.md, the spec block.
+// Under a step that builds to frames, their cards.
 const decorationsFor = (inner: string, page: Page): string => {
   const text = textOf(inner);
   const frames = /\bbuild\s+to\b/i.test(text) ? [...new Set(text.match(FRAME_PATH) ?? [])] : [];
-  const pointer = SPEC_LINE.exec(text);
-  const row =
-    frames.length === 0
-      ? ""
-      : `<div class="frames">${frames.map((frame) => frameCard(frame, page)).join("")}</div>`;
-  return `${row}${pointer === null ? "" : specBlock(pointer[1] ?? "", page)}`;
+  return frames.length === 0
+    ? ""
+    : `<div class="frames">${frames.map((frame) => frameCard(frame, page)).join("")}</div>`;
 };
 
 // A step is a paragraph, or the text a tight list item opens with; a loose item's text is
@@ -215,7 +220,7 @@ const renderDoc = (doc: Doc, page: Page): string => {
   const label =
     doc.phase === undefined ? "" : `<span class="phase-label">Phase ${doc.phase}</span>`;
   const body = addHeadingIds(
-    wrapTables(decorateSteps(renderMarkdown(doc.markdown, page.repo), page)),
+    wrapTables(decorateSteps(renderMarkdown(withoutSpecLines(doc.markdown), page.repo), page)),
     doc.id,
   );
   const gallery = doc.phase === undefined && page.rows.size > 0 ? galleryOf(page) : "";
@@ -261,7 +266,6 @@ const valuesOf = (html: string, attribute: string): readonly string[] => [
 export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Promise<string> => {
   const docs = await readDocs(artifactsDir);
   const index = (await readArtifact(artifactsDir, "design/INDEX.md")) ?? "";
-  const spec = await readArtifact(artifactsDir, "design/spec.md");
   const named = docs.flatMap((doc) => doc.markdown.match(FRAME_PATH) ?? []);
   const wanted = [...new Set([...indexedFrames(index).map((row) => row.frame), ...named])];
   const located = await Promise.all(wanted.map((f) => locateFrame(artifactsDir, f)));
@@ -274,7 +278,6 @@ export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Prom
     rows: readIndexRows(index),
     frames,
     tooBig: new Set(found.filter((f) => !kept.includes(f)).map((f) => f.frame)),
-    hasSpec: spec !== undefined,
   };
   const documents = docs.map((doc) => renderDoc(doc, page)).join("\n");
   const images = Object.fromEntries(
@@ -296,7 +299,6 @@ export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Prom
     "{{DOCUMENTS}}": documents,
     '"{{IMAGES_JSON}}"': toScriptJson(images),
     '"{{SOURCES_JSON}}"': toScriptJson(sources),
-    "{{SPEC}}": spec === undefined ? "" : wrapTables(renderMarkdown(spec)),
   };
   // One pass over the template, so a plan that quotes a slot name never has it filled in its text.
   return TEMPLATE.replace(SLOT, (slot) => slots[slot] ?? slot);
