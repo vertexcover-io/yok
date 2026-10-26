@@ -24,6 +24,7 @@ import {
   runUpdate,
   updateAgents,
 } from "./install.ts";
+import { installAll } from "./plugin.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -320,6 +321,32 @@ describe("updateAgents", () => {
     const result = updateAgents(undefined, { PATH: binDir([]) });
     expect(result.ok).toBe(false);
     expect(result.ok ? "" : result.error).toContain("--agent");
+  });
+});
+
+describe("installAll", () => {
+  test("with claude's plugin install failing, still tries codex, prints both failures and the --agent hint, and returns 1", async () => {
+    const dir = temp("yok-agents-");
+    const log = join(dir, "log");
+    for (const name of ["claude", "codex"]) {
+      writeFileSync(
+        join(dir, name),
+        `#!/bin/sh\necho "${name} $*" >> "${log}"\necho broken >&2\nexit 1\n`,
+      );
+      chmodSync(join(dir, name), 0o755);
+    }
+    const env = { YOK_CLAUDE_BIN: join(dir, "claude"), YOK_CODEX_BIN: join(dir, "codex") };
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    const code = await installAll(["claude", "codex"], env);
+
+    const printed = errors.mock.calls.flat().join("\n");
+    errors.mockRestore();
+    expect(code).toBe(1);
+    expect(logLines(log)).toEqual(["claude plugin list --json", "codex plugin list --json"]);
+    expect(printed).toContain(`${env.YOK_CLAUDE_BIN} plugin list --json failed: broken`);
+    expect(printed).toContain(`${env.YOK_CODEX_BIN} plugin list --json failed: broken`);
+    expect(printed).toContain("limit it with --agent NAME");
   });
 });
 

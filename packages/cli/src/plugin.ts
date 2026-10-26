@@ -23,14 +23,30 @@ export const agentOption = (description: string) =>
 
 const DEV_PLUGIN = "yok-dev loads the plugin from this checkout: claude --plugin-dir PATH_TO_REPO";
 
-const installAll = async (agents: readonly WorkflowAgent[]): Promise<void> => {
+// Every agent is tried, so one broken agent does not keep the others on the old plugin.
+export const installAll = async (
+  agents: readonly WorkflowAgent[],
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<number> => {
+  const failed: WorkflowAgent[] = [];
   for (const agent of agents) {
-    const binary = agentBinary(agent, process.env);
+    const binary = agentBinary(agent, env);
     const exec = execWithTimeout(120_000);
     const result = await installPlugin(agent, binary, VERSION, exec, process.cwd());
-    if (!result.ok) return fail(result.error);
-    console.log(result.value);
+    if (result.ok) {
+      console.log(result.value);
+      continue;
+    }
+    console.error(result.error);
+    failed.push(agent);
   }
+  if (failed.length === 0) return 0;
+  if (agents.length > 1) {
+    console.error(
+      `the yok plugin did not move for ${failed.join(" and ")}: limit it with --agent NAME`,
+    );
+  }
+  return 1;
 };
 
 export const pluginCommand = () =>
@@ -38,5 +54,8 @@ export const pluginCommand = () =>
     new Command("install")
       .description("Install the plugin at this binary's version, or move an installed one to it")
       .addOption(agentOption("claude or codex; repeat for both").makeOptionMandatory())
-      .action(async ({ agent }) => (isCompiled ? installAll(agent) : fail(DEV_PLUGIN))),
+      .action(async ({ agent }) => {
+        if (!isCompiled) return fail(DEV_PLUGIN);
+        process.exitCode = await installAll(agent, process.env);
+      }),
   );
