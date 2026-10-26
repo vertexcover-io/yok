@@ -167,7 +167,7 @@ const check = (
 const checkReport = (dir: string, output?: VerifierInput["output"]) =>
   check([{ type: "proof-report", name: "proof-report", path: reportPath(dir) }], output);
 
-const gap = (mechanism: string) => ({ scenario: "03", req: "R9", mechanism });
+const frameGap = (mechanism: string) => ({ scenario: "03", req: "R9", mechanism });
 
 describe("checkDesignCoverage", () => {
   test("SC14 (design): a report whose scenarios compare against ../design/a.png and ../design/b.png passes", async () => {
@@ -195,14 +195,19 @@ describe("checkDesignCoverage", () => {
     [
       "a PARTIAL whose gap names design/b.png passes",
       "PARTIAL",
-      [gap("design/b.png: no route")],
+      [frameGap("design/b.png: no route")],
       true,
     ],
-    ["a PARTIAL whose gaps never name design/b.png fails", "PARTIAL", [gap("no sandbox")], false],
+    [
+      "a PARTIAL whose gaps never name design/b.png fails",
+      "PARTIAL",
+      [frameGap("no sandbox")],
+      false,
+    ],
     [
       "a PARTIAL whose gap names design/b.png.old, not the frame, fails",
       "PARTIAL",
-      [gap("design/b.png.old: no route")],
+      [frameGap("design/b.png.old: no route")],
       false,
     ],
     [
