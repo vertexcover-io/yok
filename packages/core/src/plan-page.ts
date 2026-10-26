@@ -43,8 +43,9 @@ const MIME: Readonly<Record<string, string>> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
+  ".avif": "image/avif",
 };
-const FRAME_PATH = /design\/[\w./-]+?\.(?:png|jpe?g|webp|gif|svg)\b/gi;
+const FRAME_PATH = /design\/[\w./-]+?\.(?:png|jpe?g|webp|gif|svg|avif)\b/gi;
 const PARAGRAPH = /<p\b[^>]*>([\s\S]*?)<\/p>/g;
 // A list item's opening text up to its nested list or end, unless it opens with a paragraph.
 const TIGHT_ITEM = /<li\b[^>]*>(?!\s*<p\b)((?:(?!<\/?(?:li|ul|ol|p)\b)[\s\S])+)/g;

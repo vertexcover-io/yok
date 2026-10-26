@@ -102,6 +102,7 @@ describe("checkDesignCoverage", () => {
     ["a build claim with no width fails when the index gives one", "390", "", false],
     ["a build claim with no width passes when the index gives none", "", "", true],
     ["a build claim at a width the index does not give fails", "390", " at 1024px", false],
+    ["a build claim on a longer path that starts with the frame's fails", "", ".old", false],
   ])("%s", async (_name, width, claimed, pass) => {
     const index = `| Home | \`design/b.png\` | ${width} | mockup | layout |\n`;
     const plan = `- build to design/b.png${claimed}\n`;

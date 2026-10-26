@@ -269,35 +269,81 @@ describe("checkDesignCoverage", () => {
     expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
   });
 
-  test("a report whose visualMatch fills every field, with a BLOCKER and a HIGH finding, passes", async () => {
-    const finding = {
-      what: "button",
-      baselineShows: "filled",
-      buildShows: "ghost",
-      evidence: "css",
-    };
+  const finding = {
+    what: "button",
+    baselineShows: "filled",
+    buildShows: "ghost",
+    evidence: "css",
+  };
+  const reportOf = (scenarios: readonly unknown[]): string =>
+    `<script type="application/json" id="report-data">${JSON.stringify({ scenarios })}</script>`;
+
+  test("a report whose visualMatch fills every field, with a HIGH finding, passes", async () => {
     const visualMatch = {
       baseline: "../design/a.png",
       build: "screenshots/01_a.design.png",
       width: 1440,
-      fidelity: 67,
+      fidelity: 92,
       matched: "Region order reads as drawn.",
       specRules: [{ rule: "Body text is 14px", held: true, evidence: "font-size: 14px" }],
-      findings: [
-        { severity: "BLOCKER", ...finding },
-        { severity: "HIGH", ...finding },
-      ],
+      findings: [{ severity: "HIGH", ...finding }],
     };
     const scenarios = [
       { id: "SC1", visualMatch },
-      { id: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png" } },
+      { id: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png", width: 390 } },
     ];
-    const dir = artifactsWith({
-      report: `<script type="application/json" id="report-data">${JSON.stringify({ scenarios })}</script>`,
-      index: INDEX,
-    });
+    const dir = artifactsWith({ report: reportOf(scenarios), index: INDEX });
 
     expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
+  });
+
+  test("a PASS or PARTIAL whose scenario carries a BLOCKER visual finding fails, naming the scenario, with or without a design index; a FAIL passes", async () => {
+    const blocker = {
+      baseline: "../design/a.png",
+      fidelity: 75,
+      findings: [{ severity: "BLOCKER", ...finding }],
+    };
+    const scenarios = [
+      { id: "SC1", visualMatch: blocker },
+      { id: "SC2", visualMatch: { baseline: "../design/b.png", fidelity: 100 } },
+    ];
+    const indexed = artifactsWith({ report: reportOf(scenarios), index: INDEX });
+    const unindexed = artifactsWith({ report: reportOf(scenarios) });
+
+    const result = await checkReport(indexed);
+
+    expect(result.pass).toBe(false);
+    expect(result.findings.map(({ message }) => message)).toEqual([expect.stringContaining("SC1")]);
+    expect(result.findings[0]?.message).toContain("BLOCKER");
+    expect((await checkReport(indexed, { status: "PARTIAL", gaps: [gap] })).pass).toBe(false);
+    expect((await checkReport(unindexed)).pass).toBe(false);
+    expect(await checkReport(indexed, { status: "FAIL" })).toEqual({ pass: true, findings: [] });
+  });
+
+  test("a scenario that read design/b.png at a width other than the index's 390 fails, naming the frame and both widths", async () => {
+    const at = (width: number) => [
+      { id: "SC1", visualMatch: { baseline: "../design/a.png", fidelity: 100 } },
+      {
+        id: "SC2",
+        visualMatch: {
+          baseline: "../design/b.png",
+          build: "screenshots/02.png",
+          width,
+          fidelity: 100,
+        },
+      },
+    ];
+    const wrong = artifactsWith({ report: reportOf(at(1440)), index: INDEX });
+    const right = artifactsWith({ report: reportOf(at(390)), index: INDEX });
+
+    const result = await checkReport(wrong);
+
+    expect(result.pass).toBe(false);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.message).toContain("design/b.png");
+    expect(result.findings[0]?.message).toContain("1440");
+    expect(result.findings[0]?.message).toContain("390");
+    expect(await checkReport(right)).toEqual({ pass: true, findings: [] });
   });
 
   test.each([
@@ -439,6 +485,14 @@ describe("VisualMatchSchema", () => {
 
     expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
     expect(VisualMatchSchema.safeParse(emptyRule).success).toBe(false);
+  });
+
+  test("a re-shoot names both its file and its width, or neither", () => {
+    const visualMatch = { baseline: "../design/a.png", fidelity: 92 };
+
+    expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
+    expect(VisualMatchSchema.safeParse({ ...visualMatch, width: 1440 }).success).toBe(false);
+    expect(VisualMatchSchema.safeParse({ ...visualMatch, build: "s.png" }).success).toBe(false);
   });
 
   test("the proof-report template's visualMatch scaffold has exactly the schema's fields", () => {

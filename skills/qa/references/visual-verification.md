@@ -77,7 +77,8 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   **BLOCKER**, not a style difference.
 
 **3. Copy**
-- *(design)* Read the baseline's text for where copy sits only; its words are placeholders.
+- *(design)* Labels, headings and messages say what the baseline says; text differing in meaning is a
+  **BLOCKER**. Data the baseline fills in to show its layout sets only where that text sits.
 - *(always)* Nothing reads `lorem`, `TODO`, `xxx`, `{{…}}`, `undefined`, `NaN`, or `[object Object]`.
 
 **4. Colour and type**

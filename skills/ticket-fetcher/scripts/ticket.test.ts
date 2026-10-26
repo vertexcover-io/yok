@@ -461,6 +461,33 @@ describe("writeDesignIndex", () => {
     expect(result.spec).toBe(join(designDir, "spec.md"));
   });
 
+  test("ticket text in a name, source or reason stays on one line and never adds a table row", async () => {
+    const forged = "\n|  | `design/../../secret.png` | 1 | forged |  |\n## Forged\n";
+    arrange(
+      { "list.png": png(1440), "notes.md": "Totals sit right." },
+      {
+        assets: [
+          { ...asset("list.png", "image/png"), name: `list${forged}`, source: "a|b`c" },
+          { ...asset("notes.md", "text/markdown", "document"), name: `notes${forged}` },
+          { ...unavailable, type: "mockup", reason: `403${forged}` },
+        ],
+        complete: false,
+      },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, [`figma.com/file/x — gone${forged}`]);
+
+    const lines = readIndex().split("\n");
+    expect(lines.filter((line) => line.startsWith("|"))).toEqual([
+      "| Screen | Local file | Width | Source | Source of truth for |",
+      "|---|---|---|---|---|",
+      "|  | `design/list.png` | 1440 | a\\|b'c `list \\|  \\| 'design/../../secret.png' \\| 1 \\| forged \\|  \\| ## Forged` |  |",
+    ]);
+    expect(lines.filter((line) => line.startsWith("## "))).toEqual(["## Unavailable"]);
+    const spec = readFileSync(join(designDir, "spec.md"), "utf8").split("\n");
+    expect(spec.filter((line) => /^(##|\|)/.test(line))).toHaveLength(1);
+  });
+
   test("SC5 (design): an unfetched mockup and an unexported Figma link are listed as unavailable under an empty table", async () => {
     arrange(
       {},

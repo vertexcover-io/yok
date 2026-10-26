@@ -251,13 +251,22 @@ const readPngWidth = async (path: string): Promise<number | null> => {
 
 const stripExtension = (path: string): string => path.replace(/\.[^.]+$/, "");
 
+// Ticket text written into INDEX.md or spec.md: one line, with no pipe or backtick to end its
+// table cell or code span.
+const inline = (text: string): string =>
+  text
+    .trim()
+    .replace(/\s*[\r\n]+\s*/g, " ")
+    .replaceAll("|", "\\|")
+    .replaceAll("`", "'");
+
 const describeSource = (
   file: string,
   assets: readonly Downloaded[],
   slugs: readonly string[],
 ): string => {
   const asset = assets.find((a) => a.path === file);
-  if (asset !== undefined) return `${asset.source} \`${asset.name}\``;
+  if (asset !== undefined) return `${inline(asset.source)} \`${inline(asset.name)}\``;
   const slug = slugs.find((s) => file.startsWith(`${s}--`));
   if (slug !== undefined) return `HTML mockup \`design/${slug}/index.html\``;
   return file.startsWith("figma--") ? "Figma export" : "added by hand";
@@ -336,10 +345,10 @@ export const writeDesignIndex = async (
   const missing = [
     ...ticket.assets.flatMap((a) =>
       a.status === "unavailable" && (a.type === "mockup" || a.type === "screenshot")
-        ? [`${a.name} — ${a.reason}`]
+        ? [`${inline(a.name)} — ${inline(a.reason)}`]
         : [],
     ),
-    ...unavailable,
+    ...unavailable.map(inline),
   ];
   const figma = ticket.references.map((r) => r.url).filter(isFigma);
   const empty = [images, pages, specs, missing, figma].every((list) => list.length === 0);
@@ -361,7 +370,9 @@ export const writeDesignIndex = async (
   await Promise.all(placements.map(place));
   await Promise.all(placements.map((p) => rm(p.from, { force: true })));
   const specTexts = await Promise.all(
-    specs.map(async (a) => `## ${a.name}\n\n${await readFile(join(ticketDir, a.path), "utf8")}`),
+    specs.map(
+      async (a) => `## ${inline(a.name)}\n\n${await readFile(join(ticketDir, a.path), "utf8")}`,
+    ),
   );
   const spec = specTexts.length === 0 ? null : join(designDir, "spec.md");
   if (spec !== null) await writeFile(spec, `${specTexts.join("\n\n")}\n`);

@@ -22,7 +22,7 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 // width needs none. The phrase may wrap or start with a capital.
 export const isBuiltTo = ({ frame, width }: DesignFrame, plan: string): boolean =>
   new RegExp(
-    `build\\s+to\\s+${escapeRegExp(frame)}${width === "" ? "" : `\\s+at\\s+${width}px\\b`}`,
+    `build\\s+to\\s+${escapeRegExp(frame)}(?![\\w./-])${width === "" ? "" : `\\s+at\\s+${width}px\\b`}`,
     "i",
   ).test(plan);
 

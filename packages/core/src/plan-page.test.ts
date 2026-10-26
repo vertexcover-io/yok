@@ -150,6 +150,20 @@ describe("buildPlanPage", () => {
     expect(page.split(wideUri).length - 1).toBe(1);
   });
 
+  test("an .avif frame, which ticket-fetcher indexes, is embedded under the step that builds to it", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(artifacts, "phases/phase-1.md", "# Phase 1\n\nBuild to design/hero.avif.\n");
+    put(artifacts, "design/hero.avif", "avif");
+
+    const page = await build(artifacts);
+
+    expect(page).toContain('<img data-img="design/hero.avif"');
+    expect(scriptJson(page, "plan-images")).toEqual({
+      "design/hero.avif": `data:image/avif;base64,${Buffer.from("avif").toString("base64")}`,
+    });
+  });
+
   test("a step written as a tight list item gets its frame card and spec block inside the item, and a loose item gets them once", async () => {
     const artifacts = tempDir("plan-artifacts");
     put(

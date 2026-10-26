@@ -68,38 +68,45 @@ export const QaOutputSchema = z
 export const schemas = { "qa.output.v1": QaOutputSchema };
 
 // A scenario's screen read against its design, as the report's data island holds it.
-export const VisualMatchSchema = z.strictObject({
-  baseline: NonEmptyStringSchema.nullable(),
-  fidelity: z.number().min(0).max(100).nullable(),
-  matched: z.string().optional(),
-  // the screen re-shot at the width the design was drawn at, report-relative, and that width
-  build: NonEmptyStringSchema.optional(),
-  width: z.int().positive().optional(),
-  // each design/spec.md rule a plan step cites, and whether the build kept it
-  specRules: z
-    .array(
-      z.strictObject({
-        rule: NonEmptyStringSchema,
-        held: z.boolean(),
-        evidence: NonEmptyStringSchema,
-      }),
-    )
-    .optional(),
-  findings: z
-    .array(
-      z.strictObject({
-        severity: z.enum(["BLOCKER", "HIGH"]),
-        what: NonEmptyStringSchema,
-        baselineShows: z.string(),
-        buildShows: z.string(),
-        evidence: NonEmptyStringSchema,
-      }),
-    )
-    .optional(),
-});
+export const VisualMatchSchema = z
+  .strictObject({
+    baseline: NonEmptyStringSchema.nullable(),
+    fidelity: z.number().min(0).max(100).nullable(),
+    matched: z.string().optional(),
+    // the screen re-shot at the width the design was drawn at, report-relative, and that width
+    build: NonEmptyStringSchema.optional(),
+    width: z.int().positive().optional(),
+    // each design/spec.md rule a plan step cites, and whether the build kept it
+    specRules: z
+      .array(
+        z.strictObject({
+          rule: NonEmptyStringSchema,
+          held: z.boolean(),
+          evidence: NonEmptyStringSchema,
+        }),
+      )
+      .optional(),
+    findings: z
+      .array(
+        z.strictObject({
+          severity: z.enum(["BLOCKER", "HIGH"]),
+          what: NonEmptyStringSchema,
+          baselineShows: z.string(),
+          buildShows: z.string(),
+          evidence: NonEmptyStringSchema,
+        }),
+      )
+      .optional(),
+  })
+  .refine((match) => (match.build === undefined) === (match.width === undefined), {
+    path: ["width"],
+    message: "a re-shoot names both build and width, or neither",
+  });
 
 const ReportScenariosSchema = z.looseObject({
-  scenarios: z.array(z.looseObject({ visualMatch: VisualMatchSchema.optional() })),
+  scenarios: z.array(
+    z.looseObject({ id: z.unknown().optional(), visualMatch: VisualMatchSchema.optional() }),
+  ),
 });
 
 const readOptional = (path: string): Promise<string | undefined> =>
@@ -135,20 +142,50 @@ const checkFrames = async (
       new RegExp(`(?<![\\w./-])${escapeRegExp(frame)}(?![\\w./-])`).test(mechanism),
     );
   const plan = await readPlanText(artifactsDir);
-  const baselines = new Set(
-    parsed.data.scenarios.flatMap(({ visualMatch }) =>
-      typeof visualMatch?.baseline === "string"
-        ? [relative(artifactsDir, resolve(verificationDir, visualMatch.baseline))]
-        : [],
-    ),
+  const compared = parsed.data.scenarios.flatMap(({ visualMatch }) =>
+    typeof visualMatch?.baseline === "string"
+      ? [
+          {
+            frame: relative(artifactsDir, resolve(verificationDir, visualMatch.baseline)),
+            width: visualMatch.width,
+          },
+        ]
+      : [],
   );
-  return indexedFrames(index)
+  const baselines = new Set(compared.map(({ frame }) => frame));
+  const frames = indexedFrames(index);
+  const uncompared = frames
     .filter(({ frame }) => !isNotBuilt(frame, plan) && !baselines.has(frame) && !isExcused(frame))
     .map(({ frame }) => ({
       message: `${frame} is a frame the plan builds, but no scenario's visualMatch.baseline is ../${frame}: compare the scenario on that screen against it, or, when that screen could not be reached, name ${frame} in the mechanism of the gaps[] entry that says why`,
       path: reportPath,
     }));
+  // A re-shoot records its width; a scenario shot at the frame's width records none.
+  const offWidth = frames.flatMap(({ frame, width }) =>
+    compared
+      .filter(
+        (c) => width !== "" && c.frame === frame && (c.width ?? Number(width)) !== Number(width),
+      )
+      .map((c) => ({
+        message: `a scenario read ${frame} at ${c.width}px, but design/INDEX.md draws it at ${width}px: re-shoot that screen at ${width}px`,
+        path: reportPath,
+      })),
+  );
+  return [...uncompared, ...offWidth];
 };
+
+// A BLOCKER makes its scenario a FAILURE, so the verdict that carries one is FAIL.
+const checkBlockers = (data: unknown, reportPath: string): Finding[] =>
+  (ReportScenariosSchema.safeParse(data).data?.scenarios ?? []).flatMap((scenario, i) =>
+    scenario.visualMatch?.findings?.some(({ severity }) => severity === "BLOCKER")
+      ? [
+          {
+            message: `scenario ${String(scenario.id ?? i + 1)} has a BLOCKER visual finding, which makes it a FAILURE: give it a bug and report FAIL`,
+            path: reportPath,
+          },
+        ]
+      : [],
+  );
 
 // spec.md has no fixed format, so its rules cannot be counted; a ledger with no spec row at all
 // means the pass never read the spec.
@@ -163,9 +200,9 @@ const checkSpecRows = (data: unknown, reportPath: string): Finding[] => {
   return [{ message, path: reportPath }];
 };
 
-// The qa stage's verifier, for a PASS or PARTIAL: checkFrames when the run has design/INDEX.md,
-// and checkSpecRows when its design/spec.md states a rule. A FAIL is not rejected, so its bugs reach the fix
-// loop.
+// The qa stage's verifier, for a PASS or PARTIAL: checkBlockers always, checkFrames when the run
+// has design/INDEX.md, and checkSpecRows when its design/spec.md states a rule. A FAIL is not
+// rejected, so its bugs reach the fix loop.
 export const checkDesignCoverage = async (input: VerifierInput): Promise<VerifierResult> => {
   const report = input.artifacts.find(
     (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
@@ -179,11 +216,10 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
   const index = await readOptional(join(designDir, "INDEX.md"));
   const spec = await readOptional(join(designDir, "spec.md"));
   const hasSpec = spec !== undefined && statesRules(spec);
-  if (index === undefined && !hasSpec) return { pass: true, findings: [] };
   const data = parseReportData((await readOptional(report.path)) ?? "");
   const frameFindings =
     index === undefined ? [] : await checkFrames(index, data, verdict.data, report.path);
   const specFindings = hasSpec ? checkSpecRows(data, report.path) : [];
-  const all = [...frameFindings, ...specFindings];
+  const all = [...checkBlockers(data, report.path), ...frameFindings, ...specFindings];
   return { pass: all.length === 0, findings: all };
 };

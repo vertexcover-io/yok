@@ -64,9 +64,14 @@ Read the two references with `yok orchestrate skill ref design.coverage` and
 
 1. Read `task` in full, and every file it names.
 2. When `.yok/RUN/artifacts/design/INDEX.md` exists, open every frame it lists and
-   `design/spec.md`. Fill each row's `Screen` with the screen and its viewport, and its
-   `Source of truth for` with what the frame settles. Delete a row whose image is not a
-   screen to build. Change only those cells and rows.
+   `design/spec.md`, then edit those two files and nothing else:
+   - fill each row's `Screen` with the screen and its viewport, and its `Source of truth for`
+     with what the frame settles;
+   - set each row's `Width` to the viewport width the frame was drawn for, where the cell
+     gives another;
+   - delete a row whose image is not a screen to build;
+   - keep in `spec.md` the sections that state rules for what this build draws, word for word,
+     and delete the rest.
 3. Find **why** the task exists. A reason that restates the request is no reason; it becomes
    question `D0`.
 4. Before your first question, dispatch in parallel on a fast model (`sonnet`):

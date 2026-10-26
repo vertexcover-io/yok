@@ -121,9 +121,10 @@ Everything else comes from the run's artifacts:
 - **The designs** plan.md's `## Design References` names, in `.yok/RUN/artifacts/design/`, each with the width
   it was drawn at. Each image is the **baseline** for the screen it draws, written `../design/FILE` from the
   report; the `visual-verification` reference owns what a baseline is authoritative about. Compare every frame
-  the plan builds against at least one scenario. A frame whose screen no walk could reach makes its scenario
-  `NOT VERIFIED`, and the `mechanism` of that scenario's `gaps[]` entry names the frame's `design/FILE` path. `done`
-  checks both.
+  the plan builds against at least one scenario, at the width the index gives it. A frame whose screen no walk
+  could reach makes its scenario `NOT VERIFIED`, and the `mechanism` of that scenario's `gaps[]` entry names the
+  frame's `design/FILE` path. `done` checks each frame and its width, and rejects a PASS or PARTIAL whose report
+  carries a BLOCKER.
 - **The config's `environments` entry the `environment` variable picks** — how the stack starts, seeds
   and authenticates. Step 1 works its keys through the `stack-up` reference.
 - **The project's stack skill** — the app facts verification turns on that no key carries (self-lying surfaces,
