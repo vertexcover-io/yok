@@ -46,7 +46,8 @@ export const CLAUDE_MAX_ESCAPES = 3;
 export const isClaudeBusy = (screen: string): boolean =>
   screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
 
-const RULE = /^\s*─{10,}\s*$/;
+// A named session draws its name into the rule: `──── fix-login ─`.
+const RULE = /^\s*─{10,}(?:\s.*\S\s─+)?\s*$/;
 const INPUT_LINE = /^❯(?:\s|$)/;
 const MENU_OPTION = /^❯\s*\d+\.\s/;
 const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;
@@ -134,11 +135,19 @@ const promptWhenReady = async (
   return typed.ok ? { ok: true, value: "sent" } : typed;
 };
 
+// /name is an immediate command: Claude runs it at once, even mid-turn, instead of queueing it.
+export const nameClaudeSession = (
+  terminal: ITerminal,
+  name: string,
+): Promise<Result<"sent" | "not-ready">> =>
+  promptWhenReady(terminal, `/name ${name}`, { whileBusy: true });
+
 export type ClaudeArgOptions = Readonly<{
   model?: string;
   effort?: Effort;
   permissionMode?: PermissionMode;
   systemPrompt?: string;
+  name?: string;
   prompt?: string;
   orchestrateArgv?: readonly string[];
   pluginDir?: string | undefined;
@@ -158,6 +167,7 @@ export const claudeArgs = (options: ClaudeArgOptions): string[] => {
     ...(options.effort !== undefined ? ["--effort", options.effort] : []),
     ...(options.permissionMode !== undefined ? ["--permission-mode", options.permissionMode] : []),
     ...(options.systemPrompt !== undefined ? ["--append-system-prompt", options.systemPrompt] : []),
+    ...(options.name !== undefined ? ["--name", options.name] : []),
     ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
     ...(options.pluginDir !== undefined ? ["--plugin-dir", options.pluginDir] : []),
     ...(options.prompt !== undefined ? [options.prompt] : []),

@@ -671,6 +671,54 @@ describe("terminal naming", () => {
     }
   });
 
+  test.each<[string, "claude" | "codex", string, boolean, (string | readonly string[])[]]>([
+    [
+      "a Claude pane with an empty input box gets /name fix-login typed and submitted",
+      "claude",
+      "",
+      false,
+      ["/name fix-login", ["Enter"]],
+    ],
+    [
+      "a Claude pane whose box holds the user's text gets nothing typed",
+      "claude",
+      "half a th",
+      false,
+      [],
+    ],
+    ["a Codex pane gets nothing typed", "codex", "", false, []],
+    [
+      "a Claude pane that refuses the typed /name gets no Enter",
+      "claude",
+      "",
+      true,
+      ["/name fix-login"],
+    ],
+  ])("%s at init", async (_label, agent, boxText, typingFails, expected) => {
+    const rule = "─".repeat(40);
+    const typed: (string | readonly string[])[] = [];
+    const ok = async () => ({ ok: true as const, value: undefined });
+    const terminal: ITerminal = {
+      ...({} as ITerminal),
+      rename: ok,
+      capture: async () => ({ ok: true, value: `· Working… (3s)\n${rule}\n❯ ${boxText}\n${rule}` }),
+      sendText: async (text) => {
+        typed.push(text);
+        return typingFails ? { ok: false, error: "pane closed" } : ok();
+      },
+      sendKeys: async (keys) => {
+        typed.push(keys);
+        return ok();
+      },
+    };
+    const { run, init } = await savedRun({ sessions: [{ agent, sessionId: "s1" }] });
+
+    const result = await init("fix-login", run.id, { terminal });
+
+    expect(result.ok).toBe(true);
+    expect(typed).toEqual(expected);
+  });
+
   test.each<[string, ITerminal | undefined]>([
     ["SC4: init outside tmux", undefined],
     [

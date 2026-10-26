@@ -60,6 +60,8 @@ import {
   VERSION,
 } from "@yok/sdk/internal";
 import * as z from "zod";
+import { nameClaudeSession } from "./agents/claude.ts";
+import { unwrap } from "./agents/common.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { type AgentMode, extensionPath } from "./stage.ts";
@@ -113,11 +115,13 @@ export type InitOptions = Readonly<{
 export const terminalName = (agent: string, runName: string, runId: string): string =>
   `${agent}-${runName}-${runId.slice(-4)}`;
 
+const firstAgent = (run: WorkflowRun): AgentType => run.sessions[0]?.agent ?? "claude";
+
 // A failed rename is only logged: the run works, its tmux session just keeps the old name.
 const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
   const { terminal, registry, name, log } = options;
   if (terminal === undefined) return;
-  const sessionName = terminalName(run.sessions[0]?.agent ?? "claude", name, run.id);
+  const sessionName = terminalName(firstAgent(run), name, run.id);
   try {
     const renamed = await terminal.rename(sessionName);
     if (!renamed.ok) {
@@ -127,6 +131,19 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
     await registry.setTerminal(run.id, sessionName);
   } catch (error) {
     log.warn({ runId: run.id, err: error }, "tmux session not renamed");
+  }
+};
+
+// Like the tmux name, a Claude session left unnamed is only logged.
+const nameSession = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
+  const { terminal, name, log } = options;
+  if (terminal === undefined || firstAgent(run) !== "claude") return;
+  try {
+    const named = unwrap(await nameClaudeSession(terminal, name));
+    if (named === "not-ready")
+      log.warn({ runId: run.id }, "Claude session not named: its input box is not free");
+  } catch (error) {
+    log.warn({ runId: run.id, err: error }, "Claude session not named");
   }
 };
 
@@ -337,6 +354,7 @@ export const initializeRun = async (
     const state = await fillRunDir(checked.value, options);
     await options.registry.initRun(run.id, options.name);
     await renameTerminal(run, options);
+    await nameSession(run, options);
     options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
     return { ok: true, value: { dir, state } };
   } catch (error) {

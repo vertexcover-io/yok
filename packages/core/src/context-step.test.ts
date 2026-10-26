@@ -289,7 +289,9 @@ describe("runContextStep: new", () => {
     expect(typesAtRelaunch).toEqual(["workflow.session.replaced", "workflow.context.started"]);
     const [relaunch] = starting.relaunches;
     expect(relaunch?.terminal).toBe(fake.terminal);
-    expect(relaunch).toMatchObject({ options: { ...LAUNCH, prompt: RESUME } });
+    expect(relaunch).toMatchObject({
+      options: { ...LAUNCH, prompt: RESUME, name: context.run.name },
+    });
     const sessionId = relaunch?.sessionId ?? "";
     expect(fake.typed).toEqual([]);
     expect((await context.registry.findRun("r-1"))?.sessions).toContainEqual({
@@ -1185,6 +1187,7 @@ describe("runModelStep", () => {
       model: "opus-x",
       effort: "high",
       prompt: RESUME,
+      name: context.run.name,
     });
     expect(await appliedEvents(context.runDir)).toEqual([
       { requestSeq: context.seq, node: "think", model: "opus-x", effort: "high", applied: true },
