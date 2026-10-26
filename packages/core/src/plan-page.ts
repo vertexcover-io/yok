@@ -1,17 +1,10 @@
 /// <reference path="./text-imports.d.ts" />
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { extname, join, normalize, relative } from "node:path";
-import { execWithTimeout, indexedFrames, type RunRef, runDirOf } from "@yok/sdk";
-import {
-  colorFile,
-  DOC_STYLES,
-  type RepoFiles,
-  renderMarkdown,
-  repoFiles,
-  resolveRepoPath,
-} from "./markdown.ts";
+import { extname, join, normalize } from "node:path";
+import { indexedFrames, type RunRef, runDirOf } from "@yok/sdk";
+import { colorFile, DOC_STYLES, type RepoFiles, renderMarkdown, repoFiles } from "./markdown.ts";
 import TEMPLATE_IMPORT from "./plan-page.html" with { type: "text" };
 import { isInsideDir } from "./workflow/done.ts";
 
@@ -41,6 +34,8 @@ const MAX_FRAME_BYTES = 20_000_000;
 // 60 MB of frames is about 80 MB as base64, which keeps the page under Slack's 100 MB upload cap.
 const FRAME_BUDGET_BYTES = 60_000_000;
 const GIT_TIMEOUT_MS = 10_000;
+// The most source a file may add to the page, as in yok view.
+const MAX_SOURCE_BYTES = 2_000_000;
 const MIME: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -306,41 +301,22 @@ export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Prom
   return TEMPLATE.replace(SLOT, (slot) => slots[slot] ?? slot);
 };
 
-const gitPaths = async (
-  cwd: string,
-  args: readonly string[],
-): Promise<readonly string[] | null> => {
-  const ran = await execWithTimeout(GIT_TIMEOUT_MS)("git", args, cwd).catch(() => null);
-  return ran?.code === 0 ? ran.stdout.split("\0").filter((p) => p !== "") : null;
-};
-
-// The files under cwd whose working copy is what HEAD holds: tracked, with no staged or unstaged
-// change. None outside a git repo or before its first commit, so nothing is embedded there.
-const committedFiles = async (cwd: string): Promise<ReadonlySet<string>> => {
-  const [tracked, changed] = await Promise.all([
-    gitPaths(cwd, ["ls-files", "-z"]),
-    gitPaths(cwd, ["diff", "--name-only", "--relative", "-z", "HEAD"]),
-  ]);
-  if (tracked === null || changed === null) return new Set();
-  const dirty = new Set(changed);
-  return new Set(tracked.filter((path) => !dirty.has(path)));
-};
-
-// The page is uploaded to chat, so it embeds only content everyone with the repo already has: a
-// committed file with no local edit, reached at a path that is itself committed, so a committed
-// link cannot pull in an untracked file. repoFiles' secret-name check still runs on top.
-const committedRepoFiles = (
-  cwd: string,
-  repo: RepoFiles,
-  committed: ReadonlySet<string>,
-): RepoFiles => ({
+// The page is uploaded to chat, so a file's lines come from the blob HEAD holds, which everyone with
+// the repo already has, never from the working copy: an untracked file has no blob, and no local
+// edit, skip-worktree bit or smudge filter (git-crypt decrypts there) changes what is embedded.
+// repoFiles still decides which paths may be read: inside the repo, not secret-named, not too big.
+const committedRepoFiles = (cwd: string, repo: RepoFiles): RepoFiles => ({
   exists: repo.exists,
   read: (path) => {
-    const abs = resolveRepoPath(cwd, path);
-    if (abs === null || !committed.has(normalize(path))) return null;
+    if (repo.read(path) === null) return null;
     try {
-      const real = relative(realpathSync(cwd), realpathSync(abs));
-      return committed.has(real) ? repo.read(path) : null;
+      return execFileSync("git", ["cat-file", "blob", `HEAD:./${normalize(path)}`], {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: MAX_SOURCE_BYTES,
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: GIT_TIMEOUT_MS,
+      });
     } catch {
       return null;
     }
@@ -349,7 +325,7 @@ const committedRepoFiles = (
 
 export const writePlanPage = async (run: RunRef): Promise<string> => {
   const runDir = runDirOf(run.cwd, run.name);
-  const repo = committedRepoFiles(run.cwd, repoFiles(run.cwd), await committedFiles(run.cwd));
+  const repo = committedRepoFiles(run.cwd, repoFiles(run.cwd));
   const html = await buildPlanPage(join(runDir, "artifacts"), repo);
   const path = join(runDir, PLAN_PAGE_PATH);
   // A rename replaces a link planted at the path, and the exclusive create refuses a link planted

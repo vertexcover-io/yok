@@ -417,27 +417,51 @@ describe("buildPlanPage", () => {
     expect(scriptJson(page, "plan-sources")).toEqual({});
   });
 
-  test("writePlanPage embeds a committed file's lines, and never an untracked file, a tracked link to one, or uncommitted edits", async () => {
+  test("writePlanPage embeds what HEAD holds: no untracked file, no link's target, no local edit, hidden or not, and no smudged plaintext", async () => {
     const cwd = tempDir("plan-git");
     const git = (...args: string[]) =>
       execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd });
     git("init", "-q");
+    // A smudge filter, as git-crypt uses: HEAD stores ENCRYPTED, the working copy holds the secret.
+    git("config", "filter.reveal.clean", "sed s/PLAIN-SECRET/ENCRYPTED/");
+    git("config", "filter.reveal.smudge", "sed s/ENCRYPTED/PLAIN-SECRET/");
+    put(cwd, ".gitattributes", "*.vault filter=reveal\n");
     put(cwd, "src/a.ts", "const a = 1;\n");
     put(cwd, "src/b.ts", "const b = 1;\n");
+    put(cwd, "src/c.ts", "const c = 1;\n");
+    put(cwd, "app.vault", "key: PLAIN-SECRET\n");
     put(cwd, "config/secrets.yml", "token: s3cr3t-value\n");
     symlinkSync("../config/secrets.yml", join(cwd, "src/link.ts"));
-    git("add", "src/a.ts", "src/b.ts", "src/link.ts");
+    git("add", ".gitattributes", "src", "app.vault");
     git("commit", "-q", "-m", "init");
     put(cwd, "src/b.ts", "const b = 'uncommitted-token';\n");
+    put(cwd, "src/c.ts", "const c = 'hidden-edit';\n");
+    git("update-index", "--skip-worktree", "src/c.ts");
     const diff = (file: string) => [`\`${file}\``, "", `${FENCE}diff`, "+x", FENCE, ""];
-    const files = ["src/a.ts", "src/b.ts", "src/link.ts", "config/secrets.yml"];
+    const files = [
+      "src/a.ts",
+      "src/b.ts",
+      "src/c.ts",
+      "src/link.ts",
+      "app.vault",
+      "config/secrets.yml",
+    ];
     put(cwd, ".yok/feat-x/artifacts/plan.md", ["# Plan", "", ...files.flatMap(diff)].join("\n"));
 
     const page = readFileSync(await writePlanPage({ id: "r-1", cwd, name: "feat-x" }), "utf8");
 
-    expect(Object.keys(scriptJson(page, "plan-sources"))).toEqual(["src/a.ts"]);
-    expect(page).not.toContain("s3cr3t-value");
-    expect(page).not.toContain("uncommitted-token");
+    const sources = scriptJson(page, "plan-sources");
+    expect(Object.keys(sources).toSorted()).toEqual([
+      "app.vault",
+      "src/a.ts",
+      "src/b.ts",
+      "src/c.ts",
+      "src/link.ts",
+    ]);
+    for (const leaked of ["s3cr3t-value", "uncommitted-token", "hidden-edit", "PLAIN-SECRET"]) {
+      expect(page).not.toContain(leaked);
+    }
+    expect(JSON.stringify(sources["app.vault"])).toContain("ENCRYPTED");
     expect(page).toContain('data-file="config/secrets.yml"');
   });
 
