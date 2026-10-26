@@ -269,8 +269,12 @@ describe("viewer in a browser", () => {
 
   afterAll(async () => {
     stopDeliveries();
+    // A sync spawn blocks the worker until every holder of its pipes exits, and the browser's
+    // background process can hold them for good, so it gets no pipes and a deadline.
     spawnSync("agent-browser", ["close"], {
       env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
+      stdio: "ignore",
+      timeout: 10_000,
     });
     await viewer.stop();
   });
