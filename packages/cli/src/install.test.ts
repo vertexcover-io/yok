@@ -22,6 +22,7 @@ import {
   pickRelease,
   removeInstall,
   runUpdate,
+  updateAgents,
 } from "./install.ts";
 
 const dirs: string[] = [];
@@ -262,6 +263,64 @@ describe("runUpdate", () => {
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(logLines(log)).toEqual([]);
   });
+
+  test("SC643: hands every resolved agent to the new binary's plugin install", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+    const lines = spyOn(console, "log").mockImplementation(() => undefined);
+
+    const { code } = await runUpdate(
+      { ...target, execPath, version: "0.0.1" },
+      ["claude", "codex"],
+      false,
+    );
+
+    lines.mockRestore();
+    expect(code).toBe(0);
+    expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude --agent codex"]);
+  });
+});
+
+// A directory holding an executable stub for each of `names`.
+const binDir = (names: readonly string[]): string => {
+  const dir = temp("yok-path-");
+  for (const name of names) {
+    writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(dir, name), 0o755);
+  }
+  return dir;
+};
+
+describe("updateAgents", () => {
+  test.each([
+    ["only claude", () => ({ PATH: binDir(["claude"]) }), ["claude"]],
+    ["only codex", () => ({ PATH: binDir(["codex"]) }), ["codex"]],
+    ["both", () => ({ PATH: binDir(["claude", "codex"]) }), ["claude", "codex"]],
+    [
+      "nothing, with YOK_CLAUDE_BIN naming an executable",
+      () => ({ PATH: binDir([]), YOK_CLAUDE_BIN: join(binDir(["my-claude"]), "my-claude") }),
+      ["claude"],
+    ],
+  ] as const)(
+    "SC640: without --agent, PATH holding %s targets those agents",
+    (_label, env, expected) => {
+      expect(updateAgents(undefined, env())).toEqual({ ok: true, value: expected });
+    },
+  );
+
+  test("SC641: with --agent, targets exactly the named agents whatever is on PATH", () => {
+    expect(updateAgents(["codex"], { PATH: binDir(["claude"]) })).toEqual({
+      ok: true,
+      value: ["codex"],
+    });
+  });
+
+  test("SC642: with no agent on PATH and no --agent, refuses and names --agent", () => {
+    const result = updateAgents(undefined, { PATH: binDir([]) });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.error).toContain("--agent");
+  });
 });
 
 const INSTALL_SH = join(import.meta.dir, "..", "..", "..", "install.sh");
@@ -415,5 +474,17 @@ describe("the plugin, update and uninstall commands from source", () => {
       expect(result.output).toContain("expected claude or codex, got foo");
       expect(result.calls).toEqual([]);
     }
+  }, 30_000);
+
+  test("SC644: update accepts a bare call while plugin install still requires --agent", () => {
+    const update = fromSource(["update"]);
+    expect(update.code).toBe(1);
+    expect(update.output).toContain("git pull");
+    expect(update.calls).toEqual([]);
+
+    const install = fromSource(["plugin", "install"]);
+    expect(install.code).not.toBe(0);
+    expect(install.output).toContain("--agent");
+    expect(install.calls).toEqual([]);
   }, 30_000);
 });

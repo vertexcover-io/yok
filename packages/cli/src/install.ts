@@ -184,6 +184,28 @@ const failed = (message: string): UpdateOutcome => {
   return { code: 1, binaryReady: false };
 };
 
+// An agent counts as installed when its CLI is on PATH.
+export const agentsOnPath = (
+  env: Readonly<Record<string, string | undefined>>,
+): readonly WorkflowAgent[] =>
+  WorkflowAgentSchema.options.filter(
+    (agent) => Bun.which(agentBinary(agent, env), { PATH: env.PATH ?? "" }) !== null,
+  );
+
+// No agent to move would leave the new binary without a matching plugin, so nothing runs.
+export const updateAgents = (
+  named: readonly WorkflowAgent[] | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+): Result<readonly WorkflowAgent[]> => {
+  if (named !== undefined) return { ok: true, value: named };
+  const found = agentsOnPath(env);
+  if (found.length > 0) return { ok: true, value: found };
+  return {
+    ok: false,
+    error: "found neither claude nor codex on PATH: install one, or name it with --agent",
+  };
+};
+
 const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Promise<number> =>
   spawnInteractive(
     binary,
@@ -266,10 +288,12 @@ export const updateCommand = () =>
       "Install the newest yok release (through Homebrew or npm if they installed it), move the plugin to it, and restart the server",
     )
     .option("--pre-release", "take the newest release of any kind, not only stable")
-    .addOption(agentOption())
+    .addOption(agentOption("claude or codex; repeat for both; default: every one found on PATH"))
     .action(async ({ agent, preRelease }) => {
       if (!isCompiled) return fail(DEV_UPDATE);
-      const { code, binaryReady } = await update(agent, preRelease === true);
+      const agents = updateAgents(agent, process.env);
+      if (!agents.ok) return fail(agents.error);
+      const { code, binaryReady } = await update(agents.value, preRelease === true);
       process.exitCode = code;
       if (!binaryReady) return;
       // The server keeps running the binary it started from until it is restarted. A failed
@@ -336,9 +360,8 @@ const askYes = async (question: string): Promise<boolean> => {
 
 // An agent that is not installed has no plugin to remove.
 const removePlugins = async (): Promise<boolean> => {
-  for (const agent of WorkflowAgentSchema.options) {
+  for (const agent of agentsOnPath(process.env)) {
     const binary = agentBinary(agent, process.env);
-    if (Bun.which(binary) === null) continue;
     const result = await uninstallPlugin(agent, binary, execWithTimeout(120_000), process.cwd());
     if (!result.ok) {
       fail(result.error);

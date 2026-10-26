@@ -105,8 +105,9 @@ Tool names differ between Claude Code and Codex. The mapping is in [references/c
 Run the install command again, or:
 
 ```bash
-yok update --agent claude                 # newest stable release; the plugin moves with it
-yok update --agent claude --pre-release   # release candidates too
+yok update                    # newest stable release; the plugin moves with it for every agent on PATH
+yok update --agent claude     # move the plugin for claude only (repeat --agent for several)
+yok update --pre-release      # release candidates too
 ```
 
 On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install --agent claude` yourself; the next `yok` command that needs the server replaces the one still running the old version.
@@ -308,7 +309,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
-| `yok update --agent NAME` | Install the newest release, move the plugin to it, restart the server. `--pre-release` |
+| `yok update` | Install the newest release, move the plugin to it for every agent on PATH, restart the server. `--agent NAME` (repeatable) limits it, `--pre-release` |
 | `yok plugin install --agent NAME` | Reinstall the plugin at the binary's version |
 | `yok uninstall` | Remove yok from this machine. `--plugin`, `--no-plugin` |
 | `yok types` | Write the SDK's type files to `.yok/types/` for your editor |

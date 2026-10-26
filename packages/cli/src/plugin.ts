@@ -18,10 +18,8 @@ const parseAgent = (
   return [...previous, agent.data];
 };
 
-export const agentOption = () =>
-  new Option("--agent <name>", "claude or codex; repeat for both")
-    .argParser(parseAgent)
-    .makeOptionMandatory();
+export const agentOption = (description: string) =>
+  new Option("--agent <name>", description).argParser(parseAgent);
 
 const DEV_PLUGIN = "yok-dev loads the plugin from this checkout: claude --plugin-dir PATH_TO_REPO";
 
@@ -39,6 +37,6 @@ export const pluginCommand = () =>
   new Command("plugin").description("Manage the yok agent plugin").addCommand(
     new Command("install")
       .description("Install the plugin at this binary's version, or move an installed one to it")
-      .addOption(agentOption())
+      .addOption(agentOption("claude or codex; repeat for both").makeOptionMandatory())
       .action(async ({ agent }) => (isCompiled ? installAll(agent) : fail(DEV_PLUGIN))),
   );
