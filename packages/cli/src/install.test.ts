@@ -336,8 +336,8 @@ describe("updateYok", () => {
       {
         agent: undefined,
         preRelease: false,
-        env: { PATH: binDir(["claude"]) },
-        target: { ...target, execPath, version: "0.0.1" },
+        env: { PATH: binDir(["claude"]), GH_TOKEN: TOKEN },
+        target: { releasesUrl: target.releasesUrl, execPath, version: "0.0.1" },
       },
       true,
     );
@@ -346,6 +346,41 @@ describe("updateYok", () => {
     expect(code).toBe(0);
     expect(binaryReady).toBe(true);
     expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
+  });
+
+  test("a Homebrew install with neither gh on PATH nor a token runs brew upgrade, then the upgraded binary's plugin install", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const prefix = temp("yok-brew-");
+    const execPath = join(prefix, "Cellar/yok/0.0.1/bin/yok");
+    const upgraded = join(prefix, "opt/yok/bin/yok");
+    for (const [path, script] of [
+      [execPath, fakeYok("0.0.1", log)],
+      [upgraded, fakeYok("0.0.2", log)],
+      [join(prefix, "bin/brew"), `#!/bin/sh\necho "brew $*" >> "${log}"\n`],
+    ] as const) {
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, script);
+      chmodSync(path, 0o755);
+    }
+    const saved = { ...process.env };
+    process.env.PATH = join(prefix, "bin");
+
+    // Nothing listens on port 1, so a release download would fail instead of reaching brew.
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir(["claude"]) },
+        target: { releasesUrl: "http://127.0.0.1:1/releases", execPath, version: "0.0.1" },
+      },
+      true,
+    ).finally(() => {
+      process.env = saved;
+    });
+
+    expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
+    expect(logLines(log)).toEqual(["brew upgrade yok", "0.0.2 plugin install --agent claude"]);
   });
 
   test("without --agent and with an empty PATH, exits 1 naming --agent and downloads nothing", async () => {
@@ -362,7 +397,6 @@ describe("updateYok", () => {
         env: { PATH: binDir([]) },
         target: {
           releasesUrl: "http://127.0.0.1:1/releases",
-          token: null,
           execPath,
           version: "0.0.1",
         },

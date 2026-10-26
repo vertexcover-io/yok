@@ -142,6 +142,8 @@ export type UpdateTarget = Readonly<{
   version: string;
 }>;
 
+type ReleaseSource = Omit<UpdateTarget, "token">;
+
 const RELEASES_URL = `https://api.github.com/repos/${YOK_REPO}/releases?per_page=30`;
 
 const NO_ACCESS = `yok is private: run gh auth login with an account that can see ${YOK_REPO}, or set GH_TOKEN`;
@@ -256,14 +258,17 @@ const runManagedUpdate = async (
   return { code: await installPluginWith(update.binary, agents), binaryReady: true };
 };
 
+// Only the release download needs the token, so a Homebrew or npm update works without gh.
 const update = async (
   agents: readonly WorkflowAgent[],
   preRelease: boolean,
-  target: UpdateTarget,
+  source: ReleaseSource,
+  env: Readonly<Record<string, string | undefined>>,
 ): Promise<UpdateOutcome> => {
-  const execPath = realpathSync(target.execPath);
+  const execPath = realpathSync(source.execPath);
   const manager = installedBy(execPath);
-  if (manager === null) return runUpdate(target, agents, preRelease);
+  if (manager === null)
+    return runUpdate({ ...source, token: githubToken(env) }, agents, preRelease);
   const managed = managedUpdate(manager, execPath, preRelease);
   return managed.ok ? runManagedUpdate(managed.value, agents) : failed(managed.error);
 };
@@ -272,8 +277,8 @@ export type UpdateRequest = Readonly<{
   agent: readonly WorkflowAgent[] | undefined;
   preRelease: boolean;
   env: Readonly<Record<string, string | undefined>>;
-  // The release this binary updates from; built from env and this process when absent.
-  target?: UpdateTarget;
+  // The release this binary updates from; built from this process when absent.
+  target?: ReleaseSource;
 }>;
 
 // The update command without the server restart, which the action runs once the binary is ready.
@@ -286,11 +291,10 @@ export const updateYok = async (
   if (!agents.ok) return failed(agents.error);
   const from = target ?? {
     releasesUrl: RELEASES_URL,
-    token: githubToken(env),
     execPath: process.execPath,
     version: VERSION,
   };
-  return update(agents.value, preRelease, from);
+  return update(agents.value, preRelease, from, env);
 };
 
 export const updateCommand = () =>
