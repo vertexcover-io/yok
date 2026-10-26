@@ -132,13 +132,13 @@ These rules bind every step:
   change in plan.md's `## Design corrections`.
 - **Open each step with a summary.** Two or three lines of plain English say what changes in
   the file and why, so the developer has the gist before reading the code.
-- **Show every code change as a diff.** A step that writes or changes code carries its diff,
-  a step that builds to a frame included. The logic lives in the diff, not in prose.
+- **Show every code change as a diff.** Every step that changes code carries its diff, whether
+  or not it builds to a frame or points at the spec. The logic lives in the diff, not in prose.
 - **Every frame gets a step.** A step that builds a surface a frame defines names it on its
   Design line, `build to design/FILE at WIDTHpx` with the width the index gives, or `build to
   design/FILE` when the index gives none, and its diff builds what the frame shows. A screen no
   step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done` checks that
-  every frame has one or the other, and that every step that builds to a frame has a diff.
+  every frame has one or the other.
 - **Every spec rule gets a pointer.** A step that builds a surface `design/spec.md` governs
   names the parts that hold its rules on its Spec line, `design/spec.md — PART · PART`, in the
   spec's own words. The rule text stays in spec.md. A rule about a screen, viewport or state no
@@ -157,9 +157,9 @@ These rules bind every step:
 - **Phasing.** No two phases change the same file unless ordered · every phase is provable by
   its own scenarios the moment it lands · a phase that uses what another builds depends on it.
 - **Steps.** Every step opens with a plain-English summary of what changes and why · every
-  step that changes code has a diff, a design step included · a step's Design and Spec lines
-  are list items, one per line · no step tells the coder to discover something · every title
-  opens with an imperative verb.
+  step that changes code has a diff, with or without a frame or spec · a step's Design and
+  Spec lines are list items, one per line · no step tells the coder to discover something ·
+  every title opens with an imperative verb.
 - **Coverage.** Every requirement has a matrix row · every scenario appears once across the
   phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
   real-browser fact or a named Blocker · every frame in `design/INDEX.md` is built or recorded

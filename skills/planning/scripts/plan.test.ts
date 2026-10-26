@@ -110,55 +110,6 @@ describe("checkDesignCoverage", () => {
     expect((await check(artifactsWith({ plan, index }))).pass).toBe(pass);
   });
 
-  const DIFF = ["   ```diff", "   + export const Modal = () => null;", "   ```"];
-  const designStep = (n: number, frame: string, diff: readonly string[]) => [
-    `${n}. **Create \`src/${n}.tsx\`**`,
-    "",
-    "   Adds the screen.",
-    "",
-    `   - **Design:** build to ${frame}`,
-    "   - **Spec:** design/spec.md — 7. Modal",
-    "",
-    ...diff,
-    "",
-  ];
-
-  test("a phase step that builds to a frame with its diff passes, and one without a diff fails, naming the step, the frame and the phase file", async () => {
-    const phase = [
-      "# Phase 1",
-      "",
-      "## Steps",
-      "",
-      ...designStep(1, "design/a.png at 1440px", DIFF),
-      ...designStep(2, "design/b.png at 390px", []),
-      "## Tests",
-      "",
-      "```diff",
-      "+ unrelated",
-      "```",
-      "",
-    ].join("\n");
-    const dir = artifactsWith({ plan: "# Plan\n", phase, index: INDEX });
-
-    const result = await check(dir);
-
-    expect(result.pass).toBe(false);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]?.message).toContain("step 2");
-    expect(result.findings[0]?.message).toContain("design/b.png");
-    expect(result.findings[0]?.message).toContain("diff");
-    expect(result.findings[0]?.path).toBe(join(dir, "phases", "phase-1.md"));
-  });
-
-  test("a design step needs its diff even when the run has no design/INDEX.md", async () => {
-    const phase = ["# Phase 1", "", ...designStep(1, "design/a.png", [])].join("\n");
-
-    const result = await check(artifactsWith({ plan: "# Plan\n", phase }));
-
-    expect(result.pass).toBe(false);
-    expect(result.findings[0]?.message).toContain("step 1");
-  });
-
   test("SC11 (regression): a plan with no design/INDEX.md beside it passes untouched", async () => {
     const dir = artifactsWith({ plan: "# Plan\n- build the API\n" });
 

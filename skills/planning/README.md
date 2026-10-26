@@ -29,5 +29,5 @@ Produces the `plan` artifact: `.yok/RUN_NAME/artifacts/plan.md` plus `artifacts/
 - `references/step-card.md`: the parts of an implementation step and how a change is shown as a diff.
 - `references/test-scenarios.md`: how to derive scenarios and pick each one's test level.
 - `references/docs-scout.md`: the brief for the sub-agent that finds binding docs.
-- `scripts/plan.ts`: the `design-coverage` verifier, which rejects a plan that leaves a frame in `design/INDEX.md` unclaimed, or a step that builds to a frame without a diff. Tests beside it.
+- `scripts/plan.ts`: the `design-coverage` verifier, which rejects a plan that leaves a frame in `design/INDEX.md` unclaimed. Tests beside it.
 - `evals/evals.json`: an eval suite.

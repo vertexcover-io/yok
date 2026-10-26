@@ -10,7 +10,7 @@ governs where things go and what they are called. It never governs how much a st
 | **Title**: the action and its file | always | `1. **Change \`src/x.ts:31-40\`**` |
 | **Summary**: what changes in the file and why | always | two or three lines of plain English under the title, so the developer has the gist before reading the code |
 | **Design**: the frame this step builds to, and where its spec rules are | the step builds a surface a design defines | two list items under the summary, as **Designs** below shows |
-| **Diff**: the change | the step writes or changes code, a design step included | a line naming the file and range, then a ```` ```diff ```` block |
+| **Diff**: the change | the step changes code, whether or not it has a Design part or a Spec line | a line naming the file and range, then a ```` ```diff ```` block |
 | **Pattern**: existing code to imitate | the step copies a shape from elsewhere rather than changing that code | a fenced block, with the reason it is shown on the line above |
 | **Why this way**: the rejected alternative, or the constraint | the location or shape had a plausible alternative | closing sentence |
 | **Trap**: what breaks if the developer does the obvious thing | code that looks safe to change and is not | its own paragraph |
