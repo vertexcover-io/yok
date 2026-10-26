@@ -23,6 +23,7 @@ import {
   removeInstall,
   runUpdate,
   updateAgents,
+  updateYok,
 } from "./install.ts";
 import { installAll } from "./plugin.ts";
 
@@ -321,6 +322,61 @@ describe("updateAgents", () => {
     const result = updateAgents(undefined, { PATH: binDir([]) });
     expect(result.ok).toBe(false);
     expect(result.ok ? "" : result.error).toContain("--agent");
+  });
+});
+
+describe("updateYok", () => {
+  test("without --agent and with only claude on PATH, the new binary's plugin install receives --agent claude", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+    const lines = spyOn(console, "log").mockImplementation(() => undefined);
+
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir(["claude"]) },
+        target: { ...target, execPath, version: "0.0.1" },
+      },
+      true,
+    );
+
+    lines.mockRestore();
+    expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
+    expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
+  });
+
+  test("without --agent and with an empty PATH, exits 1 naming --agent and downloads nothing", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const before = readFileSync(execPath, "utf8");
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    // Nothing listens on port 1, so any fetch would throw instead of returning.
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir([]) },
+        target: {
+          releasesUrl: "http://127.0.0.1:1/releases",
+          token: null,
+          execPath,
+          version: "0.0.1",
+        },
+      },
+      true,
+    );
+
+    const printed = errors.mock.calls.flat().join("\n");
+    errors.mockRestore();
+    expect(code).toBe(1);
+    expect(binaryReady).toBe(false);
+    expect(printed).toContain("--agent");
+    expect(readFileSync(execPath, "utf8")).toBe(before);
+    expect(logLines(log)).toEqual([]);
   });
 });
 

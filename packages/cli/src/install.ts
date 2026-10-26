@@ -256,30 +256,41 @@ const runManagedUpdate = async (
   return { code: await installPluginWith(update.binary, agents), binaryReady: true };
 };
 
-const updateFromRelease = (
-  agents: readonly WorkflowAgent[],
-  preRelease: boolean,
-): Promise<UpdateOutcome> =>
-  runUpdate(
-    {
-      releasesUrl: RELEASES_URL,
-      token: githubToken(process.env),
-      execPath: process.execPath,
-      version: VERSION,
-    },
-    agents,
-    preRelease,
-  );
-
 const update = async (
   agents: readonly WorkflowAgent[],
   preRelease: boolean,
+  target: UpdateTarget,
 ): Promise<UpdateOutcome> => {
-  const execPath = realExecPath();
+  const execPath = realpathSync(target.execPath);
   const manager = installedBy(execPath);
-  if (manager === null) return updateFromRelease(agents, preRelease);
+  if (manager === null) return runUpdate(target, agents, preRelease);
   const managed = managedUpdate(manager, execPath, preRelease);
   return managed.ok ? runManagedUpdate(managed.value, agents) : failed(managed.error);
+};
+
+export type UpdateRequest = Readonly<{
+  agent: readonly WorkflowAgent[] | undefined;
+  preRelease: boolean;
+  env: Readonly<Record<string, string | undefined>>;
+  // The release this binary updates from; built from env and this process when absent.
+  target?: UpdateTarget;
+}>;
+
+// The update command without the server restart, which the action runs once the binary is ready.
+export const updateYok = async (
+  { agent, preRelease, env, target }: UpdateRequest,
+  compiled: boolean = isCompiled,
+): Promise<UpdateOutcome> => {
+  if (!compiled) return failed(DEV_UPDATE);
+  const agents = updateAgents(agent, env);
+  if (!agents.ok) return failed(agents.error);
+  const from = target ?? {
+    releasesUrl: RELEASES_URL,
+    token: githubToken(env),
+    execPath: process.execPath,
+    version: VERSION,
+  };
+  return update(agents.value, preRelease, from);
 };
 
 export const updateCommand = () =>
@@ -290,10 +301,11 @@ export const updateCommand = () =>
     .option("--pre-release", "take the newest release of any kind, not only stable")
     .addOption(agentOption("claude or codex; repeat for both; default: every one found on PATH"))
     .action(async ({ agent, preRelease }) => {
-      if (!isCompiled) return fail(DEV_UPDATE);
-      const agents = updateAgents(agent, process.env);
-      if (!agents.ok) return fail(agents.error);
-      const { code, binaryReady } = await update(agents.value, preRelease === true);
+      const { code, binaryReady } = await updateYok({
+        agent,
+        preRelease: preRelease === true,
+        env: process.env,
+      });
       process.exitCode = code;
       if (!binaryReady) return;
       // The server keeps running the binary it started from until it is restarted. A failed
