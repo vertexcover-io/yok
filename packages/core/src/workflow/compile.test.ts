@@ -1334,6 +1334,38 @@ describe("the shipped task workflow", () => {
       "learn",
     ]);
   });
+
+  test("SC12 (design): the planning stage loads the design-coverage function verifier and consumes design-refs as optional", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+
+    const planning = plan.nodes.find((node) => node.id === "planning");
+    expect(planning).toMatchObject({
+      stage: {
+        verifiers: [{ id: "design-coverage", kind: "function" }],
+        consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
+      },
+    });
+  });
+
+  test("SC19 (design): the qa stage inside qa-loop loads the design-coverage function verifier and consumes design-refs as optional", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+
+    expect(plan.nodes.find((node) => node.id === "qa-loop")).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({
+          id: "qa",
+          stage: expect.objectContaining({
+            verifiers: [expect.objectContaining({ id: "design-coverage", kind: "function" })],
+            consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
+          }),
+        }),
+      ]),
+    });
+  });
 });
 
 describe("the shipped regression workflow", () => {

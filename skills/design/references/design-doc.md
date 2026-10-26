@@ -20,6 +20,7 @@ Hard caps, on how many things the page says and on how long each is.
 | Rejected | 1 per approach turned down | one line |
 | Diagrams | 1 | about 10 nodes |
 | `Non-goals` | 3 | one line |
+| `Screens` | one per `design/INDEX.md` row | one line |
 | `Decisions` | 3 | one line |
 | `Risks` | 3 | one line |
 | `Hard to undo` | 1 | one line |
@@ -68,6 +69,10 @@ flowchart LR
 
 - What a reader could reasonably expect this to do, and it will not.
 
+## Screens
+
+- `design/FILE` — what this frame settles for the build: the components and states it draws.
+
 ## Decisions
 
 - D1 *(user)*: what we do, instead of the alternative, because the reason.
@@ -111,6 +116,8 @@ What this locks in that every caller will depend on.
   the origin on every line: *(user)* when the user answered the question, *(agent)* when the
   stage closed it on the user's behalf. Cite the ticket or a `file:line` in the reason where
   one drives it.
+- **Screens**: only when `design/INDEX.md` exists, one line per row. The rules in
+  `design/spec.md` go in one `Decisions` line.
 - **Risks**: gaps in the task that bite, not a checklist. Each says what it costs if ignored.
 - **Hard to undo**: the one thing approving commits every caller to: a table other code will
   write to, a contract other callers will depend on, a dependency that stays in the build.

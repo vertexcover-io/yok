@@ -1,14 +1,27 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, readFile, realpath, rm, stat } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { join, sep } from "node:path";
+import { parseArgs } from "node:util";
 import { NonEmptyStringSchema, readProjectEnv } from "@yok/sdk";
 import * as z from "zod";
 
+// Backticks, pipes and control characters would break the design index's table row.
 export const SafeFilenameSchema = NonEmptyStringSchema.refine(
-  (name) => !/[/\\\0]|^\./.test(name) && !name.includes(".."),
-  "Expected one filename with no directory part, no .. and no leading dot",
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+  (name) => !/[/\\`|\x00-\x1f\x7f]|^\./.test(name) && !name.includes(".."),
+  "Expected one filename with no directory part, no .., no leading dot, no backtick, pipe or control character",
 );
 
 const AssetBaseSchema = z.strictObject({
@@ -153,6 +166,150 @@ const exists = (path: string): Promise<boolean> =>
     () => false,
   );
 
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
+
+// What a downloaded asset is to the design index.
+export type DesignKind = "image" | "html-mockup" | "spec-doc" | "other";
+type Downloaded = Extract<Asset, { status: "downloaded" }>;
+
+// A screenshot is indexed with the mockups: the design stage drops a row that only shows today's bug.
+export const classifyAsset = (asset: Downloaded): DesignKind => {
+  const isHtml = asset.mimeType === "text/html" || /\.html?$/i.test(asset.path);
+  // Only a page the ticket calls a mockup is opened in the agent's browser; an HTML log is data.
+  if (isHtml && asset.type === "mockup") return "html-mockup";
+  const drawn = asset.type === "mockup" || asset.type === "screenshot";
+  // A download without a Content-Type records application/octet-stream; its extension still says.
+  if (drawn && (asset.mimeType.startsWith("image/") || IMAGE_FILE.test(asset.path))) return "image";
+  if (asset.type === "document" && /^text\/(markdown|plain)$/.test(asset.mimeType)) {
+    return "spec-doc";
+  }
+  return "other";
+};
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// 72 dpi, the density a 1x screen capture records, in the pixels per metre a pHYs chunk counts.
+const PIXELS_PER_METRE_AT_1X = 2835;
+
+// The pixel ratio a pHYs chunk records (2 for a Retina capture), read from the chunks before the
+// image data; 1 when the file records none, none in metres, or a print density such as 300 dpi,
+// which says nothing about the screen it was drawn for.
+const pixelRatio = (png: Buffer, offset: number): number => {
+  if (offset + 17 > png.length) return 1;
+  const type = png.toString("latin1", offset + 4, offset + 8);
+  if (type === "IDAT") return 1;
+  if (type === "pHYs" && png[offset + 16] === 1) {
+    const ratio = Math.round(png.readUInt32BE(offset + 8) / PIXELS_PER_METRE_AT_1X);
+    return ratio === 2 || ratio === 3 ? ratio : 1;
+  }
+  return pixelRatio(png, offset + 12 + png.readUInt32BE(offset));
+};
+
+// The width a PNG was drawn for: its IHDR width (a big-endian uint32 at byte 16) over its pixel
+// ratio, so a 2x screenshot reads at its CSS width. null for any other format.
+const readPngWidth = async (path: string): Promise<number | null> => {
+  const png = await readFile(path);
+  if (png.length < 24 || !png.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
+  return Math.round(png.readUInt32BE(16) / pixelRatio(png, 8));
+};
+
+const stripExtension = (path: string): string => path.replace(/\.[^.]+$/, "");
+
+const describeSource = (
+  file: string,
+  assets: readonly Downloaded[],
+  slugs: readonly string[],
+): string => {
+  const asset = assets.find((a) => a.path === file);
+  if (asset !== undefined) return `${asset.source} \`${asset.name}\``;
+  const slug = slugs.find((s) => file.startsWith(`${s}--`));
+  if (slug !== undefined) return `HTML mockup \`design/${slug}/index.html\``;
+  return file.startsWith("figma--") ? "Figma export" : "added by hand";
+};
+
+export type DesignIndex = Readonly<{
+  index: string | null;
+  mockups: readonly string[];
+  figma: readonly string[];
+  spec: string | null;
+}>;
+
+const isFigma = (url: string): boolean => /(^|\.)figma\.com$/.test(URL.parse(url)?.hostname ?? "");
+
+export const writeDesignIndex = async (
+  ticketDir: string,
+  designDir: string,
+  unavailable: readonly string[],
+): Promise<DesignIndex> => {
+  const ticket = await readTicketFile(join(ticketDir, "ticket.json"));
+  if (typeof ticket === "string") throw new Error(ticket);
+  const files = ticket.assets.filter((a): a is Downloaded => a.status === "downloaded");
+  const ofKind = (kind: DesignKind) => files.filter((a) => classifyAsset(a) === kind);
+  const [images, pages, specs] = [ofKind("image"), ofKind("html-mockup"), ofKind("spec-doc")];
+  const missing = [
+    ...ticket.assets.flatMap((a) =>
+      a.status === "unavailable" && (a.type === "mockup" || a.type === "screenshot")
+        ? [`${a.name} — ${a.reason}`]
+        : [],
+    ),
+    ...unavailable,
+  ];
+  const figma = ticket.references.map((r) => r.url).filter(isFigma);
+  const empty = [images, pages, specs, missing, figma].every((list) => list.length === 0);
+  if (empty && !(await exists(designDir))) {
+    return { index: null, mockups: [], figma: [], spec: null };
+  }
+
+  await mkdir(designDir, { recursive: true });
+  await Promise.all(images.map((a) => copyFile(join(ticketDir, a.path), join(designDir, a.path))));
+  const slugs = pages.map((a) => stripExtension(a.path));
+  // A mockup's stylesheets and images come as the ticket's other files; each lands beside the
+  // page so its relative links load, and below the folder the index scans for frames. One named
+  // index.html stays out, since it would land on the page itself.
+  await Promise.all(
+    pages.map(async (page) => {
+      const slug = stripExtension(page.path);
+      await mkdir(join(designDir, slug), { recursive: true });
+      await copyFile(join(ticketDir, page.path), join(designDir, slug, "index.html"));
+      const others = files.filter((a) => a !== page && a.path !== "index.html");
+      await Promise.all(
+        others.map((a) => copyFile(join(ticketDir, a.path), join(designDir, slug, a.path))),
+      );
+    }),
+  );
+  const specTexts = await Promise.all(
+    specs.map(async (a) => `## ${a.name}\n\n${await readFile(join(ticketDir, a.path), "utf8")}`),
+  );
+  const spec = specTexts.length === 0 ? null : join(designDir, "spec.md");
+  if (spec !== null) await writeFile(spec, `${specTexts.join("\n\n")}\n`);
+
+  // The ticket's images are listed by name, since an upload's name may carry no extension; the
+  // folder scan finds the frames an agent added on an earlier run.
+  const added = (await readdir(designDir)).filter((f) => IMAGE_FILE.test(f));
+  const frames = [...new Set([...images.map((a) => a.path), ...added])].sort();
+  const rows = await Promise.all(
+    frames.map(async (f) => {
+      const width = (await readPngWidth(join(designDir, f))) ?? "";
+      return `|  | \`design/${f}\` | ${width} | ${describeSource(f, files, slugs)} |  |`;
+    }),
+  );
+  const index = join(designDir, "INDEX.md");
+  await writeFile(
+    index,
+    [
+      "# Design index",
+      "",
+      "| Screen | Local file | Width | Source | Source of truth for |",
+      "|---|---|---|---|---|",
+      ...rows,
+      ...(spec === null ? [] : ["", "Spec: `design/spec.md`"]),
+      ...(missing.length === 0 ? [] : ["", "## Unavailable", "", ...missing.map((m) => `- ${m}`)]),
+      "",
+    ].join("\n"),
+  );
+  return { index, mockups: slugs.map((s) => join(designDir, s, "index.html")), figma, spec };
+};
+
 export const targetPath = async ({ dir, name }: Target): Promise<string> => {
   const safe = SafeFilenameSchema.safeParse(name);
   if (!safe.success) {
@@ -284,10 +441,33 @@ export const runProviderCli = async (
   }
 };
 
-const USAGE = "usage: ticket.ts validate DIR";
+const USAGE =
+  "usage: ticket.ts validate DIR | ticket.ts design TICKET_DIR DESIGN_DIR [--unavailable TEXT]...";
+
+const runDesign = async (argv: readonly string[]): Promise<void> => {
+  const { values, positionals } = parseArgs({
+    args: [...argv],
+    allowPositionals: true,
+    options: { unavailable: { type: "string", multiple: true } },
+  });
+  const [ticketDir, designDir] = positionals;
+  if (ticketDir === undefined || designDir === undefined) {
+    console.error(USAGE);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const index = await writeDesignIndex(ticketDir, designDir, values.unavailable ?? []);
+    console.log(JSON.stringify(index));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+};
 
 export const main = async (argv: readonly string[]): Promise<void> => {
   const [command, dir] = argv;
+  if (command === "design") return runDesign(argv.slice(1));
   if (command !== "validate" || dir === undefined) {
     console.error(USAGE);
     process.exitCode = 1;

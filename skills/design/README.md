@@ -13,7 +13,7 @@ Standalone, it uses a short kebab-case topic name where a run would use the run 
 
 ## What it does
 
-1. Understand: reads the task and every file it names, finds why the task exists, and sends out fast-model agents in parallel (one Explore agent per repo, a docs scout over `docs/` and `docs/adr/`, and a research agent when the repo has few examples of the pattern). A one-file, one-edit task takes the atomic route and skips the questions.
+1. Understand: reads the task and every file it names. When ticket-fetcher collected designs, it opens every frame and names each one in `design/INDEX.md`. It finds why the task exists, and sends out fast-model agents in parallel (one Explore agent per repo, a docs scout over `docs/` and `docs/adr/`, and a research agent when the repo has few examples of the pattern). A one-file, one-edit task takes the atomic route and skips the questions.
 2. Map what is unknown: walks the coverage map (purpose, actors, scope, data, interfaces, integrations, failure and so on) and turns each gap that would change the shape into a decision with its blockers.
 3. Grill in rounds: asks up to four unblocked questions at a time with a recommended option first, records every answer in `design.md` at once, and checks answers against each other for clashes. Low-impact decisions are inferred, not asked.
 4. Choose the approach: offers two or three only when real alternatives exist, framed as reuse, extend or build new, and asks the user.

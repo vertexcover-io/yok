@@ -10,6 +10,9 @@ summary: Say which approach the design chose and what it changes for the user.
 mode: inline
 allowed-tools: [Agent, AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, WebSearch, WebFetch]
 tier: deep
+consumes:
+  - artifact: design-refs
+    optional: true
 produces:
   - artifact: design
 protocols: []
@@ -60,9 +63,13 @@ Read the two references with `yok orchestrate skill ref design.coverage` and
 ## Step 1 — Understand
 
 1. Read `task` in full, and every file it names.
-2. Find **why** the task exists. A reason that restates the request is no reason; it becomes
+2. When `.yok/RUN/artifacts/design/INDEX.md` exists, open every frame it lists and
+   `design/spec.md`. Fill each row's `Screen` with the screen and its viewport, and its
+   `Source of truth for` with what the frame settles. Delete a row whose image is not a
+   screen to build. Change only those cells and rows.
+3. Find **why** the task exists. A reason that restates the request is no reason; it becomes
    question `D0`.
-3. Before your first question, dispatch in parallel on a fast model (`sonnet`):
+4. Before your first question, dispatch in parallel on a fast model (`sonnet`):
    - one **Explore** agent per repo the work touches: what already does part of this, the
      conventions to follow, the contracts it would touch, what is fragile nearby. Findings come
      back with `file:line` pointers.
@@ -71,9 +78,9 @@ Read the two references with `yok orchestrate skill ref design.coverage` and
      answers. When the task goes against one, that conflict is a question.
    - when the repo has fewer than 3 examples of the pattern this needs, one **research** agent
      for prior art, known failure modes and current API facts, with source URLs.
-4. While they run, start `design.md` per `references/design-doc.md` with `status: draft` and the
+5. While they run, start `design.md` per `references/design-doc.md` with `status: draft` and the
    problem as you understand it, so nothing lives only in the conversation.
-5. The agents locate; you read. Open every file a decision will turn on.
+6. The agents locate; you read. Open every file a decision will turn on.
 
 If the task holds several subsystems that ship on their own, say so now and ask which one to
 design first. Design one.

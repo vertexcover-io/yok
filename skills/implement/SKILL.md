@@ -88,7 +88,9 @@ For each phase:
 - Run affected tests and typecheck while iterating. Once the phase is built, run the full
   tests, typecheck and lint. Documentation-only changes need the artifact checked, not
   invented tests.
-- When building a screen, open the frame the step names first.
+- When building a screen, open the frame the step names first. When the step cites
+  `design/spec.md`, check the finished screen against each rule it cites before the full
+  tests.
 - Commit the phase with its `## Commit` message. Stage only this phase's changes and leave
   unrelated edits alone. Commit without asking.
 
