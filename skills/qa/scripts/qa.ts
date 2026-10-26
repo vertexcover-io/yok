@@ -105,6 +105,11 @@ const ReportScenariosSchema = z.looseObject({
 const readOptional = (path: string): Promise<string | undefined> =>
   readFile(path, "utf8").catch(() => undefined);
 
+// ticket-fetcher heads each spec attachment with its name, so an empty attachment still leaves a
+// spec.md; only a line that is neither blank nor a heading can state a rule.
+const statesRules = (spec: string): boolean =>
+  spec.split("\n").some((line) => line.trim() !== "" && !/^\s*#/.test(line));
+
 type Finding = VerifierResult["findings"][number];
 type Verdict = { status: "PASS" | "PARTIAL"; gaps: z.infer<typeof GapSchema>[] };
 
@@ -159,7 +164,7 @@ const checkSpecRows = (data: unknown, reportPath: string): Finding[] => {
 };
 
 // The qa stage's verifier, for a PASS or PARTIAL: checkFrames when the run has design/INDEX.md,
-// and checkSpecRows when it has design/spec.md. A FAIL is not rejected, so its bugs reach the fix
+// and checkSpecRows when its design/spec.md states a rule. A FAIL is not rejected, so its bugs reach the fix
 // loop.
 export const checkDesignCoverage = async (input: VerifierInput): Promise<VerifierResult> => {
   const report = input.artifacts.find(
@@ -172,7 +177,8 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
   if (!verdict.success) return { pass: true, findings: [] };
   const designDir = join(dirname(dirname(report.path)), "design");
   const index = await readOptional(join(designDir, "INDEX.md"));
-  const hasSpec = (await readOptional(join(designDir, "spec.md"))) !== undefined;
+  const spec = await readOptional(join(designDir, "spec.md"));
+  const hasSpec = spec !== undefined && statesRules(spec);
   if (index === undefined && !hasSpec) return { pass: true, findings: [] };
   const data = parseReportData((await readOptional(report.path)) ?? "");
   const frameFindings =

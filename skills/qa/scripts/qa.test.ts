@@ -380,6 +380,13 @@ describe("checkDesignCoverage", () => {
     expect(await checkReport(withSpecRow)).toEqual({ pass: true, findings: [] });
   });
 
+  test("a spec.md that holds only headings states no rule, so a PASS needs no SPEC: row", async () => {
+    const spec = "## Clear all spec\n\n\n## Notes\n";
+    const dir = artifactsWith({ report: reportWith([null], COVERAGE), spec });
+
+    expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
+  });
+
   test("SC719: a run with no design/spec.md passes with coverage rows that are all R-style", async () => {
     const dir = artifactsWith({
       report: reportWith(["../design/a.png", "../design/b.png"], COVERAGE),
