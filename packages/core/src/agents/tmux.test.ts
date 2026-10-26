@@ -209,6 +209,24 @@ describe("tmuxHost against a real tmux", () => {
     await pane.kill();
   });
 
+  test("a capture with colors keeps the dim mark on dim text, and a plain capture drops it", async () => {
+    const { host } = makeTerminal();
+    const pane = await created(host, {
+      name: `s-${randomUUID()}`,
+      cwd: process.cwd(),
+      argv: ["sh", "-c", "printf '> \\033[2mhint\\033[0m\\n'; cat"],
+      env: {},
+    });
+
+    await waitFor(async () => {
+      const screen = await pane.capture(40, { colors: true });
+      return screen.ok && screen.value.includes("\x1b[2mhint");
+    });
+    const plain = await pane.capture();
+    expect(plain).toEqual({ ok: true, value: "> hint" });
+    await pane.kill();
+  });
+
   test("a pasted end-of-paste sequence cannot press keys: control characters never reach the pane", async () => {
     const { host } = makeTerminal();
     const out = join(mkdtempSync(join(tmpdir(), "paste-out-")), "received");

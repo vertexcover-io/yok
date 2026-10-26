@@ -4,18 +4,12 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "@commander-js/extra-typings";
-import {
-  agentBinary,
-  uninstallPlugin,
-  type WorkflowAgent,
-  WorkflowAgentSchema,
-  YOK_REPO,
-} from "@yok/core";
+import { agentBinary, uninstallPlugin, type WorkflowAgent, YOK_REPO } from "@yok/core";
 import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
 import { fail, restartServer, stopServer, yokClient } from "./client.ts";
-import { agentOption } from "./plugin.ts";
+import { agentOption, agentsOnPath, updateAgents } from "./plugin.ts";
 
 const PLATFORMS: Readonly<Record<string, string>> = { darwin: "darwin", linux: "linux" };
 const ARCHES: Readonly<Record<string, string>> = { arm64: "arm64", x64: "x64" };
@@ -142,6 +136,8 @@ export type UpdateTarget = Readonly<{
   version: string;
 }>;
 
+type ReleaseSource = Omit<UpdateTarget, "token">;
+
 const RELEASES_URL = `https://api.github.com/repos/${YOK_REPO}/releases?per_page=30`;
 
 const NO_ACCESS = `yok is private: run gh auth login with an account that can see ${YOK_REPO}, or set GH_TOKEN`;
@@ -184,10 +180,15 @@ const failed = (message: string): UpdateOutcome => {
   return { code: 1, binaryReady: false };
 };
 
-const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Promise<number> =>
+// Only the agents the user named go along: the new binary picks the rest, since it alone knows
+// every agent its release supports.
+const installPluginWith = (
+  binary: string,
+  named: readonly WorkflowAgent[] | undefined,
+): Promise<number> =>
   spawnInteractive(
     binary,
-    ["plugin", "install", ...agents.flatMap((agent) => ["--agent", agent])],
+    ["plugin", "install", ...(named ?? []).flatMap((agent) => ["--agent", agent])],
     { cwd: process.cwd() },
   );
 
@@ -195,7 +196,7 @@ const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Pr
 // knows its own version, which this process does not.
 export const runUpdate = async (
   target: UpdateTarget,
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
   preRelease: boolean,
 ): Promise<UpdateOutcome> => {
   const asset = assetName(process.platform, process.arch);
@@ -217,7 +218,7 @@ export const runUpdate = async (
     if (problem !== null) return failed(problem);
     console.log(`yok ${target.version} replaced by ${tag}`);
   }
-  const code = await installPluginWith(target.execPath, agents);
+  const code = await installPluginWith(target.execPath, named);
   return { code, binaryReady: true };
 };
 
@@ -225,39 +226,52 @@ export const runUpdate = async (
 // binary, so the server restart that follows starts it rather than this process's old one.
 const runManagedUpdate = async (
   update: ManagedUpdate,
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
 ): Promise<UpdateOutcome> => {
   const [command, ...args] = update.upgrade;
   const upgraded = await spawnInteractive(command, args, { cwd: process.cwd() });
   if (upgraded !== 0) return failed(`${update.upgrade.join(" ")} exited with ${upgraded}`);
   process.env.YOK_SELF = JSON.stringify([update.binary]);
-  return { code: await installPluginWith(update.binary, agents), binaryReady: true };
+  return { code: await installPluginWith(update.binary, named), binaryReady: true };
 };
 
-const updateFromRelease = (
-  agents: readonly WorkflowAgent[],
-  preRelease: boolean,
-): Promise<UpdateOutcome> =>
-  runUpdate(
-    {
-      releasesUrl: RELEASES_URL,
-      token: githubToken(process.env),
-      execPath: process.execPath,
-      version: VERSION,
-    },
-    agents,
-    preRelease,
-  );
-
+// Only the release download needs the token, so a Homebrew or npm update works without gh.
 const update = async (
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
   preRelease: boolean,
+  source: ReleaseSource,
+  env: Readonly<Record<string, string | undefined>>,
 ): Promise<UpdateOutcome> => {
-  const execPath = realExecPath();
+  const execPath = realpathSync(source.execPath);
   const manager = installedBy(execPath);
-  if (manager === null) return updateFromRelease(agents, preRelease);
+  if (manager === null) return runUpdate({ ...source, token: githubToken(env) }, named, preRelease);
   const managed = managedUpdate(manager, execPath, preRelease);
-  return managed.ok ? runManagedUpdate(managed.value, agents) : failed(managed.error);
+  return managed.ok ? runManagedUpdate(managed.value, named) : failed(managed.error);
+};
+
+export type UpdateRequest = Readonly<{
+  agent: readonly WorkflowAgent[] | undefined;
+  preRelease: boolean;
+  env: Readonly<Record<string, string | undefined>>;
+  // The release this binary updates from; built from this process when absent.
+  target?: ReleaseSource;
+}>;
+
+// The update command without the server restart, which the action runs once the binary is ready.
+export const updateYok = async (
+  { agent, preRelease, env, target }: UpdateRequest,
+  compiled: boolean = isCompiled,
+): Promise<UpdateOutcome> => {
+  if (!compiled) return failed(DEV_UPDATE);
+  // Checked before the download, so no binary moves when there is no plugin to move with it.
+  const agents = updateAgents(agent, env);
+  if (!agents.ok) return failed(agents.error);
+  const from = target ?? {
+    releasesUrl: RELEASES_URL,
+    execPath: process.execPath,
+    version: VERSION,
+  };
+  return update(agent, preRelease, from, env);
 };
 
 export const updateCommand = () =>
@@ -266,10 +280,13 @@ export const updateCommand = () =>
       "Install the newest yok release (through Homebrew or npm if they installed it), move the plugin to it, and restart the server",
     )
     .option("--pre-release", "take the newest release of any kind, not only stable")
-    .addOption(agentOption())
+    .addOption(agentOption("claude or codex; repeat for both; default: every one found on PATH"))
     .action(async ({ agent, preRelease }) => {
-      if (!isCompiled) return fail(DEV_UPDATE);
-      const { code, binaryReady } = await update(agent, preRelease === true);
+      const { code, binaryReady } = await updateYok({
+        agent,
+        preRelease: preRelease === true,
+        env: process.env,
+      });
       process.exitCode = code;
       if (!binaryReady) return;
       // The server keeps running the binary it started from until it is restarted. A failed
@@ -336,9 +353,8 @@ const askYes = async (question: string): Promise<boolean> => {
 
 // An agent that is not installed has no plugin to remove.
 const removePlugins = async (): Promise<boolean> => {
-  for (const agent of WorkflowAgentSchema.options) {
+  for (const agent of agentsOnPath(process.env)) {
     const binary = agentBinary(agent, process.env);
-    if (Bun.which(binary) === null) continue;
     const result = await uninstallPlugin(agent, binary, execWithTimeout(120_000), process.cwd());
     if (!result.ok) {
       fail(result.error);

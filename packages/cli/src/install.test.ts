@@ -22,7 +22,9 @@ import {
   pickRelease,
   removeInstall,
   runUpdate,
+  updateYok,
 } from "./install.ts";
+import { installAll, installPlugins, updateAgents } from "./plugin.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -262,6 +264,283 @@ describe("runUpdate", () => {
     expect(readFileSync(execPath, "utf8")).toBe(before);
     expect(logLines(log)).toEqual([]);
   });
+
+  test("SC643: hands the named agents to the new binary's plugin install, and no --agent when none was named", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+    const lines = spyOn(console, "log").mockImplementation(() => undefined);
+
+    const named = await runUpdate(
+      { ...target, execPath, version: "0.0.1" },
+      ["claude", "codex"],
+      false,
+    );
+    const bare = await runUpdate({ ...target, execPath, version: "0.0.1" }, undefined, false);
+
+    lines.mockRestore();
+    expect(named.code).toBe(0);
+    expect(bare.code).toBe(0);
+    expect(logLines(log)).toEqual([
+      "0.0.2 plugin install --agent claude --agent codex",
+      "0.0.2 plugin install",
+    ]);
+  });
+});
+
+// A directory holding an executable stub for each of `names`.
+const binDir = (names: readonly string[]): string => {
+  const dir = temp("yok-path-");
+  for (const name of names) {
+    writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(dir, name), 0o755);
+  }
+  return dir;
+};
+
+describe("updateAgents", () => {
+  test.each([
+    ["only claude", () => ({ PATH: binDir(["claude"]) }), ["claude"]],
+    ["only codex", () => ({ PATH: binDir(["codex"]) }), ["codex"]],
+    ["both", () => ({ PATH: binDir(["claude", "codex"]) }), ["claude", "codex"]],
+    [
+      "nothing, with YOK_CLAUDE_BIN naming an executable",
+      () => ({ PATH: binDir([]), YOK_CLAUDE_BIN: join(binDir(["my-claude"]), "my-claude") }),
+      ["claude"],
+    ],
+  ] as const)(
+    "SC640: without --agent, PATH holding %s targets those agents",
+    (_label, env, expected) => {
+      expect(updateAgents(undefined, env())).toEqual({ ok: true, value: expected });
+    },
+  );
+
+  test("SC641: with --agent, targets exactly the named agents whatever is on PATH", () => {
+    expect(updateAgents(["codex"], { PATH: binDir(["claude"]) })).toEqual({
+      ok: true,
+      value: ["codex"],
+    });
+  });
+
+  test("SC642: with no agent on PATH and no --agent, refuses and names --agent", () => {
+    const result = updateAgents(undefined, { PATH: binDir([]) });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.error).toContain("--agent");
+  });
+});
+
+describe("updateYok", () => {
+  test("without --agent and with only claude on PATH, the new binary's plugin install gets no --agent and picks the agents itself", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+    const lines = spyOn(console, "log").mockImplementation(() => undefined);
+
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir(["claude"]), GH_TOKEN: TOKEN },
+        target: { releasesUrl: target.releasesUrl, execPath, version: "0.0.1" },
+      },
+      true,
+    );
+
+    lines.mockRestore();
+    expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
+    expect(logLines(log)).toEqual(["0.0.2 plugin install"]);
+  });
+
+  test("a Homebrew install with neither gh on PATH nor a token runs brew upgrade, then the upgraded binary's plugin install", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const prefix = temp("yok-brew-");
+    const execPath = join(prefix, "Cellar/yok/0.0.1/bin/yok");
+    const upgraded = join(prefix, "opt/yok/bin/yok");
+    for (const [path, script] of [
+      [execPath, fakeYok("0.0.1", log)],
+      [upgraded, fakeYok("0.0.2", log)],
+      [join(prefix, "bin/brew"), `#!/bin/sh\necho "brew $*" >> "${log}"\n`],
+    ] as const) {
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, script);
+      chmodSync(path, 0o755);
+    }
+    const saved = { ...process.env };
+    process.env.PATH = join(prefix, "bin");
+
+    // Nothing listens on port 1, so a release download would fail instead of reaching brew.
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir(["claude"]) },
+        target: { releasesUrl: "http://127.0.0.1:1/releases", execPath, version: "0.0.1" },
+      },
+      true,
+    ).finally(() => {
+      process.env = saved;
+    });
+
+    expect(code).toBe(0);
+    expect(binaryReady).toBe(true);
+    expect(logLines(log)).toEqual(["brew upgrade yok", "0.0.2 plugin install"]);
+  });
+
+  test("without --agent and with an empty PATH, exits 1 naming --agent and downloads nothing", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const before = readFileSync(execPath, "utf8");
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    // Nothing listens on port 1, so any fetch would throw instead of returning.
+    const { code, binaryReady } = await updateYok(
+      {
+        agent: undefined,
+        preRelease: false,
+        env: { PATH: binDir([]) },
+        target: {
+          releasesUrl: "http://127.0.0.1:1/releases",
+          execPath,
+          version: "0.0.1",
+        },
+      },
+      true,
+    );
+
+    const printed = errors.mock.calls.flat().join("\n");
+    errors.mockRestore();
+    expect(code).toBe(1);
+    expect(binaryReady).toBe(false);
+    expect(printed).toContain("--agent");
+    expect(readFileSync(execPath, "utf8")).toBe(before);
+    expect(logLines(log)).toEqual([]);
+  });
+});
+
+describe("installAll", () => {
+  test("with claude's plugin install failing, still tries codex, prints both failures and the --agent hint, and returns 1", async () => {
+    const dir = temp("yok-agents-");
+    const log = join(dir, "log");
+    for (const name of ["claude", "codex"]) {
+      writeFileSync(
+        join(dir, name),
+        `#!/bin/sh\necho "${name} $*" >> "${log}"\necho broken >&2\nexit 1\n`,
+      );
+      chmodSync(join(dir, name), 0o755);
+    }
+    const env = { YOK_CLAUDE_BIN: join(dir, "claude"), YOK_CODEX_BIN: join(dir, "codex") };
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    const code = await installAll(["claude", "codex"], env);
+
+    const printed = errors.mock.calls.flat().join("\n");
+    errors.mockRestore();
+    expect(code).toBe(1);
+    expect(logLines(log)).toEqual(["claude plugin list --json", "codex plugin list --json"]);
+    expect(printed).toContain(`${env.YOK_CLAUDE_BIN} plugin list --json failed: broken`);
+    expect(printed).toContain(`${env.YOK_CODEX_BIN} plugin list --json failed: broken`);
+    expect(printed).toContain("limit it with --agent NAME");
+  });
+
+  test("with claude printing a plugin list it cannot parse, still installs for codex and returns 1", async () => {
+    const dir = temp("yok-agents-");
+    const log = join(dir, "log");
+    writeFileSync(join(dir, "claude"), `#!/bin/sh\necho "claude $*" >> "${log}"\necho not-json\n`);
+    writeFileSync(
+      join(dir, "codex"),
+      [
+        "#!/bin/sh",
+        `echo "codex $*" >> "${log}"`,
+        `[ "$*" = "plugin list --json" ] && echo '{"installed":[]}'`,
+        `[ "$*" = "plugin marketplace list --json" ] && echo '{"marketplaces":[]}'`,
+        "exit 0",
+      ].join("\n"),
+    );
+    for (const name of ["claude", "codex"]) chmodSync(join(dir, name), 0o755);
+    const env = { YOK_CLAUDE_BIN: join(dir, "claude"), YOK_CODEX_BIN: join(dir, "codex") };
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const code = await installAll(["claude", "codex"], env);
+
+      expect(code).toBe(1);
+      expect(logLines(log)).toContain("codex plugin add yok --marketplace yok");
+    } finally {
+      errors.mockRestore();
+      logs.mockRestore();
+    }
+  });
+});
+
+// A codex stub whose plugin list and marketplace list answers parse, logging every call.
+const codexStub = (log: string): string =>
+  [
+    "#!/bin/sh",
+    `echo "codex $*" >> "${log}"`,
+    `[ "$*" = "plugin list --json" ] && echo '{"installed":[]}'`,
+    `[ "$*" = "plugin marketplace list --json" ] && echo '{"marketplaces":[]}'`,
+    "exit 0",
+  ].join("\n");
+
+describe("installPlugins", () => {
+  test("without --agent and with only codex on PATH, installs for codex alone", async () => {
+    const dir = binDir([]);
+    const log = join(dir, "log");
+    writeFileSync(join(dir, "codex"), codexStub(log));
+    chmodSync(join(dir, "codex"), 0o755);
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const code = await installPlugins(undefined, { PATH: dir });
+
+      expect(code).toBe(0);
+      expect(logLines(log)).toContain("codex plugin add yok --marketplace yok");
+      expect(logLines(log).every((line) => line.startsWith("codex "))).toBe(true);
+    } finally {
+      process.env.PATH = saved;
+      logs.mockRestore();
+    }
+  });
+
+  test("without --agent, YOK_CODEX_BIN naming a binary outside PATH is installed for", async () => {
+    const dir = binDir([]);
+    const log = join(dir, "log");
+    writeFileSync(join(dir, "my-codex"), codexStub(log));
+    chmodSync(join(dir, "my-codex"), 0o755);
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const code = await installPlugins(undefined, {
+        PATH: binDir([]),
+        YOK_CODEX_BIN: join(dir, "my-codex"),
+      });
+
+      expect(code).toBe(0);
+      expect(logLines(log)).toContain("codex plugin add yok --marketplace yok");
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  test("without --agent and with no agent found, exits 0 with a hint and runs nothing", async () => {
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const code = await installPlugins(undefined, { PATH: binDir([]) });
+
+      expect(code).toBe(0);
+      expect(errors).not.toHaveBeenCalled();
+      expect(logs.mock.calls.flat().join("\n")).toContain("yok plugin install");
+    } finally {
+      logs.mockRestore();
+      errors.mockRestore();
+    }
+  });
 });
 
 const INSTALL_SH = join(import.meta.dir, "..", "..", "..", "install.sh");
@@ -415,5 +694,17 @@ describe("the plugin, update and uninstall commands from source", () => {
       expect(result.output).toContain("expected claude or codex, got foo");
       expect(result.calls).toEqual([]);
     }
+  }, 30_000);
+
+  test("SC644: update and plugin install both accept a bare call", () => {
+    const update = fromSource(["update"]);
+    expect(update.code).toBe(1);
+    expect(update.output).toContain("git pull");
+    expect(update.calls).toEqual([]);
+
+    const install = fromSource(["plugin", "install"]);
+    expect(install.code).toBe(1);
+    expect(install.output).toContain("claude --plugin-dir");
+    expect(install.calls).toEqual([]);
   }, 30_000);
 });

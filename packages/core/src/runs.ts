@@ -14,6 +14,7 @@ import {
   type Event,
   type EventHandlerRefs,
   eventError,
+  type IAgentProvider,
   type IGit,
   type ILogger,
   type ITerminal,
@@ -60,6 +61,7 @@ import {
   VERSION,
 } from "@yok/sdk/internal";
 import * as z from "zod";
+import { unwrap } from "./agents/common.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
@@ -107,6 +109,8 @@ export type InitOptions = Readonly<{
   log: ILogger;
   // the agent's terminal, when init runs inside one
   terminal?: ITerminal | undefined;
+  // the provider of the agent in that terminal
+  provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
 }>;
@@ -114,11 +118,13 @@ export type InitOptions = Readonly<{
 export const terminalName = (agent: string, runName: string, runId: string): string =>
   `${agent}-${runName}-${runId.slice(-4)}`;
 
+const firstAgent = (run: WorkflowRun): AgentType => run.sessions[0]?.agent ?? "claude";
+
 // A failed rename is only logged: the run works, its tmux session just keeps the old name.
 const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
   const { terminal, registry, name, log } = options;
   if (terminal === undefined) return;
-  const sessionName = terminalName(run.sessions[0]?.agent ?? "claude", name, run.id);
+  const sessionName = terminalName(firstAgent(run), name, run.id);
   try {
     const renamed = await terminal.rename(sessionName);
     if (!renamed.ok) {
@@ -128,6 +134,22 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
     await registry.setTerminal(run.id, sessionName);
   } catch (error) {
     log.warn({ runId: run.id, err: error }, "tmux session not renamed");
+  }
+};
+
+// Claude (where /name is an alias) and Codex both run /rename at once, even mid-turn, instead of
+// queueing it. Like the tmux name, a session left unnamed is only logged.
+const nameSession = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
+  const { terminal, provider, name, log } = options;
+  if (terminal === undefined || provider === undefined) return;
+  try {
+    const named = unwrap(
+      await provider.promptWhenReady(terminal, `/rename ${name}`, { whileBusy: true }),
+    );
+    if (named === "not-ready")
+      log.warn({ runId: run.id }, "session not named: its input box is not free");
+  } catch (error) {
+    log.warn({ runId: run.id, err: error }, "session not named");
   }
 };
 
@@ -338,6 +360,7 @@ export const initializeRun = async (
     const state = await fillRunDir(checked.value, options);
     await options.registry.initRun(run.id, options.name);
     await renameTerminal(run, options);
+    await nameSession(run, options);
     options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
     return { ok: true, value: { dir, state } };
   } catch (error) {

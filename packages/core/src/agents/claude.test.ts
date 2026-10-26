@@ -30,6 +30,7 @@ describe("claudeArgs", () => {
         effort: "high",
         permissionMode: "plan",
         systemPrompt: "be terse",
+        name: "fix-login",
         prompt: "fix the bug",
       }),
     ).toEqual([
@@ -41,6 +42,8 @@ describe("claudeArgs", () => {
       "plan",
       "--append-system-prompt",
       "be terse",
+      "--name",
+      "fix-login",
       "fix the bug",
     ]);
   });
@@ -476,6 +479,9 @@ const RULE = "─".repeat(40);
 const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
 // Claude 2.1.286's empty input box, with its status line below.
 const PROMPT = `${RULE}\n❯\n${RULE}\n  Model: Opus | Ctx Used: 8.0%`;
+// After /name, Claude Code 2.1.310 draws the session's name into the rule above its input box.
+const NAMED_RULE = `${RULE} fix-login ─`;
+const NAMED_PROMPT = `${NAMED_RULE}\n❯\n${RULE}\n  Model: Opus | Ctx Used: 8.0%`;
 const LIMIT_MENU = [
   "What do you want to do?",
   "❯ 1. Upgrade your plan",
@@ -573,6 +579,7 @@ describe("canTypeComment", () => {
       `${box("❯")}\n${box("❯ half")}`,
       false,
     ],
+    ["a named session's empty box under a spinner", `· Ionizing… (6s)\n${NAMED_PROMPT}`, true],
   ])("SC14: %s -> %p", (_name, screen, expected) => {
     expect(canTypeComment(screen)).toBe(expected);
   });
@@ -681,6 +688,28 @@ describe("hasClaudeInputBox", () => {
     [
       "a dialog whose footer reads Enter to select with no Esc to cancel",
       `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,
+      false,
+    ],
+    ["a named session's box, its name drawn in the top rule", NAMED_PROMPT, true],
+    // In a pane narrow for the name, Claude draws fewer dashes before it, or none and cuts it.
+    [
+      "a named session's box in a narrow pane, five dashes before the name",
+      `───── add-retry-to-the-webhook-delivery-worker ─\n❯\n${RULE}`,
+      true,
+    ],
+    [
+      "a named session's box in a pane too narrow for the name, no dashes before it",
+      ` add-retry-to-the-webhook-delivery-wo… ─\n❯\n${RULE}`,
+      true,
+    ],
+    [
+      "a ❯ under a transcript line that starts with dashes",
+      `${"─".repeat(20)} notes\n❯\n${RULE}`,
+      false,
+    ],
+    [
+      "a named session's permission dialog whose ❯ 1. Yes sits between rules",
+      `${NAMED_RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`,
       false,
     ],
   ])("%s -> %p", (_name, screen, expected) => {

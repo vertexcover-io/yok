@@ -192,11 +192,12 @@ const tmuxPane = (socket: TmuxSocket, target: string): ITerminal => ({
     return done(result);
   },
   sendKeys: async (keys) => done(await runTmux(socket, ["send-keys", "-t", target, ...keys])),
-  capture: async (lines = 40) => {
+  capture: async (lines = 40, options = {}) => {
     const result = await runTmux(socket, [
       "capture-pane",
       "-p",
       "-J",
+      ...(options.colors === true ? ["-e"] : []),
       "-t",
       target,
       "-S",
