@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+/* {{DOC_STYLES}} */
+
+/* ---- page layout: a file list on the left, one document at a time on the right ---- */
+html, body { height: auto; min-height: 100%; margin: 0; }
+body { display: block; overflow: auto; background: var(--bg); }
+.page { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }
+.side { position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto; display: flex; flex-direction: column; padding: 14px 10px; background: var(--panel); border-right: 1px solid var(--line); }
+.side ul { list-style: none; margin: 0; padding: 0; }
+.side-label { padding: 0 10px 6px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.side .file-btn { cursor: pointer; width: 100%; border: 0; background: none; font: inherit; display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 1px; padding: 7px 10px; border-radius: 6px; color: var(--fg); }
+.side .file-btn small { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.side .file-btn:hover { background: var(--panel-2); }
+.side .file-btn.on { background: var(--accent-soft); color: var(--accent); }
+.side .file-btn.on small { color: var(--accent); opacity: .8; }
+.side .outline-list { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.side .outline-btn { display: block; padding: 4px 10px; border-radius: 6px; color: var(--muted); font-size: 13px; text-decoration: none; }
+.side .outline-btn:hover { color: var(--fg); background: var(--panel-2); }
+.side .outline-btn.on { color: var(--accent); background: var(--accent-soft); }
+.side .side-note { margin: auto 10px 0; padding-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.content { min-width: 0; }
+.content .doc[hidden] { display: none; }
+/* the viewer centres a 920px reading column; the plan page keeps it centred but wider */
+.content .doc { max-width: 1180px; margin: 0 auto; padding: 24px 32px 80px; }
+.content .doc table { width: 100%; }
+.doc .phase-label { display: inline-block; margin: 0 0 6px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+
+/* ---- frame cards: as wide as the image at 260px tall; a tall board shows its top ---- */
+.doc .frames { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin: 14px 0 20px; }
+.doc figure.frame { margin: 0; padding: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.doc figure.frame img { display: block; height: 260px; width: 100%; object-fit: cover; object-position: top; background: var(--panel-2); }
+.doc figure.frame figcaption { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.doc figure.frame .frame-name { color: var(--fg); font-weight: 600; font-family: var(--mono); font-size: 12px; }
+.doc figure.frame .frame-truth { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.doc .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.doc .gallery figure.frame { width: auto !important; }
+.doc .gallery figure.frame img { height: 180px; }
+.frame-missing { color: var(--del); font-size: 12.5px; }
+
+/* ---- spec block: the cited spec.md sections, closed until the reviewer opens it ---- */
+.doc details.spec { margin: 10px 0 20px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.doc details.spec > summary { cursor: pointer; padding: 8px 12px; color: var(--accent); font-size: 13px; font-weight: 600; }
+.doc details.spec[open] > summary { border-bottom: 1px solid var(--line); }
+.doc .spec-body { padding: 4px 16px 8px; max-height: 480px; overflow: auto; }
+
+/* ---- lightbox: any frame at full size. Click, Enter or Space opens; ✕, backdrop or Esc closes ---- */
+img[data-img] { cursor: zoom-in; }
+img[data-img]:focus-visible, .lb-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lightbox { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; padding: 40px; background: rgba(14, 12, 10, 0.86); }
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5); cursor: default; }
+.lightbox .lb-close { position: absolute; top: 14px; right: 16px; width: 38px; height: 38px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 50%; background: rgba(30, 28, 25, 0.85); color: #f2efe9; font: 500 20px/1 var(--ui); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.lightbox .lb-close:hover { background: rgba(60, 56, 50, 0.95); }
+.lightbox .lb-cap { position: absolute; left: 0; right: 0; bottom: 12px; padding: 0 60px; text-align: center; color: #d8d3ca; font-size: 12.5px; pointer-events: none; }
+
+@media (max-width: 860px) {
+  .page { grid-template-columns: 1fr; }
+  .side { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .side .outline-list { display: none; }
+  .content .doc { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <nav class="side" aria-label="Plan files">
+    <div class="side-label">Plan</div>
+    <ul>{{FILE_BUTTONS}}</ul>
+    <div class="side-label" style="margin-top:14px">On this page</div>
+    <ul class="outline-list" id="outline"></ul>
+    <p class="side-note">One file at a time. Each frame a step builds to is shown under that step.</p>
+  </nav>
+  <main class="content">
+{{DOCUMENTS}}
+  </main>
+</div>
+<script type="application/json" id="plan-images">"{{IMAGES_JSON}}"</script>
+<script type="application/json" id="plan-sources">"{{SOURCES_JSON}}"</script>
+<template id="plan-spec">{{SPEC}}</template>
+<script>
+/* ---- spec: the one rendered copy of design/spec.md goes into every step's spec block ---- */
+const specCopy = document.getElementById("plan-spec").content;
+for (const body of document.querySelectorAll("[data-spec]")) body.append(specCopy.cloneNode(true));
+</script>
+<script>
+/* ---- code blocks, as in yok view: Copy on every block, a fold over 40 lines, and ↑/↓ context
+   on each placed diff hunk. The viewer fetches context from the server; the page reads the
+   embedded lines. "Open in editor" needs the server, so the page has none. ---- */
+const SOURCES = JSON.parse(document.getElementById("plan-sources").textContent);
+const FOLD_OVER = 40;
+const FOLD_KEEP = 30;
+const EXPAND_STEP = 10;
+const button = (cls) => { const b = document.createElement("button"); b.type = "button"; b.className = cls; return b; };
+
+const copyButton = (pre) => {
+  const btn = button("copy-btn");
+  btn.setAttribute("aria-label", "Copy code");
+  btn.addEventListener("click", async () => {
+    const text = pre.querySelector("code")?.textContent ?? "";
+    const copied = await navigator.clipboard.writeText(text).then(() => true, () => false);
+    btn.dataset.state = copied ? "copied" : "failed";
+    setTimeout(() => btn.removeAttribute("data-state"), 1500);
+  });
+  return btn;
+};
+
+const foldButton = (pre, lines) => {
+  pre.classList.add("folded");
+  const btn = button("fold-btn");
+  btn.dataset.more = String(lines - FOLD_KEEP);
+  btn.setAttribute("aria-expanded", "false");
+  btn.setAttribute("aria-label", "Show all lines");
+  btn.addEventListener("click", () => {
+    const folded = pre.classList.toggle("folded");
+    btn.setAttribute("aria-expanded", String(!folded));
+    btn.setAttribute("aria-label", folded ? "Show all lines" : "Show fewer lines");
+  });
+  return btn;
+};
+
+const hunkLimits = (pre, hunk) => {
+  const hunks = [...pre.querySelectorAll(".hunk[data-from]")];
+  const at = hunks.indexOf(hunk);
+  return {
+    floor: at > 0 ? Number(hunks[at - 1].dataset.to) + 1 : 1,
+    ceiling: at < hunks.length - 1 ? Number(hunks[at + 1].dataset.from) - 1 : Number(pre.dataset.total),
+  };
+};
+
+const updateExpanders = (pre) => {
+  for (const hunk of pre.querySelectorAll(".hunk[data-from]")) {
+    const { floor, ceiling } = hunkLimits(pre, hunk);
+    const above = Number(hunk.dataset.from) - floor;
+    const below = ceiling - Number(hunk.dataset.to);
+    const [up, down] = [...hunk.querySelectorAll(":scope > .expand-btn")];
+    up.hidden = above <= 0;
+    up.dataset.count = String(Math.min(EXPAND_STEP, above));
+    down.hidden = below <= 0;
+    down.dataset.count = String(Math.min(EXPAND_STEP, below));
+  }
+};
+
+const expandHunk = (pre, hunk, dir) => {
+  const source = SOURCES[pre.dataset.file];
+  if (!source) return;
+  const { floor, ceiling } = hunkLimits(pre, hunk);
+  const [from, to] = [Number(hunk.dataset.from), Number(hunk.dataset.to)];
+  const [first, last] = dir === "up"
+    ? [Math.max(floor, from - EXPAND_STEP), from - 1]
+    : [to + 1, Math.min(ceiling, to + EXPAND_STEP)];
+  if (first > last) return;
+  const rows = source.slice(first - 1, last).map((html) => `<span class="diff-line"> ${html}</span>`).join("\n");
+  const [up, down] = hunk.querySelectorAll(":scope > .expand-btn");
+  if (dir === "up") {
+    up.insertAdjacentHTML("afterend", `${rows}\n`);
+    hunk.dataset.from = String(first);
+  } else {
+    down.insertAdjacentHTML("beforebegin", `\n${rows}`);
+    hunk.dataset.to = String(last);
+  }
+  updateExpanders(pre);
+};
+
+const expandButton = (pre, hunk, dir) => {
+  const btn = button("expand-btn");
+  btn.dataset.dir = dir;
+  btn.setAttribute("aria-label", dir === "up" ? "Show more lines above" : "Show more lines below");
+  btn.addEventListener("click", () => expandHunk(pre, hunk, dir));
+  return btn;
+};
+
+for (const pre of document.querySelectorAll(".content pre[data-total]")) {
+  if (!SOURCES[pre.dataset.file]) continue;
+  for (const hunk of pre.querySelectorAll(".hunk[data-from]")) {
+    hunk.prepend(expandButton(pre, hunk, "up"));
+    hunk.append(expandButton(pre, hunk, "down"));
+  }
+  updateExpanders(pre);
+}
+for (const pre of document.querySelectorAll(".content pre:not(.mermaid)")) {
+  pre.append(copyButton(pre));
+  const lines = (pre.querySelector("code")?.textContent ?? "").replace(/\n$/, "").split("\n").length;
+  if (lines > FOLD_OVER) pre.append(foldButton(pre, lines));
+}
+</script>
+<script>
+/* ---- frames: each image's bytes sit once in #plan-images; every card that shows it points there ---- */
+const IMG = JSON.parse(document.getElementById("plan-images").textContent);
+for (const el of document.querySelectorAll("img[data-img]")) {
+  const uri = IMG[el.dataset.img];
+  if (uri) el.src = uri;
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.setAttribute("aria-label", "Expand: " + (el.alt || el.dataset.img));
+}
+
+/* ---- lightbox ---- */
+const lightbox = document.createElement("div");
+lightbox.className = "lightbox";
+lightbox.innerHTML = '<button class="lb-close" type="button" aria-label="Close">×</button><img alt=""><div class="lb-cap"></div>';
+document.body.appendChild(lightbox);
+const lbImg = lightbox.querySelector("img");
+const lbCap = lightbox.querySelector(".lb-cap");
+let lbOpener = null;
+const closeLightbox = () => {
+  if (!lightbox.classList.contains("open")) return;
+  lightbox.classList.remove("open");
+  lbImg.removeAttribute("src");
+  if (lbOpener) { lbOpener.focus(); lbOpener = null; }
+};
+const openLightbox = (el) => {
+  if (!el.src) return;
+  lbOpener = el;
+  lbImg.src = el.src; lbImg.alt = el.alt; lbCap.textContent = el.alt;
+  lightbox.classList.add("open");
+  lightbox.querySelector(".lb-close").focus();
+};
+document.addEventListener("click", (e) => {
+  const img = e.target.closest("img[data-img]");
+  if (img) { openLightbox(img); return; }
+  if (e.target.closest(".lb-close") || e.target === lightbox) closeLightbox();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeLightbox(); return; }
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const img = e.target.closest?.("img[data-img]");
+  if (img) { e.preventDefault(); openLightbox(img); }
+});
+
+/* ---- one file at a time: #phase-3 opens that file, #phase-3-goal opens it and scrolls there ---- */
+const docs = [...document.querySelectorAll(".content .doc")];
+const fileBtns = [...document.querySelectorAll(".file-btn")];
+const outlineHost = document.getElementById("outline");
+const show = (id, scrollTo) => {
+  const doc = docs.find((d) => d.id === id) ?? docs[0];
+  for (const d of docs) d.hidden = d !== doc;
+  for (const b of fileBtns) b.classList.toggle("on", b.dataset.doc === doc.id);
+  outlineHost.replaceChildren(
+    ...[...doc.querySelectorAll("h2[id]")].map((h) => {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.className = "outline-btn";
+      link.href = "#" + h.id;
+      link.textContent = h.textContent;
+      item.append(link);
+      return item;
+    }),
+  );
+  const target = scrollTo && document.getElementById(scrollTo);
+  if (target) target.scrollIntoView({ block: "start" }); else window.scrollTo(0, 0);
+};
+const route = () => {
+  const hash = decodeURIComponent(location.hash.slice(1));
+  const doc = docs.find((d) => d.id === hash || hash.startsWith(d.id + "-"));
+  show(doc ? doc.id : docs[0].id, doc && hash !== doc.id ? hash : null);
+};
+for (const b of fileBtns) b.addEventListener("click", () => { location.hash = b.dataset.doc; });
+addEventListener("hashchange", route);
+route();
+
+/* ---- outline: highlight the section being read ---- */
+const spy = () => {
+  const links = [...outlineHost.querySelectorAll(".outline-btn")];
+  const y = window.scrollY + 80;
+  let on = -1;
+  links.forEach((a, i) => { const h = document.getElementById(a.getAttribute("href").slice(1)); if (h && h.offsetTop <= y) on = i; });
+  links.forEach((a, i) => { a.classList.toggle("on", i === on); });
+};
+addEventListener("scroll", spy, { passive: true });
+</script>
+<script type="module">
+/* ---- mermaid: drawn only when a document has a diagram ---- */
+const blocks = document.querySelectorAll("pre.mermaid");
+if (blocks.length > 0) {
+  const s = document.createElement("script");
+  s.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+  s.onload = async () => {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
+    await window.mermaid.run({ nodes: blocks }).catch(() => {});
+  };
+  document.head.append(s);
+}
+</script>
+</body>
+</html>
