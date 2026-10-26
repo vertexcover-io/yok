@@ -4,18 +4,12 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "@commander-js/extra-typings";
-import {
-  agentBinary,
-  uninstallPlugin,
-  type WorkflowAgent,
-  WorkflowAgentSchema,
-  YOK_REPO,
-} from "@yok/core";
+import { agentBinary, uninstallPlugin, type WorkflowAgent, YOK_REPO } from "@yok/core";
 import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
 import { fail, restartServer, stopServer, yokClient } from "./client.ts";
-import { agentOption } from "./plugin.ts";
+import { agentOption, agentsOnPath, updateAgents } from "./plugin.ts";
 
 const PLATFORMS: Readonly<Record<string, string>> = { darwin: "darwin", linux: "linux" };
 const ARCHES: Readonly<Record<string, string>> = { arm64: "arm64", x64: "x64" };
@@ -186,32 +180,15 @@ const failed = (message: string): UpdateOutcome => {
   return { code: 1, binaryReady: false };
 };
 
-// An agent counts as installed when its CLI is on PATH.
-export const agentsOnPath = (
-  env: Readonly<Record<string, string | undefined>>,
-): readonly WorkflowAgent[] =>
-  WorkflowAgentSchema.options.filter(
-    (agent) => Bun.which(agentBinary(agent, env), { PATH: env.PATH ?? "" }) !== null,
-  );
-
-// No agent to move would leave the new binary without a matching plugin, so nothing runs.
-export const updateAgents = (
+// Only the agents the user named go along: the new binary picks the rest, since it alone knows
+// every agent its release supports.
+const installPluginWith = (
+  binary: string,
   named: readonly WorkflowAgent[] | undefined,
-  env: Readonly<Record<string, string | undefined>>,
-): Result<readonly WorkflowAgent[]> => {
-  if (named !== undefined) return { ok: true, value: named };
-  const found = agentsOnPath(env);
-  if (found.length > 0) return { ok: true, value: found };
-  return {
-    ok: false,
-    error: "found neither claude nor codex on PATH: install one, or name it with --agent",
-  };
-};
-
-const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Promise<number> =>
+): Promise<number> =>
   spawnInteractive(
     binary,
-    ["plugin", "install", ...agents.flatMap((agent) => ["--agent", agent])],
+    ["plugin", "install", ...(named ?? []).flatMap((agent) => ["--agent", agent])],
     { cwd: process.cwd() },
   );
 
@@ -219,7 +196,7 @@ const installPluginWith = (binary: string, agents: readonly WorkflowAgent[]): Pr
 // knows its own version, which this process does not.
 export const runUpdate = async (
   target: UpdateTarget,
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
   preRelease: boolean,
 ): Promise<UpdateOutcome> => {
   const asset = assetName(process.platform, process.arch);
@@ -241,7 +218,7 @@ export const runUpdate = async (
     if (problem !== null) return failed(problem);
     console.log(`yok ${target.version} replaced by ${tag}`);
   }
-  const code = await installPluginWith(target.execPath, agents);
+  const code = await installPluginWith(target.execPath, named);
   return { code, binaryReady: true };
 };
 
@@ -249,28 +226,27 @@ export const runUpdate = async (
 // binary, so the server restart that follows starts it rather than this process's old one.
 const runManagedUpdate = async (
   update: ManagedUpdate,
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
 ): Promise<UpdateOutcome> => {
   const [command, ...args] = update.upgrade;
   const upgraded = await spawnInteractive(command, args, { cwd: process.cwd() });
   if (upgraded !== 0) return failed(`${update.upgrade.join(" ")} exited with ${upgraded}`);
   process.env.YOK_SELF = JSON.stringify([update.binary]);
-  return { code: await installPluginWith(update.binary, agents), binaryReady: true };
+  return { code: await installPluginWith(update.binary, named), binaryReady: true };
 };
 
 // Only the release download needs the token, so a Homebrew or npm update works without gh.
 const update = async (
-  agents: readonly WorkflowAgent[],
+  named: readonly WorkflowAgent[] | undefined,
   preRelease: boolean,
   source: ReleaseSource,
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<UpdateOutcome> => {
   const execPath = realpathSync(source.execPath);
   const manager = installedBy(execPath);
-  if (manager === null)
-    return runUpdate({ ...source, token: githubToken(env) }, agents, preRelease);
+  if (manager === null) return runUpdate({ ...source, token: githubToken(env) }, named, preRelease);
   const managed = managedUpdate(manager, execPath, preRelease);
-  return managed.ok ? runManagedUpdate(managed.value, agents) : failed(managed.error);
+  return managed.ok ? runManagedUpdate(managed.value, named) : failed(managed.error);
 };
 
 export type UpdateRequest = Readonly<{
@@ -287,6 +263,7 @@ export const updateYok = async (
   compiled: boolean = isCompiled,
 ): Promise<UpdateOutcome> => {
   if (!compiled) return failed(DEV_UPDATE);
+  // Checked before the download, so no binary moves when there is no plugin to move with it.
   const agents = updateAgents(agent, env);
   if (!agents.ok) return failed(agents.error);
   const from = target ?? {
@@ -294,7 +271,7 @@ export const updateYok = async (
     execPath: process.execPath,
     version: VERSION,
   };
-  return update(agents.value, preRelease, from, env);
+  return update(agent, preRelease, from, env);
 };
 
 export const updateCommand = () =>
