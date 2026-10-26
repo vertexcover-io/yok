@@ -1,6 +1,6 @@
 import { Command, InvalidArgumentError, Option } from "@commander-js/extra-typings";
 import { agentBinary, installPlugin, type WorkflowAgent, WorkflowAgentSchema } from "@yok/core";
-import { execWithTimeout } from "@yok/sdk";
+import { execWithTimeout, type Result } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import { fail } from "./client.ts";
 
@@ -23,6 +23,20 @@ export const agentOption = (description: string) =>
 
 const DEV_PLUGIN = "yok-dev loads the plugin from this checkout: claude --plugin-dir PATH_TO_REPO";
 
+// installPlugin also throws: on a timeout, or on agent output it cannot parse.
+const tryInstall = async (
+  agent: WorkflowAgent,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<Result<string, string>> => {
+  const binary = agentBinary(agent, env);
+  try {
+    return await installPlugin(agent, binary, VERSION, execWithTimeout(120_000), process.cwd());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `${binary} plugin install failed: ${message}` };
+  }
+};
+
 // Every agent is tried, so one broken agent does not keep the others on the old plugin.
 export const installAll = async (
   agents: readonly WorkflowAgent[],
@@ -30,9 +44,7 @@ export const installAll = async (
 ): Promise<number> => {
   const failed: WorkflowAgent[] = [];
   for (const agent of agents) {
-    const binary = agentBinary(agent, env);
-    const exec = execWithTimeout(120_000);
-    const result = await installPlugin(agent, binary, VERSION, exec, process.cwd());
+    const result = await tryInstall(agent, env);
     if (result.ok) {
       console.log(result.value);
       continue;

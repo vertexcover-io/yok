@@ -438,6 +438,36 @@ describe("installAll", () => {
     expect(printed).toContain(`${env.YOK_CODEX_BIN} plugin list --json failed: broken`);
     expect(printed).toContain("limit it with --agent NAME");
   });
+
+  test("with claude printing a plugin list it cannot parse, still installs for codex and returns 1", async () => {
+    const dir = temp("yok-agents-");
+    const log = join(dir, "log");
+    writeFileSync(join(dir, "claude"), `#!/bin/sh\necho "claude $*" >> "${log}"\necho not-json\n`);
+    writeFileSync(
+      join(dir, "codex"),
+      [
+        "#!/bin/sh",
+        `echo "codex $*" >> "${log}"`,
+        `[ "$*" = "plugin list --json" ] && echo '{"installed":[]}'`,
+        `[ "$*" = "plugin marketplace list --json" ] && echo '{"marketplaces":[]}'`,
+        "exit 0",
+      ].join("\n"),
+    );
+    for (const name of ["claude", "codex"]) chmodSync(join(dir, name), 0o755);
+    const env = { YOK_CLAUDE_BIN: join(dir, "claude"), YOK_CODEX_BIN: join(dir, "codex") };
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const code = await installAll(["claude", "codex"], env);
+
+      expect(code).toBe(1);
+      expect(logLines(log)).toContain("codex plugin add yok --marketplace yok");
+    } finally {
+      errors.mockRestore();
+      logs.mockRestore();
+    }
+  });
 });
 
 const INSTALL_SH = join(import.meta.dir, "..", "..", "..", "install.sh");
