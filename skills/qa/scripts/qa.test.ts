@@ -120,21 +120,25 @@ const INDEX = `| Screen | Local file | Width | Source | Source of truth for |
 | Home, mobile | \`design/b.png\` | 390 | mockup | layout |
 `;
 
-const reportWith = (baselines: readonly (string | null)[]): string => {
+const reportWith = (
+  baselines: readonly (string | null)[],
+  coverage: readonly { req: string; scenario: string; verdict: string }[] = [],
+): string => {
   const scenarios = baselines.map((baseline, i) => ({
     id: `SC${i + 1}`,
     visualMatch: { baseline, fidelity: baseline === null ? null : 90 },
   }));
-  return `<html><body><script type="application/json" id="report-data">${JSON.stringify({ scenarios })}</script></body></html>`;
+  return `<html><body><script type="application/json" id="report-data">${JSON.stringify({ scenarios, coverage })}</script></body></html>`;
 };
 
 // An artifacts/ folder holding plan.md, verification/proof-report.html and, when given,
-// phases/phase-1.md and design/INDEX.md.
+// phases/phase-1.md, design/INDEX.md and design/spec.md.
 const artifactsWith = (files: {
   report: string;
   plan?: string;
   phase?: string;
   index?: string;
+  spec?: string;
 }): string => {
   const dir = join(mkdtempSync(join(tmpdir(), "qa-")), "artifacts");
   mkdirSync(join(dir, "phases"), { recursive: true });
@@ -145,6 +149,10 @@ const artifactsWith = (files: {
   if (files.index !== undefined) {
     mkdirSync(join(dir, "design"));
     writeFileSync(join(dir, "design", "INDEX.md"), files.index);
+  }
+  if (files.spec !== undefined) {
+    mkdirSync(join(dir, "design"), { recursive: true });
+    writeFileSync(join(dir, "design", "spec.md"), files.spec);
   }
   return dir;
 };
@@ -323,6 +331,69 @@ describe("checkDesignCoverage", () => {
       pass: true,
       findings: [],
     });
+  });
+
+  const COVERAGE = [
+    { req: "R1", scenario: "01", verdict: "SUCCESS" },
+    { req: "R2", scenario: "02", verdict: "SUCCESS" },
+  ];
+
+  test("SC718: a PASS on a run with design/spec.md whose coverage has no SPEC: row fails, and passes once one is added", async () => {
+    const baselines = ["../design/a.png", "../design/b.png"];
+    const spec = "# Spec\n\nThe modal is 420px wide.\n";
+    const noSpecRow = artifactsWith({
+      report: reportWith(baselines, COVERAGE),
+      index: INDEX,
+      spec,
+    });
+    const specRow = { req: "SPEC: modal is 420px wide", scenario: "02", verdict: "SUCCESS" };
+    const withSpecRow = artifactsWith({
+      report: reportWith(baselines, [...COVERAGE, specRow]),
+      index: INDEX,
+      spec,
+    });
+
+    const result = await checkReport(noSpecRow);
+
+    expect(result.pass).toBe(false);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.message).toContain("design/spec.md");
+    expect(result.findings[0]?.message).toContain("SPEC:");
+    expect(result.findings[0]?.path).toBe(reportPath(noSpecRow));
+    expect(await checkReport(withSpecRow)).toEqual({ pass: true, findings: [] });
+  });
+
+  test("a run with design/spec.md and no design/INDEX.md still needs a SPEC: row in a PASS or PARTIAL, and a FAIL passes through", async () => {
+    const spec = "# Spec\n\nThe modal is 420px wide.\n";
+    const specRow = { req: "SPEC: modal is 420px wide", scenario: "02", verdict: "SUCCESS" };
+    const noSpecRow = artifactsWith({ report: reportWith([null], COVERAGE), spec });
+    const withSpecRow = artifactsWith({ report: reportWith([null], [...COVERAGE, specRow]), spec });
+
+    const result = await checkReport(noSpecRow);
+
+    expect(result.pass).toBe(false);
+    expect(result.findings.map(({ message }) => message)).toEqual([
+      expect.stringContaining("no SPEC: row"),
+    ]);
+    expect((await checkReport(noSpecRow, { status: "PARTIAL", gaps: [] })).pass).toBe(false);
+    expect(await checkReport(noSpecRow, { status: "FAIL" })).toEqual({ pass: true, findings: [] });
+    expect(await checkReport(withSpecRow)).toEqual({ pass: true, findings: [] });
+  });
+
+  test("a spec.md that holds only headings states no rule, so a PASS needs no SPEC: row", async () => {
+    const spec = "## Clear all spec\n\n\n## Notes\n";
+    const dir = artifactsWith({ report: reportWith([null], COVERAGE), spec });
+
+    expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
+  });
+
+  test("SC719: a run with no design/spec.md passes with coverage rows that are all R-style", async () => {
+    const dir = artifactsWith({
+      report: reportWith(["../design/a.png", "../design/b.png"], COVERAGE),
+      index: INDEX,
+    });
+
+    expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
   });
 
   test.each([

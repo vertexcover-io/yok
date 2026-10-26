@@ -40,8 +40,17 @@ export {
   type LogBase,
   resolveLevel,
 } from "./logging.ts";
+export {
+  colorFile,
+  DOC_STYLES,
+  type RepoFiles,
+  renderMarkdown,
+  repoFiles,
+  resolveRepoPath,
+} from "./markdown.ts";
 export * as notifierHooks from "./notifier.ts";
 export { orchestrateCommand } from "./orchestrate.ts";
+export { buildPlanPage, PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 export {
   enabledVersions,
   installPlugin,

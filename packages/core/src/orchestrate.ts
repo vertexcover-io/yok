@@ -262,7 +262,10 @@ const awaitApprovalCommand = () =>
   new Command("await-approval")
     .description("Mark an agent node as waiting for the user to approve an artifact")
     .argument("<nodeRunId>", "node run id from next")
-    .requiredOption("--file <path>", "the artifact to approve, such as artifacts/design.md")
+    .requiredOption(
+      "--file <path>",
+      "the artifact to approve, such as artifacts/design.md; artifacts/plan.html is rebuilt from the plan files first",
+    )
     .option("--run <name>", RUN_HELP)
     .option("--run-id <id>", RUN_ID_HELP)
     .action(async (nodeRunId, opts) =>

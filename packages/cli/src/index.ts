@@ -4,6 +4,7 @@ import { orchestrateCommand } from "@yok/core";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import { agentCommand } from "./agent.ts";
 import { attachCommand } from "./attach.ts";
+import { buildPlanCommand } from "./build-plan.ts";
 import { fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
@@ -30,6 +31,7 @@ await new Command()
   .version(VERSION)
   .enablePositionalOptions()
   .addCommand(attachCommand())
+  .addCommand(buildPlanCommand())
   .addCommand(agentCommand("claude"))
   .addCommand(agentCommand("codex"))
   .addCommand(doctorCommand())

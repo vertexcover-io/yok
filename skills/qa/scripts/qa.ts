@@ -105,30 +105,31 @@ const ReportScenariosSchema = z.looseObject({
 const readOptional = (path: string): Promise<string | undefined> =>
   readFile(path, "utf8").catch(() => undefined);
 
-// The qa stage's verifier: in a PASS or PARTIAL, every frame the plan builds is some scenario's
-// visualMatch.baseline, or, in a PARTIAL, named in a gap.
-export const checkDesignCoverage = async (input: VerifierInput): Promise<VerifierResult> => {
-  const report = input.artifacts.find(
-    (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
-  );
-  if (report === undefined) return { pass: true, findings: [] };
-  const verificationDir = dirname(report.path);
+// ticket-fetcher heads each spec attachment with its name, so an empty attachment still leaves a
+// spec.md; only a line that is neither blank nor a heading can state a rule.
+const statesRules = (spec: string): boolean =>
+  spec.split("\n").some((line) => line.trim() !== "" && !/^\s*#/.test(line));
+
+type Finding = VerifierResult["findings"][number];
+type Verdict = { status: "PASS" | "PARTIAL"; gaps: z.infer<typeof GapSchema>[] };
+
+// Every frame the plan builds is some scenario's visualMatch.baseline, or, in a PARTIAL, named in
+// a gap. A PARTIAL ships like a PASS, so a frame it left uncompared must be named in the gap that
+// says why.
+const checkFrames = async (
+  index: string,
+  data: unknown,
+  verdict: Verdict,
+  reportPath: string,
+): Promise<Finding[]> => {
+  const verificationDir = dirname(reportPath);
   const artifactsDir = dirname(verificationDir);
-  const index = await readOptional(join(artifactsDir, "design", "INDEX.md"));
-  if (index === undefined) return { pass: true, findings: [] };
-  // A FAIL is not rejected, so its bugs reach the fix loop. A PARTIAL ships like a PASS, so a
-  // frame it left uncompared must be named in the gap that says why.
-  const verdict = z
-    .looseObject({ status: z.enum(["PASS", "PARTIAL"]), gaps: z.array(GapSchema).default([]) })
-    .safeParse(input.output);
-  if (!verdict.success) return { pass: true, findings: [] };
-  const data = parseReportData((await readOptional(report.path)) ?? "");
   const parsed = ReportScenariosSchema.safeParse(data);
   if (!parsed.success) {
     const message = `the report-data island is missing or invalid: ${z.prettifyError(parsed.error)}`;
-    return { pass: false, findings: [{ message, path: report.path }] };
+    return [{ message, path: reportPath }];
   }
-  const gaps = verdict.data.status === "PARTIAL" ? verdict.data.gaps : [];
+  const gaps = verdict.status === "PARTIAL" ? verdict.gaps : [];
   const isExcused = (frame: string): boolean =>
     gaps.some(({ mechanism }) =>
       new RegExp(`(?<![\\w./-])${escapeRegExp(frame)}(?![\\w./-])`).test(mechanism),
@@ -141,11 +142,48 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
         : [],
     ),
   );
-  const findings = indexedFrames(index)
+  return indexedFrames(index)
     .filter(({ frame }) => !isNotBuilt(frame, plan) && !baselines.has(frame) && !isExcused(frame))
     .map(({ frame }) => ({
       message: `${frame} is a frame the plan builds, but no scenario's visualMatch.baseline is ../${frame}: compare the scenario on that screen against it, or, when that screen could not be reached, name ${frame} in the mechanism of the gaps[] entry that says why`,
-      path: report.path,
+      path: reportPath,
     }));
-  return { pass: findings.length === 0, findings };
+};
+
+// spec.md has no fixed format, so its rules cannot be counted; a ledger with no spec row at all
+// means the pass never read the spec.
+const checkSpecRows = (data: unknown, reportPath: string): Finding[] => {
+  const ledger = z
+    .looseObject({ coverage: z.array(z.looseObject({ req: z.string() })).default([]) })
+    .safeParse(data);
+  const specRows = ledger.data?.coverage.filter(({ req }) => /^SPEC:/i.test(req)) ?? [];
+  if (specRows.length > 0) return [];
+  const message =
+    "design/spec.md exists, but coverage[] has no SPEC: row: walk spec.md and give every rule it states its own row";
+  return [{ message, path: reportPath }];
+};
+
+// The qa stage's verifier, for a PASS or PARTIAL: checkFrames when the run has design/INDEX.md,
+// and checkSpecRows when its design/spec.md states a rule. A FAIL is not rejected, so its bugs reach the fix
+// loop.
+export const checkDesignCoverage = async (input: VerifierInput): Promise<VerifierResult> => {
+  const report = input.artifacts.find(
+    (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
+  );
+  if (report === undefined) return { pass: true, findings: [] };
+  const verdict = z
+    .looseObject({ status: z.enum(["PASS", "PARTIAL"]), gaps: z.array(GapSchema).default([]) })
+    .safeParse(input.output);
+  if (!verdict.success) return { pass: true, findings: [] };
+  const designDir = join(dirname(dirname(report.path)), "design");
+  const index = await readOptional(join(designDir, "INDEX.md"));
+  const spec = await readOptional(join(designDir, "spec.md"));
+  const hasSpec = spec !== undefined && statesRules(spec);
+  if (index === undefined && !hasSpec) return { pass: true, findings: [] };
+  const data = parseReportData((await readOptional(report.path)) ?? "");
+  const frameFindings =
+    index === undefined ? [] : await checkFrames(index, data, verdict.data, report.path);
+  const specFindings = hasSpec ? checkSpecRows(data, report.path) : [];
+  const all = [...frameFindings, ...specFindings];
+  return { pass: all.length === 0, findings: all };
 };

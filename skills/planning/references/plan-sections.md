@@ -124,7 +124,7 @@ coder building one phase in isolation which screens are already drawn, where, an
 width.
 
 The step that builds the surface carries the instruction, `build to design/FILE at WIDTHpx`,
-and the index carries the paths. A screen here that no step builds is a finding, as in the
+and its `Spec: design/spec.md` pointer; the index carries the paths. A screen here that no step builds is a finding, as in the
 signature index; where that is deliberate, the row records it as
 `design/FILE — not built: REASON`.
 
