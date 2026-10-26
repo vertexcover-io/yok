@@ -137,7 +137,8 @@ Three rules bind every step:
 - **Every frame gets a step.** A step that builds a surface a frame defines names it, `build to
   design/FILE at WIDTHpx` with the width the index gives, carries that frame's style facts, and
   quotes each `design/spec.md` rule the surface must keep. A frame the index gives no width is
-  named `build to design/FILE`.
+  named `build to design/FILE`. A `design/spec.md` rule about a screen, viewport or state no
+  frame draws is quoted on the step that builds that surface, so every rule has a step.
   A screen no step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done`
   checks that every frame has one or the other.
 

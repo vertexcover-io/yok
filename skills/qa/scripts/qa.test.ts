@@ -168,10 +168,31 @@ describe("checkDesignCoverage", () => {
       true,
     ],
     ["a PARTIAL whose gaps never name design/b.png fails", "PARTIAL", [gap("no sandbox")], false],
+    [
+      "a PARTIAL whose gap names design/b.png.old, not the frame, fails",
+      "PARTIAL",
+      [gap("design/b.png.old: no route")],
+      false,
+    ],
+    [
+      "a PARTIAL whose gap names the frame only in its scenario field fails",
+      "PARTIAL",
+      [{ scenario: "design/b.png", req: "R9", mechanism: "no route" }],
+      false,
+    ],
   ])("a report that could not compare design/b.png: %s", async (_name, status, gaps, pass) => {
     const dir = artifactsWith({ report: reportWith(["../design/a.png", null]), index: INDEX });
 
     expect((await checkReport(dir, { status, gaps })).pass).toBe(pass);
+  });
+
+  test("a FAIL whose report has no data island passes, so its bugs reach the fix loop", async () => {
+    const dir = artifactsWith({ report: "<html></html>", index: INDEX });
+
+    expect(await checkReport(dir, { status: "FAIL", gaps: [] })).toEqual({
+      pass: true,
+      findings: [],
+    });
   });
 
   test("SC16 (design): a frame phases/phase-1.md records as not built needs no scenario, so the report passes", async () => {

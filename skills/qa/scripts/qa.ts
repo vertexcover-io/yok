@@ -13,18 +13,21 @@ import {
 import * as z from "zod";
 import { parseReportData } from "./report-media.ts";
 
+// A scenario the pass could not drive, and why; the mechanism names the frame it left uncompared.
+const GapSchema = z.strictObject({
+  scenario: NonEmptyStringSchema,
+  req: NonEmptyStringSchema,
+  mechanism: NonEmptyStringSchema,
+});
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 export const QaOutputSchema = z
   .strictObject({
     status: z.enum(["PASS", "PARTIAL", "FAIL", "BLOCKED"]),
     reason: NonEmptyStringSchema.optional(),
     report: NonEmptyStringSchema.nullable(),
-    gaps: z.array(
-      z.strictObject({
-        scenario: NonEmptyStringSchema,
-        req: NonEmptyStringSchema,
-        mechanism: NonEmptyStringSchema,
-      }),
-    ),
+    gaps: z.array(GapSchema),
     // the fix stage records one result per id, so two bugs sharing one could never both be closed
     bugs: z
       .array(FixRequestSchema.extend({ askUser: z.boolean() }))
@@ -98,19 +101,23 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
   const artifactsDir = dirname(verificationDir);
   const index = await readOptional(join(artifactsDir, "design", "INDEX.md"));
   if (index === undefined) return { pass: true, findings: [] };
+  // A FAIL is not rejected, so its bugs reach the fix loop. A PARTIAL ships like a PASS, so a
+  // frame it left uncompared must be named in the gap that says why.
+  const verdict = z
+    .looseObject({ status: z.enum(["PASS", "PARTIAL"]), gaps: z.array(GapSchema).default([]) })
+    .safeParse(input.output);
+  if (!verdict.success) return { pass: true, findings: [] };
   const data = parseReportData((await readOptional(report.path)) ?? "");
   const parsed = ReportScenariosSchema.safeParse(data);
   if (!parsed.success) {
     const message = `the report-data island is missing or invalid: ${z.prettifyError(parsed.error)}`;
     return { pass: false, findings: [{ message, path: report.path }] };
   }
-  // A FAIL is not rejected, so its bugs reach the fix loop. A PARTIAL ships like a PASS, so a
-  // frame it left uncompared must be named in the gap that says why.
-  const verdict = z
-    .looseObject({ status: z.enum(["PASS", "PARTIAL"]), gaps: z.array(z.unknown()).default([]) })
-    .safeParse(input.output);
-  if (!verdict.success) return { pass: true, findings: [] };
-  const gaps = verdict.data.status === "PARTIAL" ? JSON.stringify(verdict.data.gaps) : "";
+  const gaps = verdict.data.status === "PARTIAL" ? verdict.data.gaps : [];
+  const isExcused = (frame: string): boolean =>
+    gaps.some(({ mechanism }) =>
+      new RegExp(`(?<![\\w./-])${escapeRegExp(frame)}(?![\\w./-])`).test(mechanism),
+    );
   const plan = await readPlanText(artifactsDir);
   const baselines = new Set(
     parsed.data.scenarios.flatMap(({ visualMatch }) =>
@@ -120,11 +127,9 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
     ),
   );
   const findings = indexedFrames(index)
-    .filter(
-      ({ frame }) => !isNotBuilt(frame, plan) && !baselines.has(frame) && !gaps.includes(frame),
-    )
+    .filter(({ frame }) => !isNotBuilt(frame, plan) && !baselines.has(frame) && !isExcused(frame))
     .map(({ frame }) => ({
-      message: `${frame} is a frame the plan builds, but no scenario's visualMatch.baseline is ../${frame}: compare the scenario on that screen against it, or, when that screen could not be reached, name ${frame} in the gaps[] entry that says why`,
+      message: `${frame} is a frame the plan builds, but no scenario's visualMatch.baseline is ../${frame}: compare the scenario on that screen against it, or, when that screen could not be reached, name ${frame} in the mechanism of the gaps[] entry that says why`,
       path: report.path,
     }));
   return { pass: findings.length === 0, findings };

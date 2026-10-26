@@ -17,9 +17,11 @@ import { parseArgs } from "node:util";
 import { NonEmptyStringSchema, readProjectEnv } from "@yok/sdk";
 import * as z from "zod";
 
+// Backticks, pipes and control characters would break the design index's table row.
 export const SafeFilenameSchema = NonEmptyStringSchema.refine(
-  (name) => !/[/\\\0]|^\./.test(name) && !name.includes(".."),
-  "Expected one filename with no directory part, no .. and no leading dot",
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+  (name) => !/[/\\`|\x00-\x1f\x7f]|^\./.test(name) && !name.includes(".."),
+  "Expected one filename with no directory part, no .., no leading dot, no backtick, pipe or control character",
 );
 
 const AssetBaseSchema = z.strictObject({
@@ -164,6 +166,8 @@ const exists = (path: string): Promise<boolean> =>
     () => false,
   );
 
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
+
 // What a downloaded asset is to the design index.
 export type DesignKind = "image" | "html-mockup" | "spec-doc" | "other";
 type Downloaded = Extract<Asset, { status: "downloaded" }>;
@@ -174,14 +178,14 @@ export const classifyAsset = (asset: Downloaded): DesignKind => {
   // Only a page the ticket calls a mockup is opened in the agent's browser; an HTML log is data.
   if (isHtml && asset.type === "mockup") return "html-mockup";
   const drawn = asset.type === "mockup" || asset.type === "screenshot";
-  if (drawn && asset.mimeType.startsWith("image/")) return "image";
+  // A download without a Content-Type records application/octet-stream; its extension still says.
+  if (drawn && (asset.mimeType.startsWith("image/") || IMAGE_FILE.test(asset.path))) return "image";
   if (asset.type === "document" && /^text\/(markdown|plain)$/.test(asset.mimeType)) {
     return "spec-doc";
   }
   return "other";
 };
 
-const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 // 72 dpi, the density a 1x screen capture records, in the pixels per metre a pHYs chunk counts.

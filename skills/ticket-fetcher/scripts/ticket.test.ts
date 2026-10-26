@@ -273,6 +273,22 @@ describe("writeDesignIndex", () => {
     ]);
   });
 
+  test("a .png mockup served without a Content-Type is indexed by its extension", async () => {
+    arrange(
+      { "home.png": png(1440), "notes.bin": "x" },
+      {
+        assets: [
+          asset("home.png", "application/octet-stream"),
+          asset("notes.bin", "application/octet-stream"),
+        ],
+      },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(tableRows()).toEqual(["|  | `design/home.png` | 1440 | attachment `home.png` |  |"]);
+  });
+
   test("an extensionless image and an SVG mockup are each indexed, not only copied", async () => {
     arrange(
       { a1b2c3: png(1440), "logo.svg": "<svg/>" },
@@ -420,12 +436,17 @@ describe("loadApiKey", () => {
 describe("targetPath", () => {
   const dir = mkdtempSync(join(tmpdir(), "ticket-target-"));
 
-  test.each(["../escape.png", "sub/x.png", ".hidden", ""])(
-    "refuses the unsafe name %p",
-    async (name) => {
-      await expect(targetPath({ dir, name })).rejects.toThrow("unsafe file name");
-    },
-  );
+  test.each([
+    "../escape.png",
+    "sub/x.png",
+    ".hidden",
+    "",
+    "home`mobile.png",
+    "a|b.png",
+    "a\nb.png",
+  ])("refuses the unsafe name %p", async (name) => {
+    await expect(targetPath({ dir, name })).rejects.toThrow("unsafe file name");
+  });
 
   test("refuses a name that already exists in DIR", async () => {
     writeFileSync(join(dir, "keep.txt"), "original");
