@@ -34,7 +34,8 @@ export interface ITerminal {
   sendText(text: string): Promise<Result<void>>;
   // key names such as "Enter", "Escape"
   sendKeys(keys: readonly string[]): Promise<Result<void>>;
-  capture(lines?: number): Promise<Result<string>>;
+  // with colors, the screen keeps its escape codes, such as the dim mark on an input box's hint
+  capture(lines?: number, options?: Readonly<{ colors?: boolean }>): Promise<Result<string>>;
   isAlive(): Promise<boolean>;
   kill(): Promise<Result<void>>;
   // renames the session the pane belongs to

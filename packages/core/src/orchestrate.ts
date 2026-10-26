@@ -150,6 +150,7 @@ const initCommand = () =>
       const runId = opts.runId ?? process.env.YOK_RUN_ID;
       if (!runId) return fail("no run: pass --run-id or run inside a yok session");
       await runWorkflowCommand(async () => {
+        const linked = await registry().findRun(runId);
         const result = await initializeRun({
           registry: registry(),
           runId,
@@ -157,6 +158,7 @@ const initCommand = () =>
           git: createGit(),
           log,
           terminal: currentTerminal(),
+          provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);

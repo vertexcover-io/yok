@@ -135,13 +135,6 @@ const promptWhenReady = async (
   return typed.ok ? { ok: true, value: "sent" } : typed;
 };
 
-// /name is an immediate command: Claude runs it at once, even mid-turn, instead of queueing it.
-export const nameClaudeSession = (
-  terminal: ITerminal,
-  name: string,
-): Promise<Result<"sent" | "not-ready">> =>
-  promptWhenReady(terminal, `/name ${name}`, { whileBusy: true });
-
 export type ClaudeArgOptions = Readonly<{
   model?: string;
   effort?: Effort;
