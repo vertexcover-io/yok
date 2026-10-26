@@ -1,8 +1,8 @@
 /// <reference path="./text-imports.d.ts" />
 import { randomUUID } from "node:crypto";
-import { readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { indexedFrames, type RunRef, runDirOf } from "@yok/sdk";
+import { readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { extname, join, normalize } from "node:path";
+import { execWithTimeout, indexedFrames, type RunRef, runDirOf } from "@yok/sdk";
 import { colorFile, DOC_STYLES, type RepoFiles, renderMarkdown, repoFiles } from "./markdown.ts";
 import TEMPLATE_IMPORT from "./plan-page.html" with { type: "text" };
 import { isInsideDir } from "./workflow/done.ts";
@@ -19,15 +19,20 @@ export const PLAN_PAGE_PATH = "artifacts/plan.html";
 type Doc = Readonly<{ id: string; label: string; path: string; markdown: string; phase?: number }>;
 type IndexRow = Readonly<{ screen: string; truth: string }>;
 type Frame = Readonly<{ uri: string; width: number }>;
+type FrameFile = Readonly<{ frame: string; file: string; size: number }>;
 type Page = Readonly<{
   repo: RepoFiles;
   rows: ReadonlyMap<string, IndexRow>;
   frames: ReadonlyMap<string, Frame>;
+  tooBig: ReadonlySet<string>;
   hasSpec: boolean;
-  phaseCount: number;
 }>;
 
 const THUMB_HEIGHT = 260;
+const MAX_FRAME_BYTES = 20_000_000;
+// 60 MB of frames is about 80 MB as base64, which keeps the page under Slack's 100 MB upload cap.
+const FRAME_BUDGET_BYTES = 60_000_000;
+const GIT_TIMEOUT_MS = 10_000;
 const MIME: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -86,25 +91,48 @@ const cardWidth = (size: Readonly<{ w: number; h: number }> | null): number =>
     ? 320
     : Math.round(Math.min(520, Math.max(240, (THUMB_HEIGHT * size.w) / size.h)));
 
-// A frame path comes from the plan's text, so it may only name an image inside artifacts/design/,
-// links included.
-const readFrameBytes = async (artifactsDir: string, frame: string): Promise<Buffer | undefined> => {
-  if (MIME[extname(frame).toLowerCase()] === undefined) return undefined;
+// The page is uploaded to chat, so it reads a file of artifacts/ only when the file's real path is
+// inside the real artifacts/: a link an agent planted cannot pull in a file from elsewhere.
+const readArtifact = async (artifactsDir: string, path: string): Promise<string | undefined> => {
   try {
-    const designDir = await realpath(join(artifactsDir, "design"));
-    const file = await realpath(join(artifactsDir, frame));
-    return isInsideDir(designDir, file) ? await readFile(file) : undefined;
+    const file = await realpath(join(artifactsDir, path));
+    const inside = isInsideDir(await realpath(artifactsDir), file);
+    return inside ? await readFile(file, "utf8") : undefined;
   } catch {
     return undefined;
   }
 };
 
-const loadFrame = async (artifactsDir: string, frame: string): Promise<[string, Frame][]> => {
-  const bytes = await readFrameBytes(artifactsDir, frame);
-  if (bytes === undefined) return [];
+// A frame path comes from the plan's text, so it may only name an image inside artifacts/design/,
+// links included, measured at its real path.
+const locateFrame = async (artifactsDir: string, frame: string): Promise<FrameFile | undefined> => {
+  if (MIME[extname(frame).toLowerCase()] === undefined) return undefined;
+  try {
+    const designDir = join(await realpath(artifactsDir), "design");
+    const file = await realpath(join(artifactsDir, frame));
+    return isInsideDir(designDir, file)
+      ? { frame, file, size: (await stat(file)).size }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// The frames to embed, in order: each at most MAX_FRAME_BYTES, while their total stays in budget.
+const withinBudget = (files: readonly FrameFile[]): readonly FrameFile[] =>
+  files.reduce<Readonly<{ kept: readonly FrameFile[]; used: number }>>(
+    (acc, f) =>
+      f.size > MAX_FRAME_BYTES || acc.used + f.size > FRAME_BUDGET_BYTES
+        ? acc
+        : { kept: [...acc.kept, f], used: acc.used + f.size },
+    { kept: [], used: 0 },
+  ).kept;
+
+const loadFrame = async ({ frame, file }: FrameFile): Promise<[string, Frame]> => {
+  const bytes = await readFile(file);
   const mime = MIME[extname(frame).toLowerCase()] ?? "application/octet-stream";
   const uri = `data:${mime};base64,${bytes.toString("base64")}`;
-  return [[frame, { uri, width: cardWidth(imageSize(bytes)) }]];
+  return [frame, { uri, width: cardWidth(imageSize(bytes)) }];
 };
 
 // Screen and "Source of truth for" per frame, from design/INDEX.md's
@@ -123,7 +151,8 @@ const readIndexRows = (index: string): ReadonlyMap<string, IndexRow> =>
 const frameCard = (frame: string, page: Page): string => {
   const loaded = page.frames.get(frame);
   if (loaded === undefined) {
-    return `<p class="frame-missing">frame ${escapeHtml(frame)} is not in artifacts/</p>`;
+    const why = page.tooBig.has(frame) ? "is too big to embed; open it in" : "is not in";
+    return `<p class="frame-missing">frame ${escapeHtml(frame)} ${why} artifacts/</p>`;
   }
   const row = page.rows.get(frame);
   const screen = row?.screen ? `<span class="frame-screen">${escapeHtml(row.screen)}</span>` : "";
@@ -178,10 +207,9 @@ const galleryOf = (page: Page): string => {
 };
 
 const renderDoc = (doc: Doc, page: Page): string => {
+  // No "of N": a revision that deletes a phase leaves a gap in the numbers.
   const label =
-    doc.phase === undefined
-      ? ""
-      : `<span class="phase-label">Phase ${doc.phase} of ${page.phaseCount}</span>`;
+    doc.phase === undefined ? "" : `<span class="phase-label">Phase ${doc.phase}</span>`;
   const body = addHeadingIds(
     wrapTables(decorateSteps(renderMarkdown(doc.markdown, page.repo), page)),
     doc.id,
@@ -195,27 +223,24 @@ const titleOf = (doc: Doc): string => doc.markdown.match(/^#\s+(.+)$/m)?.[1]?.tr
 const fileButton = (doc: Doc): string =>
   `<li><button type="button" class="file-btn" data-doc="${doc.id}" title="${escapeHtml(titleOf(doc))}"><b>${doc.label}</b><small>${doc.path}</small></button></li>`;
 
-const readOptional = (path: string): Promise<string | undefined> =>
-  readFile(path, "utf8").catch(() => undefined);
+const readPhase = async (artifactsDir: string, phase: number): Promise<Doc[]> => {
+  const path = `phases/phase-${phase}.md`;
+  const markdown = await readArtifact(artifactsDir, path);
+  return markdown === undefined
+    ? []
+    : [{ id: `phase-${phase}`, label: `Phase ${phase}`, path, markdown, phase }];
+};
 
 const readDocs = async (artifactsDir: string): Promise<readonly [Doc, ...Doc[]]> => {
-  const plan = await readOptional(join(artifactsDir, "plan.md"));
+  const plan = await readArtifact(artifactsDir, "plan.md");
   if (plan === undefined) throw new Error(`no plan.md in ${artifactsDir}`);
   const names = await readdir(join(artifactsDir, "phases")).catch((): string[] => []);
   const numbers = names
     .flatMap((name) => /^phase-(\d+)\.md$/.exec(name)?.slice(1, 2) ?? [])
     .map(Number)
     .toSorted((a, b) => a - b);
-  const phases = await Promise.all(
-    numbers.map(async (phase) => ({
-      id: `phase-${phase}`,
-      label: `Phase ${phase}`,
-      path: `phases/phase-${phase}.md`,
-      markdown: await readFile(join(artifactsDir, "phases", `phase-${phase}.md`), "utf8"),
-      phase,
-    })),
-  );
-  return [{ id: "plan", label: "Plan", path: "plan.md", markdown: plan }, ...phases];
+  const phases = await Promise.all(numbers.map((phase) => readPhase(artifactsDir, phase)));
+  return [{ id: "plan", label: "Plan", path: "plan.md", markdown: plan }, ...phases.flat()];
 };
 
 // The template's slots; the style and JSON ones sit in a comment and a string so the file parses.
@@ -231,17 +256,21 @@ const valuesOf = (html: string, attribute: string): readonly string[] => [
 
 export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Promise<string> => {
   const docs = await readDocs(artifactsDir);
-  const index = (await readOptional(join(artifactsDir, "design", "INDEX.md"))) ?? "";
-  const spec = await readOptional(join(artifactsDir, "design", "spec.md"));
+  const index = (await readArtifact(artifactsDir, "design/INDEX.md")) ?? "";
+  const spec = await readArtifact(artifactsDir, "design/spec.md");
   const named = docs.flatMap((doc) => doc.markdown.match(FRAME_PATH) ?? []);
   const wanted = [...new Set([...indexedFrames(index).map((row) => row.frame), ...named])];
-  const frames = new Map((await Promise.all(wanted.map((f) => loadFrame(artifactsDir, f)))).flat());
+  const located = await Promise.all(wanted.map((f) => locateFrame(artifactsDir, f)));
+  const found = located.filter((f) => f !== undefined);
+  // Only the frames that fit are read, so memory stays within the budget however many a plan names.
+  const kept = withinBudget(found);
+  const frames = new Map(await Promise.all(kept.map(loadFrame)));
   const page: Page = {
     repo,
     rows: readIndexRows(index),
     frames,
+    tooBig: new Set(found.filter((f) => !kept.includes(f)).map((f) => f.frame)),
     hasSpec: spec !== undefined,
-    phaseCount: docs.length - 1,
   };
   const documents = docs.map((doc) => renderDoc(doc, page)).join("\n");
   const images = Object.fromEntries(
@@ -269,9 +298,26 @@ export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Prom
   return TEMPLATE.replace(SLOT, (slot) => slots[slot] ?? slot);
 };
 
+// The files git tracks under cwd; none outside a git repo, so nothing is embedded there.
+const trackedFiles = async (cwd: string): Promise<ReadonlySet<string>> => {
+  const listed = await execWithTimeout(GIT_TIMEOUT_MS)("git", ["ls-files", "-z"], cwd).catch(
+    () => ({ code: 1, stdout: "" }),
+  );
+  return new Set(listed.code === 0 ? listed.stdout.split("\0").filter((p) => p !== "") : []);
+};
+
+// The page is uploaded to chat, so it embeds only the lines of files git tracks, which everyone
+// with the repo already has; an untracked credentials file is never read. repoFiles' secret-name
+// check still runs on the tracked ones.
+const trackedRepoFiles = (repo: RepoFiles, tracked: ReadonlySet<string>): RepoFiles => ({
+  exists: repo.exists,
+  read: (path) => (tracked.has(normalize(path)) ? repo.read(path) : null),
+});
+
 export const writePlanPage = async (run: RunRef): Promise<string> => {
   const runDir = runDirOf(run.cwd, run.name);
-  const html = await buildPlanPage(join(runDir, "artifacts"), repoFiles(run.cwd));
+  const repo = trackedRepoFiles(repoFiles(run.cwd), await trackedFiles(run.cwd));
+  const html = await buildPlanPage(join(runDir, "artifacts"), repo);
   const path = join(runDir, PLAN_PAGE_PATH);
   // A rename replaces a link planted at the path, and the exclusive create refuses a link planted
   // at the staging name, where a plain write would follow either.

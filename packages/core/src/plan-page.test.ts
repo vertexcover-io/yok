@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import {
   mkdirSync,
@@ -8,6 +9,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,7 +87,7 @@ describe("buildPlanPage", () => {
     ]);
     expect(page).toContain("<title>Plan: Export</title>");
     expect(page).toContain(
-      '<article id="phase-2" class="doc" hidden><span class="phase-label">Phase 2 of 3</span>',
+      '<article id="phase-2" class="doc" hidden><span class="phase-label">Phase 2</span>',
     );
     expect(page).toMatch(/<h2 id="phase-2-goal"/);
     expect(page).not.toMatch(/\{\{[A-Z_]+\}\}/);
@@ -178,6 +180,77 @@ describe("buildPlanPage", () => {
     );
     expect(page.match(/<div class="frames">/g)?.length).toBe(2);
     expect(page.match(/<details class="spec">/g)?.length).toBe(1);
+  });
+
+  test("a phase keeps its own number when a revision left a gap, with no count beside it", async () => {
+    const artifacts = tempDir("plan-gap");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(artifacts, "phases/phase-1.md", "# Phase 1\n");
+    put(artifacts, "phases/phase-3.md", "# Phase 3\n");
+
+    const page = await build(artifacts);
+
+    expect(
+      [...page.matchAll(/<span class="phase-label">([^<]+)<\/span>/g)].map((m) => m[1]),
+    ).toEqual(["Phase 1", "Phase 3"]);
+  });
+
+  test("a frame over 20 MB, and any frame past 60 MB of frames in all, is named instead of embedded", async () => {
+    const artifacts = tempDir("plan-big-frames");
+    const mb = 1_000_000;
+    const frame = (name: string, bytes: number): void => {
+      put(artifacts, `design/${name}`, pngBytes(1200, 1000));
+      truncateSync(join(artifacts, "design", name), bytes);
+    };
+    frame("huge.png", 21 * mb);
+    for (const name of ["a.png", "b.png", "c.png", "d.png"]) frame(name, 19 * mb);
+    const steps = ["huge", "a", "b", "c", "d"].map((n) => `Build to design/${n}.png.`);
+    put(artifacts, "plan.md", `# Plan\n\n${steps.join("\n\n")}\n`);
+
+    const page = await build(artifacts);
+
+    expect(Object.keys(scriptJson(page, "plan-images")).toSorted()).toEqual([
+      "design/a.png",
+      "design/b.png",
+      "design/c.png",
+    ]);
+    expect(page).toContain(
+      '<p class="frame-missing">frame design/huge.png is too big to embed; open it in artifacts/</p>',
+    );
+    expect(page).toContain(
+      '<p class="frame-missing">frame design/d.png is too big to embed; open it in artifacts/</p>',
+    );
+  });
+
+  test("a plan, phase, spec or design folder that links outside artifacts/ is not read", async () => {
+    const root = tempDir("plan-links");
+    const artifacts = join(root, "run", "artifacts");
+    const outside = join(root, "outside");
+    put(outside, "notes.md", "# Phase 2\n\nOUTSIDE-PHASE\n");
+    put(outside, "spec.md", "OUTSIDE-SPEC\n");
+    put(outside, "plan.md", "# Plan\n\nOUTSIDE-PLAN\n");
+    put(outside, "design/x.png", pngBytes(1200, 1000));
+    put(
+      outside,
+      "design/INDEX.md",
+      "| Screen | Local file | Width | Source | Truth |\n|---|---|---|---|---|\n| Home | `design/x.png` | 1200 | x | y |\n",
+    );
+    put(artifacts, "plan.md", "# Plan\n\nSpec: design/spec.md — all\n\nBuild to design/x.png.\n");
+    put(artifacts, "phases/phase-1.md", "# Phase 1\n");
+    symlinkSync(join(outside, "notes.md"), join(artifacts, "phases", "phase-2.md"));
+    symlinkSync(join(outside, "design"), join(artifacts, "design"));
+    symlinkSync(join(outside, "spec.md"), join(outside, "design", "spec.md"));
+
+    const page = await build(artifacts);
+
+    expect(page).not.toContain("OUTSIDE-PHASE");
+    expect(page).not.toContain("OUTSIDE-SPEC");
+    expect(page).not.toContain('id="phase-2"');
+    expect(Object.keys(scriptJson(page, "plan-images"))).toEqual([]);
+
+    rmSync(join(artifacts, "plan.md"));
+    symlinkSync(join(outside, "plan.md"), join(artifacts, "plan.md"));
+    await expect(build(artifacts)).rejects.toThrow("plan.md");
   });
 
   test("SC704: a frame a step builds to that the artifacts lack shows a missing line under the step and is not embedded", async () => {
@@ -342,6 +415,26 @@ describe("buildPlanPage", () => {
 
     expect(page).not.toContain("hunter2");
     expect(scriptJson(page, "plan-sources")).toEqual({});
+  });
+
+  test("writePlanPage embeds the lines of a file git tracks, and never those of an untracked one", async () => {
+    const cwd = tempDir("plan-git");
+    execFileSync("git", ["init", "-q"], { cwd });
+    put(cwd, "src/a.ts", "const a = 1;\n");
+    put(cwd, "config/secrets.yml", "token: s3cr3t-value\n");
+    execFileSync("git", ["add", "src/a.ts"], { cwd });
+    const diff = (file: string) => [`\`${file}\``, "", `${FENCE}diff`, "+x", FENCE, ""];
+    put(
+      cwd,
+      ".yok/feat-x/artifacts/plan.md",
+      ["# Plan", "", ...diff("src/a.ts"), ...diff("config/secrets.yml")].join("\n"),
+    );
+
+    const page = readFileSync(await writePlanPage({ id: "r-1", cwd, name: "feat-x" }), "utf8");
+
+    expect(Object.keys(scriptJson(page, "plan-sources"))).toEqual(["src/a.ts"]);
+    expect(page).not.toContain("s3cr3t-value");
+    expect(page).toContain('data-file="config/secrets.yml"');
   });
 
   test("writePlanPage refuses a link planted at its staging name instead of writing through it", async () => {
