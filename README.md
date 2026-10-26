@@ -75,7 +75,7 @@ Both install only the binary. The plugin install still clones `vertexcover-io/yo
 
 ```bash
 brew install vertexcover-io/tap/yok      # or: npm i -g @vertexcover/yok
-yok plugin install --agent claude
+yok plugin install                       # every agent found on PATH; --agent claude limits it
 ```
 
 ### 2. Check it
@@ -105,15 +105,16 @@ Tool names differ between Claude Code and Codex. The mapping is in [references/c
 Run the install command again, or:
 
 ```bash
-yok update --agent claude                 # newest stable release; the plugin moves with it
-yok update --agent claude --pre-release   # release candidates too
+yok update                    # newest stable release; the plugin moves with it for every agent on PATH
+yok update --agent claude     # move the plugin for claude only (repeat --agent for several)
+yok update --pre-release      # release candidates too
 ```
 
-On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install --agent claude` yourself; the next `yok` command that needs the server replaces the one still running the old version.
+On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
 
 `yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
 
-The binary and the plugin always ship at the same version, and `yok doctor` and `yok run` stop when they differ. `yok plugin install --agent claude` puts the plugin back at the binary's version. Agent sessions that are already open keep the old skills until `/reload-plugins` or a restart.
+The binary and the plugin always ship at the same version, and `yok doctor` and `yok run` stop when they differ. `yok plugin install` puts the plugin back at the binary's version. Agent sessions that are already open keep the old skills until `/reload-plugins` or a restart.
 
 ## Project setup
 
@@ -308,8 +309,8 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
-| `yok update --agent NAME` | Install the newest release, move the plugin to it, restart the server. `--pre-release` |
-| `yok plugin install --agent NAME` | Reinstall the plugin at the binary's version |
+| `yok update` | Install the newest release, move the plugin to it for every agent on PATH, restart the server. `--agent NAME` (repeatable) limits it, `--pre-release` |
+| `yok plugin install` | Reinstall the plugin at the binary's version for every agent on PATH. `--agent NAME` (repeatable) limits it |
 | `yok uninstall` | Remove yok from this machine. `--plugin`, `--no-plugin` |
 | `yok types` | Write the SDK's type files to `.yok/types/` for your editor |
 | `yok claude` / `yok codex` | Open an agent session by hand with the yok plugin loaded |
