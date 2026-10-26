@@ -5,7 +5,9 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -140,6 +142,28 @@ describe("validateTicketDir", () => {
     expect(JSON.stringify(result)).toContain(issue);
   });
 
+  test("a bundle whose designs the design script moved to the sibling design folder still validates", async () => {
+    const ticketDir = join(mkdtempSync(join(tmpdir(), "run-")), "ticket");
+    mkdirSync(ticketDir);
+    const page = '<link href="s.css">';
+    writeFileSync(join(ticketDir, "m.png"), "hello");
+    writeFileSync(join(ticketDir, "home.html"), page);
+    writeFileSync(join(ticketDir, "s.css"), "a{}");
+    const image = { ...downloaded("m.png"), mimeType: "image/png" };
+    const mockup = { ...downloaded("home.html", page), mimeType: "text/html" };
+    const sheet = { ...downloaded("s.css", "a{}"), type: "code", mimeType: "text/css" };
+    writeFileSync(
+      join(ticketDir, "ticket.json"),
+      JSON.stringify(ticket({ assets: [image, mockup, sheet] })),
+    );
+    await writeDesignIndex(ticketDir, join(ticketDir, "..", "design"), []);
+
+    expect(await validateTicketDir(ticketDir)).toEqual({
+      ok: true,
+      path: join(ticketDir, "ticket.json"),
+    });
+  });
+
   test("SC8: a size mismatch is the only issue, since the file is not hashed", async () => {
     writeFileSync(join(dir, "m.png"), "hello!");
     write(ticket({ assets: [downloaded("m.png")] }));
@@ -232,6 +256,27 @@ describe("writeDesignIndex", () => {
     });
   });
 
+  test("an image and an HTML mockup leave the ticket folder: each exists once, under design/", async () => {
+    sc1Ticket();
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(existsSync(join(ticketDir, "list.png"))).toBe(false);
+    expect(existsSync(join(ticketDir, "invoices.html"))).toBe(false);
+    expect(existsSync(join(designDir, "list.png"))).toBe(true);
+    expect(existsSync(join(designDir, "invoices", "index.html"))).toBe(true);
+  });
+
+  test("a design file gone from both the ticket folder and its design path fails the run, naming the path", async () => {
+    sc1Ticket();
+    await writeDesignIndex(ticketDir, designDir, []);
+    rmSync(join(designDir, "list.png"));
+
+    await expect(writeDesignIndex(ticketDir, designDir, [])).rejects.toThrow(
+      join(designDir, "list.png"),
+    );
+  });
+
   test("SC2 (design): a second run indexes the mockup shot and the Figma export the agent added, sorted by file name", async () => {
     sc1Ticket();
     await writeDesignIndex(ticketDir, designDir, []);
@@ -295,18 +340,22 @@ describe("writeDesignIndex", () => {
     ]);
   });
 
-  test("an HTML mockup's folder gets the ticket's other files beside it, so its relative links load", async () => {
+  test("the ticket files an HTML mockup links to land beside it, once: a linked image is part of the page, not a frame", async () => {
     arrange(
       {
-        "invoices.html": "<link href=styles.css><img src=logo.png>",
+        "invoices.html": '<link href="styles.css?v=2"><img src=logo.png><img src="home.png">',
         "styles.css": "a{}",
         "logo.png": png(64),
+        "home.png": png(1440),
+        "list.png": png(1440),
       },
       {
         assets: [
           asset("invoices.html", "text/html"),
           asset("styles.css", "text/css", "code"),
           asset("logo.png", "image/png"),
+          asset("home.png", "image/png"),
+          asset("list.png", "image/png"),
         ],
       },
     );
@@ -315,7 +364,42 @@ describe("writeDesignIndex", () => {
 
     expect(readFileSync(join(designDir, "invoices", "styles.css"), "utf8")).toBe("a{}");
     expect(existsSync(join(designDir, "invoices", "logo.png"))).toBe(true);
-    expect(tableRows()).toEqual(["|  | `design/logo.png` | 64 | attachment `logo.png` |  |"]);
+    expect(existsSync(join(designDir, "invoices", "home.png"))).toBe(true);
+    expect(existsSync(join(designDir, "invoices", "list.png"))).toBe(false);
+    expect(existsSync(join(designDir, "logo.png"))).toBe(false);
+    expect(existsSync(join(ticketDir, "styles.css"))).toBe(false);
+    expect(tableRows()).toEqual(["|  | `design/list.png` | 1440 | attachment `list.png` |  |"]);
+  });
+
+  test("a self-contained HTML mockup's folder holds only index.html; the ticket's images stay frames", async () => {
+    arrange(
+      { "invoices.html": "<h1>Invoices</h1><p>see list.png</p>", "list.png": png(1440) },
+      { assets: [asset("invoices.html", "text/html"), asset("list.png", "image/png")] },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(readdirSync(join(designDir, "invoices"))).toEqual(["index.html"]);
+    expect(tableRows()).toEqual(["|  | `design/list.png` | 1440 | attachment `list.png` |  |"]);
+  });
+
+  test("a stylesheet two mockups link to sits beside each, and a second run keeps both", async () => {
+    arrange(
+      { "a.html": "<link href=s.css>", "b.html": "<link href=s.css>", "s.css": "a{}" },
+      {
+        assets: [
+          asset("a.html", "text/html"),
+          asset("b.html", "text/html"),
+          asset("s.css", "text/css", "code"),
+        ],
+      },
+    );
+
+    await writeDesignIndex(ticketDir, designDir, []);
+    await writeDesignIndex(ticketDir, designDir, []);
+
+    expect(readFileSync(join(designDir, "a", "s.css"), "utf8")).toBe("a{}");
+    expect(readFileSync(join(designDir, "b", "s.css"), "utf8")).toBe("a{}");
   });
 
   test("a ticket file named index.html beside a mockup never replaces the mockup's page", async () => {

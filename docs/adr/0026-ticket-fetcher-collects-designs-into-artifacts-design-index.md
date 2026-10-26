@@ -13,13 +13,13 @@ A UI ticket's mockups, screenshots, Figma frames and spec docs were downloaded a
 
 ## Considered Options
 
-- Ticket-fetcher copies the designs into `.yok/RUN/artifacts/design/` and writes `INDEX.md` there, registered as the optional `design-refs` artifact
+- Ticket-fetcher moves the designs into `.yok/RUN/artifacts/design/` and writes `INDEX.md` there, registered as the optional `design-refs` artifact
 - Planning's design scout keeps collecting into `.yok/RUN/design/`, found by convention
 - The design stage collects the designs when it first reads the ticket
 
 ## Decision Outcome
 
-Chosen: ticket-fetcher writes `artifacts/design/INDEX.md`, because it already holds the tracker credentials and the downloaded files, and `done` registers only files inside `artifacts/`. Every stage then finds the designs at one registered path. The index's columns are `Screen | Local file | Width | Source | Source of truth for`; ticket-fetcher fills file, width and source, and the design stage names the screens.
+Chosen: ticket-fetcher writes `artifacts/design/INDEX.md`, because it already holds the tracker credentials and the downloaded files, and `done` registers only files inside `artifacts/`. Every stage then finds the designs at one registered path. The files are moved, not copied, so a design file exists once: `ticket/` keeps `ticket.json` and the non-design files, and `validate` looks for a design file at its design path. The index's columns are `Screen | Local file | Width | Source | Source of truth for`; ticket-fetcher fills file, width and source, and the design stage names the screens.
 
 ## Consequences
 

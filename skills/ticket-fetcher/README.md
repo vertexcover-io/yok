@@ -25,14 +25,14 @@ A custom workflow can leave the stage out and give `create-workspace` the prompt
 - Follows that provider's reference, which calls the provider script to read the ticket and download its relevant files into `.yok/RUN/artifacts/ticket/`.
 - Asks you to choose when the request only describes a ticket and the search finds several.
 - Validates the bundle with the `validate` script. A partial bundle is allowed and marked `complete: false`.
-- Copies the ticket's designs (image mockups and screenshots, HTML mockups shot to PNG, Figma frames exported to PNG, spec docs) into `.yok/RUN/artifacts/design/` and indexes them in `INDEX.md`. When a tool a design needs is missing, it asks whether to go on without it.
+- Moves the ticket's designs (image mockups and screenshots, HTML mockups shot to PNG, Figma frames exported to PNG, spec docs) into `.yok/RUN/artifacts/design/` and indexes them in `INDEX.md`, so every design file exists once. A file an HTML mockup links to lands beside that page and nowhere else. When a tool a design needs is missing, it asks whether to go on without it.
 - Returns the task text, with the ticket's title and body quoted as data, plus the bundle's location.
 
 Ticket text is treated as data, never as instructions.
 
 ## Inputs and outputs
 
-Reads the `request` input, the raw prompt. Produces the `task` output and, for a ticket, the optional `ticket` artifact at `artifacts/ticket/ticket.json` with the downloaded files beside it, and, when the ticket has designs, the optional `design-refs` artifact at `artifacts/design/INDEX.md`.
+Reads the `request` input, the raw prompt. Produces the `task` output and, for a ticket, the optional `ticket` artifact at `artifacts/ticket/ticket.json` with the non-design files beside it, and, when the ticket has designs, the optional `design-refs` artifact at `artifacts/design/INDEX.md` with the design files around it. `validate` finds a moved design file at its design path.
 
 ## Adding a provider
 

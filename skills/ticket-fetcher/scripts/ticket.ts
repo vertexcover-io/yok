@@ -12,7 +12,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { NonEmptyStringSchema, readProjectEnv } from "@yok/sdk";
 import * as z from "zod";
@@ -122,12 +122,40 @@ const sha256Of = async (path: string): Promise<string> => {
   return hash.digest("hex");
 };
 
-// realDir is the folder's realpath, so a symlink out of it is caught.
-const fileIssue = async (realDir: string, asset: Extract<Asset, { status: "downloaded" }>) => {
+type Downloaded = Extract<Asset, { status: "downloaded" }>;
+
+// Where a downloaded file may be: the ticket folder, or, once the design script moved it, the
+// sibling design folder: an image at its name, a mockup as its folder's index.html, and a file a
+// mockup links to beside that page.
+const homes = (dir: string, ticket: Ticket, asset: Downloaded): readonly string[] => {
+  const designDir = join(dir, "..", "design");
+  const pages = ticket.assets.filter(
+    (a): a is Downloaded => a.status === "downloaded" && classifyAsset(a) === "html-mockup",
+  );
+  const own =
+    classifyAsset(asset) === "html-mockup"
+      ? join(designDir, stripExtension(asset.path), "index.html")
+      : join(designDir, asset.path);
+  return [
+    join(dir, asset.path),
+    own,
+    ...pages.map((p) => join(designDir, stripExtension(p.path), asset.path)),
+  ];
+};
+
+// Roots are realpaths, so a symlink out of both folders is caught.
+const fileIssue = async ({
+  roots,
+  candidates,
+  asset,
+}: Readonly<{ roots: readonly string[]; candidates: readonly string[]; asset: Downloaded }>) => {
   const label = `asset ${asset.id} (${asset.path})`;
-  const file = await realpath(join(realDir, asset.path)).catch(() => undefined);
+  const found = await Promise.all(candidates.map((c) => realpath(c).catch(() => undefined)));
+  const file = found.find((f) => f !== undefined);
   if (file === undefined) return [`${label}: file is missing`];
-  if (!file.startsWith(`${realDir}${sep}`)) return [`${label}: file resolves outside the folder`];
+  if (!roots.some((root) => file.startsWith(`${root}${sep}`))) {
+    return [`${label}: file resolves outside the folder`];
+  }
   const info = await stat(file);
   if (!info.isFile()) return [`${label}: not a regular file`];
   if (info.size !== asset.bytes) return [`${label}: bytes is ${info.size}, not ${asset.bytes}`];
@@ -146,13 +174,22 @@ export const validateTicketDir = async (dir: string): Promise<Validation> => {
   const ticket = await readTicketFile(path);
   if (typeof ticket === "string") return { ok: false, issues: [ticket] };
   const files = ticket.assets.filter((asset) => asset.status === "downloaded");
-  const realDir = await realpath(dir);
+  const roots = await Promise.all(
+    [dir, join(dir, "..", "design")].map((d) => realpath(d).catch(() => undefined)),
+  );
+  const fileIssues = files.map((asset) =>
+    fileIssue({
+      roots: roots.filter((r) => r !== undefined),
+      candidates: homes(dir, ticket, asset),
+      asset,
+    }),
+  );
   const issues = [
     ...duplicatePaths(files.map((asset) => asset.path)),
     ...(ticket.complete && files.length < ticket.assets.length
       ? ["complete must be false while an asset is unavailable"]
       : []),
-    ...(await Promise.all(files.map((asset) => fileIssue(realDir, asset)))).flat(),
+    ...(await Promise.all(fileIssues)).flat(),
   ];
   return issues.length === 0 ? { ok: true, path } : { ok: false, issues };
 };
@@ -170,7 +207,6 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
 
 // What a downloaded asset is to the design index.
 export type DesignKind = "image" | "html-mockup" | "spec-doc" | "other";
-type Downloaded = Extract<Asset, { status: "downloaded" }>;
 
 // A screenshot is indexed with the mockups: the design stage drops a row that only shows today's bug.
 export const classifyAsset = (asset: Downloaded): DesignKind => {
@@ -236,6 +272,57 @@ export type DesignIndex = Readonly<{
 
 const isFigma = (url: string): boolean => /(^|\.)figma\.com$/.test(URL.parse(url)?.hostname ?? "");
 
+type Placement = Readonly<{ from: string; to: string }>;
+
+// A design file lives in one place. The first run copies it out of the ticket folder and the
+// caller removes the original; a later run, or a restarted one, finds it at its design path.
+const place = async ({ from, to }: Placement): Promise<void> => {
+  if (await exists(from)) return copyFile(from, to);
+  if (await exists(to)) return;
+  throw new Error(`${to} is missing and ${from} is gone`);
+};
+
+const LINKED_FILE = /(?:src|href)\s*=\s*["']?([^"'\s>]+)|url\(\s*["']?([^"')\s]+)/gi;
+
+// The file names a page's src, href and url() values point at, without any query or fragment.
+const linkedFiles = (html: string): ReadonlySet<string> =>
+  new Set(
+    [...html.matchAll(LINKED_FILE)].map((m) =>
+      basename((m[1] ?? m[2] ?? "").split(/[?#]/)[0] ?? ""),
+    ),
+  );
+
+type Mockup = Readonly<{ linked: readonly string[]; placements: readonly Placement[] }>;
+
+// A mockup's stylesheets and images are the ticket files its markup links to; each lands beside
+// the page so its relative links load, and nowhere else: a linked image is part of the page, not
+// a frame. A ticket file named index.html stays out, since it would land on the page itself.
+const mockupPlacements = async ({
+  ticketDir,
+  designDir,
+  page,
+  files,
+}: Readonly<{
+  ticketDir: string;
+  designDir: string;
+  page: Downloaded;
+  files: readonly Downloaded[];
+}>): Promise<Mockup> => {
+  const folder = join(designDir, stripExtension(page.path));
+  await mkdir(folder, { recursive: true });
+  const source = join(ticketDir, page.path);
+  const html = await readFile((await exists(source)) ? source : join(folder, "index.html"), "utf8");
+  const linked = linkedFiles(html);
+  const deps = files.filter((a) => a !== page && a.path !== "index.html" && linked.has(a.path));
+  return {
+    linked: deps.map((a) => a.path),
+    placements: [
+      { from: source, to: join(folder, "index.html") },
+      ...deps.map((a) => ({ from: join(ticketDir, a.path), to: join(folder, a.path) })),
+    ],
+  };
+};
+
 export const writeDesignIndex = async (
   ticketDir: string,
   designDir: string,
@@ -261,22 +348,18 @@ export const writeDesignIndex = async (
   }
 
   await mkdir(designDir, { recursive: true });
-  await Promise.all(images.map((a) => copyFile(join(ticketDir, a.path), join(designDir, a.path))));
   const slugs = pages.map((a) => stripExtension(a.path));
-  // A mockup's stylesheets and images come as the ticket's other files; each lands beside the
-  // page so its relative links load, and below the folder the index scans for frames. One named
-  // index.html stays out, since it would land on the page itself.
-  await Promise.all(
-    pages.map(async (page) => {
-      const slug = stripExtension(page.path);
-      await mkdir(join(designDir, slug), { recursive: true });
-      await copyFile(join(ticketDir, page.path), join(designDir, slug, "index.html"));
-      const others = files.filter((a) => a !== page && a.path !== "index.html");
-      await Promise.all(
-        others.map((a) => copyFile(join(ticketDir, a.path), join(designDir, slug, a.path))),
-      );
-    }),
+  const mockups = await Promise.all(
+    pages.map((page) => mockupPlacements({ ticketDir, designDir, page, files })),
   );
+  const linked = new Set(mockups.flatMap((m) => m.linked));
+  const standalone = images.filter((a) => !linked.has(a.path));
+  const placements = [
+    ...standalone.map((a) => ({ from: join(ticketDir, a.path), to: join(designDir, a.path) })),
+    ...mockups.flatMap((m) => m.placements),
+  ];
+  await Promise.all(placements.map(place));
+  await Promise.all(placements.map((p) => rm(p.from, { force: true })));
   const specTexts = await Promise.all(
     specs.map(async (a) => `## ${a.name}\n\n${await readFile(join(ticketDir, a.path), "utf8")}`),
   );
@@ -286,7 +369,7 @@ export const writeDesignIndex = async (
   // The ticket's images are listed by name, since an upload's name may carry no extension; the
   // folder scan finds the frames an agent added on an earlier run.
   const added = (await readdir(designDir)).filter((f) => IMAGE_FILE.test(f));
-  const frames = [...new Set([...images.map((a) => a.path), ...added])].sort();
+  const frames = [...new Set([...standalone.map((a) => a.path), ...added])].sort();
   const rows = await Promise.all(
     frames.map(async (f) => {
       const width = (await readPngWidth(join(designDir, f))) ?? "";
