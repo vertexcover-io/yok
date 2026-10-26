@@ -101,11 +101,14 @@ this skill and the provider's reference list.
    `{ index, mockups, figma, spec }`. Running it again finds the moved files where they are.
    When `index` is null, go to step 9.
 8. **Shoot what the script cannot move.** Save each as a PNG in the design folder:
-   - each HTML mockup in `mockups`: one `agent-browser` screenshot per screen or state it shows,
-     each in its own shot, at the width it is drawn for, named `SLUG--SCREEN.png`. The ticket's
-     own screenshots stay the frames; a mockup fills in only the screens and states they do not
-     show;
+   - each HTML mockup in `mockups`: one PNG per screen or state it shows, shot with
+     `agent-browser` at the width it is drawn for, named after the mockup's folder:
+     `FOLDER--SCREEN.png`. The ticket's own screenshots stay the frames; a mockup fills in only
+     the screens and states they do not show;
    - each link in `figma`: one export per frame through the Figma MCP, named `figma--NAME.png`.
+
+   **Look at every frame before you go on.** Open each PNG and check it shows the whole screen
+   or state as the mockup draws it; retake any that is blank, cut off or shows another state.
 
    When a tool is missing, ask the user with `AskUserQuestion` to go on without those designs
    or stop and set the tool up. Going on is the default: pass each skipped design as
