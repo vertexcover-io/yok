@@ -46,8 +46,9 @@ export const CLAUDE_MAX_ESCAPES = 3;
 export const isClaudeBusy = (screen: string): boolean =>
   screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
 
-// A named session draws its name into the rule: `──── fix-login ─`.
-const RULE = /^\s*─{10,}(?:\s.*\S\s─+)?\s*$/;
+// A named session draws its name into the rule, `──── fix-login ─`, with fewer dashes before it
+// in a narrow pane, or none.
+const RULE = /^\s*(?:─{10,}|─*\s.*\S\s─+)\s*$/;
 const INPUT_LINE = /^❯(?:\s|$)/;
 const MENU_OPTION = /^❯\s*\d+\.\s/;
 const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;

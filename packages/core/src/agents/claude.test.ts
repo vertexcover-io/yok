@@ -691,6 +691,17 @@ describe("hasClaudeInputBox", () => {
       false,
     ],
     ["a named session's box, its name drawn in the top rule", NAMED_PROMPT, true],
+    // In a pane narrow for the name, Claude draws fewer dashes before it, or none and cuts it.
+    [
+      "a named session's box in a narrow pane, five dashes before the name",
+      `───── add-retry-to-the-webhook-delivery-worker ─\n❯\n${RULE}`,
+      true,
+    ],
+    [
+      "a named session's box in a pane too narrow for the name, no dashes before it",
+      ` add-retry-to-the-webhook-delivery-wo… ─\n❯\n${RULE}`,
+      true,
+    ],
     [
       "a ❯ under a transcript line that starts with dashes",
       `${"─".repeat(20)} notes\n❯\n${RULE}`,
