@@ -417,23 +417,27 @@ describe("buildPlanPage", () => {
     expect(scriptJson(page, "plan-sources")).toEqual({});
   });
 
-  test("writePlanPage embeds the lines of a file git tracks, and never those of an untracked one", async () => {
+  test("writePlanPage embeds a committed file's lines, and never an untracked file, a tracked link to one, or uncommitted edits", async () => {
     const cwd = tempDir("plan-git");
-    execFileSync("git", ["init", "-q"], { cwd });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd });
+    git("init", "-q");
     put(cwd, "src/a.ts", "const a = 1;\n");
+    put(cwd, "src/b.ts", "const b = 1;\n");
     put(cwd, "config/secrets.yml", "token: s3cr3t-value\n");
-    execFileSync("git", ["add", "src/a.ts"], { cwd });
+    symlinkSync("../config/secrets.yml", join(cwd, "src/link.ts"));
+    git("add", "src/a.ts", "src/b.ts", "src/link.ts");
+    git("commit", "-q", "-m", "init");
+    put(cwd, "src/b.ts", "const b = 'uncommitted-token';\n");
     const diff = (file: string) => [`\`${file}\``, "", `${FENCE}diff`, "+x", FENCE, ""];
-    put(
-      cwd,
-      ".yok/feat-x/artifacts/plan.md",
-      ["# Plan", "", ...diff("src/a.ts"), ...diff("config/secrets.yml")].join("\n"),
-    );
+    const files = ["src/a.ts", "src/b.ts", "src/link.ts", "config/secrets.yml"];
+    put(cwd, ".yok/feat-x/artifacts/plan.md", ["# Plan", "", ...files.flatMap(diff)].join("\n"));
 
     const page = readFileSync(await writePlanPage({ id: "r-1", cwd, name: "feat-x" }), "utf8");
 
     expect(Object.keys(scriptJson(page, "plan-sources"))).toEqual(["src/a.ts"]);
     expect(page).not.toContain("s3cr3t-value");
+    expect(page).not.toContain("uncommitted-token");
     expect(page).toContain('data-file="config/secrets.yml"');
   });
 

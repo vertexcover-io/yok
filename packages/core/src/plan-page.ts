@@ -1,9 +1,17 @@
 /// <reference path="./text-imports.d.ts" />
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, relative } from "node:path";
 import { execWithTimeout, indexedFrames, type RunRef, runDirOf } from "@yok/sdk";
-import { colorFile, DOC_STYLES, type RepoFiles, renderMarkdown, repoFiles } from "./markdown.ts";
+import {
+  colorFile,
+  DOC_STYLES,
+  type RepoFiles,
+  renderMarkdown,
+  repoFiles,
+  resolveRepoPath,
+} from "./markdown.ts";
 import TEMPLATE_IMPORT from "./plan-page.html" with { type: "text" };
 import { isInsideDir } from "./workflow/done.ts";
 
@@ -298,25 +306,50 @@ export const buildPlanPage = async (artifactsDir: string, repo: RepoFiles): Prom
   return TEMPLATE.replace(SLOT, (slot) => slots[slot] ?? slot);
 };
 
-// The files git tracks under cwd; none outside a git repo, so nothing is embedded there.
-const trackedFiles = async (cwd: string): Promise<ReadonlySet<string>> => {
-  const listed = await execWithTimeout(GIT_TIMEOUT_MS)("git", ["ls-files", "-z"], cwd).catch(
-    () => ({ code: 1, stdout: "" }),
-  );
-  return new Set(listed.code === 0 ? listed.stdout.split("\0").filter((p) => p !== "") : []);
+const gitPaths = async (
+  cwd: string,
+  args: readonly string[],
+): Promise<readonly string[] | null> => {
+  const ran = await execWithTimeout(GIT_TIMEOUT_MS)("git", args, cwd).catch(() => null);
+  return ran?.code === 0 ? ran.stdout.split("\0").filter((p) => p !== "") : null;
 };
 
-// The page is uploaded to chat, so it embeds only the lines of files git tracks, which everyone
-// with the repo already has; an untracked credentials file is never read. repoFiles' secret-name
-// check still runs on the tracked ones.
-const trackedRepoFiles = (repo: RepoFiles, tracked: ReadonlySet<string>): RepoFiles => ({
+// The files under cwd whose working copy is what HEAD holds: tracked, with no staged or unstaged
+// change. None outside a git repo or before its first commit, so nothing is embedded there.
+const committedFiles = async (cwd: string): Promise<ReadonlySet<string>> => {
+  const [tracked, changed] = await Promise.all([
+    gitPaths(cwd, ["ls-files", "-z"]),
+    gitPaths(cwd, ["diff", "--name-only", "--relative", "-z", "HEAD"]),
+  ]);
+  if (tracked === null || changed === null) return new Set();
+  const dirty = new Set(changed);
+  return new Set(tracked.filter((path) => !dirty.has(path)));
+};
+
+// The page is uploaded to chat, so it embeds only content everyone with the repo already has: a
+// committed file with no local edit, reached at a path that is itself committed, so a committed
+// link cannot pull in an untracked file. repoFiles' secret-name check still runs on top.
+const committedRepoFiles = (
+  cwd: string,
+  repo: RepoFiles,
+  committed: ReadonlySet<string>,
+): RepoFiles => ({
   exists: repo.exists,
-  read: (path) => (tracked.has(normalize(path)) ? repo.read(path) : null),
+  read: (path) => {
+    const abs = resolveRepoPath(cwd, path);
+    if (abs === null || !committed.has(normalize(path))) return null;
+    try {
+      const real = relative(realpathSync(cwd), realpathSync(abs));
+      return committed.has(real) ? repo.read(path) : null;
+    } catch {
+      return null;
+    }
+  },
 });
 
 export const writePlanPage = async (run: RunRef): Promise<string> => {
   const runDir = runDirOf(run.cwd, run.name);
-  const repo = trackedRepoFiles(repoFiles(run.cwd), await trackedFiles(run.cwd));
+  const repo = committedRepoFiles(run.cwd, repoFiles(run.cwd), await committedFiles(run.cwd));
   const html = await buildPlanPage(join(runDir, "artifacts"), repo);
   const path = join(runDir, PLAN_PAGE_PATH);
   // A rename replaces a link planted at the path, and the exclusive create refuses a link planted
