@@ -81,8 +81,9 @@ export type ContextStepOptions = Readonly<{
   terminal: ITerminal | undefined;
   registry: Registry;
   provider: IAgentProvider;
-  // how the agent was launched; relaunching adds the session's env and the resume prompt
-  launch: Omit<LaunchOptions, "prompt" | "env">;
+  // how the agent was launched; relaunching adds the session's env, the resume prompt and the
+  // run's name
+  launch: Omit<LaunchOptions, "prompt" | "env" | "name">;
   home: string;
   log: ILogger;
 }>;
@@ -331,6 +332,7 @@ const startNewSession = async (options: ContextStepOptions, terminal: ITerminal)
     ...options.launch,
     env: sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home)),
     prompt: resumePrompt(run),
+    name: run.name,
   };
   const relaunch = await failureOf(
     provider.relaunch(terminal, sessionId, launch).then((relaunched) => unwrap(relaunched)),
@@ -543,8 +545,9 @@ export type ModelStepOptions = Readonly<{
   sessionId: string;
   terminal: ITerminal | undefined;
   provider: IAgentProvider;
-  // how the agent was launched; the relaunch adds the model, the session's env and the resume prompt
-  launch: Omit<LaunchOptions, "prompt" | "env" | "model" | "effort" | "resume">;
+  // how the agent was launched; the relaunch adds the model, the session's env, the resume prompt
+  // and the run's name
+  launch: Omit<LaunchOptions, "prompt" | "env" | "model" | "effort" | "resume" | "name">;
   home: string;
   log: ILogger;
 }>;
@@ -568,6 +571,7 @@ const resumeOnModel = async (
       resume: true,
       env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
       prompt: resumePrompt(run),
+      name: run.name,
     }),
   );
   await waitForResume(store, sessionId, before, target.model);

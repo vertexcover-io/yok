@@ -68,6 +68,8 @@ export type LaunchOptions = Readonly<{
   permissionMode?: PermissionMode;
   model?: string;
   effort?: Effort;
+  // the session's display name (claude --name)
+  name?: string;
   // relaunch only: continue the session's conversation (claude --resume) instead of starting
   // a new session on that id
   resume?: boolean;
