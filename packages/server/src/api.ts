@@ -9,7 +9,7 @@ export type Vars = { log: ILogger };
 
 export const errorResponse = (
   c: Context,
-  status: 400 | 401 | 404 | 409 | 500 | 502,
+  status: 400 | 404 | 409 | 500 | 502,
   code: ErrorCode,
   message: string,
   details?: JsonValue,

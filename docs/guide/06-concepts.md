@@ -214,7 +214,7 @@ Where a run writes code. `layout: mono` means one repo: a worktree at `.worktree
 
 `registry.json` in the yok home lists every run on the machine: id, workflow, inputs, cwd, name, tmux session, Claude session ids, tiers. The server adds a run; init names it; the SessionStart hook links sessions. It is read and written under a file lock by both the server and orchestrate.
 
-The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, API key, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
+The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
 
 ## Doctor
 

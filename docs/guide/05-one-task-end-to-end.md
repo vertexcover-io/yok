@@ -16,7 +16,7 @@ yok run task --prompt "Add a --json flag to the doctor command"
 | Player | What it is | Where it lives |
 |---|---|---|
 | **The `yok` CLI** | The command you type. Names the project, then asks the server for a run. | `packages/cli` |
-| **The yok server** | One small HTTP server per yok home, on loopback behind an API key. Compiles the workflow, runs the doctor, starts agent sessions, keeps the list of projects and runs, serves the viewer page. | `packages/server` |
+| **The yok server** | One small HTTP server per yok home, on loopback behind a Host/Origin guard. Compiles the workflow, runs the doctor, starts agent sessions, keeps the list of projects and runs, serves the viewer page. | `packages/server` |
 | **The agent session** | A Claude Code (or Codex) conversation running inside a tmux window. It does the actual work. | started by `packages/core/src/agents` |
 | **The orchestrate commands** | `yok orchestrate init`, `next`, `done`. The agent calls these to ask "what now?" and to report "finished". They are the workflow engine. | `packages/core/src/orchestrate.ts`, `runs.ts`, `workflow/` |
 | **The run folder** | `.yok/RUN_NAME/` inside your repo. The event log, the current state, and every file a stage produced. | written by `packages/sdk` |
@@ -102,7 +102,7 @@ Two things the picture makes plain. First, every arrow back to `next` goes throu
 
 [packages/cli/src/run.ts:115](../../packages/cli/src/run.ts#L115) is where `yok run` starts work. It does two things before it asks for the run.
 
-**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L191) calls `GET /health` on `127.0.0.1` at the port in `~/.yok-dev/server.port` (or `~/.yok/server.port` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers. From source (`yok-dev`), a server that started before this command is stopped and started again, so it runs the current code; two commands started together do not restart each other's server. Every request after `/health` carries the API key the server wrote into the home's `.env` on its first start.
+**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L191) calls `GET /api/health` on `127.0.0.1` at the port in `~/.yok-dev/server.port` (or `~/.yok/server.port` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers. From source (`yok-dev`), a server that started before this command is stopped and started again, so it runs the current code; two commands started together do not restart each other's server. The API is under `/api` on that port, and the run pages are on every other path.
 
 **It names the project.** A project is a name the server knows for a checkout on its machine. With `--project`, that name is used. Without it, the CLI looks for the checkout it stands in among the server's projects, and the first time it is not there, adds it under its folder's name.
 
@@ -342,7 +342,7 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
 ~/.yok-dev/                    or ~/.yok for the release binary
   registry.json                every run on this machine, with its sessions and tmux name
   server.port                  the port the server listens on at 127.0.0.1
-  .env                         the server's API key, YOK_API_KEY
+  .env                         SERVER_DOMAIN, the domain a proxy in front of yok answers on
   projects.yaml                the projects: a name for each checkout the server runs on
   server.log
   shims/HASH/yok               the PATH shim from hop 2

@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import {
@@ -34,8 +33,13 @@ export const readPort = (home: string): number | null => {
 export const readHomeEnv = (home: string): Record<string, string | undefined> =>
   parseEnv(readHomeFile(homeEnvPath(home)));
 
-export const readApiKey = (home: string): string | undefined =>
-  readHomeEnv(home).YOK_API_KEY || undefined;
+// The domain a reverse proxy in front of yok answers on; this machine's own address without one.
+export const serverDomain = (home: string, port: number): string =>
+  readHomeEnv(home).SERVER_DOMAIN || `localhost:${port}`;
+
+// Plain http only for this machine: any other domain is reached through a proxy doing https.
+export const publicOrigin = (domain: string): string =>
+  `${/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(domain) ? "http" : "https"}://${domain}`;
 
 const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
 
@@ -58,19 +62,6 @@ export const updateHomeEnv = async (
   await chmod(homeEnvPath(home), 0o600);
 };
 
-// Never put in process.env: the server hands its env to every run's agent session.
-// base64url stays inside the bearer-token alphabet, so the key needs no quoting anywhere.
-export const ensureApiKey = async (home: string): Promise<string> => {
-  const existing = readApiKey(home);
-  if (existing !== undefined) return existing;
-  const key = randomBytes(32).toString("base64url");
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  await appendFile(homeEnvPath(home), `\nYOK_API_KEY=${key}\n`, { mode: 0o600 });
-  // appendFile's mode applies only when it creates the file; a .env the person made keeps its own.
-  await chmod(homeEnvPath(home), 0o600);
-  return key;
-};
-
 export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
@@ -80,7 +71,6 @@ export const ErrorBodySchema = z.strictObject({
       "agent-failed",
       "git-failed",
       "internal",
-      "unauthorized",
     ]),
     message: z.string(),
     // what the route knows beyond the message: the doctor's report when a run is refused

@@ -63,7 +63,8 @@ export type RunDeps = Readonly<{
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   home: string;
-  viewerOrigin: string;
+  // where every dashboard link starts: https://SERVER_DOMAIN, else http://localhost:PORT
+  publicOrigin: string;
   checkCheckout: CheckCheckout;
 }>;
 
@@ -78,7 +79,7 @@ const checkInputs = (plan: WorkflowPlan, inputs: JsonObject): Result<null> => {
   }
 };
 
-const viewUrl = (deps: RunDeps, runId: string): string => `${deps.viewerOrigin}/runs/${runId}`;
+const viewUrl = (deps: RunDeps, runId: string): string => `${deps.publicOrigin}/runs/${runId}`;
 
 // The run's tier set and policies, merged once here; init copies both into the run's state.
 // The caller's layer wins over the workflow's, which comes from the compiled plan.
@@ -365,14 +366,14 @@ const resumeRun = async (
   );
 };
 
-// Mounted at /runs by app.ts. Chained, so each route's input and output types reach AppType.
+// Mounted at /runs by app.ts. Chained, so each route's input and output types reach ApiType.
 export const runRoutes = (deps: RunDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(StartRunBodySchema), (c) => startRun(c, deps, c.req.valid("json")))
     .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
       resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
     )
-    .get("/view", (c) => c.json({ view: `${deps.viewerOrigin}/` }, 200))
+    .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");
       if ((await deps.registry.findRun(id)) === undefined) {

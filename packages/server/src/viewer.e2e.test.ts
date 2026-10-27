@@ -8,7 +8,7 @@ import { noopLogger } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
-import { startViewer, type Viewer } from "./viewer.ts";
+import { viewerRoutes } from "./viewer.ts";
 
 const ORCHESTRATE = [
   join(import.meta.dir, "..", "..", "cli", "src", "index.ts"),
@@ -220,7 +220,7 @@ describe("viewer in a browser", () => {
   let home: string;
   let cwd: string;
   let runDir: string;
-  let viewer: Viewer;
+  let viewer: Readonly<{ origin: string; stop: () => Promise<void> }>;
   let url: string;
   const opened: { file: string; line: number | null }[] = [];
   let typed: readonly string[] = [];
@@ -250,17 +250,23 @@ describe("viewer in a browser", () => {
     await registry.addRun(run);
     const { host, calls } = fakeHost(EMPTY_BOX);
     typed = calls;
-    viewer = await startViewer({
-      home,
-      registry,
-      providerFor: () => claudeOver(host),
-      host,
-      log: noopLogger,
-      openInEditor: (target) => {
-        opened.push(target);
-        return { ok: true, value: null };
-      },
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: viewerRoutes({
+        registry,
+        providerFor: () => claudeOver(host),
+        host,
+        log: noopLogger,
+        now: () => new Date(),
+        openInEditor: (target) => {
+          opened.push(target);
+          return { ok: true, value: null };
+        },
+      }).fetch,
     });
+    viewer = { origin: `http://localhost:${server.port}`, stop: () => server.stop(true) };
     url = `${viewer.origin}/runs/r1`;
   });
 

@@ -31,7 +31,6 @@ import {
   apiErrorText,
   cliLog,
   commandLog,
-  configuredServerUrl,
   ensureServer,
   errorText,
   fail,
@@ -179,7 +178,7 @@ type RunOptions = Readonly<{
   config?: string;
 }>;
 
-type RunTarget = Readonly<{ project?: string; workflow: string; config?: string }>;
+type RunTarget = Readonly<{ project: string; workflow: string; config?: string }>;
 
 // The checkout's project, added if new, with its .yok/types written. Paths go absolute, which
 // the server's resolve against the project root leaves as they are.
@@ -201,14 +200,6 @@ const localTarget = async (
   return { ok: true, value: { project: project.value, workflow: path, ...config } };
 };
 
-// The current folder is on another machine: no checkout to add, no .yok/types to write, and the
-// workflow and config go as typed, for the server to resolve against the project's root.
-const remoteTarget = (workflow: string, opts: RunOptions): RunTarget => ({
-  workflow,
-  ...(opts.project === undefined ? {} : { project: opts.project }),
-  ...(opts.config === undefined ? {} : { config: opts.config }),
-});
-
 export const runCommand = () => {
   const command = new Command("run")
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
@@ -228,10 +219,7 @@ export const runCommand = () => {
       // Before the project lookup, which calls the server.
       await ensureServer();
       const client = yokClient();
-      const configured = configuredServerUrl() !== null;
-      const target = configured
-        ? { ok: true as const, value: remoteTarget(workflowArg, opts) }
-        : await localTarget(client, { workflow: workflowArg, opts, cwd });
+      const target = await localTarget(client, { workflow: workflowArg, opts, cwd });
       if (!target.ok) return fail(target.error);
 
       const result = await client.run({
@@ -242,8 +230,6 @@ export const runCommand = () => {
       });
       if (!result.ok) return fail(startError(result.error));
       const { run } = result.value;
-      // Attach and the browser need the server's machine, so a run elsewhere prints its page only.
-      if (configured) return console.log(`${run.id}\nview: ${result.value.view}`);
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
       await showStartedRun(result.value, opts, cwd, log);

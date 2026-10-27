@@ -22,7 +22,6 @@ import type {
   ITerminal,
   LaunchOptions,
   Result,
-  SavedPolicies,
   State,
   WorkflowRun,
 } from "@yok/sdk";
@@ -33,12 +32,13 @@ import {
   jsonlEventStore,
   type Registry,
 } from "@yok/sdk/internal";
+import { Hono } from "hono";
 import * as z from "zod";
-import { createApp } from "./app.ts";
+import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { AddProjectBodySchema } from "./protocol.ts";
-import type { CheckCheckout } from "./server.ts";
+import { type CheckCheckout, createRoot } from "./server.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
 
@@ -99,29 +99,22 @@ const buildDeps = async (
     log,
     home,
     triggers: createTriggerStore(home),
-    viewerOrigin: "http://localhost:1",
+    publicOrigin: "http://localhost:1",
     pid: 4242,
     version: "0.0.0-test",
     startedAt: 1_700_000_000_000,
-    apiKey: "test-key",
     git: createGit(),
     checkCheckout: readyCheckout,
   };
 };
 
-// The key buildDeps gives the app, on every request but the ones that test the key itself.
-const authed = (headers: Record<string, string> = {}) => ({
-  authorization: "Bearer test-key",
-  ...headers,
-});
-
 const runBody = (extra: object = {}) =>
   JSON.stringify({ project: "demo", workflow: "ok.yaml", inputs: {}, ...extra });
 
-const postRun = (app: ReturnType<typeof createApp>, extra: object = {}) =>
+const postRun = (app: ReturnType<typeof createApi>, extra: object = {}) =>
   app.request("/runs", {
     method: "POST",
-    headers: authed({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: runBody(extra),
   });
 
@@ -176,15 +169,15 @@ const projectDeps = async (checkCheckout: CheckCheckout = readyCheckout) => {
   return { deps, calls };
 };
 
-const post = (app: ReturnType<typeof createApp>, body: unknown) =>
+const post = (app: ReturnType<typeof createApi>, body: unknown) =>
   app.request("/projects", {
     method: "POST",
-    headers: authed({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 
-const listProjects = async (app: ReturnType<typeof createApp>) => {
-  const res = await app.request("/projects", { headers: authed() });
+const listProjects = async (app: ReturnType<typeof createApi>) => {
+  const res = await app.request("/projects");
   return ((await res.json()) as { projects: Array<Record<string, unknown>> }).projects;
 };
 
@@ -204,9 +197,9 @@ describe("POST /runs", () => {
     });
     tempWorkspace(deps.home);
 
-    const res = await createApp(deps).request("/runs", {
+    const res = await createApi(deps).request("/runs", {
       method: "POST",
-      headers: authed({ "content-type": "application/json" }),
+      headers: { "content-type": "application/json" },
       body,
     });
 
@@ -226,7 +219,7 @@ describe("POST /runs", () => {
     });
     const { workflowPath, cwd } = tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps), { inputs: { prompt: "x" } });
+    const res = await postRun(createApi(deps), { inputs: { prompt: "x" } });
 
     expect(res.status).toBe(201);
     const json = (await res.json()) as {
@@ -272,7 +265,7 @@ describe("POST /runs", () => {
         Promise.resolve({ env: { ok: true, value: {} }, report })) satisfies CheckCheckout,
     };
     tempWorkspace(deps.home);
-    const app = createApp(deps);
+    const app = createApi(deps);
 
     const res = await postRun(app);
 
@@ -302,7 +295,7 @@ describe("POST /runs", () => {
     const { cwd } = tempWorkspace(deps.home);
     writeFileSync(join(cwd, "orchestrate.config.yaml"), "version: 2\nnope: 1\n");
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(400);
     const { error } = (await res.json()) as { error: { details?: DoctorReport } };
@@ -342,7 +335,7 @@ describe("POST /runs", () => {
     writeFileSync(join(cwd, "bad.yaml"), "name: [unclosed\n");
     writeFileSync(join(cwd, "envfile.yaml"), okWorkflow({ envFile: "missing.env" }));
 
-    const res = await postRun(createApp(deps), extra);
+    const res = await postRun(createApi(deps), extra);
 
     expect(res.status).toBe(400);
     expect((await errorOf(res)).message).toContain(holds(cwd));
@@ -353,12 +346,12 @@ describe("POST /runs", () => {
   test("SC304: no project named picks the only one, and with two the reply names them", async () => {
     const deps = await buildDeps(launchesOk);
     const { cwd } = tempWorkspace(deps.home);
-    const app = createApp(deps);
+    const app = createApi(deps);
     const body = { workflow: "ok.yaml", inputs: {} };
     const start = () =>
       app.request("/runs", {
         method: "POST",
-        headers: authed({ "content-type": "application/json" }),
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
 
@@ -380,7 +373,7 @@ describe("POST /runs", () => {
     });
     const { workflowPath } = tempWorkspace(deps.home, okWorkflow({ agent: "codex" }));
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(201);
     expect(prompt).toBe(`$orchestrate --workflow ${workflowPath} --inputs {}`);
@@ -394,7 +387,7 @@ describe("POST /runs", () => {
     });
     const { workflowPath, cwd } = tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(201);
     expect(savedAtLaunch).toMatchObject({ workflowPath, cwd, sessions: [], name: null });
@@ -403,7 +396,7 @@ describe("POST /runs", () => {
   test("a config file in the body is resolved against the checkout and saved on the run; with none the run's config is null", async () => {
     const deps = await buildDeps(launchesOk);
     const { cwd } = tempWorkspace(deps.home);
-    const app = createApp(deps);
+    const app = createApi(deps);
     writeFileSync(join(cwd, "custom.json"), '{"version": 2}');
 
     const runOf = async (extra: object) =>
@@ -427,7 +420,7 @@ describe("POST /runs", () => {
     const workflow = okWorkflow({ agent, ...(tiers === undefined ? {} : { tiers }) });
     const { cwd } = tempWorkspace(deps.home, workflow);
     writeFileSync(join(cwd, "tiers.yaml"), config);
-    const res = await postRun(createApp(deps), { config: "tiers.yaml" });
+    const res = await postRun(createApi(deps), { config: "tiers.yaml" });
     const launched = seen.map(({ model, effort }) => ({ model, effort }));
     return { res, launched, deps };
   };
@@ -490,7 +483,7 @@ describe("POST /runs", () => {
       const configText = config === undefined ? "" : `policies:\n  interaction: ${config}\n`;
       writeFileSync(join(cwd, "policy.yaml"), `version: 2\n${configText}`);
 
-      const res = await postRun(createApp(deps), { config: "policy.yaml", ...layer(request) });
+      const res = await postRun(createApi(deps), { config: "policy.yaml", ...layer(request) });
 
       expect(res.status).toBe(201);
       const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
@@ -506,7 +499,7 @@ describe("POST /runs", () => {
     const deps = await buildDeps(launchesOk);
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps), extra);
+    const res = await postRun(createApi(deps), extra);
 
     expect(res.status).toBe(400);
     expect((await errorOf(res)).code).toBe("bad-request");
@@ -522,7 +515,7 @@ describe("POST /runs", () => {
     const { cwd } = tempWorkspace(deps.home);
     writeFileSync(join(cwd, ".env"), "API_URL=http://x\nYOK_RUN_ID=spoofed\n");
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(201);
     const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
@@ -542,7 +535,7 @@ describe("POST /runs", () => {
     });
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(201);
     const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
@@ -571,7 +564,7 @@ describe("POST /runs", () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(502);
     const json = (await res.json()) as { error: { code: string } };
@@ -587,7 +580,7 @@ describe("POST /runs", () => {
     const deps = await buildDeps(() => Promise.reject(new Error("tmux timed out")), log);
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: { code: "internal", message: "tmux timed out" } });
@@ -598,35 +591,11 @@ describe("POST /runs", () => {
   });
 });
 
-describe("API key", () => {
-  test.each([
-    ["no authorization header", {}],
-    ["a wrong key", { authorization: "Bearer wrong" }],
-    ["a key much longer than the right one", { authorization: `Bearer ${"x".repeat(500)}` }],
-  ])("SC102: POST /runs with %s is 401 unauthorized and launches nothing", async (_label, auth) => {
-    let launched = false;
-    const deps = await buildDeps(() => {
-      launched = true;
-      return launchesOk();
-    });
-    tempWorkspace(deps.home);
-
-    const res = await createApp(deps).request("/runs", {
-      method: "POST",
-      headers: { "content-type": "application/json", ...auth },
-      body: runBody(),
-    });
-
-    expect(res.status).toBe(401);
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("unauthorized");
-    expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
-  });
-
-  test("SC103: GET /health answers 200 without a key", async () => {
+describe("GET /health", () => {
+  test("SC103: GET /health answers 200 with the pid, version and start time", async () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "unused" }));
 
-    const res = await createApp(deps).request("/health");
+    const res = await createApi(deps).request("/health");
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -634,19 +603,6 @@ describe("API key", () => {
       version: "0.0.0-test",
       startedAt: 1_700_000_000_000,
     });
-  });
-
-  test("SC110: no log line carries the right key or a wrong one", async () => {
-    const { log, lines } = captureLogger();
-    const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "unused" }), log);
-    const app = createApp(deps);
-
-    await app.request("/runs/view", { headers: authed() });
-    await app.request("/runs/view", { headers: { authorization: "Bearer wrong-key-value" } });
-
-    expect(lines.length).toBeGreaterThan(0);
-    expect(JSON.stringify(lines)).not.toContain("test-key");
-    expect(JSON.stringify(lines)).not.toContain("wrong-key-value");
   });
 });
 
@@ -657,7 +613,7 @@ describe("POST /runs logging", () => {
     const { cwd } = tempWorkspace(deps.home);
     writeFileSync(join(cwd, ".env"), "API_KEY=top-secret-value\n");
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(201);
     expect(JSON.stringify(lines)).not.toContain("top-secret-value");
@@ -668,7 +624,7 @@ describe("POST /runs logging", () => {
     const deps = await buildDeps(launchesOk, log);
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.headers.get("x-request-id")).toBeString();
     const runStarted = at("info").find((line) => line.msg === "run started");
@@ -684,7 +640,7 @@ describe("POST /runs logging", () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }), log);
     tempWorkspace(deps.home);
 
-    await postRun(createApp(deps));
+    await postRun(createApi(deps));
 
     const failures = at("error").filter(
       (line) => line.msg === "run not started: the agent session failed to launch",
@@ -699,12 +655,12 @@ describe("createYokClient", () => {
     return { url: `http://127.0.0.1:${server.port}`, server };
   };
 
-  test("SC104: calls the real routes over loopback HTTP with the key and returns their typed bodies", async () => {
+  test("SC104: calls the real routes over loopback HTTP and returns their typed bodies", async () => {
     const deps = await buildDeps(launchesOk);
     const { cwd } = tempWorkspace(deps.home);
-    const { url, server } = serveOn(createApp(deps).fetch);
+    const { url, server } = serveOn(new Hono().route("/api", createApi(deps)).fetch);
     try {
-      const client = createYokClient({ url, apiKey: "test-key" });
+      const client = createYokClient({ url });
 
       const health = await client.health();
       expect(health).toEqual({
@@ -726,43 +682,39 @@ describe("createYokClient", () => {
     }
   });
 
-  test("the key goes on every request but /health, so whatever holds the port learns nothing from a health check", async () => {
+  test("SC1003: the client calls every route under /api, with a UTF-8 Basic header only when given a login", async () => {
     const seen: Array<readonly [string, string | null]> = [];
     const { url, server } = serveOn((request) => {
       seen.push([new URL(request.url).pathname, request.headers.get("authorization")]);
       return Response.json({});
     });
     try {
-      const client = createYokClient({ url, apiKey: "test-key" });
-      await client.health();
-      await client.viewRuns();
+      const keyless = createYokClient({ url });
+      await keyless.health();
+      await keyless.viewRuns();
+      const login = { user: "ritesh", password: "pässwörd" };
+      const withLogin = createYokClient({ url, login });
+      await withLogin.health();
+      await withLogin.viewRuns();
+      await createYokClient({ url: `${url}/` }).health();
     } finally {
       await server.stop(true);
     }
 
+    const basic = "Basic cml0ZXNoOnDDpHNzd8O2cmQ=";
     expect(seen).toEqual([
-      ["/health", null],
-      ["/runs/view", "Bearer test-key"],
+      ["/api/health", null],
+      ["/api/runs/view", null],
+      ["/api/health", basic],
+      ["/api/runs/view", basic],
+      ["/api/health", null],
     ]);
-  });
-
-  test("SC104: a wrong key comes back as an unauthorized error", async () => {
-    const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "unused" }));
-    const { url, server } = serveOn(createApp(deps).fetch);
-    try {
-      expect(await createYokClient({ url, apiKey: "wrong" }).viewRuns()).toEqual({
-        ok: false,
-        error: { code: "unauthorized", message: "missing or wrong API key" },
-      });
-    } finally {
-      await server.stop(true);
-    }
   });
 
   test("a non-JSON error reply comes back as an internal error, not a thrown parse error", async () => {
     const { url, server } = serveOn(() => new Response("Internal Server Error", { status: 500 }));
     try {
-      expect(await createYokClient({ url, apiKey: "test-key" }).health()).toEqual({
+      expect(await createYokClient({ url }).health()).toEqual({
         ok: false,
         error: { code: "internal", message: "500 Internal Server Error" },
       });
@@ -772,27 +724,163 @@ describe("createYokClient", () => {
   });
 
   test("SC104: nothing listening at the URL is an unreachable error", async () => {
-    expect(await createYokClient({ url: "http://127.0.0.1:1", apiKey: "k" }).health()).toEqual({
+    expect(await createYokClient({ url: "http://127.0.0.1:1" }).health()).toEqual({
       ok: false,
       error: { code: "internal", message: "server unreachable" },
     });
   });
 });
 
+// The one app the server's listener serves, on port 4000 behind DOMAIN, with project demo and a
+// named run r-1 on its checkout; launched counts agent launches.
+const rootApp = async (domain: string) => {
+  let launched = 0;
+  const deps = await buildDeps(() => {
+    launched += 1;
+    return launchesOk();
+  });
+  const { cwd } = tempWorkspace(deps.home);
+  const run = WorkflowRunSchema.parse({
+    id: "r-1",
+    workflow: "ok",
+    workflowPath: join(cwd, "ok.yaml"),
+    inputs: {},
+    cwd,
+    sessions: [],
+    name: "named",
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  await deps.registry.addRun(run);
+  mkdirSync(runDirOf(cwd, "named"), { recursive: true });
+  const app = createRoot({
+    ...deps,
+    port: 4000,
+    domain,
+    now: () => new Date(),
+    openInEditor: () => ({ ok: true, value: null }),
+  });
+  return {
+    app,
+    deps,
+    commentsPath: join(runDirOf(cwd, "named"), "comments.json"),
+    launched: () => launched,
+  };
+};
+
+const send = (
+  app: ReturnType<typeof createRoot>,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+) =>
+  app.request(path, {
+    method,
+    headers: { "content-type": "application/json", ...headers },
+    ...(method === "POST"
+      ? { body: path === "/api/runs" ? runBody() : JSON.stringify({ comments: [] }) }
+      : {}),
+  });
+
+describe("createRoot guard", () => {
+  test("SC1004: with SERVER_DOMAIN set, its Host and https Origin reach the API and the dashboard", async () => {
+    const { app, deps } = await rootApp("yok.example.com");
+    const headers = { host: "yok.example.com", origin: "https://yok.example.com" };
+
+    const projects = await send(app, "GET", "/api/projects", headers);
+    expect(projects.status).toBe(200);
+    expect(JSON.stringify(await projects.json())).toContain('"demo"');
+    const started = await send(app, "POST", "/api/runs", headers);
+    expect(started.status).toBe(201);
+    expect((await deps.registry.listRuns()).length).toBe(2);
+    for (const path of ["/runs/r-1", "/"]) {
+      const page = await send(app, "GET", path, headers);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("content-type")).toContain("text/html");
+    }
+  });
+
+  test("SC1005: a foreign Host gets 403 naming it on API and dashboard paths, and nothing is written", async () => {
+    const { app, deps, launched } = await rootApp("yok.example.com");
+    const headers = { host: "evil.example:4000" };
+    const requests = [
+      ["GET", "/api/health"],
+      ["GET", "/api/projects"],
+      ["POST", "/api/runs"],
+      ["GET", "/"],
+      ["GET", "/runs/r-1"],
+      ["GET", "/stream"],
+      ["GET", "/assets/shared.js"],
+    ] as const;
+
+    for (const [method, path] of requests) {
+      const res = await send(app, method, path, headers);
+      expect([path, res.status]).toEqual([path, 403]);
+      expect(await res.text()).toContain("evil.example:4000");
+    }
+    expect(launched()).toBe(0);
+    expect((await deps.registry.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
+  });
+
+  test.each(["http://evil.example", "http://yok.example.com"])(
+    "SC1006: Origin %p gets 403 with an accepted Host, and nothing is written",
+    async (origin) => {
+      const { app, deps, commentsPath, launched } = await rootApp("yok.example.com");
+      const headers = { host: "localhost:4000", origin };
+      const requests = [
+        ["POST", "/api/runs"],
+        ["GET", "/api/projects"],
+        ["GET", "/runs/r-1"],
+        ["POST", "/runs/r-1/comments"],
+      ] as const;
+
+      for (const [method, path] of requests) {
+        expect([path, (await send(app, method, path, headers)).status]).toEqual([path, 403]);
+      }
+      expect(launched()).toBe(0);
+      expect((await deps.registry.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
+      expect(existsSync(commentsPath)).toBe(false);
+    },
+  );
+
+  test("SC1007: without SERVER_DOMAIN only this machine's Host and Origin pass the guard", async () => {
+    const { app } = await rootApp("localhost:4000");
+    const status = async (headers: Record<string, string>, path: string) =>
+      (await send(app, "GET", path, headers)).status;
+    const passing = [
+      { host: "localhost:4000" },
+      { host: "localhost:4000", origin: "http://localhost:4000" },
+      { host: "127.0.0.1:4000", origin: "http://127.0.0.1:4000" },
+    ];
+
+    for (const headers of passing) {
+      expect([await status(headers, "/api/health"), await status(headers, "/")]).toEqual([
+        200, 200,
+      ]);
+    }
+    expect(await status({ host: "yok.example.com" }, "/api/health")).toBe(403);
+    expect(
+      await status({ host: "localhost:4000", origin: "https://yok.example.com" }, "/api/health"),
+    ).toBe(403);
+  });
+});
+
 describe("run page URL", () => {
   test("SC11: POST /runs returns the page URL, GET /runs/:id/view returns it later, and a missing run is 404", async () => {
-    const deps = { ...(await buildDeps(launchesOk)), viewerOrigin: "http://localhost:4321" };
+    const deps = { ...(await buildDeps(launchesOk)), publicOrigin: "http://localhost:4321" };
     tempWorkspace(deps.home);
-    const app = createApp(deps);
+    const app = createApi(deps);
 
     const started = await postRun(app);
     const { run, view } = (await started.json()) as { run: { id: string }; view: string };
     expect(view).toBe(`http://localhost:4321/runs/${run.id}`);
 
-    const again = await app.request(`/runs/${run.id}/view`, { headers: authed() });
+    const again = await app.request(`/runs/${run.id}/view`);
     expect(await again.json()).toEqual({ view });
 
-    const missing = await app.request("/runs/r-missing/view", { headers: authed() });
+    const missing = await app.request("/runs/r-missing/view");
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not-found");
   });
@@ -831,7 +919,7 @@ describe("/projects", () => {
   test("SC203: a checkout is added without running the doctor, and listed as ready", async () => {
     const root = gitRepo();
     const { deps, calls } = await projectDeps();
-    const app = createApp(deps);
+    const app = createApi(deps);
 
     const res = await post(app, { name: "demo", path: root });
 
@@ -854,7 +942,7 @@ describe("/projects", () => {
   test("SC204: a git URL is cloned into the home and added, and the same URL again is refused", async () => {
     const url = "https://example.test/demo.git";
     const { deps } = await projectDeps();
-    const app = createApp({ ...deps, git: gitServing(url, { "README.md": "hi\n" }) });
+    const app = createApi({ ...deps, git: gitServing(url, { "README.md": "hi\n" }) });
 
     const res = await post(app, { name: "demo", git: url });
     const again = await post(app, { name: "demo2", git: url });
@@ -915,7 +1003,7 @@ describe("/projects", () => {
     async (_label, body, status, code) => {
       const taken = gitRepo();
       const { deps, calls } = await projectDeps();
-      const app = createApp(deps);
+      const app = createApi(deps);
       expect((await post(app, { name: "taken", path: taken })).status).toBe(201);
       const before = await listProjects(app);
 
@@ -938,7 +1026,7 @@ describe("/projects", () => {
       execFileSync("git", ["init", "-q", dest]);
       return { ok: true, value: undefined };
     };
-    const app = createApp({ ...deps, git: { ...deps.git, clone: slowClone } });
+    const app = createApi({ ...deps, git: { ...deps.git, clone: slowClone } });
 
     const slow = post(app, { name: "big", git: "https://example.test/big.git" });
     await Bun.sleep(50);
@@ -969,7 +1057,7 @@ describe("/projects", () => {
       execFileSync("git", ["init", "-q", dest]);
       return { ok: true, value: undefined };
     };
-    const app = createApp({ ...deps, git: { ...deps.git, clone: slowClone } });
+    const app = createApi({ ...deps, git: { ...deps.git, clone: slowClone } });
     const within2s = (res: Response | Promise<Response>) =>
       Promise.race([
         Promise.resolve(res).then((answered) => answered.status),
@@ -979,9 +1067,7 @@ describe("/projects", () => {
     const slow = post(app, { name: "big", git: "https://example.test/big.git" });
     await Bun.sleep(50);
     const started = await within2s(postRun(app));
-    const removed = await within2s(
-      app.request("/projects/spare", { method: "DELETE", headers: authed() }),
-    );
+    const removed = await within2s(app.request("/projects/spare", { method: "DELETE" }));
     releaseClone();
 
     expect(started).not.toBe("blocked");
@@ -997,7 +1083,7 @@ describe("/projects", () => {
       execFileSync("git", ["init", "-q", dest]);
       return { ok: true, value: undefined };
     };
-    const app = createApp({ ...deps, git: { ...deps.git, clone: initClone } });
+    const app = createApi({ ...deps, git: { ...deps.git, clone: initClone } });
 
     const res = await post(app, { name: "other", git: "https://example.test/o.git", path });
 
@@ -1010,7 +1096,7 @@ describe("/projects", () => {
     const url = "https://example.test/bad.git";
     const bad = { "orchestrate.config.yaml": "version: 2\nnope: 1\n" };
     const { deps } = await projectDeps();
-    const app = createApp({ ...deps, git: gitServing(url, bad) });
+    const app = createApi({ ...deps, git: gitServing(url, bad) });
 
     const res = await post(app, { name: "bad", git: url });
 
@@ -1022,7 +1108,7 @@ describe("/projects", () => {
 
   test("SC206: a clone that fails removes its folder and answers 502 git-failed", async () => {
     const { deps, calls } = await projectDeps();
-    const app = createApp(deps);
+    const app = createApi(deps);
 
     const res = await post(app, { name: "none", git: "https://127.0.0.1:1/none.git" });
 
@@ -1038,7 +1124,7 @@ describe("/projects", () => {
   test("SC207: a project with a live run cannot be removed until the run's terminal is gone", async () => {
     const root = gitRepo();
     const { deps } = await projectDeps();
-    expect((await post(createApp(deps), { name: "demo", path: root })).status).toBe(201);
+    expect((await post(createApi(deps), { name: "demo", path: root })).status).toBe(201);
     const run: WorkflowRun = {
       id: "r-live",
       workflow: "ok",
@@ -1053,10 +1139,10 @@ describe("/projects", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     };
     await deps.registry.addRun(run);
-    const remove = (app: ReturnType<typeof createApp>) =>
-      app.request("/projects/demo", { method: "DELETE", headers: authed() });
-    const alive = createApp({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
-    const gone = createApp({ ...deps, host: fakeHost(EMPTY_BOX, false).host });
+    const remove = (app: ReturnType<typeof createApi>) =>
+      app.request("/projects/demo", { method: "DELETE" });
+    const alive = createApi({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
+    const gone = createApi({ ...deps, host: fakeHost(EMPTY_BOX, false).host });
 
     const refused = await remove(alive);
     expect(refused.status).toBe(409);
@@ -1074,7 +1160,7 @@ describe("/projects", () => {
   ])("SC207: a run still starting with no terminal yet, %s", async (_case, createdAt, status) => {
     const root = gitRepo();
     const { deps } = await projectDeps();
-    const app = createApp(deps);
+    const app = createApi(deps);
     expect((await post(app, { name: "demo", path: root })).status).toBe(201);
     await deps.registry.addRun({
       id: "r-starting",
@@ -1090,7 +1176,7 @@ describe("/projects", () => {
       createdAt,
     });
 
-    const res = await app.request("/projects/demo", { method: "DELETE", headers: authed() });
+    const res = await app.request("/projects/demo", { method: "DELETE" });
 
     expect(res.status).toBe(status);
   });
@@ -1104,13 +1190,13 @@ describe("/projects", () => {
     const deps = {
       ...base,
       checkCheckout: (async (input) => {
-        await createApp(base).request("/projects/demo", { method: "DELETE", headers: authed() });
+        await createApi(base).request("/projects/demo", { method: "DELETE" });
         return readyCheckout(input);
       }) satisfies CheckCheckout,
     };
     tempWorkspace(deps.home);
 
-    const res = await postRun(createApp(deps));
+    const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(409);
     expect((await errorOf(res)).message).toContain("demo");
@@ -1121,7 +1207,7 @@ describe("/projects", () => {
   test("SC207: a run that has finished does not hold its project, though its session is still open", async () => {
     const root = gitRepo();
     const { deps } = await projectDeps();
-    const app = createApp({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
+    const app = createApi({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
     expect((await post(app, { name: "demo", path: root })).status).toBe(201);
     const runDir = runDirOf(root, "demo-run");
     mkdirSync(runDir, { recursive: true });
@@ -1141,7 +1227,7 @@ describe("/projects", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     });
 
-    const res = await app.request("/projects/demo", { method: "DELETE", headers: authed() });
+    const res = await app.request("/projects/demo", { method: "DELETE" });
 
     expect(res.status).toBe(200);
     expect(await listProjects(app)).toEqual([]);
@@ -1160,11 +1246,10 @@ describe("/projects", () => {
       join(deps.home, "projects.yaml"),
       `cloned:\n${entry(cloned, "  git: https://example.test/cloned.git\n")}outside:\n${entry(outside)}placed:\n${entry(placed)}`,
     );
-    const app = createApp(deps);
+    const app = createApi(deps);
     const purge = async (name: string) => {
       const res = await app.request(`/projects/${name}?purge=true`, {
         method: "DELETE",
-        headers: authed(),
       });
       return res.json();
     };
@@ -1196,9 +1281,8 @@ describe("/projects", () => {
       `link:\n  path: ${link}\n  git: https://example.test/link.git\n  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
     );
 
-    const res = await createApp(deps).request("/projects/link?purge=true", {
+    const res = await createApi(deps).request("/projects/link?purge=true", {
       method: "DELETE",
-      headers: authed(),
     });
 
     expect(await res.json()).toMatchObject({ removed: "link", purged: false });
@@ -1212,21 +1296,9 @@ describe("/projects", () => {
       "gone:\n  path: /no/such/checkout\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n",
     );
 
-    expect(await listProjects(createApp(deps))).toEqual([
+    expect(await listProjects(createApi(deps))).toEqual([
       expect.objectContaining({ name: "gone", status: "missing" }),
     ]);
-  });
-
-  test.each([
-    ["GET", "/projects"],
-    ["POST", "/projects"],
-    ["DELETE", "/projects/x"],
-  ])("SC211: %s %s without the key is 401", async (method, path) => {
-    const { deps } = await projectDeps();
-
-    const res = await createApp(deps).request(path, { method });
-
-    expect(res.status).toBe(401);
   });
 });
 
@@ -1313,10 +1385,10 @@ const resumeDeps = async () => {
   return { deps, launches };
 };
 
-const resume = (deps: Parameters<typeof createApp>[0], runId: string, env = {}) =>
-  createApp(deps).request(`/runs/${runId}/resume`, {
+const resume = (deps: Parameters<typeof createApi>[0], runId: string, env = {}) =>
+  createApi(deps).request(`/runs/${runId}/resume`, {
     method: "POST",
-    headers: authed({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ env }),
   });
 

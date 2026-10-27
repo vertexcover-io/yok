@@ -10,7 +10,7 @@ import {
 } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { type ApiError, logPath, pidPath, readApiKey, readHomeEnv, readPort } from "@yok/server";
+import { type ApiError, logPath, pidPath, readPort } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 
 const HEALTH_TIMEOUT_MS = 5_000;
@@ -78,11 +78,9 @@ export const apiErrorText = (error: ApiError): string => `${error.code}: ${error
 // With no port file yet, port 1 answers nothing and the server counts as unreachable.
 export const localUrl = (home: string): string => `http://127.0.0.1:${readPort(home) ?? 1}`;
 
-export type Target = Readonly<{ url: string; apiKey: string }>;
-
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-// Plain http is allowed only on this machine, so the key never crosses the network in clear.
+// Plain http is allowed only on this machine, so a login never crosses the network in clear.
 export const checkServerUrl = (url: string): Result<string> => {
   if (!URL.canParse(url)) return { ok: false, error: `not a URL: ${url}` };
   const { protocol, hostname } = new URL(url);
@@ -91,40 +89,9 @@ export const checkServerUrl = (url: string): Result<string> => {
   return { ok: false, error: `${url} must use https:// unless the server is on this machine` };
 };
 
-// The environment wins over the home's .env, and the key comes from the same place as the URL.
-const serverSettings = (
-  home: string,
-  env: NodeJS.ProcessEnv,
-): Record<string, string | undefined> => (env.YOK_SERVER_URL ? env : readHomeEnv(home));
-
-// The URL set in the environment or .env, or null when this CLI uses the server yok runs here.
-export const configuredServerUrl = (
-  home: string = yokHome(),
-  env: NodeJS.ProcessEnv = process.env,
-): string | null => serverSettings(home, env).YOK_SERVER_URL || null;
-
-// With no URL set, the target is the server yok runs on this machine: its port file and its key.
-export const resolveTarget = (
-  home: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Result<Target> => {
-  const source = serverSettings(home, env);
-  const url = source.YOK_SERVER_URL;
-  if (!url) return { ok: true, value: { url: localUrl(home), apiKey: readApiKey(home) ?? "" } };
-  const apiKey = source.YOK_API_KEY;
-  if (!apiKey) return { ok: false, error: `YOK_SERVER_URL is ${url}, but YOK_API_KEY is not set` };
-  const checked = checkServerUrl(url);
-  if (!checked.ok) return checked;
-  return { ok: true, value: { url: url.replace(/\/+$/, ""), apiKey } };
-};
-
-// Read on every call, since the first server start writes the port and the key.
-// index.ts prints the thrown error, as it does any command's.
-export const yokClient = (home: string = yokHome()): YokClient => {
-  const target = resolveTarget(home);
-  if (!target.ok) throw new Error(target.error);
-  return createYokClient({ ...target.value, log: cliLog() });
-};
+// Read on every call, since the first server start writes the port.
+export const yokClient = (home: string = yokHome()): YokClient =>
+  createYokClient({ url: localUrl(home), log: cliLog() });
 
 const tailOf = (path: string, lines = 20): string =>
   existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").slice(-lines).join("\n") : "";
@@ -150,10 +117,9 @@ const readServerPid = (home: string): number | null => {
 
 type Running = Readonly<{ pid: number; version: string; startedAt: number }>;
 
-// The server yok runs here, or null when a URL is configured or the pid on the port is not the
-// one in server.pid. Another user's process could be on that port.
+// The server yok runs here, or null when the pid on the port is not the one in server.pid.
+// Another user's process could be on that port.
 export const runningServer = async (home: string = yokHome()): Promise<Running | null> => {
-  if (configuredServerUrl(home) !== null) return null;
   const health = await yokClient(home).health();
   if (!health.ok) return null;
   const { pid } = health.value;
@@ -200,12 +166,6 @@ export const ensureServer = async (
   home: string = yokHome(),
   replaceBefore: number = defaultReplaceBefore(),
 ): Promise<void> => {
-  // A configured server is only checked, never started or replaced.
-  const configured = configuredServerUrl(home);
-  if (configured !== null) {
-    if ((await yokClient(home).health()).ok) return;
-    throw new Error(`the yok server at ${configured} is not answering`);
-  }
   const isFresh = (server: Running | null): boolean =>
     isCurrentServer(server, replaceBefore, VERSION);
   // Checked again inside the lock: another command may have started the server meanwhile.
@@ -225,8 +185,7 @@ export const ensureServer = async (
     const startedAt = Date.now();
     const pid = spawnDetached(command, args, {
       cwd: home,
-      // The server's env reaches every run's session, so no key goes in it.
-      env: { YOK_HOME: home, YOK_API_KEY: undefined, YOK_SERVER_URL: undefined },
+      env: { YOK_HOME: home },
       output: logPath(home),
     });
     log.info({ pid, command: [command, ...args], log: logPath(home) }, "server process started");

@@ -259,7 +259,7 @@ const removeProject = (
     return c.json({ removed: name, purged: purge && cloned, note }, 200);
   });
 
-// Mounted at /projects by app.ts. Chained, so each route's types reach AppType.
+// Mounted at /projects by app.ts. Chained, so each route's types reach ApiType.
 export const projectRoutes = (deps: ProjectDeps) =>
   new Hono<{ Variables: Vars }>()
     .get("/", async (c) => {

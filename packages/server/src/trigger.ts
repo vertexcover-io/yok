@@ -284,7 +284,7 @@ const addTrigger = async (
 const notFound = (c: Context<{ Variables: Vars }>, { cwd, name }: TriggerRef) =>
   errorResponse(c, 404, "not-found", `no trigger named ${name} in ${cwd}`);
 
-// Mounted at /triggers by app.ts. Chained, so each route's input and output types reach AppType.
+// Mounted at /triggers by app.ts. Chained, so each route's input and output types reach ApiType.
 export const triggerRoutes = (deps: TriggerRouteDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(AddTriggerBodySchema), (c) => addTrigger(c, deps, c.req.valid("json")))

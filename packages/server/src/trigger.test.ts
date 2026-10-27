@@ -12,7 +12,7 @@ import {
   type TriggerDraft,
   type TriggerStore,
 } from "@yok/sdk/internal";
-import { createApp } from "./app.ts";
+import { createApi } from "./app.ts";
 import { fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { checkCheckoutWith } from "./server.ts";
 import {
@@ -160,7 +160,7 @@ const setup = async (workflow?: string) => {
       }),
     host: fakeHost("", alive).host,
     home,
-    viewerOrigin: "http://localhost:1",
+    publicOrigin: "http://localhost:1",
     // the fake host and provider bring no runtime checks of their own
     checkCheckout: (input) => checkCheckoutWith([], input),
     log: noopLogger,
@@ -421,19 +421,18 @@ describe("scheduler", () => {
       const now = new Date();
       await store.save({ ...trigger, cron: "* * * * *", nextFireAt: now.toISOString() });
       const { now: _now, ...scheduled } = deps(now.toISOString());
-      const app = createApp({
+      const app = createApi({
         ...scheduled,
         pid: 1,
         version: "0.0.0-test",
         startedAt: 0,
-        apiKey: "test-key",
         git: createGit(),
       });
 
       startScheduler(deps(now.toISOString()));
       const reply = await app.request("/triggers/fire", {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer test-key" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ cwd: trigger.cwd, name: "digest" }),
       });
       await stopScheduler();
@@ -450,18 +449,17 @@ describe("/triggers routes", () => {
     const env = await setup(workflow);
     await env.store.remove(env.trigger.id);
     const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
-    const app = createApp({
+    const app = createApi({
       ...deps,
       pid: 1,
       version: "0.0.0-test",
       startedAt: 0,
-      apiKey: "test-key",
       git: createGit(),
     });
     const call = (method: string, path: string, body?: unknown) =>
       app.request(path, {
         method,
-        headers: { "content-type": "application/json", authorization: "Bearer test-key" },
+        headers: { "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     return { ...env, call };

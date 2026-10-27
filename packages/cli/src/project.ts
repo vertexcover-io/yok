@@ -2,7 +2,7 @@ import { basename, resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { createGit } from "@yok/sdk";
 import type { ProjectView } from "@yok/server";
-import { apiErrorText, configuredServerUrl, ensureServer, fail, yokClient } from "./client.ts";
+import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
 
 // "Refrens_Main" -> "refrens-main"; empty or digit-first when the folder has no usable name.
 export const folderSlug = (folder: string): string =>
@@ -38,18 +38,11 @@ export const projectCommand = () => {
     .option("--path <dir>", "a checkout on the server, or where --git clones to")
     .action(async (nameArg, opts) => {
       const fromHere = opts.git === undefined && opts.path === undefined;
-      // A configured server's folders may not be this machine's: --path goes as typed.
-      const elsewhere = configuredServerUrl() !== null;
-      if (elsewhere && fromHere) {
-        return fail(
-          "the server is elsewhere: pass --path DIR (a folder on the server) or --git URL",
-        );
-      }
       const here = fromHere ? await createGit().repoRoot(process.cwd()) : null;
       if (fromHere && here === null) {
         return fail("not inside a git repository; pass --path DIR or --git URL");
       }
-      const typed = elsewhere || opts.path === undefined ? opts.path : resolve(opts.path);
+      const typed = opts.path === undefined ? undefined : resolve(opts.path);
       const path = typed ?? here ?? undefined;
       const folder = basename(path ?? opts.git ?? "");
       const name = nameArg ?? folderSlug(folder);
