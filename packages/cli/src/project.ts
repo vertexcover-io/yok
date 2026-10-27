@@ -1,16 +1,8 @@
 import { basename, resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { createGit } from "@yok/sdk";
-import type { ProjectView } from "@yok/server";
+import { folderSlug, type ProjectView } from "@yok/server";
 import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
-
-// "Refrens_Main" -> "refrens-main"; empty or digit-first when the folder has no usable name.
-export const folderSlug = (folder: string): string =>
-  folder
-    .replace(/\.git$/, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 
 const HEADERS = ["NAME", "STATUS", "PATH", "ADDED BY"] as const;
 

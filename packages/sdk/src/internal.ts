@@ -65,6 +65,8 @@ export {
   createTriggerStore,
   type Fire,
   FireSchema,
+  type LegacyTrigger,
+  LegacyTriggerSchema,
   type Trigger,
   type TriggerDraft,
   TriggerSchema,

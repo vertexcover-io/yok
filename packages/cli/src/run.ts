@@ -25,7 +25,7 @@ import {
   spawnInteractive,
 } from "@yok/sdk";
 import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import { type ApiError, runtimeChecks } from "@yok/server";
+import { type ApiError, folderSlug, runtimeChecks } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
@@ -37,7 +37,6 @@ import {
   openForPerson,
   yokClient,
 } from "./client.ts";
-import { folderSlug } from "./project.ts";
 import { writeProjectTypes } from "./types.ts";
 
 const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
@@ -122,7 +121,10 @@ const startError = (error: ApiError): string => {
   return report.success ? blockedText(error.message, report.data) : apiErrorText(error);
 };
 
-const projectAt = async (client: YokClient, root: string): Promise<Result<string | null>> => {
+export const projectAt = async (
+  client: YokClient,
+  root: string,
+): Promise<Result<string | null>> => {
   const listed = await client.projects();
   if (!listed.ok) return { ok: false, error: apiErrorText(listed.error) };
   const known = listed.value.projects.find((project) => project.path === root);
@@ -158,7 +160,7 @@ const checkoutProject = async (client: YokClient, root: string): Promise<Result<
 };
 
 // --project names the project; without it, the checkout this command runs in.
-const pickProjectName = async (
+export const pickProjectName = async (
   client: YokClient,
   project: string | undefined,
   root: string | null,

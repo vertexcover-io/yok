@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { zValidator } from "@hono/zod-validator";
 import {
   type IGit,
@@ -14,7 +14,7 @@ import {
   type WorkflowRun,
   withLock,
 } from "@yok/sdk";
-import { isRunLive, type Registry, stringifyYaml } from "@yok/sdk/internal";
+import { isRunLive, type Registry, stringifyYaml, type TriggerStore } from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import * as z from "zod";
@@ -24,6 +24,7 @@ import {
   type AddProjectBody,
   AddProjectBodySchema,
   type ErrorCode,
+  folderSlug,
   type Project,
   ProjectSchema,
   type ProjectView,
@@ -40,6 +41,7 @@ export type ProjectDeps = Readonly<{
   registry: Registry;
   host: ITerminalHost;
   git: IGit;
+  triggers: TriggerStore;
 }>;
 
 const projectsPath = (home: string): string => join(home, "projects.yaml");
@@ -60,6 +62,32 @@ export const writeProjects = async (home: string, projects: ProjectsFile): Promi
   await writeFile(tempPath, stringifyYaml(projects));
   await rename(tempPath, projectsPath(home));
 };
+
+// The name `yok run` gives the folder. Nobody is asked here, so a name another folder holds
+// gets the first free number, and a folder with no usable name starts with "project".
+const chooseProjectName = (projects: ProjectsFile, folder: string): string => {
+  const slug = folderSlug(basename(folder));
+  const base = /^[a-z]/.test(slug) ? slug : `project-${slug}`.replace(/-$/, "");
+  const numbered = Object.keys(projects).map((_name, index) => `${base}-${index + 2}`);
+  return [base, ...numbered].find((name) => projects[name] === undefined) ?? base;
+};
+
+// The project at FOLDER, added when there is none. Never refuses: a trigger saved on main for
+// this folder must keep a project to fire in.
+export const findOrAddFolderProject = (home: string, folder: string): Promise<string> =>
+  withLock(projectsLockPath(home), async () => {
+    const projects = await readProjects(home);
+    const known = Object.entries(projects).find(([, project]) => project.path === folder);
+    if (known !== undefined) return known[0];
+    const name = chooseProjectName(projects, folder);
+    const project: Project = {
+      path: folder,
+      addedBy: { channel: "server" },
+      addedAt: new Date().toISOString(),
+    };
+    await writeProjects(home, { ...projects, [name]: project });
+    return name;
+  });
 
 const viewProject = (name: string, project: Project): ProjectView => ({
   name,
@@ -247,6 +275,12 @@ const removeProject = (
     const live = runs.filter((_run, index) => holding[index]).map((run) => run.id);
     if (live.length > 0) {
       return errorResponse(c, 409, "conflict", `${name} has runs still going: ${live.join(", ")}`);
+    }
+    const triggers = (await deps.triggers.list()).filter((t) => t.project === name);
+    if (triggers.length > 0) {
+      const names = triggers.map((t) => t.name).join(", ");
+      const message = `${name} still has triggers: ${names}; remove them first with yok trigger rm NAME --project ${name}`;
+      return errorResponse(c, 409, "conflict", message);
     }
     await writeProjects(deps.home, rest);
     const cloned = isClone(deps.home, project);

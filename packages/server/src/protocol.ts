@@ -103,16 +103,27 @@ export const DoctorBodySchema = z.strictObject({
 export type DoctorBody = z.infer<typeof DoctorBodySchema>;
 
 export const AddTriggerBodySchema = z.strictObject({
-  workflowPath: AbsolutePathSchema,
-  // the repo root the trigger's runs start in
-  cwd: AbsolutePathSchema,
-  config: AbsolutePathSchema.optional(),
+  project: SlugSchema,
+  // a shipped workflow's name, or a workflow file resolved against the project's folder
+  workflow: NonEmptyStringSchema,
+  // a config file read instead of the project's own, resolved against the project's folder
+  config: NonEmptyStringSchema.optional(),
 });
 export type AddTriggerBody = z.infer<typeof AddTriggerBodySchema>;
 
-// A trigger's name is unique within its repo.
-export const TriggerRefSchema = z.strictObject({ cwd: AbsolutePathSchema, name: SlugSchema });
+// A trigger's name is unique within its project.
+export const TriggerRefSchema = z.strictObject({ project: SlugSchema, name: SlugSchema });
 export type TriggerRef = z.infer<typeof TriggerRefSchema>;
+
+// "Refrens_Main" -> "refrens-main": the project name `yok run` gives a new checkout, and the
+// server gives the folder of a trigger saved on main. Empty or digit-first when the folder has
+// no usable name.
+export const folderSlug = (folder: string): string =>
+  folder
+    .replace(/\.git$/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 // The env the resumed session starts with, which yok resume builds the way yok run does
 export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });

@@ -21,7 +21,7 @@ import { type ApiDeps, createApi } from "./app.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
-import { startScheduler, stopScheduler } from "./trigger.ts";
+import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts";
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
 
 export type CheckCheckout = (
@@ -144,6 +144,13 @@ export const startServer = async ({
   const viewerLog = log.child({ component: "viewer" });
   void resumeDeliveries({ registry, providerFor, host, log: viewerLog, now: () => new Date() });
   const triggers = createTriggerStore(home, log);
+  const triggersLog = log.child({ component: "triggers" });
+  // Before the first tick and before the routes are served, so nothing sees an unmoved trigger.
+  // Those that fail to move stay in the file and do not fire.
+  await adoptLegacyTriggers(home, { triggers, log: triggersLog }).catch((error: unknown) =>
+    triggersLog.error({ err: error }, "triggers saved with a folder were not moved to projects"),
+  );
+  const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS));
   startScheduler({
     triggers,
     registry,
@@ -152,7 +159,8 @@ export const startServer = async ({
     home,
     publicOrigin: origin,
     checkCheckout,
-    log: log.child({ component: "triggers" }),
+    git,
+    log: triggersLog,
     now: () => new Date(),
   });
   const root = createRoot({
@@ -166,7 +174,7 @@ export const startServer = async ({
     pid: process.pid,
     version,
     startedAt: Date.now(),
-    git: createGit(execWithTimeout(CLONE_TIMEOUT_MS)),
+    git,
     checkCheckout,
     port: boundPort,
     domain,

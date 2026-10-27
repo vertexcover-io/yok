@@ -8,6 +8,7 @@ export {
   type ErrorBody,
   ErrorBodySchema,
   type ErrorCode,
+  folderSlug,
   homeEnvPath,
   logPath,
   type Project,

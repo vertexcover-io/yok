@@ -18,8 +18,8 @@ const tempHome = (): string => mkdtempSync(join(tmpdir(), "yok-triggers-"));
 
 const draft = (overrides: Partial<TriggerDraft> = {}): TriggerDraft => ({
   name: "daily-digest",
-  workflowPath: `/abs/repo/${overrides.name ?? "daily-digest"}.yaml`,
-  cwd: "/abs/repo",
+  project: "web",
+  workflow: `/abs/repo/${overrides.name ?? "daily-digest"}.yaml`,
   config: null,
   cron: "0 9 * * *",
   timezone: "UTC",
@@ -54,7 +54,7 @@ describe("createTriggerStore", () => {
     expect(file.triggers[saved.id]).toEqual(saved);
   });
 
-  test("saving the same repo and name again updates the schedule and keeps its id and createdAt", async () => {
+  test("saving the same project and name again updates the schedule and keeps its id and createdAt", async () => {
     const store = createTriggerStore(tempHome());
     const first = await saveOk(store, draft());
 
@@ -64,24 +64,30 @@ describe("createTriggerStore", () => {
     expect(second).toMatchObject({ id: first.id, createdAt: first.createdAt, cron: "0 18 * * *" });
   });
 
-  test("the same name in two repos is two triggers, and find picks by repo and name", async () => {
+  test("SC3001: the same name in projects web and api is two triggers, found by project and name, and removing web's leaves api's", async () => {
     const store = createTriggerStore(tempHome());
-    const a = await saveOk(store, draft());
-    const b = await saveOk(store, draft({ cwd: "/abs/other", workflowPath: "/abs/other/d.yaml" }));
+    const web = await saveOk(store, draft());
+    const api = await saveOk(store, draft({ project: "api", workflow: "/abs/other/d.yaml" }));
 
-    expect((await store.list()).map((t) => t.id).toSorted()).toEqual([a.id, b.id].toSorted());
-    expect(await store.find("/abs/other", "daily-digest")).toEqual(b);
-    expect(await store.find("/abs/nowhere", "daily-digest")).toBeUndefined();
+    expect((await store.list()).map((t) => t.id).toSorted()).toEqual([web.id, api.id].toSorted());
+    expect(await store.find("web", "daily-digest")).toEqual(web);
+    expect(await store.find("api", "daily-digest")).toEqual(api);
+    expect(await store.find("nowhere", "daily-digest")).toBeUndefined();
+
+    await store.remove(web.id);
+
+    expect(await store.list()).toEqual([api]);
+    expect(await store.find("api", "daily-digest")).toEqual(api);
   });
 
   test.each([
-    ["a second file under the same name", { workflowPath: "/abs/repo/copy.yaml" }],
+    ["a second workflow under the same name", { workflow: "/abs/repo/copy.yaml" }],
     [
       "the same file under another name",
-      { name: "renamed", workflowPath: "/abs/repo/daily-digest.yaml" },
+      { name: "renamed", workflow: "/abs/repo/daily-digest.yaml" },
     ],
   ])(
-    "saving %s is refused with the trigger it clashes with, and writes nothing",
+    "SC3002: saving %s in the same project is refused with the trigger it clashes with, and writes nothing",
     async (_label, clash) => {
       const store = createTriggerStore(tempHome());
       const first = await saveOk(store, draft());
@@ -98,7 +104,7 @@ describe("createTriggerStore", () => {
 
     const results = await Promise.all([
       store.save(draft()),
-      store.save(draft({ workflowPath: "/abs/repo/copy.yaml" })),
+      store.save(draft({ workflow: "/abs/repo/copy.yaml" })),
     ]);
 
     expect(results.map((r) => r.ok).toSorted()).toEqual([false, true]);
@@ -129,10 +135,10 @@ describe("createTriggerStore", () => {
 
     expect(await store.setNextFireAt(a, "2026-10-25T09:00:00.000Z")).toBe(true);
 
-    expect(await store.find(a.cwd, a.name)).toMatchObject({
+    expect(await store.find(a.project, a.name)).toMatchObject({
       nextFireAt: "2026-10-25T09:00:00.000Z",
     });
-    expect(await store.find(b.cwd, b.name)).toEqual(b);
+    expect(await store.find(b.project, b.name)).toEqual(b);
   });
 
   test("setNextFireAt on a trigger removed since, or whose cron changed since, reports false and writes nothing", async () => {
@@ -176,6 +182,44 @@ describe("createTriggerStore", () => {
     );
 
     expect(store.list()).rejects.toThrow();
+  });
+
+  test("SC3003: a main-era trigger with a cwd loads as legacy, and adopting it keeps its id, schedule and fire log", async () => {
+    const home = tempHome();
+    const legacy = {
+      id: "t-0000aaaa",
+      name: "nightly",
+      workflowPath: "/abs/repo/nightly.yaml",
+      cwd: "/abs/repo",
+      config: null,
+      cron: "0 2 * * *",
+      timezone: "Asia/Kolkata",
+      nextFireAt: "2026-10-24T20:30:00.000Z",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    };
+    const current = { ...draft(), id: "t-0000bbbb", createdAt: "2026-10-02T00:00:00.000Z" };
+    await writeFile(
+      triggersPath(home),
+      JSON.stringify({ version: 1, triggers: { [legacy.id]: legacy, [current.id]: current } }),
+    );
+    const store = createTriggerStore(home);
+    await store.appendFire(fire(legacy.id, "2026-10-22T20:30:00.000Z"));
+    await store.appendFire(fire(legacy.id, "2026-10-23T20:30:00.000Z"));
+
+    expect(await store.list()).toEqual([current]);
+    expect(await store.listLegacy()).toEqual([legacy]);
+
+    await store.adopt(legacy.id, "web");
+
+    const { cwd: _cwd, workflowPath, ...schedule } = legacy;
+    expect(await store.find("web", "nightly")).toEqual({
+      ...schedule,
+      project: "web",
+      workflow: workflowPath,
+    });
+    expect(await store.readFires(legacy.id, 20)).toHaveLength(2);
+    expect(await readFile(triggersPath(home), "utf8")).not.toContain('"cwd"');
+    expect(await store.listLegacy()).toEqual([]);
   });
 });
 

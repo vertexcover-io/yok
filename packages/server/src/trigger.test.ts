@@ -1,21 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Check, LaunchOptions } from "@yok/sdk";
-import { createGit, noopLogger, ok } from "@yok/sdk";
+import { createGit, fail, noopLogger, ok } from "@yok/sdk";
 import {
   createRegistry,
   createTriggerStore,
   type Trigger,
   type TriggerDraft,
   type TriggerStore,
+  triggerFiresPath,
+  triggersPath,
 } from "@yok/sdk/internal";
 import { createApi } from "./app.ts";
 import { fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
+import { findOrAddFolderProject, readProjects, writeProjects } from "./projects.ts";
 import { checkCheckoutWith } from "./server.ts";
 import {
+  adoptLegacyTriggers,
   dueSlot,
   fireTrigger,
   nextSlot,
@@ -139,11 +143,22 @@ const makeRepo = (workflow: string = DIGEST): string => {
   return cwd;
 };
 
-// A server's view of the world: a fresh home, a repo holding the workflow, and a provider that
-// records each launch instead of starting an agent.
+const registerProject = async (
+  home: string,
+  name: string,
+  project: Readonly<{ path: string; git?: string }>,
+): Promise<void> =>
+  writeProjects(home, {
+    ...(await readProjects(home)),
+    [name]: { ...project, addedBy: { channel: "cli" }, addedAt: "2026-10-23T00:00:00.000Z" },
+  });
+
+// A server's view of the world: a fresh home, a repo registered as project web holding the
+// workflow, and a provider that records each launch instead of starting an agent.
 const setup = async (workflow?: string) => {
   const cwd = makeRepo(workflow);
   const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
+  await registerProject(home, "web", { path: cwd });
   const launches: LaunchOptions[] = [];
   const store = createTriggerStore(home);
   const registry = createRegistry(join(home, "registry.json"));
@@ -161,6 +176,7 @@ const setup = async (workflow?: string) => {
     host: fakeHost("", alive).host,
     home,
     publicOrigin: "http://localhost:1",
+    git: createGit(),
     // the fake host and provider bring no runtime checks of their own
     checkCheckout: (input) => checkCheckoutWith([], input),
     log: noopLogger,
@@ -168,8 +184,8 @@ const setup = async (workflow?: string) => {
   });
   const trigger: Trigger = await saveOk(store, {
     name: "digest",
-    workflowPath: join(cwd, "digest.yaml"),
-    cwd,
+    project: "web",
+    workflow: join(cwd, "digest.yaml"),
     config: null,
     cron: "0 9 * * *",
     timezone: "UTC",
@@ -201,6 +217,69 @@ describe("tick", () => {
       });
       expect(fired?.runId).toMatch(/^r-/);
       expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC3007: a firing on cloned project web pulls first, launches with the block's acceptEdits and inputs, and saves interaction false from cli",
+    async () => {
+      const setupEnv = await setup();
+      const { home, store, registry, deps } = setupEnv;
+      await store.remove(setupEnv.trigger.id);
+      const cwd = join(realpathSync(home), "projects", "web");
+      mkdirSync(cwd, { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd });
+      writeFileSync(join(cwd, ".gitignore"), ".yok/\n");
+      writeFileSync(join(cwd, "orchestrate.config.json"), '{ "version": 2 }\n');
+      writeFileSync(
+        join(cwd, "digest.yaml"),
+        DIGEST.replace("  timezone: UTC", "  timezone: UTC\n  permissionMode: acceptEdits"),
+      );
+      await registerProject(home, "web", { path: cwd, git: "https://example.test/web.git" });
+      const trigger = await saveOk(store, {
+        name: "digest",
+        project: "web",
+        workflow: join(cwd, "digest.yaml"),
+        config: null,
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        nextFireAt: "2026-10-23T09:00:00.000Z",
+      });
+      const order: string[] = [];
+      const base = deps("2026-10-23T09:00:10.000Z");
+      const launched: LaunchOptions[] = [];
+
+      await tick({
+        ...base,
+        git: {
+          ...base.git,
+          pullFastForward: (path) => {
+            order.push(`pull ${path}`);
+            return Promise.resolve({ ok: true, value: null });
+          },
+        },
+        providerFor: (agent) =>
+          fakeProvider(agent, (options) => {
+            order.push("launch");
+            launched.push(options);
+            return Promise.resolve({
+              ok: true,
+              value: { terminalName: "s1", terminal: fakePane("s1") },
+            });
+          }),
+      });
+
+      expect(order).toEqual([`pull ${cwd}`, "launch"]);
+      expect(launched[0]?.permissionMode).toBe("acceptEdits");
+      expect(launched[0]?.prompt).toEndWith(
+        '--inputs {"prompt":"summarise yesterday"} --name digest-20261023-090000',
+      );
+      const [fired] = await store.readFires(trigger.id, 20);
+      expect(fired?.status).toBe("started");
+      const run = await registry.findRun(fired?.runId ?? "");
+      expect(run?.policies?.values.interaction).toBe(false);
+      expect(run?.policies?.sources.interaction).toBe("cli");
     },
     TIMEOUT_MS,
   );
@@ -249,11 +328,11 @@ describe("tick", () => {
   );
 
   test.each([
-    ["has completed fires its next slot", "completed" as const, 2],
-    ["is still running logs skipped for its next slot", "running" as const, 1],
+    ["has completed fires its next slot", "completed" as const, 2, "started" as const],
+    ["is still running logs skipped for its next slot", "running" as const, 1, "skipped" as const],
   ])(
-    "a trigger whose last run is named and %s, while its agent session stays open",
-    async (_label, status, launchCount) => {
+    "SC3015: a trigger whose last run is named and %s, while its agent session stays open",
+    async (_label, status, launchCount, outcome) => {
       const { cwd, store, registry, launches, deps, trigger } = await setup();
       await tick(deps("2026-10-23T09:00:10.000Z"));
       const [fired] = await store.readFires(trigger.id, 20);
@@ -268,6 +347,9 @@ describe("tick", () => {
       await tick(deps("2026-10-24T09:00:10.000Z"));
 
       expect(launches).toHaveLength(launchCount);
+      const last = (await store.readFires(trigger.id, 20)).at(-1);
+      expect(last?.status).toBe(outcome);
+      if (outcome === "skipped") expect(last?.reason).toBe("previous run still running");
     },
     TIMEOUT_MS,
   );
@@ -295,12 +377,13 @@ describe("tick", () => {
   ])(
     "when the first trigger's workflow file %s, it logs failed and the second trigger still fires",
     async (_label, broken, reason) => {
-      const { cwd, store, launches, deps, trigger } = await setup();
+      const { cwd, home, store, launches, deps, trigger } = await setup();
       const otherCwd = makeRepo();
+      await registerProject(home, "other", { path: otherCwd });
       const other = await saveOk(store, {
         ...trigger,
-        workflowPath: join(otherCwd, "digest.yaml"),
-        cwd: otherCwd,
+        project: "other",
+        workflow: join(otherCwd, "digest.yaml"),
       });
       writeFileSync(join(cwd, "digest.yaml"), broken);
 
@@ -316,20 +399,24 @@ describe("tick", () => {
   );
 
   test(
-    "a workflow whose doctor check fails logs failed with the check's reason and launches nothing",
+    "SC3008: a firing the doctor refuses logs failed with the BLOCKED verdict line and records no run",
     async () => {
-      const blocked = DIGEST.replace(
-        "nodes:",
-        "doctor:\n  - check: env\n    key: YOK_TRIGGER_UNSET_KEY\n    fix: set it\nnodes:",
-      );
-      const { store, launches, deps, trigger } = await setup(blocked);
+      const { store, registry, launches, deps, trigger } = await setup();
+      const base = deps("2026-10-23T09:00:10.000Z");
+      const failing: Check = {
+        name: "api-key",
+        fix: [],
+        run: async () => fail("YOK_TRIGGER_UNSET_KEY is not set"),
+      };
 
-      await tick(deps("2026-10-23T09:00:10.000Z"));
+      await tick({ ...base, checkCheckout: (input) => checkCheckoutWith([failing], input) });
 
       expect(launches).toHaveLength(0);
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired?.status).toBe("failed");
-      expect(fired?.reason).toContain("YOK_TRIGGER_UNSET_KEY");
+      expect(fired?.reason).toStartWith("BLOCKED");
+      expect(fired?.reason).toContain("api-key");
+      expect(await registry.listRuns()).toEqual([]);
     },
     TIMEOUT_MS,
   );
@@ -356,9 +443,9 @@ describe("tick", () => {
   );
 
   test(
-    "a trigger removed while its doctor runs logs skipped removed and launches nothing",
+    "SC3009: a trigger removed while its doctor runs logs skipped removed and records no run",
     async () => {
-      const { store, launches, deps, trigger } = await setup();
+      const { store, registry, launches, deps, trigger } = await setup();
       const base = deps("2026-10-23T09:00:10.000Z");
       const rmDuringDoctor: Check = {
         name: "rm lands here",
@@ -374,12 +461,13 @@ describe("tick", () => {
       expect(launches).toHaveLength(0);
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired).toMatchObject({ status: "skipped", reason: "removed" });
+      expect(await registry.listRuns()).toEqual([]);
     },
     TIMEOUT_MS,
   );
 
   test(
-    "after sleeping three days it logs one missed line, then fires today's slot once",
+    "SC3014: after sleeping three days it logs one missed line, then fires today's slot once",
     async () => {
       const { store, launches, deps, trigger } = await setup();
       await store.setNextFireAt(trigger, "2026-10-20T09:00:00.000Z");
@@ -392,12 +480,15 @@ describe("tick", () => {
         ["skipped", "2026-10-20T09:00:00.000Z"],
         ["started", "2026-10-23T09:00:00.000Z"],
       ]);
+      expect(fires[0]?.reason).toBe(
+        "missed: slept through the slots up to 2026-10-23T09:00:00.000Z",
+      );
     },
     TIMEOUT_MS,
   );
 
   test(
-    "a slot 7h old logs skipped too late and launches nothing, and the trigger waits for tomorrow",
+    "SC3013: a slot 7h old logs skipped too late and launches nothing, and the trigger waits for tomorrow",
     async () => {
       const { store, launches, deps, trigger } = await setup();
 
@@ -406,7 +497,7 @@ describe("tick", () => {
       expect(launches).toHaveLength(0);
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired).toMatchObject({ status: "skipped", slot: "2026-10-23T09:00:00.000Z" });
-      expect(fired?.reason).toContain("too late");
+      expect(fired?.reason).toBe("too late: more than 6h past its slot");
       expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
     },
     TIMEOUT_MS,
@@ -421,19 +512,13 @@ describe("scheduler", () => {
       const now = new Date();
       await store.save({ ...trigger, cron: "* * * * *", nextFireAt: now.toISOString() });
       const { now: _now, ...scheduled } = deps(now.toISOString());
-      const app = createApi({
-        ...scheduled,
-        pid: 1,
-        version: "0.0.0-test",
-        startedAt: 0,
-        git: createGit(),
-      });
+      const app = createApi({ ...scheduled, pid: 1, version: "0.0.0-test", startedAt: 0 });
 
       startScheduler(deps(now.toISOString()));
       const reply = await app.request("/triggers/fire", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cwd: trigger.cwd, name: "digest" }),
+        body: JSON.stringify({ project: trigger.project, name: "digest" }),
       });
       await stopScheduler();
 
@@ -449,13 +534,7 @@ describe("/triggers routes", () => {
     const env = await setup(workflow);
     await env.store.remove(env.trigger.id);
     const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
-    const app = createApi({
-      ...deps,
-      pid: 1,
-      version: "0.0.0-test",
-      startedAt: 0,
-      git: createGit(),
-    });
+    const app = createApi({ ...deps, pid: 1, version: "0.0.0-test", startedAt: 0 });
     const call = (method: string, path: string, body?: unknown) =>
       app.request(path, {
         method,
@@ -470,16 +549,23 @@ describe("/triggers routes", () => {
     async () => {
       const { cwd, call } = await appFor();
       const workflowPath = join(cwd, "digest.yaml");
+      const body = { project: "web", workflow: "digest.yaml" };
 
-      const first = await call("POST", "/triggers", { workflowPath, cwd });
+      const first = await call("POST", "/triggers", body);
       expect(first.status).toBe(201);
       const { trigger } = (await first.json()) as { trigger: Trigger };
-      expect(trigger).toMatchObject({ name: "digest", cron: "0 9 * * *", timezone: "UTC", cwd });
+      expect(trigger).toMatchObject({
+        name: "digest",
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        project: "web",
+      });
+      expect(trigger.workflow).toBe(workflowPath);
       expect(trigger.nextFireAt).toMatch(/T09:00:00\.000Z$/);
       expect(new Date(trigger.nextFireAt).getTime()).toBeGreaterThan(Date.now());
 
       writeFileSync(workflowPath, DIGEST.replace('"0 9 * * *"', '"0 18 * * *"'));
-      const again = (await (await call("POST", "/triggers", { workflowPath, cwd })).json()) as {
+      const again = (await (await call("POST", "/triggers", body)).json()) as {
         trigger: Trigger;
       };
       expect(again.trigger).toMatchObject({ id: trigger.id, cron: "0 18 * * *" });
@@ -498,15 +584,15 @@ describe("/triggers routes", () => {
     "add of %s is 409 and leaves the first trigger as it was",
     async (_label, file, workflow) => {
       const { cwd, store, call } = await appFor();
-      await call("POST", "/triggers", { workflowPath: join(cwd, "digest.yaml"), cwd });
+      await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
       const before = await store.list();
 
       writeFileSync(join(cwd, file), workflow);
-      const res = await call("POST", "/triggers", { workflowPath: join(cwd, file), cwd });
+      const res = await call("POST", "/triggers", { project: "web", workflow: file });
 
       expect(res.status).toBe(409);
       expect(((await res.json()) as { error: { message: string } }).error.message).toContain(
-        "yok trigger rm digest",
+        "yok trigger rm digest --project web",
       );
       expect(await store.list()).toEqual(before);
     },
@@ -521,9 +607,9 @@ describe("/triggers routes", () => {
       "input: trigger.inputs.prompt",
     ],
   ])("add with %s is 400 and stores nothing", async (_label, workflow, message) => {
-    const { cwd, store, call } = await appFor(workflow);
+    const { store, call } = await appFor(workflow);
 
-    const res = await call("POST", "/triggers", { workflowPath: join(cwd, "digest.yaml"), cwd });
+    const res = await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
 
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: { message: string } }).error.message).toContain(message);
@@ -531,12 +617,16 @@ describe("/triggers routes", () => {
   });
 
   test(
-    "fire runs the trigger now, list shows that firing as its last, log returns it, and rm removes it",
+    "SC3005: a trigger added to project web is listed, fired in web's folder, logged and removed by project and name",
     async () => {
-      const { cwd, launches, call } = await appFor();
-      await call("POST", "/triggers", { workflowPath: join(cwd, "digest.yaml"), cwd });
+      const { cwd, registry, launches, call } = await appFor();
 
-      const fired = await call("POST", "/triggers/fire", { cwd, name: "digest" });
+      const added = await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
+      expect(added.status).toBe(201);
+      const { trigger } = (await added.json()) as { trigger: Trigger };
+      expect(trigger).toMatchObject({ project: "web", workflow: join(cwd, "digest.yaml") });
+
+      const fired = await call("POST", "/triggers/fire", { project: "web", name: "digest" });
       expect(fired.status).toBe(200);
       const { fire } = (await fired.json()) as {
         fire: { status: string; runId: string; runName: string };
@@ -545,23 +635,63 @@ describe("/triggers routes", () => {
       // to the second, so a second fire in the same minute does not reuse the run's folder
       expect(fire.runName).toMatch(/^digest-\d{8}-\d{6}$/);
       expect(launches).toHaveLength(1);
+      expect((await registry.findRun(fire.runId))?.cwd).toBe(cwd);
 
       const listed = (await (await call("GET", "/triggers")).json()) as {
-        triggers: { name: string; lastFire: { runId: string } | null }[];
+        triggers: { name: string; project: string; lastFire: { runId: string } | null }[];
       };
-      expect(listed.triggers.map((t) => [t.name, t.lastFire?.runId])).toEqual([
-        ["digest", fire.runId],
+      expect(listed.triggers.map((t) => [t.name, t.project, t.lastFire?.runId])).toEqual([
+        ["digest", "web", fire.runId],
       ]);
 
-      const query = `cwd=${encodeURIComponent(cwd)}&name=digest`;
+      const query = "project=web&name=digest";
       const log = (await (await call("GET", `/triggers/log?${query}`)).json()) as {
         fires: { runId: string }[];
       };
       expect(log.fires.map((f) => f.runId)).toEqual([fire.runId]);
 
       expect((await call("DELETE", `/triggers?${query}`)).status).toBe(200);
-      expect((await call("DELETE", `/triggers?${query}`)).status).toBe(404);
+      const gone = await call("GET", `/triggers/log?${query}`);
+      expect(gone.status).toBe(404);
+      const { error } = (await gone.json()) as { error: { message: string } };
+      expect(error.message).toContain("digest");
+      expect(error.message).toContain("project web");
       expect((await (await call("GET", "/triggers")).json()) as unknown).toEqual({ triggers: [] });
+    },
+    TIMEOUT_MS,
+  );
+
+  test("SC3006: adding a trigger to unknown project mobile is 400 naming the known project web, and stores nothing", async () => {
+    const { call } = await appFor();
+
+    const res = await call("POST", "/triggers", { project: "mobile", workflow: "digest.yaml" });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toContain("web");
+    expect((await (await call("GET", "/triggers")).json()) as unknown).toEqual({ triggers: [] });
+  });
+
+  test(
+    "SC3010: removing project web while it has triggers digest and nightly is 409 naming both; api and then a trigger-less web remove",
+    async () => {
+      const { cwd, home, call } = await appFor();
+      writeFileSync(join(cwd, "nightly.yaml"), DIGEST.replace("name: digest", "name: nightly"));
+      await registerProject(home, "api", { path: makeRepo() });
+      await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
+      await call("POST", "/triggers", { project: "web", workflow: "nightly.yaml" });
+
+      const refused = await call("DELETE", "/projects/web");
+      expect(refused.status).toBe(409);
+      const { error } = (await refused.json()) as { error: { message: string } };
+      expect(error.message).toContain("digest");
+      expect(error.message).toContain("nightly");
+      expect(Object.keys(await readProjects(home))).toContain("web");
+
+      expect((await call("DELETE", "/projects/api")).status).toBe(200);
+
+      await call("DELETE", "/triggers?project=web&name=digest");
+      await call("DELETE", "/triggers?project=web&name=nightly");
+      expect((await call("DELETE", "/projects/web")).status).toBe(200);
     },
     TIMEOUT_MS,
   );
@@ -569,12 +699,12 @@ describe("/triggers routes", () => {
   test(
     "two fires of one trigger sent at once launch one run, and the other logs skipped",
     async () => {
-      const { cwd, launches, call } = await appFor();
-      await call("POST", "/triggers", { workflowPath: join(cwd, "digest.yaml"), cwd });
+      const { launches, call } = await appFor();
+      await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
 
       const replies = await Promise.all([
-        call("POST", "/triggers/fire", { cwd, name: "digest" }),
-        call("POST", "/triggers/fire", { cwd, name: "digest" }),
+        call("POST", "/triggers/fire", { project: "web", name: "digest" }),
+        call("POST", "/triggers/fire", { project: "web", name: "digest" }),
       ]);
 
       expect(launches).toHaveLength(1);
@@ -586,15 +716,152 @@ describe("/triggers routes", () => {
     TIMEOUT_MS,
   );
 
-  test("fire for a name the repo has no trigger under is 404", async () => {
-    const { cwd, call } = await appFor();
-    expect((await call("POST", "/triggers/fire", { cwd, name: "nope" })).status).toBe(404);
+  test("fire for a name the project has no trigger under is 404", async () => {
+    const { call } = await appFor();
+    const res = await call("POST", "/triggers/fire", { project: "web", name: "nope" });
+    expect(res.status).toBe(404);
   });
 
   test("add for a workflow file that is gone is 400", async () => {
     const { cwd, call } = await appFor();
     rmSync(join(cwd, "digest.yaml"));
-    const res = await call("POST", "/triggers", { workflowPath: join(cwd, "digest.yaml"), cwd });
+    const res = await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("findOrAddFolderProject", () => {
+  test.each([
+    ["the project already at the folder", { web: "/c/web" }, "/c/web", "web", {}],
+    [
+      "a new project named the way yok run names the folder",
+      {},
+      "/c/Nightly_Jobs",
+      "nightly-jobs",
+      { "nightly-jobs": "/c/Nightly_Jobs" },
+    ],
+    [
+      "web-2 when web names another folder",
+      { web: "/other/web" },
+      "/c/web",
+      "web-2",
+      { "web-2": "/c/web" },
+    ],
+    [
+      "project-2024 for a digit-first folder",
+      {},
+      "/c/2024",
+      "project-2024",
+      { "project-2024": "/c/2024" },
+    ],
+    ["a missing folder, added all the same", {}, "/c/gone", "gone", { gone: "/c/gone" }],
+  ])(
+    "SC3004: findOrAddFolderProject returns %s",
+    async (_label, before, folder, expected, added) => {
+      const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
+      for (const [name, path] of Object.entries(before))
+        await registerProject(home, name, { path });
+      const original = await readProjects(home);
+
+      expect(await findOrAddFolderProject(home, folder)).toBe(expected);
+
+      const after = await readProjects(home);
+      expect(Object.keys(after).toSorted()).toEqual(
+        [...Object.keys(original), ...Object.keys(added)].toSorted(),
+      );
+      for (const [name, path] of Object.entries(added)) {
+        expect(after[name]).toMatchObject({ path, addedBy: { channel: "server" } });
+      }
+    },
+  );
+});
+
+describe("adoptLegacyTriggers", () => {
+  // A trigger as main saved it: named by its folder, with no project.
+  const legacyTrigger = (id: string, name: string, cwd: string) => ({
+    id,
+    name,
+    workflowPath: join(cwd, `${name}.yaml`),
+    cwd,
+    config: null,
+    cron: "0 9 * * *",
+    timezone: "UTC",
+    nextFireAt: "2026-10-23T09:00:00.000Z",
+    createdAt: "2026-10-01T00:00:00.000Z",
+  });
+
+  const writeLegacy = (home: string, triggers: readonly ReturnType<typeof legacyTrigger>[]) =>
+    writeFileSync(
+      triggersPath(home),
+      JSON.stringify({ version: 1, triggers: Object.fromEntries(triggers.map((t) => [t.id, t])) }),
+    );
+
+  test(
+    "SC3011: a main-era digest trigger whose cwd is web's folder moves to web with its id, slot and fire log, and fires",
+    async () => {
+      const env = await setup();
+      await env.store.remove(env.trigger.id);
+      const legacy = legacyTrigger("t-0000aaaa", "digest", env.cwd);
+      writeLegacy(env.home, [legacy]);
+      const oldFire = {
+        triggerId: legacy.id,
+        slot: "2026-10-22T09:00:00.000Z",
+        status: "started",
+        at: "2026-10-22T09:00:01.000Z",
+      };
+      writeFileSync(triggerFiresPath(env.home), `${JSON.stringify(oldFire)}\n`);
+      const projectsBefore = await readProjects(env.home);
+
+      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
+
+      const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
+      const app = createApi({ ...deps, pid: 1, version: "0.0.0-test", startedAt: 0 });
+      const listed = (await (await app.request("/triggers")).json()) as { triggers: Trigger[] };
+      expect(listed.triggers).toMatchObject([
+        { id: legacy.id, name: "digest", project: "web", nextFireAt: legacy.nextFireAt },
+      ]);
+      const log = (await (await app.request("/triggers/log?project=web&name=digest")).json()) as {
+        fires: unknown[];
+      };
+      expect(log.fires).toEqual([oldFire]);
+      expect(await readProjects(env.home)).toEqual(projectsBefore);
+      const fired = await app.request("/triggers/fire", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: "web", name: "digest" }),
+      });
+      expect(((await fired.json()) as { fire: { status: string } }).fire.status).toBe("started");
+    },
+    TIMEOUT_MS,
+  );
+
+  test("SC3012: two main-era triggers in folder Nightly_Jobs, which no project names, share one new project nightly-jobs, and a second adoption changes nothing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
+    const folder = join(realpathSync(mkdtempSync(join(tmpdir(), "yok-trigger-"))), "Nightly_Jobs");
+    mkdirSync(folder);
+    writeLegacy(home, [
+      legacyTrigger("t-0000aaaa", "digest", folder),
+      legacyTrigger("t-0000bbbb", "nightly", folder),
+    ]);
+    const store = createTriggerStore(home);
+
+    await adoptLegacyTriggers(home, { triggers: store, log: noopLogger });
+
+    const projects = await readProjects(home);
+    expect(Object.keys(projects)).toEqual(["nightly-jobs"]);
+    expect(projects["nightly-jobs"]).toMatchObject({
+      path: folder,
+      addedBy: { channel: "server" },
+    });
+    expect((await store.list()).map((t) => [t.name, t.project]).toSorted()).toEqual([
+      ["digest", "nightly-jobs"],
+      ["nightly", "nightly-jobs"],
+    ]);
+    const triggersBefore = readFileSync(triggersPath(home), "utf8");
+
+    await adoptLegacyTriggers(home, { triggers: store, log: noopLogger });
+
+    expect(await readProjects(home)).toEqual(projects);
+    expect(readFileSync(triggersPath(home), "utf8")).toBe(triggersBefore);
   });
 });

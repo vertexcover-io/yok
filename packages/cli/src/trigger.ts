@@ -1,15 +1,24 @@
 import { resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
-import { findWorkflowPath } from "@yok/core";
+import { isWorkflowFile, unwrap } from "@yok/core";
 import { createGit } from "@yok/sdk";
 import type { Fire } from "@yok/sdk/internal";
+import type { YokClient } from "@yok/server/client";
 import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
+import { pickProjectName, projectAt } from "./run.ts";
 
-// A trigger belongs to the repo it was added from, and its runs start at that repo's root.
-const repoRootOrFail = async (): Promise<string | null> => {
+// --project names the trigger's project; without it, the project of the checkout this runs in.
+// A lookup never adds a project: only `add` does.
+const resolveTriggerProject = async (
+  client: YokClient,
+  project: string | undefined,
+): Promise<string> => {
+  if (project !== undefined) return project;
   const root = await createGit().repoRoot(process.cwd());
-  if (root === null) fail("not inside a git repository");
-  return root;
+  if (root === null) throw new Error("not inside a git repository; pass --project NAME");
+  const known = unwrap(await projectAt(client, root));
+  if (known === null) throw new Error(`${root} is not a project; pass --project NAME`);
+  return known;
 };
 
 const describeFire = (fire: Fire): string =>
@@ -28,21 +37,25 @@ export const triggerCommand = () => {
 
   trigger
     .command("add")
-    .argument("<workflow>", "workflow file with a trigger: block")
+    .argument("<workflow>", "shipped workflow name, or workflow file with a trigger: block")
+    .option("--project <name>", "project the runs start in (default: this checkout, added if new)")
     .option("--config <file>", "orchestrate config file the runs read (default: the checkout's)")
     .description("Register the workflow's trigger, or update it if already registered")
     .action(async (workflowArg, opts) => {
-      const cwd = await repoRootOrFail();
-      if (cwd === null) return;
       await ensureServer();
-      const result = await yokClient().addTrigger({
-        workflowPath: findWorkflowPath(workflowArg, process.cwd()),
-        cwd,
-        ...(opts.config === undefined ? {} : { config: resolve(process.cwd(), opts.config) }),
+      const client = yokClient();
+      const cwd = process.cwd();
+      const root = opts.project === undefined ? await createGit().repoRoot(cwd) : null;
+      const project = unwrap(await pickProjectName(client, opts.project, root));
+      // A file goes absolute, as `yok run` sends it: the server resolves against the project root.
+      const result = await client.addTrigger({
+        project,
+        workflow: isWorkflowFile(workflowArg) ? resolve(cwd, workflowArg) : workflowArg,
+        ...(opts.config === undefined ? {} : { config: resolve(cwd, opts.config) }),
       });
       if (!result.ok) return fail(apiErrorText(result.error));
       const { name, cron, timezone, nextFireAt } = result.value.trigger;
-      console.log(`${name}: ${cron} (${timezone}), next fire ${nextFireAt}`);
+      console.log(`${name} in ${project}: ${cron} (${timezone}), next fire ${nextFireAt}`);
     });
 
   trigger
@@ -56,7 +69,7 @@ export const triggerCommand = () => {
         const last =
           t.lastFire === null ? "never fired" : `last ${t.lastFire.status} ${t.lastFire.at}`;
         console.log(
-          `${t.name}  ${t.cron} (${t.timezone})  next ${t.nextFireAt}  ${last}  ${t.cwd}`,
+          `${t.name}  ${t.project}  ${t.cron} (${t.timezone})  next ${t.nextFireAt}  ${last}`,
         );
       }
     });
@@ -64,12 +77,13 @@ export const triggerCommand = () => {
   trigger
     .command("fire")
     .argument("<name>", "trigger name: the workflow's name")
+    .option("--project <name>", "the trigger's project (default: this checkout's)")
     .description("Fire the trigger now, as its schedule would")
-    .action(async (name) => {
-      const cwd = await repoRootOrFail();
-      if (cwd === null) return;
+    .action(async (name, opts) => {
       await ensureServer();
-      const result = await yokClient().fireTrigger({ cwd, name });
+      const client = yokClient();
+      const project = await resolveTriggerProject(client, opts.project);
+      const result = await client.fireTrigger({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
       const { fire } = result.value;
       if (fire.status === "failed") return fail(describeFire(fire));
@@ -79,12 +93,13 @@ export const triggerCommand = () => {
   trigger
     .command("log")
     .argument("<name>", "trigger name: the workflow's name")
+    .option("--project <name>", "the trigger's project (default: this checkout's)")
     .description("Show the trigger's last 20 firings")
-    .action(async (name) => {
-      const cwd = await repoRootOrFail();
-      if (cwd === null) return;
+    .action(async (name, opts) => {
       await ensureServer();
-      const result = await yokClient().triggerLog({ cwd, name });
+      const client = yokClient();
+      const project = await resolveTriggerProject(client, opts.project);
+      const result = await client.triggerLog({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
       for (const fire of result.value.fires) console.log(describeFire(fire));
     });
@@ -92,14 +107,15 @@ export const triggerCommand = () => {
   trigger
     .command("rm")
     .argument("<name>", "trigger name: the workflow's name")
+    .option("--project <name>", "the trigger's project (default: this checkout's)")
     .description("Stop firing the trigger")
-    .action(async (name) => {
-      const cwd = await repoRootOrFail();
-      if (cwd === null) return;
+    .action(async (name, opts) => {
       await ensureServer();
-      const result = await yokClient().removeTrigger({ cwd, name });
+      const client = yokClient();
+      const project = await resolveTriggerProject(client, opts.project);
+      const result = await client.removeTrigger({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
-      console.log(`removed ${name}`);
+      console.log(`removed ${name} from ${project}`);
     });
 
   return trigger;

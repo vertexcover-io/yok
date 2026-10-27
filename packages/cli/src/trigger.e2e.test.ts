@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -43,8 +44,10 @@ const DIGEST = [
   "",
 ].join("\n");
 
-const makeRepo = (): string => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "yok-trigger-e2e-repo-")));
+// A checkout in a folder named NAME, so the project yok names after it is predictable.
+const makeRepo = (name = "repo"): string => {
+  const dir = join(realpathSync(mkdtempSync(join(tmpdir(), "yok-trigger-e2e-"))), name);
+  mkdirSync(dir);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir });
   git("init", "-q", "-b", "main");
   writeFileSync(join(dir, ".gitignore"), ".yok/\n");
@@ -76,7 +79,7 @@ const makeEnv = () => {
     spawnSync("tmux", ["-L", socket, "kill-server"]);
     rmSync(home, { recursive: true, force: true });
   });
-  return { home, fakeOut, env };
+  return { home, fakeOut, env, socket };
 };
 
 const yok = (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) => {
@@ -105,18 +108,22 @@ const waitFor = (predicate: () => boolean, timeoutMs = 10_000): void => {
 
 describe("yok trigger", () => {
   test(
-    "add, list, fire, log and rm a trigger: fire starts the agent in auto with the trigger's inputs",
+    "SC3016: add in checkout digest-repo makes it a project; list, fire from the checkout; log and rm from outside need --project",
     () => {
-      const repo = makeRepo();
+      const repo = makeRepo("digest-repo");
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), "yok-trigger-e2e-outside-")));
       const { env, fakeOut } = makeEnv();
 
       const added = yok(repo, env, "trigger", "add", "digest.yaml");
       expect(added.code).toBe(0);
-      expect(added.stdout).toContain("digest: 0 9 * * * (UTC), next fire ");
+      expect(added.stdout).toContain("digest in digest-repo: 0 9 * * * (UTC), next fire ");
+      expect(yok(repo, env, "project", "list").stdout).toMatch(
+        new RegExp(`digest-repo\\s+ready\\s+${repo}`),
+      );
 
       const listed = yok(repo, env, "trigger", "list");
       expect(listed.code).toBe(0);
-      expect(listed.stdout).toContain("digest");
+      expect(listed.stdout).toContain("digest  digest-repo");
       expect(listed.stdout).toContain("never fired");
 
       const fired = yok(repo, env, "trigger", "fire", "digest");
@@ -129,37 +136,56 @@ describe("yok trigger", () => {
       expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("auto");
       expect(argv.at(-1)).toContain('--inputs {"prompt":"summarise yesterday"} --name digest-');
 
-      const log = yok(repo, env, "trigger", "log", "digest");
+      const lost = yok(outside, env, "trigger", "log", "digest");
+      expect(lost.code).not.toBe(0);
+      expect(lost.stderr).toContain("pass --project NAME");
+
+      const log = yok(outside, env, "trigger", "log", "digest", "--project", "digest-repo");
       expect(log.code).toBe(0);
-      expect(log.stdout).toContain(`started`);
+      expect(log.stdout).toContain("started");
       expect(log.stdout).toContain(String(runId));
 
-      expect(yok(repo, env, "trigger", "rm", "digest").code).toBe(0);
+      expect(yok(outside, env, "trigger", "rm", "digest", "--project", "digest-repo").code).toBe(0);
       expect(yok(repo, env, "trigger", "list").stdout).not.toContain("digest");
-      expect(yok(repo, env, "trigger", "fire", "digest").code).not.toBe(0);
     },
     TIMEOUT_MS,
   );
 
   test(
-    "a server that starts with a trigger already due fires it with nobody asking",
+    "SC3017: a server started over a main-era triggers.json moves its due trigger to the checkout's project, fires it, and refuses to remove that project",
     () => {
-      const repo = makeRepo();
-      const { env, home, fakeOut } = makeEnv();
-      expect(yok(repo, env, "trigger", "add", "digest.yaml").code).toBe(0);
+      const repo = makeRepo("nightly");
+      const { env, home, fakeOut, socket } = makeEnv();
+      expect(yok(repo, env, "project", "add").code).toBe(0);
       yok(repo, env, "server", "stop");
-      const path = join(home, "triggers.json");
-      const file = JSON.parse(readFileSync(path, "utf8")) as {
-        triggers: Record<string, { nextFireAt: string }>;
+      const legacy = {
+        id: "t-0000aaaa",
+        name: "digest",
+        workflowPath: join(repo, "digest.yaml"),
+        cwd: repo,
+        config: null,
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        nextFireAt: new Date(Date.now() - 60_000).toISOString(),
+        createdAt: "2026-10-01T00:00:00.000Z",
       };
-      const minuteAgo = new Date(Date.now() - 60_000).toISOString();
-      for (const trigger of Object.values(file.triggers)) trigger.nextFireAt = minuteAgo;
-      writeFileSync(path, JSON.stringify(file));
+      writeFileSync(
+        join(home, "triggers.json"),
+        JSON.stringify({ version: 1, triggers: { [legacy.id]: legacy } }),
+      );
 
-      expect(yok(repo, env, "trigger", "list").code).toBe(0);
+      const listed = yok(repo, env, "trigger", "list");
+      expect(listed.code).toBe(0);
+      expect(listed.stdout).toContain("digest  nightly");
 
       waitFor(() => launches(fakeOut).length === 1);
       waitFor(() => yok(repo, env, "trigger", "log", "digest").stdout.includes("started"));
+
+      // The run's session ends first, so the trigger is all that holds the project.
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+      const removed = yok(repo, env, "project", "remove", "nightly");
+      expect(removed.code).not.toBe(0);
+      expect(removed.stderr).toContain("digest");
     },
     TIMEOUT_MS,
   );

@@ -21,4 +21,4 @@ Chosen: the server's tick, because it keeps one store on every platform and the 
 
 ## Consequences
 
-Triggers fire only while the server is up; keeping it up across reboots is a separate step. A webhook trigger should reuse the store, the fire log and `launchRun` rather than add a second launcher.
+Triggers fire only while the server is up; keeping it up across reboots is a separate step. A trigger is stored under `{project, name}`, and a firing starts its run through `startProjectRun`, the start-up path `POST /api/runs` takes, so it gets the pull on a cloned project, the doctor and the policy merge, with `interaction: false`. A webhook trigger should reuse the store, the fire log and `startProjectRun` rather than add a second launcher.

@@ -241,7 +241,7 @@ export type StartExtra = Readonly<{
 
 // Checked before compiling, so a mistyped shipped workflow is not a compile error about a
 // file under the plugin folder.
-const compileWorkflow = async (
+export const compileWorkflow = async (
   workflow: string,
   cwd: string,
   config: string | null,
