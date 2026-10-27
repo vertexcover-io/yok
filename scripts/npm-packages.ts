@@ -12,6 +12,7 @@ export const PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm6
 
 const SCOPE = "@vertexcover"
 const LAUNCHER = fileURLToPath(new URL("npm-launcher.cjs", import.meta.url))
+const REMOTE_LAUNCHER = fileURLToPath(new URL("npm-launcher-remote.cjs", import.meta.url))
 
 const common = {
   license: "UNLICENSED",
@@ -42,14 +43,18 @@ const writePlatform = (dist: string, version: string, out: string, platform: str
 const writeLauncher = (version: string, out: string): void => {
   const dir = join(out, "yok")
   mkdirSync(join(dir, "bin"), { recursive: true })
-  copyFileSync(LAUNCHER, join(dir, "bin", "yok.js"))
-  chmodSync(join(dir, "bin", "yok.js"), 0o755)
+  // yok-remote.js loads yok.js from beside it, so the two always ship together.
+  const launchers = [[LAUNCHER, "yok.js"], [REMOTE_LAUNCHER, "yok-remote.js"]] as const
+  for (const [source, name] of launchers) {
+    copyFileSync(source, join(dir, "bin", name))
+    chmodSync(join(dir, "bin", name), 0o755)
+  }
   writeJson(join(dir, "package.json"), {
     name: `${SCOPE}/yok`,
     version,
     description: "Run coding agents through a workflow, from ticket to PR",
     ...common,
-    bin: { yok: "bin/yok.js" },
+    bin: { yok: "bin/yok.js", "yok-remote": "bin/yok-remote.js" },
     files: ["bin"],
     optionalDependencies: Object.fromEntries(PLATFORMS.map((p) => [`${SCOPE}/yok-${p}`, version])),
   })

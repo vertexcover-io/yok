@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { isWorkflowFile, unwrap } from "@yok/core";
 import { createGit } from "@yok/sdk";
-import type { Fire } from "@yok/sdk/internal";
+import type { Fire, Trigger } from "@yok/sdk/internal";
 import type { YokClient } from "@yok/server/client";
 import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
 import { pickProjectName, projectAt } from "./run.ts";
@@ -21,7 +21,7 @@ const resolveTriggerProject = async (
   return known;
 };
 
-const describeFire = (fire: Fire): string =>
+export const describeFire = (fire: Fire): string =>
   [
     fire.at,
     fire.status,
@@ -29,6 +29,20 @@ const describeFire = (fire: Fire): string =>
     ...(fire.runId === undefined ? [] : [`run ${fire.runId} (${fire.runName ?? "unnamed"})`]),
     ...(fire.reason === undefined ? [] : [fire.reason]),
   ].join("  ");
+
+type Schedule = Pick<Trigger, "name" | "project" | "cron" | "timezone" | "nextFireAt">;
+
+export const describeSchedule = (trigger: Schedule): string => {
+  const { name, project, cron, timezone, nextFireAt } = trigger;
+  return `${name} in ${project}: ${cron} (${timezone}), next fire ${nextFireAt}`;
+};
+
+type ListedTrigger = Schedule & Readonly<{ lastFire: Pick<Fire, "status" | "at"> | null }>;
+
+export const describeTrigger = (t: ListedTrigger): string => {
+  const last = t.lastFire === null ? "never fired" : `last ${t.lastFire.status} ${t.lastFire.at}`;
+  return `${t.name}  ${t.project}  ${t.cron} (${t.timezone})  next ${t.nextFireAt}  ${last}`;
+};
 
 export const triggerCommand = () => {
   const trigger = new Command("trigger").description(
@@ -54,8 +68,7 @@ export const triggerCommand = () => {
         ...(opts.config === undefined ? {} : { config: resolve(cwd, opts.config) }),
       });
       if (!result.ok) return fail(apiErrorText(result.error));
-      const { name, cron, timezone, nextFireAt } = result.value.trigger;
-      console.log(`${name} in ${project}: ${cron} (${timezone}), next fire ${nextFireAt}`);
+      console.log(describeSchedule(result.value.trigger));
     });
 
   trigger
@@ -65,13 +78,7 @@ export const triggerCommand = () => {
       await ensureServer();
       const result = await yokClient().listTriggers();
       if (!result.ok) return fail(apiErrorText(result.error));
-      for (const t of result.value.triggers) {
-        const last =
-          t.lastFire === null ? "never fired" : `last ${t.lastFire.status} ${t.lastFire.at}`;
-        console.log(
-          `${t.name}  ${t.project}  ${t.cron} (${t.timezone})  next ${t.nextFireAt}  ${last}`,
-        );
-      }
+      for (const t of result.value.triggers) console.log(describeTrigger(t));
     });
 
   trigger

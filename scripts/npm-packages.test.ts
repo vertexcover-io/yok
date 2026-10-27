@@ -36,7 +36,7 @@ describe("writeNpmPackages", () => {
 
     const main = readJson(join(out, "yok", "package.json"))
     assert.equal(main.name, "@vertexcover/yok")
-    assert.deepEqual(main.bin, { yok: "bin/yok.js" })
+    assert.deepEqual(main.bin, { yok: "bin/yok.js", "yok-remote": "bin/yok-remote.js" })
     assert.deepEqual(
       main.optionalDependencies,
       Object.fromEntries(PLATFORMS.map((p) => [`@vertexcover/yok-${p}`, "1.2.3-rc.1"])),
@@ -66,7 +66,7 @@ describe("writeNpmPackages", () => {
 
 describe("the launcher", () => {
   // Lays the packages out the way npm installs them, then runs the launcher with node.
-  const installed = (exit: string) => {
+  const installed = (exit: string, bin = "yok.js") => {
     const out = temp("yok-npm-")
     writeNpmPackages(fakeDist(), "1.2.3", out)
     const scope = join(temp("yok-prefix-"), "node_modules", "@vertexcover")
@@ -75,7 +75,7 @@ describe("the launcher", () => {
     cpSync(join(out, "yok"), join(scope, "yok"), { recursive: true })
     cpSync(join(out, `yok-${platform}`), join(scope, `yok-${platform}`), { recursive: true })
     chmodSync(join(scope, `yok-${platform}`, "bin", "yok"), 0o755)
-    return spawnSync("node", [join(scope, "yok", "bin", "yok.js"), "run", "--flag"], {
+    return spawnSync("node", [join(scope, "yok", "bin", bin), "run", "--flag"], {
       encoding: "utf8",
       env: { ...process.env, YOK_EXIT: exit },
     })
@@ -89,6 +89,13 @@ describe("the launcher", () => {
 
   test("exits with the binary's exit code", () => {
     assert.equal(installed("3").status, 3)
+  })
+
+  test("SC4016: yok-remote runs this platform's binary with remote in front, and passes its exit code through", () => {
+    const result = installed("0", "yok-remote.js")
+    assert.equal(result.stdout, `${process.platform}-${process.arch} remote run --flag\n`)
+    assert.equal(result.status, 0)
+    assert.equal(installed("3", "yok-remote.js").status, 3)
   })
 
   test("names the missing package when npm skipped this platform's binary", () => {

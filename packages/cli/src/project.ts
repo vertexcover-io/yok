@@ -6,7 +6,7 @@ import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
 
 const HEADERS = ["NAME", "STATUS", "PATH", "ADDED BY"] as const;
 
-const renderProjects = (projects: readonly ProjectView[]): string => {
+export const renderProjects = (projects: readonly ProjectView[]): string => {
   const rows = projects.map((p) => [p.name, p.status, p.path, p.addedBy.name ?? p.addedBy.channel]);
   const widths = HEADERS.map((header, column) =>
     Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),

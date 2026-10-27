@@ -1206,3 +1206,436 @@ describe("remote settings", () => {
     TIMEOUT_MS,
   );
 });
+
+const REMOTE_PASSWORD = `p#ss'w"rd`;
+const REMOTE_BASIC = `Basic ${Buffer.from(`ritesh:${REMOTE_PASSWORD}`).toString("base64")}`;
+const STARTED_AT = Date.parse("2026-10-27T08:00:00.000Z");
+
+type SeenRequest = Readonly<{ request: string; body: unknown }>;
+
+// A yok server behind Caddy's basic_auth, as yok remote sees it: 401 without ritesh's login.
+const fakeRemote = (
+  answers: Readonly<Record<string, () => Response>> = {},
+  version: string = VERSION,
+): { url: string; seen: SeenRequest[] } => {
+  const seen: SeenRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      const text = await request.text();
+      const body: unknown = text === "" ? null : JSON.parse(text);
+      seen.push({ request: `${request.method} ${url.pathname}${url.search}`, body });
+      if (request.headers.get("authorization") !== REMOTE_BASIC) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (url.pathname === "/api/health") {
+        return Response.json({ pid: 4242, version, startedAt: STARTED_AT });
+      }
+      const answer = answers[`${request.method} ${url.pathname}`];
+      return answer === undefined ? new Response("no route", { status: 404 }) : answer();
+    },
+  });
+  cleanups.push(() => server.stop(true));
+  return { url: `http://127.0.0.1:${server.port}`, seen };
+};
+
+// `yok remote ARGS` with the login in the shell and an empty YOK_HOME of its own.
+const remoteYok = async (
+  url: string,
+  args: readonly string[],
+  password: string = REMOTE_PASSWORD,
+): Promise<{ code: number; stdout: string; stderr: string; home: string }> => {
+  const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const env = {
+    ...process.env,
+    YOK_HOME: home,
+    YOK_SERVER_URL: url,
+    YOK_SERVER_USER: "ritesh",
+    YOK_SERVER_PASSWORD: password,
+  };
+  return { ...(await spawnHarness(home, env, ["remote", ...args])), home };
+};
+
+const hasNoServer = (home: string): boolean =>
+  !existsSync(join(home, "server.pid")) && !existsSync(join(home, "server.port"));
+
+const routeCalls = (seen: readonly SeenRequest[]): readonly SeenRequest[] =>
+  seen.filter((call) => call.request !== "GET /api/health");
+
+const LINEAR_REPORT = {
+  results: [
+    {
+      name: "LINEAR_API_KEY",
+      status: "fail",
+      optional: false,
+      detail: "not set",
+      fix: ["add LINEAR_API_KEY to .env"],
+    },
+  ],
+  failed: ["LINEAR_API_KEY"],
+  warned: [],
+};
+
+const DIGEST = {
+  name: "digest",
+  project: "web",
+  cron: "0 9 * * *",
+  timezone: "UTC",
+  nextFireAt: "2026-10-28T09:00:00.000Z",
+};
+
+const DIGEST_FIRE = {
+  triggerId: "t-1",
+  slot: "2026-10-27T09:00:00.000Z",
+  status: "started",
+  runId: "r-9",
+  runName: "digest-1",
+  at: "2026-10-27T09:00:01.000Z",
+};
+
+describe("yok remote", () => {
+  test.each([
+    ["a closed port", true],
+    ["a proxy answering 502", false],
+  ] as const)(
+    "SC4006: with %s, a remote command stops with HOST is not answering and starts no local server",
+    async (_case, closed) => {
+      const proxy = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: () => new Response("bad gateway", { status: 502 }),
+      });
+      const host = `127.0.0.1:${proxy.port}`;
+      if (closed) proxy.stop(true);
+      else cleanups.push(() => proxy.stop(true));
+
+      const listed = await remoteYok(`http://${host}`, ["project", "list"]);
+
+      expect(listed.stderr).toContain(`${host} is not answering`);
+      expect(listed.code).toBe(1);
+      expect(hasNoServer(listed.home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4007: a login the server rejects stops a remote command with the advice to log in again",
+    async () => {
+      const server = fakeRemote();
+
+      const listed = await remoteYok(server.url, ["project", "list"], "wrong");
+
+      expect(listed.stderr).toContain("wrong username or password; run yok remote login again");
+      expect(listed.code).toBe(1);
+      expect(server.seen.map((call) => call.request)).toEqual(["GET /api/health"]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    ["the same version", VERSION, ""],
+    ["another version", "9.9.9", `warning: this CLI is ${VERSION}, the server is 9.9.9`],
+  ])(
+    "SC4008: status against a server on %s prints both versions, the pid and the start time, and warns only on a mismatch",
+    async (_case, version, warning) => {
+      const server = fakeRemote({}, version);
+
+      const status = await remoteYok(server.url, ["status"]);
+
+      expect(status.code).toBe(0);
+      expect(status.stdout).toBe(
+        [
+          `server   ${server.url}`,
+          `cli      ${VERSION}`,
+          `version  ${version}`,
+          "pid      4242",
+          "started  2026-10-27T08:00:00.000Z",
+          "",
+        ].join("\n"),
+      );
+      expect(status.stderr.trim()).toBe(warning);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    ["by default", false, []],
+    ["with --interaction true", true, ["--interaction", "true"]],
+  ] as const)(
+    "SC4009: a remote run %s sends interaction %p, sends the paths as typed, and prints the server's link",
+    async (_case, interaction, flags) => {
+      const server = fakeRemote({
+        "POST /api/runs": () =>
+          Response.json(
+            { run: { id: "r-1" }, view: "https://yok.example.com/runs/r-1", attach: [] },
+            { status: 201 },
+          ),
+      });
+      const args = [
+        ...["run", "task", "--project", "web", "--prompt", "fix login"],
+        ...["--input", "ticket=ENG-1", "--name", "fix-login", "--config", "cfg/ci.yaml"],
+        ...flags,
+      ];
+
+      const run = await remoteYok(server.url, args);
+
+      expect(run.stderr).toBe("");
+      expect(run.code).toBe(0);
+      expect(routeCalls(server.seen)).toEqual([
+        {
+          request: "POST /api/runs",
+          body: {
+            project: "web",
+            workflow: "task",
+            inputs: { prompt: "fix login", ticket: "ENG-1" },
+            policies: { interaction },
+            name: "fix-login",
+            config: "cfg/ci.yaml",
+          },
+        },
+      ]);
+      expect(run.stdout).toBe("r-1\nview: https://yok.example.com/runs/r-1\n");
+      expect(hasNoServer(run.home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4010: a remote run without --project is refused before any request",
+    async () => {
+      const server = fakeRemote();
+
+      const run = await remoteYok(server.url, ["run", "task", "--prompt", "x"]);
+
+      expect(run.stderr).toContain("--project");
+      expect(run.code).not.toBe(0);
+      expect(server.seen).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4011: a remote run the server's doctor refuses prints the failing checks and their fixes",
+    async () => {
+      const refused = { code: "bad-request", message: "BLOCKED: 1 check failed" };
+      const server = fakeRemote({
+        "POST /api/runs": () =>
+          Response.json({ error: { ...refused, details: LINEAR_REPORT } }, { status: 400 }),
+      });
+
+      const run = await remoteYok(server.url, ["run", "task", "--project", "web", "--prompt", "x"]);
+
+      expect(run.stderr).toContain("BLOCKED: 1 check failed");
+      expect(run.stderr).toContain("LINEAR_API_KEY: not set");
+      expect(run.stderr).toContain("  fix: add LINEAR_API_KEY to .env");
+      expect(run.code).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  const WEB = { name: "web", status: "ready", path: "/srv/yok/projects/web" };
+  test.each([
+    {
+      args: ["project", "list"],
+      answers: {
+        "GET /api/projects": () =>
+          Response.json({ projects: [{ ...WEB, addedBy: { channel: "cli" } }] }),
+      },
+      request: { request: "GET /api/projects", body: null },
+      stdout: /^NAME\s+STATUS\s+PATH\s+ADDED BY\nweb\s+ready\s+\/srv\/yok\/projects\/web\s+cli\n$/,
+    },
+    {
+      args: ["project", "add", "web", "--git", "git@github.com:acme/web.git"],
+      answers: { "POST /api/projects": () => Response.json({ project: WEB }, { status: 201 }) },
+      request: {
+        request: "POST /api/projects",
+        body: { name: "web", git: "git@github.com:acme/web.git", addedBy: { channel: "cli" } },
+      },
+      stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
+    },
+    {
+      args: ["project", "remove", "web", "--purge"],
+      answers: {
+        "DELETE /api/projects/web": () =>
+          Response.json({ removed: "web", purged: true, note: null }),
+      },
+      request: { request: "DELETE /api/projects/web?purge=true", body: null },
+      stdout: /^removed web\n$/,
+    },
+  ])(
+    "SC4012: yok remote $args.0 $args.1 calls the project route and prints what the local command prints",
+    async ({ args, answers, request, stdout }) => {
+      const server = fakeRemote(answers);
+
+      const result = await remoteYok(server.url, args);
+
+      expect(result.stderr).toBe("");
+      expect(routeCalls(server.seen)).toEqual([request]);
+      expect(result.stdout).toMatch(stdout);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4013: remote doctor sends the project and workflow, prints the report, and exits 1 on a failed check",
+    async () => {
+      const server = fakeRemote({
+        "POST /api/doctor": () => Response.json({ report: LINEAR_REPORT }),
+      });
+
+      const doctor = await remoteYok(server.url, [
+        ...["doctor", "--project", "web", "--workflow", "task"],
+      ]);
+
+      expect(routeCalls(server.seen)).toEqual([
+        { request: "POST /api/doctor", body: { project: "web", workflow: "task" } },
+      ]);
+      expect(doctor.stdout).toContain("ENVIRONMENT");
+      expect(doctor.stdout).toContain("VERDICT");
+      expect(doctor.code).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    {
+      args: ["trigger", "add", "digest.yaml", "--project", "web", "--config", "cfg/ci.yaml"],
+      answers: { "POST /api/triggers": () => Response.json({ trigger: DIGEST }, { status: 201 }) },
+      request: {
+        request: "POST /api/triggers",
+        body: { project: "web", workflow: "digest.yaml", config: "cfg/ci.yaml" },
+      },
+      stdout: "digest in web: 0 9 * * * (UTC), next fire 2026-10-28T09:00:00.000Z\n",
+    },
+    {
+      args: ["trigger", "list"],
+      answers: {
+        "GET /api/triggers": () => Response.json({ triggers: [{ ...DIGEST, lastFire: null }] }),
+      },
+      request: { request: "GET /api/triggers", body: null },
+      stdout: "digest  web  0 9 * * * (UTC)  next 2026-10-28T09:00:00.000Z  never fired\n",
+    },
+    {
+      args: ["trigger", "fire", "digest", "--project", "web"],
+      answers: { "POST /api/triggers/fire": () => Response.json({ fire: DIGEST_FIRE }) },
+      request: { request: "POST /api/triggers/fire", body: { project: "web", name: "digest" } },
+      stdout:
+        "2026-10-27T09:00:01.000Z  started  slot 2026-10-27T09:00:00.000Z  run r-9 (digest-1)\n",
+    },
+    {
+      args: ["trigger", "log", "digest", "--project", "web"],
+      answers: { "GET /api/triggers/log": () => Response.json({ fires: [DIGEST_FIRE] }) },
+      request: { request: "GET /api/triggers/log?project=web&name=digest", body: null },
+      stdout:
+        "2026-10-27T09:00:01.000Z  started  slot 2026-10-27T09:00:00.000Z  run r-9 (digest-1)\n",
+    },
+    {
+      args: ["trigger", "rm", "digest", "--project", "web"],
+      answers: { "DELETE /api/triggers": () => Response.json({ trigger: DIGEST }) },
+      request: { request: "DELETE /api/triggers?project=web&name=digest", body: null },
+      stdout: "removed digest from web\n",
+    },
+  ])(
+    "SC4014: yok remote trigger $args.1 names the project on its route",
+    async ({ args, answers, request, stdout }) => {
+      const server = fakeRemote(answers);
+
+      const result = await remoteYok(server.url, args);
+
+      expect(result.stderr).toBe("");
+      expect(routeCalls(server.seen)).toEqual([request]);
+      expect(result.stdout).toBe(stdout);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+// Caddy's basic_auth and reverse_proxy: 401 without ritesh's login, else the request goes to the
+// yok server at 127.0.0.1:PORT, with that address as its Host, as Caddy's upstream would get it.
+const basicAuthProxy = (port: number): string => {
+  const proxy = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      if (request.headers.get("authorization") !== REMOTE_BASIC) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const { pathname, search } = new URL(request.url);
+      const body = request.method === "GET" ? null : await request.text();
+      const contentType = request.headers.get("content-type");
+      return fetch(`http://127.0.0.1:${port}${pathname}${search}`, {
+        method: request.method,
+        headers: contentType === null ? {} : { "content-type": contentType },
+        body,
+      });
+    },
+  });
+  cleanups.push(() => proxy.stop(true));
+  return `http://127.0.0.1:${proxy.port}`;
+};
+
+describe("yok remote beside a local server", () => {
+  test(
+    "SC4019: a run started through a Basic-auth proxy saves interaction false from cli, and the laptop side starts no server",
+    async () => {
+      const repo = makeRepo();
+      const server = makeEnv();
+      expect(yok(repo, server.env, "project", "add", "web", "--path", repo).code).toBe(0);
+      const proxy = basicAuthProxy(readPort(server.home) ?? 0);
+
+      const remote = await remoteYok(proxy, [
+        "run",
+        "ok.yaml",
+        "--project",
+        "web",
+        "--prompt",
+        "x",
+      ]);
+
+      expect(remote.stderr).toBe("");
+      expect(remote.code).toBe(0);
+      const [runId = "", view = ""] = remote.stdout.trim().split("\n");
+      expect(view).toStartWith("view: http://localhost:");
+      const registry = JSON.parse(readFileSync(join(server.home, "registry.json"), "utf8"));
+      expect(registry.runs[runId].policies).toEqual({
+        values: { interaction: false },
+        sources: { interaction: "cli" },
+      });
+      expect(hasNoServer(remote.home)).toBe(true);
+
+      stopServer(repo, server.env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4020: a server yok starts gives none of the remote login variables to a run's agent session",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+      const shell = {
+        ...env,
+        YOK_SERVER_URL: "https://yok.example.com",
+        YOK_SERVER_USER: "ritesh",
+        YOK_SERVER_PASSWORD: "secret",
+      };
+
+      const run = yok(repo, shell, "run", "ok.yaml", "--prompt", "x", "--no-attach", "--no-open");
+
+      expect(run.code).toBe(0);
+      waitFor(() => readLines(fakeOut).some(isLaunch));
+      const launched = readLines(fakeOut).find(isLaunch)?.env as Record<string, string>;
+      expect(Object.keys(launched)).not.toContainAnyValues([
+        "YOK_SERVER_URL",
+        "YOK_SERVER_USER",
+        "YOK_SERVER_PASSWORD",
+      ]);
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+});

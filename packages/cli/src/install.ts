@@ -1,7 +1,7 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "@commander-js/extra-typings";
 import { agentBinary, uninstallPlugin, type WorkflowAgent, YOK_REPO } from "@yok/core";
@@ -327,13 +327,18 @@ const removePathLine = async (rc: string): Promise<boolean> => {
   return true;
 };
 
-// Returns what it removed, one line each. A null execPath keeps the binary.
+// Returns what it removed, one line each. A null execPath keeps the binary. The yok-remote
+// install.sh writes beside the binary goes with it.
 export const removeInstall = async ({
   execPath,
   installDir,
   rcFiles,
 }: InstallPaths): Promise<readonly string[]> => {
-  const binary = execPath === null || isInside(execPath, installDir) ? [] : [execPath];
+  const outside = execPath === null || isInside(execPath, installDir) ? [] : [execPath];
+  const shortcut = outside
+    .map((path) => join(dirname(path), "yok-remote"))
+    .filter((path) => existsSync(path));
+  const binary = [...outside, ...shortcut];
   for (const path of [...binary, installDir]) await rm(path, { recursive: true, force: true });
   const cleaned: string[] = [];
   for (const rc of rcFiles) if (await removePathLine(rc)) cleaned.push(rc);

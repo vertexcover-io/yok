@@ -1,5 +1,5 @@
 import { basename, resolve } from "node:path";
-import { Command } from "@commander-js/extra-typings";
+import { Command, type CommandUnknownOpts } from "@commander-js/extra-typings";
 import {
   builtInChecks,
   compileRunWorkflow,
@@ -39,7 +39,7 @@ import {
 } from "./client.ts";
 import { writeProjectTypes } from "./types.ts";
 
-const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
+export const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
   const index = pair.indexOf("=");
   if (index === -1) throw new Error(`--input must be KEY=VALUE, got "${pair}"`);
   return { ...acc, [pair.slice(0, index)]: pair.slice(index + 1) };
@@ -116,7 +116,7 @@ const showStartedRun = async (
   process.exitCode = exitCode;
 };
 
-const startError = (error: ApiError): string => {
+export const startError = (error: ApiError): string => {
   const report = DoctorReportSchema.safeParse(error.details);
   return report.success ? blockedText(error.message, report.data) : apiErrorText(error);
 };
@@ -202,6 +202,13 @@ const localTarget = async (
   return { ok: true, value: { project: project.value, workflow: path, ...config } };
 };
 
+// One `--NAME <value>` option per policy, with its help text, for parsePolicyFlags to read.
+export const addPolicyOptions = (command: CommandUnknownOpts): void => {
+  for (const name of POLICY_NAMES) {
+    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
+  }
+};
+
 export const runCommand = () => {
   const command = new Command("run")
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
@@ -236,10 +243,7 @@ export const runCommand = () => {
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
       await showStartedRun(result.value, opts, cwd, log);
     });
-  // one `--NAME <value>` option per policy, with the policy's help text
-  for (const name of POLICY_NAMES) {
-    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
-  }
+  addPolicyOptions(command);
   return command;
 };
 

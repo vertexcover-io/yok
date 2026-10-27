@@ -113,6 +113,21 @@ describe("install.sh", () => {
     assert.match(second.stdout.trim().split("\n").at(-1) ?? "", /^yok 0\.0\.9 is ready/)
   })
 
+  test("SC4015: puts an executable yok-remote beside yok that runs `yok remote` with the same arguments", async () => {
+    const home = temp("yok-install-home-")
+    const log = join(temp("yok-install-log-"), "log")
+    const url = await serve(under("", releaseFiles("0.0.9", log)))
+
+    const result = await install(home, url, fakeAgents(["claude"]))
+
+    assert.equal(result.code, 0, result.stderr)
+    const shortcut = join(home, ".yok/bin/yok-remote")
+    assert.ok((statSync(shortcut).mode & 0o111) !== 0)
+    const ran = spawnSync(shortcut, ["run", "task", "--project", "web"], { encoding: "utf8" })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.equal(logLines(log).at(-1), "0.0.9 remote run task --project web")
+  })
+
   test("SC139: stops on a checksum mismatch and installs nothing", async () => {
     const home = temp("yok-install-home-")
     const log = join(temp("yok-install-log-"), "log")

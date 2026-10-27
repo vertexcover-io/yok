@@ -185,7 +185,14 @@ export const ensureServer = async (
     const startedAt = Date.now();
     const pid = spawnDetached(command, args, {
       cwd: home,
-      env: { YOK_HOME: home },
+      // The server's env reaches every run's agent session, so a remote login set in this shell
+      // stays out of it.
+      env: {
+        YOK_HOME: home,
+        YOK_SERVER_URL: undefined,
+        YOK_SERVER_USER: undefined,
+        YOK_SERVER_PASSWORD: undefined,
+      },
       output: logPath(home),
     });
     log.info({ pid, command: [command, ...args], log: logPath(home) }, "server process started");
