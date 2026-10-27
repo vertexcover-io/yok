@@ -150,7 +150,7 @@ export const startServer = async ({
   await adoptLegacyTriggers(home, { triggers, log: triggersLog }).catch((error: unknown) =>
     triggersLog.error({ err: error }, "triggers saved with a folder were not moved to projects"),
   );
-  const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS));
+  const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS, { GIT_TERMINAL_PROMPT: "0" }));
   startScheduler({
     triggers,
     registry,

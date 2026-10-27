@@ -428,7 +428,7 @@ describe("POST /runs", () => {
     expect(order).toEqual([`pull ${cwd}`, "launch"]);
   });
 
-  test("SC2006: a failed pull refuses the run with 422 git-failed and git's message, registering nothing and asking no doctor", async () => {
+  test("SC2006: a failed pull refuses the run with 422 git-failed without git's message, registering nothing and asking no doctor", async () => {
     const message = "fatal: Not possible to fast-forward, aborting.";
     const { deps, order, doctorAsked } = await pullingDeps({ ok: false, error: message });
     const cwd = clonedWorkspace(deps.home);
@@ -438,7 +438,8 @@ describe("POST /runs", () => {
     expect(res.status).toBe(422);
     const error = await errorOf(res);
     expect(error.code).toBe("git-failed");
-    expect(error.message).toContain(message);
+    expect(error.message).not.toContain(message);
+    expect(error.message).toContain("see the server log");
     expect(order).toEqual([`pull ${cwd}`]);
     expect(doctorAsked).toEqual([]);
     expect(await deps.registry.listRuns()).toEqual([]);
@@ -1167,13 +1168,17 @@ describe("AddProjectBodySchema", () => {
     },
   );
 
-  test.each(["https://user:token@github.com/o/r.git", "ssh://git:pw@h/o/r"])(
-    "refuses the git URL %s, which holds a password every GET /projects would echo",
+  test.each([
+    "https://user:token@github.com/o/r.git",
+    "https://ghp_token@github.com/o/r.git",
+    "ssh://git:pw@h/o/r",
+  ])(
+    "refuses the git URL %s, which holds a credential every GET /projects would echo",
     (git) => {
       const parsed = AddProjectBodySchema.safeParse({ name: "demo", git });
       expect(parsed.success).toBe(false);
       expect(parsed.error?.issues[0]?.message).toBe(
-        "must not hold a password; use a git credential helper or an ssh key",
+        "must not hold a password or an https user name; use a git credential helper or an ssh key",
       );
     },
   );
@@ -1371,7 +1376,7 @@ describe("/projects", () => {
     expect(res.status).toBe(422);
     const error = await errorOf(res);
     expect(error.code).toBe("git-failed");
-    expect(error.message).toContain("127.0.0.1");
+    expect(error.message).toBe("git clone failed; see the server log");
     expect(existsSync(join(deps.home, "projects", "none"))).toBe(false);
     expect(await listProjects(app)).toEqual([]);
     expect(calls).toEqual([]);

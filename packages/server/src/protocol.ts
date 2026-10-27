@@ -146,15 +146,18 @@ export const ProjectSchema = z.strictObject({
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
-// Any other form, file:// or a transport helper such as ext::, would let a key holder read the
+// Any other form, file:// or a transport helper such as ext::, would let any caller read the
 // server's own files through a clone. The URL is saved and listed to every caller, so it holds
-// no password.
+// no password, and an https one no user name either, since a token often goes there.
+const isCredentialFree = (url: URL): boolean =>
+  url.password === "" && (url.protocol !== "https:" || url.username === "");
+
 const GitUrlSchema = z
   .string()
   .regex(/^(https:\/\/|ssh:\/\/|[\w.-]+@[\w.-]+:)\S+$/, "must be an https, ssh or user@host: URL")
   .refine(
-    (url) => !URL.canParse(url) || new URL(url).password === "",
-    "must not hold a password; use a git credential helper or an ssh key",
+    (url) => !URL.canParse(url) || isCredentialFree(new URL(url)),
+    "must not hold a password or an https user name; use a git credential helper or an ssh key",
   );
 
 export const AddProjectBodySchema = z

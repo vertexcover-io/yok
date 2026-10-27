@@ -270,7 +270,7 @@ export const startProjectRun = async (
         { project: project.value.name, err: pulled.error },
         "run not started: git pull failed",
       );
-      return refused(422, "git-failed", `git pull --ff-only in ${cwd} failed: ${pulled.error}`);
+      return refused(422, "git-failed", "git pull --ff-only failed; see the server log");
     }
   }
   const config = body.config === undefined ? null : resolve(cwd, body.config);

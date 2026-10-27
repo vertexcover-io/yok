@@ -5,6 +5,7 @@ import { basename, dirname, join, sep } from "node:path";
 import { zValidator } from "@hono/zod-validator";
 import {
   type IGit,
+  type ILogger,
   type ITerminalHost,
   parseYaml,
   type Result,
@@ -182,6 +183,7 @@ const conflictWith = (
 const claimAndClone = async (
   git: IGit,
   { home, url, path }: Readonly<{ home: string; url: string; path: string }>,
+  log: ILogger,
 ): Promise<
   Result<void, Readonly<{ status: 400 | 409 | 422; code: ErrorCode; message: string }>>
 > => {
@@ -202,7 +204,12 @@ const claimAndClone = async (
   const cloned = await git.clone(home, url, path);
   if (cloned.ok) return cloned;
   await rm(path, { recursive: true, force: true });
-  return { ok: false, error: { status: 422, code: "git-failed", message: cloned.error } };
+  // git's stderr can echo the URL or the server's paths; it goes to the log, not to the caller.
+  log.info({ url, err: cloned.error }, "git clone failed");
+  return {
+    ok: false,
+    error: { status: 422, code: "git-failed", message: "git clone failed; see the server log" },
+  };
 };
 
 // The clone runs outside the projects lock, so a slow clone holds up no run start; the conflicts
@@ -219,7 +226,11 @@ const addProject = async (
   if (taken !== null) return errorResponse(c, 409, "conflict", taken);
   const path = body.path ?? join(clonesDir(deps.home), name);
   if (git !== undefined) {
-    const cloned = await claimAndClone(deps.git, { home: deps.home, url: git, path });
+    const cloned = await claimAndClone(
+      deps.git,
+      { home: deps.home, url: git, path },
+      c.get("log"),
+    );
     if (!cloned.ok) {
       return errorResponse(c, cloned.error.status, cloned.error.code, cloned.error.message);
     }
