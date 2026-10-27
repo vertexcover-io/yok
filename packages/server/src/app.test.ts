@@ -38,15 +38,16 @@ import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { AddProjectBodySchema } from "./protocol.ts";
-import { type CheckCheckout, createRoot } from "./server.ts";
+import { startProjectRun } from "./run.ts";
+import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
 
-// Registers PATH as project NAME in HOME, as yok project add would.
-const addProjectEntry = (home: string, name: string, path: string): void =>
+// Registers PATH as project NAME in HOME, as yok project add would, cloned from GIT when given.
+const addProjectEntry = (home: string, name: string, path: string, git?: string): void =>
   appendFileSync(
     join(home, "projects.yaml"),
-    `${name}:\n  path: ${path}\n  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
+    `${name}:\n  path: ${path}\n${git === undefined ? "" : `  git: ${git}\n`}  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
   );
 
 const OK_NODES = [{ id: "a", type: "exec", runtime: "sh", script: "true", input: null }];
@@ -245,7 +246,7 @@ describe("POST /runs", () => {
     });
   });
 
-  test("SC302: a doctor that blocks refuses the run with its report, records nothing and marks the project blocked", async () => {
+  test("SC302, SC2013: a doctor that blocks refuses the run with its report, records nothing and leaves projects.yaml unchanged and the project ready", async () => {
     let launched = false;
     const report = summarize([
       {
@@ -266,6 +267,7 @@ describe("POST /runs", () => {
     };
     tempWorkspace(deps.home);
     const app = createApi(deps);
+    const before = readFileSync(join(deps.home, "projects.yaml"));
 
     const res = await postRun(app);
 
@@ -278,8 +280,9 @@ describe("POST /runs", () => {
     expect(error.details.failed).toEqual(["LINEAR_API_KEY"]);
     expect(launched).toBe(false);
     expect(await deps.registry.listRuns()).toEqual([]);
+    expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
     expect(await listProjects(app)).toEqual([
-      expect.objectContaining({ name: "demo", status: "blocked" }),
+      expect.objectContaining({ name: "demo", status: "ready" }),
     ]);
   });
 
@@ -304,11 +307,6 @@ describe("POST /runs", () => {
   });
 
   test.each([
-    [
-      "an unknown project",
-      { project: "nope" },
-      () => 'unknown project "nope"; known projects: demo',
-    ],
     [
       "a missing workflow",
       { workflow: "missing.yaml" },
@@ -343,26 +341,130 @@ describe("POST /runs", () => {
     expect(await deps.registry.listRuns()).toEqual([]);
   });
 
-  test("SC304: no project named picks the only one, and with two the reply names them", async () => {
-    const deps = await buildDeps(launchesOk);
-    const { cwd } = tempWorkspace(deps.home);
-    const app = createApi(deps);
-    const body = { workflow: "ok.yaml", inputs: {} };
-    const start = () =>
-      app.request("/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+  test("SC2003: a start that names no project is 400 listing the known projects, even when only one exists", async () => {
+    let launched = false;
+    const deps = await buildDeps(() => {
+      launched = true;
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
 
-    const only = await start();
+    const res = await createApi(deps).request("/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow: "ok.yaml", inputs: {} }),
+    });
+
+    expect(res.status).toBe(400);
+    const error = await errorOf(res);
+    expect(error.code).toBe("bad-request");
+    expect(error.message).toContain("known projects: demo");
+    expect(launched).toBe(false);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC2004: a start on an unknown project is 400 listing the known projects", async () => {
+    let launched = false;
+    const deps = await buildDeps(() => {
+      launched = true;
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
     addProjectEntry(deps.home, "other", gitRepo());
-    const two = await start();
 
-    expect(only.status).toBe(201);
-    expect(((await only.json()) as { run: { cwd: string } }).run.cwd).toBe(cwd);
-    expect(two.status).toBe(400);
-    expect((await errorOf(two)).message).toBe("name a project; known projects: demo, other");
+    const res = await postRun(createApi(deps), { project: "nope" });
+
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toEqual({
+      code: "bad-request",
+      message: 'unknown project "nope"; known projects: demo, other',
+    });
+    expect(launched).toBe(false);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  // A checkout yok cloned for project web: under HOME/projects and saved with its git URL.
+  const clonedWorkspace = (home: string): string => {
+    const cwd = join(realpathSync(home), "projects", "web");
+    mkdirSync(cwd, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeFileSync(join(cwd, "ok.yaml"), okWorkflow());
+    addProjectEntry(home, "web", cwd, "https://example.test/web.git");
+    return cwd;
+  };
+
+  // Deps whose launch and git pull both write to ORDER; the pull answers PULLED.
+  const pullingDeps = async (pulled: Result<null, string> = { ok: true, value: null }) => {
+    const order: string[] = [];
+    const doctorAsked: string[] = [];
+    const base = await buildDeps(() => {
+      order.push("launch");
+      return launchesOk();
+    });
+    const deps = {
+      ...base,
+      git: {
+        ...base.git,
+        pullFastForward: (cwd: string) => {
+          order.push(`pull ${cwd}`);
+          return Promise.resolve(pulled);
+        },
+      },
+      checkCheckout: ((input) => {
+        doctorAsked.push(input.cwd);
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    return { deps, order, doctorAsked };
+  };
+
+  test("SC2005: a run on a project yok cloned pulls its checkout before the launch", async () => {
+    const { deps, order } = await pullingDeps();
+    const cwd = clonedWorkspace(deps.home);
+
+    const res = await postRun(createApi(deps), { project: "web" });
+
+    expect(res.status).toBe(201);
+    expect(order).toEqual([`pull ${cwd}`, "launch"]);
+  });
+
+  test("SC2006: a failed pull refuses the run with 422 git-failed and git's message, registering nothing and asking no doctor", async () => {
+    const message = "fatal: Not possible to fast-forward, aborting.";
+    const { deps, order, doctorAsked } = await pullingDeps({ ok: false, error: message });
+    const cwd = clonedWorkspace(deps.home);
+
+    const res = await postRun(createApi(deps), { project: "web" });
+
+    expect(res.status).toBe(422);
+    const error = await errorOf(res);
+    expect(error.code).toBe("git-failed");
+    expect(error.message).toContain(message);
+    expect(order).toEqual([`pull ${cwd}`]);
+    expect(doctorAsked).toEqual([]);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test.each([
+    ["outside the home", (_home: string) => gitRepo()],
+    [
+      "inside HOME/projects with no git URL",
+      (home: string) => {
+        const dir = join(realpathSync(home), "projects", "placed");
+        mkdirSync(dir, { recursive: true });
+        execFileSync("git", ["init", "-q"], { cwd: dir });
+        return dir;
+      },
+    ],
+  ])("SC2007: a project added by path %s is never pulled", async (_label, folder) => {
+    const { deps, order } = await pullingDeps();
+    const cwd = folder(deps.home);
+    writeFileSync(join(cwd, "ok.yaml"), okWorkflow());
+    addProjectEntry(deps.home, "placed", cwd);
+
+    const res = await postRun(createApi(deps), { project: "placed" });
+
+    expect(res.status).toBe(201);
+    expect(order).toEqual(["launch"]);
   });
 
   test("SC305: a codex workflow invokes the skill the way the agent does, with $orchestrate", async () => {
@@ -591,6 +693,141 @@ describe("POST /runs", () => {
   });
 });
 
+describe("POST /doctor", () => {
+  const postDoctor = (app: ReturnType<typeof createApi>, body: object) =>
+    app.request("/doctor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  test("SC2010: the doctor on request returns the checkout's report and stores nothing", async () => {
+    const asked: Array<Parameters<CheckCheckout>[0]> = [];
+    const deps = {
+      ...(await buildDeps(launchesOk)),
+      checkCheckout: ((input) => {
+        asked.push(input);
+        return Promise.resolve({ env: { ok: true, value: {} }, report: BLOCKED_REPORT });
+      }) satisfies CheckCheckout,
+    };
+    const { cwd } = tempWorkspace(deps.home);
+    const before = readFileSync(join(deps.home, "projects.yaml"));
+
+    const res = await postDoctor(createApi(deps), { project: "demo" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ report: BLOCKED_REPORT });
+    expect(asked).toEqual([{ cwd }]);
+    expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC2011: the doctor on request with a workflow adds that workflow's own checks to the report", async () => {
+    const key = "YOK_DOCTOR_UNSET_KEY";
+    const deps = {
+      ...(await buildDeps(launchesOk)),
+      checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
+    };
+    const { cwd } = tempWorkspace(deps.home);
+    writeFileSync(
+      join(cwd, "check.yaml"),
+      okWorkflow({ doctor: [{ check: "env", key, fix: "set it" }] }),
+    );
+    const app = createApi(deps);
+    const rowsOf = async (body: object) => {
+      const res = await postDoctor(app, body);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { report: DoctorReport }).report.results;
+    };
+
+    const withWorkflow = await rowsOf({ project: "demo", workflow: "check.yaml" });
+    const without = await rowsOf({ project: "demo" });
+
+    expect(withWorkflow).toContainEqual(
+      expect.objectContaining({ name: expect.stringContaining(key), status: "fail" }),
+    );
+    expect(without.filter((row) => row.name.includes(key))).toEqual([]);
+  });
+
+  test.each([
+    ["no project", {}, "known projects: demo"],
+    ["an unknown project", { project: "nope" }, 'unknown project "nope"; known projects: demo'],
+    ["a missing workflow", { project: "demo", workflow: "missing.yaml" }, "no workflow at"],
+    ["a workflow that is not valid YAML", { project: "demo", workflow: "bad.yaml" }, "yaml:"],
+  ])(
+    "SC2012: %s is 400 bad-request and leaves projects.yaml unchanged",
+    async (_label, body, holds) => {
+      const deps = await buildDeps(launchesOk);
+      const { cwd } = tempWorkspace(deps.home);
+      writeFileSync(join(cwd, "bad.yaml"), "name: [unclosed\n");
+      const before = readFileSync(join(deps.home, "projects.yaml"));
+
+      const res = await postDoctor(createApi(deps), body);
+
+      expect(res.status).toBe(400);
+      const error = await errorOf(res);
+      expect(error.code).toBe("bad-request");
+      expect(error.message).toContain(holds);
+      expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
+    },
+  );
+});
+
+describe("startProjectRun", () => {
+  test("SC2017: a start the caller no longer wants is refused with a conflict after the doctor, recording nothing", async () => {
+    const order: string[] = [];
+    const base = await buildDeps(() => {
+      order.push("launch");
+      return launchesOk();
+    });
+    const deps = {
+      ...base,
+      checkCheckout: ((input) => {
+        order.push("doctor");
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    tempWorkspace(deps.home);
+    const stillWanted = () => {
+      order.push("stillWanted");
+      return Promise.resolve(false);
+    };
+
+    const started = await startProjectRun(
+      { project: "demo", workflow: "ok.yaml", inputs: {} },
+      deps,
+      noopLogger,
+      { stillWanted },
+    );
+
+    expect(started.ok ? null : started.error.status).toBe(409);
+    expect(started.ok ? null : started.error.code).toBe("conflict");
+    expect(order).toEqual(["doctor", "stillWanted"]);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC2018: a start with a permission mode records it on the run and launches with it", async () => {
+    const seen: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      seen.push(options);
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
+
+    const started = await startProjectRun(
+      { project: "demo", workflow: "ok.yaml", inputs: {} },
+      deps,
+      noopLogger,
+      { permissionMode: "bypassPermissions" },
+    );
+
+    expect(started.ok).toBe(true);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.permissionMode).toBe("bypassPermissions");
+    expect(seen.map((options) => options.permissionMode)).toEqual(["bypassPermissions"]);
+  });
+});
+
 describe("GET /health", () => {
   test("SC103: GET /health answers 200 with the pid, version and start time", async () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "unused" }));
@@ -709,6 +946,33 @@ describe("createYokClient", () => {
       ["/api/runs/view", basic],
       ["/api/health", null],
     ]);
+  });
+
+  test("SC2019: doctor() returns the typed report over HTTP and brings a refusal back as bad-request", async () => {
+    const deps = {
+      ...(await buildDeps(launchesOk)),
+      checkCheckout: (() =>
+        Promise.resolve({
+          env: { ok: true, value: {} },
+          report: BLOCKED_REPORT,
+        })) satisfies CheckCheckout,
+    };
+    tempWorkspace(deps.home);
+    const { url, server } = serveOn(new Hono().route("/api", createApi(deps)).fetch);
+    try {
+      const client = createYokClient({ url });
+
+      const checked = await client.doctor({ project: "demo" });
+      const refused = await client.doctor({ project: "nope" });
+
+      expect(checked).toEqual({ ok: true, value: { report: BLOCKED_REPORT } });
+      expect(refused).toEqual({
+        ok: false,
+        error: { code: "bad-request", message: 'unknown project "nope"; known projects: demo' },
+      });
+    } finally {
+      await server.stop(true);
+    }
   });
 
   test("a non-JSON error reply comes back as an internal error, not a thrown parse error", async () => {
@@ -979,16 +1243,6 @@ describe("/projects", () => {
       400,
       "bad-request",
     ],
-    [
-      "an invalid orchestrate.config.yaml",
-      () => {
-        const root = gitRepo();
-        writeFileSync(join(root, "orchestrate.config.yaml"), "version: 2\nnope: 1\n");
-        return { name: "other", path: root };
-      },
-      400,
-      "bad-request",
-    ],
     ["neither git nor path", () => ({ name: "other" }), 400, "bad-request"],
     [
       "a clone name too long for the file system",
@@ -1092,27 +1346,29 @@ describe("/projects", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("SC205: a clone whose orchestrate.config.yaml is invalid is refused 400 and its folder removed", async () => {
+  test("SC2009: a clone whose orchestrate.config.yaml is invalid is added and listed ready, without loading its config or running the doctor", async () => {
     const url = "https://example.test/bad.git";
     const bad = { "orchestrate.config.yaml": "version: 2\nnope: 1\n" };
-    const { deps } = await projectDeps();
+    const { deps, calls } = await projectDeps();
     const app = createApi({ ...deps, git: gitServing(url, bad) });
 
     const res = await post(app, { name: "bad", git: url });
 
-    expect(res.status).toBe(400);
-    expect((await errorOf(res)).code).toBe("bad-request");
-    expect(existsSync(join(deps.home, "projects", "bad"))).toBe(false);
-    expect(await listProjects(app)).toEqual([]);
+    expect(res.status).toBe(201);
+    expect(await listProjects(app)).toEqual([
+      expect.objectContaining({ name: "bad", status: "ready" }),
+    ]);
+    expect(existsSync(join(deps.home, "projects", "bad", "orchestrate.config.yaml"))).toBe(true);
+    expect(calls).toEqual([]);
   });
 
-  test("SC206: a clone that fails removes its folder and answers 502 git-failed", async () => {
+  test("SC2008: a clone that fails removes its folder and answers 422 git-failed", async () => {
     const { deps, calls } = await projectDeps();
     const app = createApi(deps);
 
     const res = await post(app, { name: "none", git: "https://127.0.0.1:1/none.git" });
 
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(422);
     const error = await errorOf(res);
     expect(error.code).toBe("git-failed");
     expect(error.message).toContain("127.0.0.1");
@@ -1121,7 +1377,7 @@ describe("/projects", () => {
     expect(calls).toEqual([]);
   });
 
-  test("SC207: a project with a live run cannot be removed until the run's terminal is gone", async () => {
+  test("SC207, SC2016: a project with a live run cannot be removed until the run's terminal is gone", async () => {
     const root = gitRepo();
     const { deps } = await projectDeps();
     expect((await post(createApi(deps), { name: "demo", path: root })).status).toBe(201);
@@ -1181,7 +1437,7 @@ describe("/projects", () => {
     expect(res.status).toBe(status);
   });
 
-  test("SC207: a project removed while its run is being checked stops the start, recording and launching nothing", async () => {
+  test("SC207, SC2015: a project removed while its run is being checked stops the start, recording and launching nothing", async () => {
     let launched = false;
     const base = await buildDeps(() => {
       launched = true;
@@ -1289,16 +1545,23 @@ describe("/projects", () => {
     expect(readdirSync(target)).toEqual([".git"]);
   });
 
-  test("SC210: a project whose folder is gone is listed as missing", async () => {
+  test("SC210, SC2014: the listing reads ready or missing only, even from a file that still holds old verdicts", async () => {
     const { deps } = await projectDeps();
+    const kept = gitRepo();
     writeFileSync(
       join(deps.home, "projects.yaml"),
-      "gone:\n  path: /no/such/checkout\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n",
+      `kept:\n  path: ${kept}\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: BLOCKED x\ngone:\n  path: /no/such/checkout\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
     );
 
-    expect(await listProjects(createApi(deps))).toEqual([
-      expect.objectContaining({ name: "gone", status: "missing" }),
+    const res = await createApi(deps).request("/projects");
+
+    expect(res.status).toBe(200);
+    const { projects } = (await res.json()) as { projects: Array<Record<string, unknown>> };
+    expect(projects.map(({ name, status }) => ({ name, status }))).toEqual([
+      { name: "kept", status: "ready" },
+      { name: "gone", status: "missing" },
     ]);
+    expect(projects.filter((project) => "verdict" in project)).toEqual([]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { zValidator } from "@hono/zod-validator";
 import {
   clearDeadSwitchLocks,
   compilePlan,
@@ -16,6 +17,7 @@ import {
 import {
   type Event,
   type IAgentProvider,
+  type IGit,
   type ILogger,
   type ITerminalHost,
   type JsonObject,
@@ -48,8 +50,10 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-import { addRunIfProjectKept, pickProject, saveVerdict } from "./projects.ts";
+import { addRunIfProjectKept, pickProject, refuseBody } from "./projects.ts";
 import {
+  type DoctorBody,
+  DoctorBodySchema,
   type ResumeRunBody,
   ResumeRunBodySchema,
   type StartRunBody,
@@ -67,6 +71,8 @@ export type RunDeps = Readonly<{
   publicOrigin: string;
   checkCheckout: CheckCheckout;
 }>;
+
+export type GitDeps = Readonly<{ git: IGit }>;
 
 const checkInputs = (plan: WorkflowPlan, inputs: JsonObject): Result<null> => {
   try {
@@ -107,8 +113,8 @@ export type LaunchReply = Readonly<{
   view: string;
 }>;
 export type LaunchError = Readonly<{
-  status: 400 | 409 | 502;
-  code: "bad-request" | "conflict" | "agent-failed";
+  status: 400 | 409 | 422 | 502;
+  code: "bad-request" | "conflict" | "agent-failed" | "git-failed";
   message: string;
   details?: JsonValue;
 }>;
@@ -124,8 +130,6 @@ export type LaunchRequest = Readonly<{
   permissionMode?: PermissionMode;
   // Adds the run to the registry unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
-  // Sees the doctor's verdict line, as the project that started the run records it.
-  onVerdict?: (line: string) => Promise<void>;
 }>;
 
 const refused = (
@@ -153,7 +157,6 @@ export const launchRun = async (
 
   const checked = await deps.checkCheckout({ cwd, plan, ...(config === null ? {} : { config }) });
   const line = verdict(checked.report);
-  await request.onVerdict?.(line);
   if (checked.report.failed.length > 0) {
     log.info({ workflow, verdict: line }, "run not started: the doctor blocked it");
     return refused(400, "bad-request", line, checked.report);
@@ -230,43 +233,104 @@ export const launchRun = async (
   };
 };
 
-const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
+export type StartExtra = Readonly<{
+  permissionMode?: PermissionMode;
+  // Asked just before the run is registered; false refuses the start with a conflict.
+  stillWanted?: () => Promise<boolean>;
+}>;
+
+// Checked before compiling, so a mistyped shipped workflow is not a compile error about a
+// file under the plugin folder.
+const compileWorkflow = async (
+  workflow: string,
+  cwd: string,
+  config: string | null,
+): Promise<Result<Readonly<{ plan: WorkflowPlan; workflowPath: string }>>> => {
+  const workflowPath = findWorkflowPath(workflow, cwd);
+  if (!existsSync(workflowPath)) return { ok: false, error: `no workflow at ${workflowPath}` };
+  const compiled = await compilePlan(workflowPath, cwd, config);
+  return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;
+};
+
+// The one start-up path: POST /runs and trigger firings both start here. A project yok cloned
+// is pulled first, and every refusal comes before the run is registered.
+export const startProjectRun = async (
+  body: StartRunBody,
+  deps: RunDeps & GitDeps,
+  log: ILogger,
+  extra: StartExtra = {},
+): Promise<Result<LaunchReply, LaunchError>> => {
   const project = await pickProject(deps.home, body.project);
-  if (!project.ok) return errorResponse(c, 400, "bad-request", project.error);
+  if (!project.ok) return refused(400, "bad-request", project.error);
   const cwd = project.value.path;
-  // Checked before compiling, so a mistyped shipped workflow is not a compile error about a
-  // file under the plugin folder.
-  const workflowPath = findWorkflowPath(body.workflow, cwd);
-  if (!existsSync(workflowPath)) {
-    return errorResponse(c, 400, "bad-request", `no workflow at ${workflowPath}`);
+  if (project.value.cloned) {
+    const pulled = await deps.git.pullFastForward(cwd);
+    if (!pulled.ok) {
+      log.info(
+        { project: project.value.name, err: pulled.error },
+        "run not started: git pull failed",
+      );
+      return refused(422, "git-failed", `git pull --ff-only in ${cwd} failed: ${pulled.error}`);
+    }
   }
   const config = body.config === undefined ? null : resolve(cwd, body.config);
-  const compiled = await compilePlan(workflowPath, cwd, config);
-  if (!compiled.ok) return errorResponse(c, 400, "bad-request", compiled.error);
-
-  const launched = await launchRun(
+  const compiled = await compileWorkflow(body.workflow, cwd, config);
+  if (!compiled.ok) return refused(400, "bad-request", compiled.error);
+  const { permissionMode, stillWanted } = extra;
+  return launchRun(
     {
-      plan: compiled.value,
-      workflowPath,
+      ...compiled.value,
       cwd,
       config,
       inputs: body.inputs,
       ...(body.name === undefined ? {} : { name: body.name }),
       policies: body.policies ?? {},
-      register: async (add) =>
-        (await addRunIfProjectKept(deps.home, project.value, add))
+      ...(permissionMode === undefined ? {} : { permissionMode }),
+      register: async (add) => {
+        if (stillWanted !== undefined && !(await stillWanted())) {
+          return { ok: false, error: "withdrawn while the run was being checked" };
+        }
+        return (await addRunIfProjectKept(deps.home, project.value, add))
           ? { ok: true, value: null }
-          : { ok: false, error: `project ${project.value.name} was removed` },
-      onVerdict: (line) => saveVerdict(deps.home, project.value.name, line),
+          : { ok: false, error: `project ${project.value.name} was removed` };
+      },
     },
     deps,
-    c.get("log").child({ component: "runs" }),
+    log,
   );
+};
+
+const startRun = async (
+  c: Context<{ Variables: Vars }>,
+  deps: RunDeps & GitDeps,
+  body: StartRunBody,
+) => {
+  const launched = await startProjectRun(body, deps, c.get("log").child({ component: "runs" }));
   if (!launched.ok) {
     const { status, code, message, details } = launched.error;
     return errorResponse(c, status, code, message, details);
   }
   return c.json(launched.value, 201);
+};
+
+// The doctor on request: the checkout's checks, plus the workflow's when one is named. The
+// report is returned and nothing is stored, and a cloned project is not pulled.
+const runProjectDoctor = async (
+  c: Context<{ Variables: Vars }>,
+  deps: RunDeps,
+  body: DoctorBody,
+) => {
+  const project = await pickProject(deps.home, body.project);
+  if (!project.ok) return errorResponse(c, 400, "bad-request", project.error);
+  const cwd = project.value.path;
+  if (body.workflow === undefined) {
+    const { report } = await deps.checkCheckout({ cwd });
+    return c.json({ report }, 200);
+  }
+  const compiled = await compileWorkflow(body.workflow, cwd, null);
+  if (!compiled.ok) return errorResponse(c, 400, "bad-request", compiled.error);
+  const { report } = await deps.checkCheckout({ cwd, plan: compiled.value.plan });
+  return c.json({ report }, 200);
 };
 
 const conflict = (c: Context<{ Variables: Vars }>, message: string) =>
@@ -367,9 +431,15 @@ const resumeRun = async (
 };
 
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach ApiType.
-export const runRoutes = (deps: RunDeps) =>
+export const runRoutes = (deps: RunDeps & GitDeps) =>
   new Hono<{ Variables: Vars }>()
-    .post("/", jsonBody(StartRunBodySchema), (c) => startRun(c, deps, c.req.valid("json")))
+    .post(
+      "/",
+      zValidator("json", StartRunBodySchema, (result, c) =>
+        result.success ? undefined : refuseBody(c, deps.home, result.error),
+      ),
+      (c) => startRun(c, deps, c.req.valid("json")),
+    )
     .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
       resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
     )
@@ -381,3 +451,13 @@ export const runRoutes = (deps: RunDeps) =>
       }
       return c.json({ view: viewUrl(deps, id) }, 200);
     });
+
+// Mounted at /doctor by app.ts.
+export const doctorRoutes = (deps: RunDeps) =>
+  new Hono<{ Variables: Vars }>().post(
+    "/",
+    zValidator("json", DoctorBodySchema, (result, c) =>
+      result.success ? undefined : refuseBody(c, deps.home, result.error),
+    ),
+    (c) => runProjectDoctor(c, deps, c.req.valid("json")),
+  );

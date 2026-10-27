@@ -4,6 +4,7 @@ export {
   AddProjectBodySchema,
   type AddProjectRequest,
   type ApiError,
+  type DoctorBody,
   type ErrorBody,
   ErrorBodySchema,
   type ErrorCode,

@@ -82,8 +82,8 @@ export type ErrorCode = ErrorBody["error"]["code"];
 
 // The agent, tiers and env come from the compiled workflow and the checkout, on the server.
 export const StartRunBodySchema = z.strictObject({
-  // a registered project's name; left out, the one registered project
-  project: SlugSchema.optional(),
+  // a registered project's name; the server never picks one
+  project: SlugSchema,
   // a shipped workflow's name, or a workflow file resolved against the project's checkout
   workflow: NonEmptyStringSchema,
   inputs: JsonObjectSchema,
@@ -94,6 +94,13 @@ export const StartRunBodySchema = z.strictObject({
   policies: PolicyLayerSchema.optional(),
 });
 export type StartRunBody = z.infer<typeof StartRunBodySchema>;
+
+export const DoctorBodySchema = z.strictObject({
+  project: SlugSchema,
+  // a shipped workflow's name, or a workflow file resolved against the project's checkout
+  workflow: NonEmptyStringSchema.optional(),
+});
+export type DoctorBody = z.infer<typeof DoctorBodySchema>;
 
 export const AddTriggerBodySchema = z.strictObject({
   workflowPath: AbsolutePathSchema,
@@ -125,8 +132,6 @@ export const ProjectSchema = z.strictObject({
   git: z.string().optional(),
   addedBy: AddedBySchema,
   addedAt: z.iso.datetime(),
-  // the doctor's verdict at the last run start; none before the first
-  verdict: z.string().optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
@@ -153,5 +158,4 @@ export const AddProjectBodySchema = z
 export type AddProjectBody = z.infer<typeof AddProjectBodySchema>;
 export type AddProjectRequest = z.input<typeof AddProjectBodySchema>;
 
-export type ProjectView = Project &
-  Readonly<{ name: string; status: "ready" | "blocked" | "missing" }>;
+export type ProjectView = Project & Readonly<{ name: string; status: "ready" | "missing" }>;

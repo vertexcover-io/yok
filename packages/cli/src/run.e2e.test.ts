@@ -343,7 +343,7 @@ describe("yok run", () => {
   );
 
   test(
-    "SC308: a run in a checkout whose config is invalid is refused with the config's error and adds no project",
+    "SC308: a run in a checkout whose config is invalid is refused with the config's error, though adding never loads the config, so the checkout stays a project",
     () => {
       const repo = makeRepo();
       const { env, fakeOut } = makeEnv();
@@ -358,7 +358,7 @@ describe("yok run", () => {
       expect(result.stderr).toContain('Unrecognized key: "tiers"');
       expect(readLines(fakeOut).some(isLaunch)).toBe(false);
       const listed = JSON.parse(yok(repo, env, "project", "list", "--json").stdout);
-      expect(listed.projects).toEqual([]);
+      expect(listed.projects).toEqual([expect.objectContaining({ path: repo, status: "ready" })]);
     },
     TIMEOUT_MS,
   );

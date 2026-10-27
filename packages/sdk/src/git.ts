@@ -24,6 +24,8 @@ export interface IGit {
   listWorktrees(cwd: string): Promise<Result<readonly WorktreeEntry[]>>;
   removeWorktree(cwd: string, path: string, options?: { force?: boolean }): Promise<Result<void>>;
   clone(cwd: string, url: string, dest: string): Promise<Result<void>>;
+  // Fast-forwards the checked-out branch from its upstream; fails rather than merge.
+  pullFastForward(cwd: string): Promise<Result<null, string>>;
 }
 
 const parseWorktreeBlock = (block: string): WorktreeEntry => {
@@ -147,6 +149,11 @@ export const createGit = (exec: Exec = execWithTimeout(GIT_TIMEOUT_MS)): IGit =>
     clone: async (cwd, url, dest) => {
       const { code, stderr } = await run(cwd, ["clone", "--quiet", "--", url, dest]);
       return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
+    },
+
+    pullFastForward: async (cwd) => {
+      const { code, stderr } = await run(cwd, ["pull", "--ff-only", "--quiet"]);
+      return code === 0 ? { ok: true, value: null } : { ok: false, error: stderr.trim() };
     },
   };
 };
