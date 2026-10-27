@@ -18,7 +18,7 @@ export const PLAN_PAGE_PATH = "artifacts/plan.html";
 
 type Doc = Readonly<{ id: string; label: string; path: string; markdown: string; phase?: number }>;
 type IndexRow = Readonly<{ screen: string; truth: string }>;
-type Frame = Readonly<{ uri: string; width: number }>;
+type Frame = Readonly<{ uri: string; tall: boolean }>;
 type FrameFile = Readonly<{ frame: string; file: string; size: number }>;
 type Page = Readonly<{
   repo: RepoFiles;
@@ -27,7 +27,6 @@ type Page = Readonly<{
   tooBig: ReadonlySet<string>;
 }>;
 
-const THUMB_HEIGHT = 260;
 const MAX_FRAME_BYTES = 20_000_000;
 // 60 MB of frames is about 80 MB as base64, which keeps the page under Slack's 100 MB upload cap.
 const FRAME_BUDGET_BYTES = 60_000_000;
@@ -48,6 +47,9 @@ const PARAGRAPH = /<p\b[^>]*>([\s\S]*?)<\/p>/g;
 // A list item's opening text up to its nested list or end, unless it opens with a paragraph.
 const TIGHT_ITEM = /<li\b[^>]*>(?!\s*<p\b)((?:(?!<\/?(?:li|ul|ol|p)\b)[\s\S])+)/g;
 const HEADING = /<h([1-4])([^>]*)>([\s\S]*?)<\/h\1>/g;
+// A bullet list with no list inside it: where a step's Design lines sit.
+const INNER_LIST = /<ul\b[^>]*>(?:(?!<\/?(?:ul|ol)\b)[\s\S])*?<\/ul>/g;
+const FRAMES = /<div class="frames">([\s\S]*?)<\/div>/g;
 const TABLE = /<table\b[\s\S]*?<\/table>/g;
 // A step's pointer into design/spec.md, plain or bold, bulleted or not.
 const SPEC_LINE = /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?Spec:(?:\*\*)?[ \t]*`?design\/spec\.md\b/;
@@ -87,12 +89,9 @@ const imageSize = (bytes: Buffer): Readonly<{ w: number; h: number }> | null => 
   return bytes[0] === 0xff && bytes[1] === 0xd8 ? jpegSize(bytes, 2) : null;
 };
 
-// The card is as wide as the image at the thumbnail height, clamped so a tall board keeps a
-// readable strip of its top and a wide banner does not take the whole column.
-const cardWidth = (size: Readonly<{ w: number; h: number }> | null): number =>
-  size === null || size.h === 0
-    ? 320
-    : Math.round(Math.min(520, Math.max(240, (THUMB_HEIGHT * size.w) / size.h)));
+// A tall board shows the top of the screen in its card; any other image shows whole.
+const isTall = (size: Readonly<{ w: number; h: number }> | null): boolean =>
+  size !== null && size.h > size.w;
 
 // The page is uploaded to chat, so it reads a file of artifacts/ only when the file's real path is
 // inside the real artifacts/: a link an agent planted cannot pull in a file from elsewhere.
@@ -135,7 +134,7 @@ const loadFrame = async ({ frame, file }: FrameFile): Promise<[string, Frame]> =
   const bytes = await readFile(file);
   const mime = MIME[extname(frame).toLowerCase()] ?? "application/octet-stream";
   const uri = `data:${mime};base64,${bytes.toString("base64")}`;
-  return [frame, { uri, width: cardWidth(imageSize(bytes)) }];
+  return [frame, { uri, tall: isTall(imageSize(bytes)) }];
 };
 
 // Screen and "Source of truth for" per frame, from design/INDEX.md's
@@ -163,7 +162,7 @@ const frameCard = (frame: string, page: Page): string => {
     ? `<span class="frame-truth" title="${escapeHtml(row.truth)}">${escapeHtml(row.truth)}</span>`
     : "";
   const name = escapeHtml(frame);
-  return `<figure class="frame" style="width:${loaded.width}px"><img data-img="${name}" alt="${name}"><figcaption><span class="frame-name">${name}</span>${screen}${truth}</figcaption></figure>`;
+  return `<figure class="frame${loaded.tall ? " tall" : ""}"><img data-img="${name}" alt="${name}"><figcaption><span class="frame-name">${name}</span>${screen}${truth}</figcaption></figure>`;
 };
 
 // The page shows no spec: a step's Spec line stays in the markdown for implement and qa, and is
@@ -198,6 +197,23 @@ const decorateSteps = (html: string, page: Page): string =>
     .replace(PARAGRAPH, (whole, inner: string) => `${whole}${decorationsFor(inner, page)}`)
     .replace(TIGHT_ITEM, (whole, inner: string) => `${whole}${decorationsFor(inner, page)}`);
 
+// A list item that is only a Design line and its frame cards.
+const DESIGN_ITEM =
+  /<li\b[^>]*>\s*(?:<strong>)?Design:(?:<\/strong>)?[^<]*<div class="frames">[\s\S]*?<\/div>\s*<\/li>\s*/g;
+const EMPTY_LIST = /<ul\b[^>]*>\s*<\/ul>/;
+
+// A list of Design lines gives way to one row of their frames: the cards name each frame, so the
+// lines would only repeat them.
+const gatherListFrames = (html: string): string =>
+  html.replace(INNER_LIST, (list) => {
+    const cards = [...list.matchAll(FRAMES)].flatMap(
+      (m) => m[1]?.match(/<figure\b[\s\S]*?<\/figure>|<p\b[\s\S]*?<\/p>/g) ?? [],
+    );
+    if (cards.length === 0) return list;
+    const rest = list.replace(DESIGN_ITEM, "").replace(FRAMES, "").replace(EMPTY_LIST, "");
+    return `${rest}<div class="frames">${[...new Set(cards)].join("")}</div>`;
+  });
+
 // As in yok view: doc.css scrolls a wrapped table inside its own box, so a wide one cannot
 // widen the page on a phone.
 const wrapTables = (html: string): string =>
@@ -220,7 +236,11 @@ const renderDoc = (doc: Doc, page: Page): string => {
   const label =
     doc.phase === undefined ? "" : `<span class="phase-label">Phase ${doc.phase}</span>`;
   const body = addHeadingIds(
-    wrapTables(decorateSteps(renderMarkdown(withoutSpecLines(doc.markdown), page.repo), page)),
+    wrapTables(
+      gatherListFrames(
+        decorateSteps(renderMarkdown(withoutSpecLines(doc.markdown), page.repo), page),
+      ),
+    ),
     doc.id,
   );
   const gallery = doc.phase === undefined && page.rows.size > 0 ? galleryOf(page) : "";

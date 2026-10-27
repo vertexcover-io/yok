@@ -135,14 +135,10 @@ describe("buildPlanPage", () => {
 
     const phase = page.match(/<article id="phase-1"[\s\S]*?<\/article>/)?.[0] ?? "";
     expect(phase.match(/<\/p>\n?<div class="frames">/g)?.length).toBe(3);
-    expect(phase).toContain(
-      '<figure class="frame" style="width:312px"><img data-img="design/wide.png"',
-    );
+    expect(phase).toContain('<figure class="frame"><img data-img="design/wide.png"');
     expect(phase).toContain('<span class="frame-screen">Home, desktop</span>');
     expect(phase).toContain('<span class="frame-truth" title="layout">layout</span>');
-    expect(phase).toContain(
-      '<figure class="frame" style="width:240px"><img data-img="design/tall.jpg"',
-    );
+    expect(phase).toContain('<figure class="frame tall"><img data-img="design/tall.jpg"');
     const images = scriptJson(page, "plan-images");
     expect(Object.keys(images).toSorted()).toEqual(["design/tall.jpg", "design/wide.png"]);
     const wideUri = `data:image/png;base64,${Buffer.from(wide).toString("base64")}`;
@@ -188,6 +184,38 @@ describe("buildPlanPage", () => {
 
     expect(page).toMatch(/<li[^>]*>Build to design\/a\.png\.<div class="frames">/);
     expect(page.match(/<div class="frames">/g)?.length).toBe(2);
+  });
+
+  test("a step's Design lines give way to one row of their frames, each frame once", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(
+      artifacts,
+      "phases/phase-1.md",
+      [
+        "# Phase 1",
+        "",
+        "1. **Create the modal**",
+        "",
+        "   Summary.",
+        "",
+        "   - **Design:** build to design/a.png at 1200px",
+        "   - **Design:** build to design/b.png at 560px",
+        "   - **Design:** build to design/a.png at 1200px",
+        "",
+      ].join("\n"),
+    );
+    put(artifacts, "design/a.png", pngBytes(1200, 1000));
+    put(artifacts, "design/b.png", pngBytes(560, 900));
+
+    const page = await build(artifacts);
+
+    expect(page.match(/<div class="frames">/g)?.length).toBe(1);
+    expect(page).not.toContain("Design:");
+    expect(page.match(/<article id="phase-1"[\s\S]*?<\/article>/)?.[0]).not.toContain("<ul");
+    expect(page).toMatch(
+      /<p[^>]*>Summary\.<\/p>\s*<div class="frames"><figure class="frame"><img data-img="design\/a\.png"[\s\S]*?<\/figure><figure class="frame tall"><img data-img="design\/b\.png"[\s\S]*?<\/figure><\/div>/,
+    );
   });
 
   test("a phase keeps its own number when a revision left a gap, with no count beside it", async () => {
@@ -347,8 +375,9 @@ describe("buildPlanPage", () => {
     expect(page).toContain("Spec: design/spec.md — quoted in a code block");
     expect(page).not.toContain('class="spec"');
     expect(page).not.toContain("plan-spec");
-    expect(page).toMatch(
-      /<li[^>]*><strong>Design:<\/strong> build to design\/a\.png at 1200px<div class="frames">/,
+    expect(page).not.toContain("Design:");
+    expect(page).toContain(
+      '<div class="frames"><figure class="frame"><img data-img="design/a.png"',
     );
   });
 
