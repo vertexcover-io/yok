@@ -22,20 +22,21 @@ export type RemoteSettings = Readonly<Record<keyof typeof ENV_KEYS, string>>;
 const REQUEST_TIMEOUT_MS = 10_000;
 const WRONG_LOGIN = "wrong username or password";
 
-// Each variable comes from the shell first, then HOME/.env, so a CI job needs no login.
+// All three come from the shell when it sets YOK_SERVER_URL, else all three from HOME/.env, so a
+// shell password is never sent to the saved server and a CI job needs no login.
 export const remoteSettings = (
   env: Readonly<Record<string, string | undefined>>,
   home: string,
 ): RemoteSettings => {
-  const saved = readHomeEnv(home);
-  const read = (setting: keyof typeof ENV_KEYS): string =>
-    env[ENV_KEYS[setting]] || saved[ENV_KEYS[setting]] || "";
-  const settings = { url: read("url"), user: read("user"), password: read("password") };
-  const missing = Object.values(ENV_KEYS).filter((key) => !env[key] && !saved[key]);
+  const source = env[ENV_KEYS.url] ? env : readHomeEnv(home);
+  const settings = {
+    url: source[ENV_KEYS.url] ?? "",
+    user: source[ENV_KEYS.user] ?? "",
+    password: source[ENV_KEYS.password] ?? "",
+  };
+  const missing = Object.values(ENV_KEYS).filter((key) => !source[key]);
   if (missing.length > 0) {
-    throw new Error(
-      `${missing.join(", ")} not set; run yok remote login URL --user USER`,
-    );
+    throw new Error(`${missing.join(", ")} not set; run yok remote login URL --user USER`);
   }
   unwrap(checkServerUrl(settings.url));
   return { ...settings, url: settings.url.replace(/\/+$/, "") };
@@ -106,7 +107,8 @@ const promptHidden = (label: string): Promise<string> =>
           stdin.pause();
           stdin.off("data", onData);
           process.stderr.write("\n");
-          return resolve(typed);
+          resolve(typed);
+          return;
         }
         typed = key === "\u007f" ? typed.slice(0, -1) : typed + key;
       }

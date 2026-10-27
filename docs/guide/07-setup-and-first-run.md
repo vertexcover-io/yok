@@ -196,7 +196,7 @@ yok remote run task --prompt "fix login" --project web
 yok remote status
 ```
 
-`login` asks for the password without echoing it. A script can pipe it on stdin or set `YOK_SERVER_PASSWORD`; `--password` stays for CI, but shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. The same three variables set in the shell win over the file, so a CI job needs no login. `yok-dev remote …` does the same from this checkout, with `~/.yok-dev/.env`. `yok-remote` is a shortcut for `yok remote`.
+`login` asks for the password without echoing it. A script can pipe it on stdin or set `YOK_SERVER_PASSWORD`; `--password` stays for CI, but shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev remote …` does the same from this checkout, with `~/.yok-dev/.env`. `yok-remote` is a shortcut for `yok remote`.
 
 Every remote command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 

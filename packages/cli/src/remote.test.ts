@@ -19,18 +19,41 @@ const basicFor = (user: string, password: string): string =>
   `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
 
 describe("remoteSettings", () => {
-  test("SC4001: each login variable comes from the shell when set there, else from HOME/.env", () => {
+  test("SC4001: all three login variables come from the shell when it sets the URL, else all from HOME/.env", () => {
     const home = tempHome();
     writeFileSync(
       join(home, ".env"),
       "YOK_SERVER_URL=https://yok.example.com/\nYOK_SERVER_USER=ritesh\nYOK_SERVER_PASSWORD=old\n",
     );
 
-    expect(remoteSettings({ YOK_SERVER_PASSWORD: "new" }, home)).toEqual({
+    expect(remoteSettings({}, home)).toEqual({
       url: "https://yok.example.com",
       user: "ritesh",
-      password: "new",
+      password: "old",
     });
+    expect(
+      remoteSettings(
+        {
+          YOK_SERVER_URL: "https://ci.example.com",
+          YOK_SERVER_USER: "ci",
+          YOK_SERVER_PASSWORD: "new",
+        },
+        home,
+      ),
+    ).toEqual({ url: "https://ci.example.com", user: "ci", password: "new" });
+  });
+
+  test("SC4012: a shell password alone is not sent to the saved server, and a shell URL does not borrow the saved login", () => {
+    const home = tempHome();
+    writeFileSync(
+      join(home, ".env"),
+      "YOK_SERVER_URL=https://yok.example.com\nYOK_SERVER_USER=ritesh\nYOK_SERVER_PASSWORD=old\n",
+    );
+
+    expect(remoteSettings({ YOK_SERVER_PASSWORD: "new" }, home).password).toBe("old");
+    expect(() => remoteSettings({ YOK_SERVER_URL: "https://ci.example.com" }, home)).toThrow(
+      /YOK_SERVER_USER, YOK_SERVER_PASSWORD not set/,
+    );
   });
 
   test("SC4002: a missing login variable stops with its name and the login command", () => {
