@@ -53,11 +53,6 @@ const FRAMES = /<div class="frames">([\s\S]*?)<\/div>/g;
 const TABLE = /<table\b[\s\S]*?<\/table>/g;
 // A step's frames with the table written right after its Design line, its UI mapping.
 const MAPPED_FRAMES = /(<div class="frames">[\s\S]*?<\/div>)\s*(<table\b[\s\S]*?<\/table>)/g;
-// A phase's Test Scenarios section, up to the next section.
-const SCENARIO_SECTION = /(<h2\b[^>]*>\s*Test Scenarios\s*<\/h2>)([\s\S]*?)(?=<h2\b|$)/g;
-const LEVEL_HEADING = /<h3\b[^>]*>([\s\S]*?)<\/h3>/;
-const SCENARIO_START = /(?=<p\b[^>]*>\s*<strong>\s*SC\d)/;
-const SCENARIO = /^\s*<p\b[^>]*>\s*<strong>\s*SC\d/;
 // A link to plan.md or a phase file, from either folder.
 const DOC_LINK = /href="(?:\.{1,2}\/)*(?:phases\/)?(plan|phase-\d+)\.md"/g;
 // A step's pointer into design/spec.md, plain or bold, bulleted or not.
@@ -271,26 +266,6 @@ const pairMappings = (html: string): string =>
     return list === undefined ? whole : `${frames}${list}`;
   });
 
-const scenarioRow = (part: string, level: string): string =>
-  SCENARIO.test(part)
-    ? `<tr><td class="sc">${part.trim()}</td><td class="sc-level">${escapeHtml(textOf(level).trim())}</td></tr>`
-    : `<tr><td class="sc-note" colspan="2">${part.trim()}</td></tr>`;
-
-// A phase's scenarios read as one table, a row each, with the level its heading gave it beside it.
-const tableScenarios = (html: string): string =>
-  html.replace(SCENARIO_SECTION, (whole, heading: string, body: string) => {
-    const [lead = "", ...groups] = body.split(LEVEL_HEADING);
-    const rows = Array.from({ length: Math.floor(groups.length / 2) }, (_, i) => {
-      const [level = "", chunk = ""] = [groups[2 * i], groups[2 * i + 1]];
-      return chunk
-        .split(SCENARIO_START)
-        .filter((part) => part.trim() !== "")
-        .map((part) => scenarioRow(part, level));
-    }).flat();
-    if (!rows.some((row) => row.startsWith('<tr><td class="sc">'))) return whole;
-    return `${heading}${lead}<table class="scenarios"><thead><tr><th>Scenario</th><th>Level</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
-  });
-
 // The page holds every plan file, so a link to one opens its document here.
 const linkDocs = (html: string): string =>
   html.replace(DOC_LINK, (_whole, doc: string) => `href="#${doc}"`);
@@ -320,7 +295,7 @@ const renderDoc = (doc: Doc, page: Page): string => {
     doc.phase === undefined ? "" : `<span class="phase-label">Phase ${doc.phase}</span>`;
   const html = renderMarkdown(withoutSpecLines(doc.markdown), page.repo);
   const steps = pairMappings(gatherListFrames(decorateSteps(html, page)));
-  const body = addHeadingIds(wrapTables(tableScenarios(linkDocs(steps))), doc.id);
+  const body = addHeadingIds(wrapTables(linkDocs(steps)), doc.id);
   const titled = /^##[ \t]+Design Frames[ \t]*$/im.test(doc.markdown);
   const gallery = doc.phase === undefined && page.rows.size > 0 ? galleryOf(page, titled) : "";
   return `<article id="${doc.id}" class="doc" hidden>${label}${body}${gallery}</article>`;

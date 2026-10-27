@@ -272,59 +272,6 @@ describe("buildPlanPage", () => {
     expect(page).toMatch(/<div class="table-wrap"><table[\s\S]*?desk/);
   });
 
-  test("a phase's test scenarios become one table, a row per scenario with its level beside it", async () => {
-    const artifacts = tempDir("plan-artifacts");
-    put(artifacts, "plan.md", "# Plan\n");
-    put(
-      artifacts,
-      "phases/phase-1.md",
-      [
-        "# Phase 1",
-        "",
-        "## Test Scenarios",
-        "",
-        "### Unit",
-        "",
-        "**SC1 — A weak password is rejected** · R2",
-        "",
-        "Given a password with no digit:",
-        "- registration is blocked",
-        "",
-        "**SC2 — A strong password is kept** · R2",
-        "",
-        "Given a password with a digit:",
-        "- registration goes through",
-        "",
-        "### E2E",
-        "",
-        "**SC3 — The form shows the rule** · R3",
-        "",
-        "Given the page is open:",
-        "- the rule is shown",
-        "",
-        "## Commit",
-        "",
-        "feat: passwords",
-        "",
-      ].join("\n"),
-    );
-
-    const page = await build(artifacts);
-    const section = page.match(/id="phase-1-test-scenarios"[\s\S]*?(?=<h2)/)?.[0] ?? "";
-
-    expect(section).not.toContain("<h3");
-    expect(section.match(/<table class="scenarios">/g)?.length).toBe(1);
-    expect(
-      [
-        ...section.matchAll(
-          /<tr><td class="sc">[\s\S]*?(SC\d)[\s\S]*?<\/td><td class="sc-level">([^<]+)<\/td><\/tr>/g,
-        ),
-      ].map((m) => `${m[1]} ${m[2]}`),
-    ).toEqual(["SC1 Unit", "SC2 Unit", "SC3 E2E"]);
-    expect(section).toContain("registration is blocked");
-    expect(page).toMatch(/<h2 id="phase-1-commit"/);
-  });
-
   test("a link to a phase file or to plan.md opens that document on the page", async () => {
     const artifacts = tempDir("plan-artifacts");
     put(
