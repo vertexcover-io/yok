@@ -28,4 +28,4 @@ Produces the `proof-report` artifact, `.yok/RUN_NAME/artifacts/verification/proo
 - `references/stack-up.md`: bringing up and tearing down the environment entry.
 - `references/driving-the-browser.md`, `headless-verification.md`, `visual-verification.md`: how to drive, prove and read the frames.
 - `references/writing-the-report.md` and `proof-report-template.html`: the report's field contract and the page it fills.
-- `scripts/qa.ts`: the output schema. `scripts/report-media.ts`: builds the videos and inlines media into the report. Both have tests beside them.
+- `scripts/qa.ts`: the output schema, the report's `visualMatch` schema, and the `design-coverage` verifier, which rejects a PASS or PARTIAL report that compares no scenario against a frame the plan builds, compares one at a width the index does not give, or carries a BLOCKER finding. `scripts/report-media.ts`: builds the videos and inlines media into the report. Both have tests beside them.

@@ -275,6 +275,23 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
   assert.deepEqual(mediaPaths({}), []);
 });
 
+test("SC21 (design): a scenario's baseline and re-shoot are both inlined, once each, after its frames", () => {
+  const data = {
+    scenarios: [
+      {
+        frames: ["screenshots/01_a__01_open.png"],
+        visualMatch: { baseline: "../design/a.png", build: "screenshots/01_a.design.png" },
+      },
+    ],
+  };
+
+  assert.deepEqual(mediaPaths(data), [
+    "screenshots/01_a__01_open.png",
+    "../design/a.png",
+    "screenshots/01_a.design.png",
+  ]);
+});
+
 test("SC18: the report data is read out of its island, and anything else reads as null", () => {
   assert.deepEqual(parseReportData(reportHtml({ scenarios: [] })), { scenarios: [] });
   assert.equal(parseReportData("<html></html>"), null);

@@ -8,19 +8,48 @@ governs where things go and what they are called. It never governs how much a st
 | Part | Include when | How it is written |
 |---|---|---|
 | **Title**: the action and its file | always | `1. **Change \`src/x.ts:31-40\`**` |
-| **What it does**: the contract, or the ordered logic with the branch and the error path | always | prose under the title |
-| **Diff**: the change | the step writes or changes code | a line naming the file and range, then a ```` ```diff ```` block |
+| **Summary**: what the step makes true and why | always | two or three sentences under the title, as **The summary** below says |
+| **Design**: the frame this step builds, and where its spec rules are | the step builds the screen, component or interaction a frame draws | two list items, as **Designs** below shows |
+| **UI mapping**: the component behind each element of the frame | the step has a Design part | a table right after the list items, as **Designs** below shows |
+| **Diff**: the change | the step changes code, whether or not it has a Design part or a Spec line | a line naming the file and range, then a ```` ```diff ```` block |
 | **Pattern**: existing code to imitate | the step copies a shape from elsewhere rather than changing that code | a fenced block, with the reason it is shown on the line above |
-| **Design**: the frame this step builds to | the step builds a surface a design defines | `build to design/x.png` |
 | **Why this way**: the rejected alternative, or the constraint | the location or shape had a plausible alternative | closing sentence |
 | **Trap**: what breaks if the developer does the obvious thing | code that looks safe to change and is not | its own paragraph |
 
-Parts are triggered, not filled. An omitted part costs nothing; a padded part states
-"considered, nothing found". The one part that is owed: where `design/INDEX.md` names a frame
-for the surface a step builds, that step's Design part is required.
+**Write the parts in the table's order.** Parts are triggered, not filled. An omitted part costs
+nothing; a padded part states "considered, nothing found".
+
+**Some parts are owed.** A step that changes code carries its Diff. A step that builds what a
+frame in `design/INDEX.md` draws carries its Design part and its UI mapping.
 
 A step can also say something that is none of these. An environment warning, or a note on how
 to see the change, is plain prose.
+
+## The summary
+
+The summary is the part every reader of the plan reads: the developer before the diff, the
+reviewer deciding whether to approve, and qa deciding what to check. Write it so each of them
+understands the step after one read, in two or three sentences of plain English, present tense.
+
+1. **Outcome first.** The first sentence says what is true once the step lands, seen from outside
+   the file: what a user, an API caller or another part of the system can now do, now gets, or
+   no longer gets.
+2. **Then the reason.** The next sentence says why the step is needed: the requirement it serves,
+   or what goes wrong without it.
+3. **Then what stays the same**, when a reader would worry about it: the behaviour the change
+   leaves untouched.
+
+**Leave the mechanics to the diff.** The names the diff adds, renames and deletes, its branches
+and its error paths are read in the diff's code. A rejected alternative goes in **Why this way**,
+and a hazard goes in **Trap**.
+
+**Gloss every name you use.** A function, type, route or file the summary names gets a few words
+saying what it is, in the sentence that first names it.
+
+**Write only for the reader.** Every diff is written against the file as the earlier phases
+leave it, for the whole plan, so a step states only what is true of this step. Test counts
+belong to the scenarios. Anything that depends on what another phase did is settled before the
+step is written, and the step states the settled answer.
 
 ## Show the change as a diff
 
@@ -55,15 +84,43 @@ asks them to fetch what the step could have handed them.
 
 ## Designs
 
-A step that builds to a design names the frame, with one line saying what it settles. Prose is
-not a substitute: the ticket states the rule, and the frame settles what the rule leaves open.
+**Put the frame on the step that builds what it shows.** The Design part belongs to the step
+whose diff creates the screen, component or interaction the frame draws: its markup, its states
+and the behaviour the user sees. A step that only imports, mounts or calls that component names
+it in its summary and leaves the frame to the step that built it. The plan page shows each frame
+under the step that carries it, beside the code that draws it.
 
-**The style facts a frame settles**, to read off it and carry in the step's contract: element
-order · spacing · type scale and weight · colour role · component variant · divider placement ·
-icon · empty-state copy word for word.
+**Two list items name the frame and the spec**, each on its own line:
 
-Where no design exists, say so in the step. A surface with no design is one the developer is
-authorized to invent.
+```markdown
+   - **Design:** build to design/FILE at WIDTHpx
+   - **Spec:** design/spec.md — PART · PART
+```
+
+The Design line names the frame and the width `design/INDEX.md` gives it. The Spec line names
+every part of `design/spec.md` the surface must keep, in the spec's own words, on that one line.
+The rule text stays in spec.md: implement and qa read those parts there and check them.
+
+**The UI mapping follows the list items**, as a table with these columns:
+
+```markdown
+   | Element | Component | Use |
+   |---|---|---|
+```
+
+One row per element the step's frames show. **Element** names what the user sees, in the frame's own
+words. **Component** names the component that draws it: a component from the repo with its
+repo-relative file, a library component with its package name, or the new component this step
+creates. **Use** is `reuse` when the component is taken as it is, `extend` when the diff changes it,
+and `new` when this step builds it. The plan page shows the mapping under the step's frames, closed
+until the reader opens it.
+
+**The frame shows the screen; the diff builds it.** What the frame settles, its element order,
+spacing, type, colour roles, component variants and copy, lands in the diff's code, never in a
+prose description of the screen.
+
+**Where no design exists, say so in the summary.** A surface with no design is one the developer
+is authorized to invent.
 
 ## Register
 
@@ -84,15 +141,16 @@ finished when a developer who was not in this conversation can act on it after o
 
 A step carries a new function's design, a new file's location, a change to an existing type or
 signature, or an algorithm whose correctness is not obvious. A step that is only "modify X to do
-Y" is mechanical: reduce it to a one-line note, or cut it. Steps are not a change list.
+Y" is mechanical: fold its diff into the step it serves. Steps are not a change list.
 
 ## One step
 
 ````markdown
 2. **Reject duplicate emails in `src/services/user.ts:31 — createUser`**
 
-   Look up the address before inserting. When the lookup returns a row, throw
-   `DuplicateError(email)`. The happy path does not change.
+   Stops a second account being created for an email that is already registered. `createUser`
+   now checks for the address first and refuses with `DuplicateError`, so the caller can tell
+   the user the email is taken. Sign-up with a new email works as before.
 
    `src/services/user.ts:31-33`
 
