@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -51,7 +52,7 @@ export const parseFrontmatter = (text: string, path: string): Result<unknown> =>
   return parseYaml(lines.slice(1, end).join("\n"), path);
 };
 
-const isProcessAlive = (pid: number): boolean => {
+export const isProcessAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;
@@ -117,6 +118,24 @@ export const withLock = async <T>(lockDir: string, action: () => Promise<T>): Pr
     await releaseLock(lockDir);
   }
 };
+
+// One change at a time: the lock is held from reading the file until the new one is renamed in,
+// so two writers cannot both change the same old copy. The rename means the file is never
+// half-written. A change that returns its input unchanged writes nothing.
+export const updateJsonFile = <T>(
+  path: string,
+  read: (path: string) => Promise<T>,
+  change: (current: T) => T,
+): Promise<Readonly<{ before: T; after: T }>> =>
+  withLock(`${path}.lock`, async () => {
+    const before = await read(path);
+    const after = change(before);
+    if (after === before) return { before, after };
+    const tempPath = `${path}.tmp-${randomUUID()}`;
+    await writeFile(tempPath, JSON.stringify(after, null, 2));
+    await rename(tempPath, path);
+    return { before, after };
+  });
 
 export type ModuleError = Readonly<{
   kind: "missing-module" | "load-failed" | "missing-export";

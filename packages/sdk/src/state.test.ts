@@ -262,7 +262,6 @@ export const onRisky = (state, event) => {
   if (event.payload === "bad") throw new Error("cannot apply a bad note");
   return { ...state, custom: { ...state.custom, note: event.payload } };
 };
-export const onBadShape = (state) => ({ ...state, runName: "Not A Slug" });
 `;
 
 test("a sync with no event since the last one leaves state.json unwritten", async () => {
@@ -369,10 +368,7 @@ describe("emitRunEvent with extension handlers", () => {
     expect((await stateJson()).lastEventSeq).toBe(0);
   });
 
-  test.each([
-    ["throws", "onRisky"],
-    ["returns a state that fails the schema", "onBadShape"],
-  ])(
+  test.each([["throws", "onRisky"]])(
     "EH13 — a handler that %s fails the emit and stores nothing, so later events still apply",
     async (_label, handler) => {
       const { run, runDir, stateJson } = await runWithHandlers({

@@ -1,8 +1,8 @@
 # learn: simulated sessions
 
-Real multi-turn sessions against a dummy repo, to test the learn skill end to end. `evals.json` checks
-single prompts; these check what only a real session shows: whether a correction gets noticed,
-whether the evidence ids point at the real messages, and whether the event reaches Samskara.
+Real multi-turn sessions against a dummy repo, to test the learn skill end to end: whether a
+correction gets noticed, what the user is offered and what gets written, whether the evidence ids
+point at the real messages, and whether the event reaches Samskara.
 
 Each run:
 

@@ -118,7 +118,7 @@ A named value a workflow's stage node passes to its stage.
 ## Stepping through a run
 
 **Orchestrate**:
-The skill and script a session uses to walk a run one node at a time.
+The skill and script a session uses to walk a run, running every node that is ready.
 
 **Step**:
 The node run that `next` hands the session, which it then carries out and reports back on with `done`.
@@ -227,11 +227,11 @@ A named target a run verifies its change against, with its own commands.
 **Doctor**:
 The check that a machine, repository and config have everything a run needs.
 
-**API key**:
-`YOK_API_KEY`, which the server writes into its home's `.env` on first start and requires on every route but `/health`.
-
 **Remote server**:
-The server `YOK_SERVER_URL` points a CLI at, on another machine, in place of the local one.
+A yok server on another machine, reached through the reverse proxy in front of it, which does https and the login.
+
+**Server domain**:
+`SERVER_DOMAIN` in the yok home's `.env`: the domain that proxy answers on. Dashboard links start with it, and the Host/Origin guard accepts it.
 
 ## People and feedback
 

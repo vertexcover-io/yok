@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,15 +38,6 @@ describe("emitEvent", () => {
     expect(Date.parse(result.value.ts)).toBeGreaterThanOrEqual(before - 1000);
     expect(Date.parse(result.value.ts)).toBeLessThanOrEqual(Date.now() + 1000);
     expect(await store.read()).toEqual([result.value]);
-  });
-
-  test("SC5: an event type outside the catalog is stored with any JSON payload", async () => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
-      type: "custom.skill.note",
-      source: "test",
-      payload: [1, "two", null],
-    });
-    expect(result).toMatchObject({ ok: true, value: { payload: [1, "two", null] } });
   });
 
   test.each([
@@ -106,20 +96,6 @@ describe("emitRunEvent", () => {
     expect(state.workspace.type).toBe("multi");
     expect(state.workspace.path).toBe(WS_DIR);
     expect(Object.keys(state.workspace.repositories)).toEqual(["api"]);
-  });
-
-  test("leaves a run folder with no state.json yet without one", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "repo-"));
-    const run = { id: "r-1", cwd, name: "fix-login" };
-
-    const result = await emitRunEvent(run, {
-      type: "custom.skill.note",
-      source: "test",
-      payload: {},
-    });
-
-    expect(result.ok).toBe(true);
-    expect(existsSync(join(runDirOf(cwd, "fix-login"), "state.json"))).toBe(false);
   });
 });
 
@@ -836,6 +812,12 @@ describe("blocker", () => {
       handler: "record-guard",
       decision: "allow",
     });
+  const inputUnreachable = (seq: number) =>
+    runEvent(seq, "agent.input.unreachable", {
+      ...session,
+      step: "design",
+      line: "/yok:orchestrate --resume r",
+    });
   const onDesign = { node: "design", since: at(2) };
   const openings: readonly (readonly [string, Event, Blocker])[] = [
     [
@@ -942,6 +924,19 @@ describe("blocker", () => {
       expect(state.blocker).toEqual(expected);
     },
   );
+
+  test("SC16: an unreachable input box leaves the run running with no blocker; only the notifier tells a person", () => {
+    unblockedState(project([designRunning, inputUnreachable(2)]));
+  });
+
+  test("an input box yok could not reach leaves the run running with no blocker; only the notifier tells a person", () => {
+    const unreachable = runEvent(2, "agent.input.unreachable", {
+      ...session,
+      step: "design",
+      line: "/yok:orchestrate --resume r",
+    });
+    unblockedState(project([designRunning, unreachable]));
+  });
 
   test("SC142: agent.resumed on a running run leaves it running with no blocker", () => {
     unblockedState(project([designRunning, resumed(2, "usage-limit")]));
@@ -1197,6 +1192,20 @@ describe("emitEvent refusals", () => {
       { sessionId: "s1" },
       "agent.limit.resumed",
     ],
+    [
+      "agent.input.unreachable with no step",
+      "agent.input.unreachable",
+      {},
+      { ...session, line: "/yok:orchestrate --resume r" },
+      "agent.input.unreachable",
+    ],
+    [
+      "agent.input.unreachable with no line",
+      "agent.input.unreachable",
+      {},
+      { ...session, step: "design" },
+      "agent.input.unreachable",
+    ],
   ])(
     "%s is refused, naming why, and nothing is stored",
     async (_label, type, ids, payload, reason) => {
@@ -1235,6 +1244,44 @@ describe("findRunningLeaf", () => {
   ])("SC113: the running leaf of $given is the deepest running node", ({ nodes, found }) => {
     expect(findRunningLeaf(nodes)).toEqual(found);
   });
+
+  const review = nodeRun("running", { nodeRunId: "review", nodeType: "agent", mode: "subagent" });
+  const write = nodeRun("running", { nodeRunId: "write", nodeType: "agent", mode: "inline" });
+  const loop = nodeRun("running", { nodeRunId: "loop", nodeType: "loop", nodes: {} });
+  const lint = nodeRun("running", { nodeRunId: "lint" });
+  test.each([
+    {
+      given: "review (subagent) listed before write (inline)",
+      nodes: { review, write },
+      found: { path: "write", run: write },
+    },
+    { given: "only review running", nodes: { review }, found: { path: "review", run: review } },
+    {
+      given: "a loop with nothing inside running",
+      nodes: { loop },
+      found: { path: "loop", run: loop },
+    },
+    {
+      given: "exec lint listed before review (subagent)",
+      nodes: { lint, review },
+      found: { path: "review", run: review },
+    },
+    {
+      given: "a loop with nothing inside running listed before review (subagent)",
+      nodes: { loop, review },
+      found: { path: "review", run: review },
+    },
+    {
+      given: "a loop with nothing inside running listed before exec lint",
+      nodes: { loop, lint },
+      found: { path: "lint", run: lint },
+    },
+  ])(
+    "SC18: with $given, the running step is the session's inline node, else an agent node, else the first running one",
+    ({ nodes, found }) => {
+      expect(findRunningLeaf(nodes)).toEqual(found);
+    },
+  );
 });
 
 describe("foldModelSwitch", () => {

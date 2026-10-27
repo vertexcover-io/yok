@@ -23,5 +23,5 @@ Chosen: a background subagent the session starts, because it is the only option 
 
 ## Consequences
 
-The agent node's `mode`, the reply's `mode`/`tier`, the subagent's `YOK-RESULT`/`YOK-ERROR` report and the adapter's `subagents` flag are contracts; a stage that starts its own subagents loses them when set to `mode: subagent`.
+The agent node's `mode`, the reply's `mode`/`tier`, the subagent's `YOK-RESULT`/`YOK-ERROR` report and the adapter's `subagents` flag are contracts; a stage whose skill says how it uses sub-agents runs inline even when set to `mode: subagent`, and the skill starts them; the mode only tells the skill to do so.
 A tier whose model has no Claude Code alias would run the subagent on the session's model without warning.

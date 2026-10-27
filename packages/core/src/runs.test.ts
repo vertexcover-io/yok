@@ -17,8 +17,10 @@ import {
   emitRunEvent,
   findRoot,
   type ITerminal,
+  type ITerminalHost,
   noopLogger,
   type ResolvedTiers,
+  type RunRef,
   resolveRun,
   StateSchema,
   SubscriberRefSchema,
@@ -26,7 +28,7 @@ import {
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
 import corePackage from "../package.json";
-import { agentAdapters } from "./agents/index.ts";
+import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
 import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
@@ -454,6 +456,15 @@ describe("the notifier at init", () => {
     expect(result.value.state.subscribers).toEqual(expected(cwd));
   });
 
+  test("SC5: a new run's notifier subscribes to the approval request", async () => {
+    const { init } = await notifierRun({}, "notifier: {}\n");
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.subscribers["artifact.approval.requested"]).toEqual([NOTIFIER_REF]);
+  });
+
   const SAMSKARA_REF = {
     name: "samskara",
     blocking: false,
@@ -661,6 +672,77 @@ describe("terminal naming", () => {
     }
   });
 
+  const rule = "─".repeat(40);
+  const claudeBox = (text: string) => `· Working… (3s)\n${rule}\n❯ ${text}\n${rule}`;
+  // Codex keeps colors in its capture: a dim hint in an empty box, plain typed text
+  const codexBox = (text: string) =>
+    `• Working (3s • esc to interrupt)\n\x1b[1m›\x1b[0m ${text || "\x1b[2mAsk Codex to do anything\x1b[0m"}`;
+  test.each<[string, "claude" | "codex", string, boolean, (string | readonly string[])[]]>([
+    [
+      "a Claude pane with an empty input box gets /rename fix-login typed and submitted",
+      "claude",
+      claudeBox(""),
+      false,
+      ["/rename fix-login", ["Enter"]],
+    ],
+    [
+      "a Claude pane whose box holds the user's text gets nothing typed",
+      "claude",
+      claudeBox("half a th"),
+      false,
+      [],
+    ],
+    [
+      "a Codex pane whose box shows only its hint gets /rename fix-login typed and submitted",
+      "codex",
+      codexBox(""),
+      false,
+      ["/rename fix-login", ["Enter"]],
+    ],
+    [
+      "a Codex pane whose box holds the user's text gets nothing typed",
+      "codex",
+      codexBox("half a th"),
+      false,
+      [],
+    ],
+    [
+      "a Claude pane that refuses the typed /rename gets no Enter",
+      "claude",
+      claudeBox(""),
+      true,
+      ["/rename fix-login"],
+    ],
+  ])("%s at init", async (_label, agent, screen, typingFails, expected) => {
+    const typed: (string | readonly string[])[] = [];
+    const ok = async () => ({ ok: true as const, value: undefined });
+    const terminal: ITerminal = {
+      ...({} as ITerminal),
+      rename: ok,
+      capture: async () => ({ ok: true, value: screen }),
+      sendText: async (text) => {
+        typed.push(text);
+        return typingFails ? { ok: false, error: "pane closed" } : ok();
+      },
+      sendKeys: async (keys) => {
+        typed.push(keys);
+        return ok();
+      },
+    };
+    const provider = agentProvider({
+      agent,
+      host: {} as ITerminalHost,
+      env: {},
+      log: noopLogger,
+    });
+    const { run, init } = await savedRun({ sessions: [{ agent, sessionId: "s1" }] });
+
+    const result = await init("fix-login", run.id, { terminal, provider });
+
+    expect(result.ok).toBe(true);
+    expect(typed).toEqual(expected);
+  });
+
   test.each<[string, ITerminal | undefined]>([
     ["SC4: init outside tmux", undefined],
     [
@@ -812,7 +894,10 @@ describe("nextStep with stage tiers", () => {
 
     const reply = await nextStep(ref, agentAdapters);
 
-    expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "make" } });
+    expect(reply).toMatchObject({
+      ok: true,
+      value: { kind: "steps", steps: [{ kind: "stage", nodeId: "make" }] },
+    });
   });
 
   test("a Claude run launched on its default deep tier hands out its first deep stage with no model step", async () => {
@@ -820,7 +905,10 @@ describe("nextStep with stage tiers", () => {
 
     const reply = await nextStep(ref, agentAdapters);
 
-    expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "think" } });
+    expect(reply).toMatchObject({
+      ok: true,
+      value: { kind: "steps", steps: [{ kind: "stage", nodeId: "think" }] },
+    });
   });
 
   test("a Claude run registered with no tiers hands out its fast stage with no model step", async () => {
@@ -828,7 +916,10 @@ describe("nextStep with stage tiers", () => {
 
     const reply = await nextStep(ref, agentAdapters);
 
-    expect(reply).toMatchObject({ ok: true, value: { kind: "stage", nodeId: "make" } });
+    expect(reply).toMatchObject({
+      ok: true,
+      value: { kind: "steps", steps: [{ kind: "stage", nodeId: "make" }] },
+    });
   });
 
   test("SC16, SC22: a fast stage on a run whose tiers map fast to sonnet-y gets a model step for sonnet-y, logged as orchestrate.next, and once applied the stage", async () => {
@@ -858,7 +949,7 @@ describe("nextStep with stage tiers", () => {
 
     expect(await nextStep(ref, agentAdapters)).toMatchObject({
       ok: true,
-      value: { kind: "stage", nodeId: "make" },
+      value: { kind: "steps", steps: [{ kind: "stage", nodeId: "make" }] },
     });
   });
   test("SC7: next on a Claude run replies to a fast subagent stage with its tier and no model step", async () => {
@@ -866,16 +957,10 @@ describe("nextStep with stage tiers", () => {
       "  - { id: make, type: agent, stage: stages/quick, input: {}, mode: subagent }\n",
     );
 
-    const reply = await nextStep(ref, agentAdapters);
+    const step = await nextSingleStep(ref);
 
-    if (!reply.ok) throw new Error(reply.error);
-    expect(reply.value).toMatchObject({
-      kind: "stage",
-      nodeId: "make",
-      mode: "subagent",
-      tier: "fast",
-    });
-    expect(reply.value).not.toHaveProperty("model");
+    expect(step).toMatchObject({ kind: "stage", nodeId: "make", mode: "subagent", tier: "fast" });
+    expect(step).not.toHaveProperty("model");
   });
 
   test("SC8: next on a Codex run replies to a subagent stage with mode: inline", async () => {
@@ -884,10 +969,107 @@ describe("nextStep with stage tiers", () => {
       { header: "agent: codex\n" },
     );
 
+    const step = await nextSingleStep(ref);
+
+    expect(step).toMatchObject({ kind: "stage", nodeId: "make", mode: "inline" });
+    expect(step).not.toHaveProperty("tier");
+  });
+});
+
+const execNode = (id: string, extra = "") =>
+  `  - { id: ${id}, type: exec, runtime: sh, script: "true", input: {}${extra} }\n`;
+
+// The one step a `next` reply hands out.
+const nextSingleStep = async (ref: RunRef) => {
+  const reply = await nextStep(ref, agentAdapters);
+  if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
+  const [step, ...rest] = reply.value.steps;
+  if (step === undefined || rest.length > 0) throw new Error(JSON.stringify(reply));
+  return step;
+};
+
+// Records the step completed, as `orchestrate exec` would.
+const completeStep = async (
+  ref: RunRef,
+  step: Readonly<{ nodeId: string; nodeRunId: string }>,
+): Promise<void> => {
+  const ended = await appendRunEvent(ref, {
+    type: "workflow.node.completed",
+    source: "orchestrate",
+    nodeId: step.nodeId,
+    nodeRunId: step.nodeRunId,
+    payload: { nodeType: "exec", attempts: 1, output: {} },
+  });
+  if (!ended.ok) throw new Error(ended.error);
+};
+
+describe("nextStep with parallel nodes", () => {
+  test("SC6: an exec, a subagent stage and an inline stage that all depend on the completed a go out in one steps reply, ordered exec, subagent, inline", async () => {
+    const { ref } = await stagedRun(
+      `${execNode("a")}  - { id: inline, type: agent, stage: stages/plain, dependsOn: [a], input: {} }
+  - { id: sub, type: agent, stage: stages/delegated, dependsOn: [a], input: {} }
+${execNode("run", ", dependsOn: [a]")}`,
+    );
+    await completeStep(ref, await nextSingleStep(ref));
+
     const reply = await nextStep(ref, agentAdapters);
 
-    if (!reply.ok) throw new Error(reply.error);
-    expect(reply.value).toMatchObject({ kind: "stage", nodeId: "make", mode: "inline" });
-    expect(reply.value).not.toHaveProperty("tier");
+    if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
+    expect(reply.value.steps).toMatchObject([
+      { kind: "exec", nodeId: "run" },
+      { kind: "stage", nodeId: "sub", mode: "subagent" },
+      { kind: "stage", nodeId: "inline", mode: "inline" },
+    ]);
+  });
+
+  test("on a Codex run, b and c, which both depend on the completed a, go out one per next", async () => {
+    const { ref } = await stagedRun(
+      `${execNode("a")}${execNode("b", ", dependsOn: [a]")}${execNode("c", ", dependsOn: [a]")}`,
+      { header: "agent: codex\n" },
+    );
+    await completeStep(ref, await nextSingleStep(ref));
+
+    expect(await nextSingleStep(ref)).toMatchObject({ kind: "exec", nodeId: "b" });
+  });
+
+  test("exec d, handed out alone once b completes while the inline stage c is still open, runs in the background", async () => {
+    const { ref } = await stagedRun(
+      `${execNode("a")}${execNode("b", ", dependsOn: [a]")}  - { id: c, type: agent, stage: stages/plain, dependsOn: [a], input: {} }
+${execNode("d", ", dependsOn: [b]")}`,
+    );
+    await completeStep(ref, await nextSingleStep(ref));
+    const second = await nextStep(ref, agentAdapters);
+    if (!second.ok || second.value.kind !== "steps") throw new Error(JSON.stringify(second));
+    const b = second.value.steps.find(({ nodeId }) => nodeId === "b");
+    if (b === undefined) throw new Error(JSON.stringify(second));
+    await completeStep(ref, b);
+
+    expect(await nextSingleStep(ref)).toMatchObject({
+      kind: "exec",
+      nodeId: "d",
+      mode: "background",
+    });
+  });
+
+  test("SC12: an exec handed out alone with nothing open keeps its own mode, and two execs handed out together each run in the background", async () => {
+    const { ref } = await stagedRun(
+      `${execNode("a")}${execNode("b", ", dependsOn: [a]")}${execNode("c", ", dependsOn: [a]")}`,
+    );
+
+    const first = await nextSingleStep(ref);
+    expect(first).toMatchObject({ kind: "exec", nodeId: "a", mode: "inline" });
+    await completeStep(ref, first);
+    const second = await nextStep(ref, agentAdapters);
+
+    expect(second).toMatchObject({
+      ok: true,
+      value: {
+        kind: "steps",
+        steps: [
+          { kind: "exec", nodeId: "b", mode: "background" },
+          { kind: "exec", nodeId: "c", mode: "background" },
+        ],
+      },
+    });
   });
 });

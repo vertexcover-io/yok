@@ -20,6 +20,7 @@ const filesContaining = (
 
 const PUBLIC_RUNTIME_NAMES = [
   "AbsolutePathSchema",
+  "AgentInputUnreachableEvent",
   "AgentResumedEvent",
   "AgentStateSchema",
   "AgentStoppedEvent",
@@ -31,6 +32,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "BlockerSchema",
   "CheckStatusSchema",
   "ConfigSchema",
+  "ContextOutputSchema",
   "ContextStartedEvent",
   "CustomStateUpdatedEvent",
   "ERROR_MESSAGE_LIMIT",
@@ -267,10 +269,12 @@ describe("source boundaries", () => {
   // only state.ts may build a path to state.json at all. Others read it through readState.
   test("EH11 — only packages/sdk/src/state.ts builds a path to state.json, so every write goes through its lock", () => {
     const statePath = /[/"'`]state\.json["'`]/;
+    // The learn sim writes a finished run's state.json into a fake run before any agent starts.
+    const sim = "skills/learn/evals/sim/run.mjs";
     const sources = ["packages/*/src/**/*.ts", "skills/**/*.{ts,mts,js,mjs}"].flatMap((pattern) =>
       filesContaining(pattern, statePath, { excludeTests: true }),
     );
-    expect(sources).toEqual(["packages/sdk/src/state.ts"]);
+    expect(sources.filter((source) => source !== sim)).toEqual(["packages/sdk/src/state.ts"]);
   });
 
   test("EH12 — no skill script imports @yok/core; skills act on a run through the orchestrate script or the sdk", () => {

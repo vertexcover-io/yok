@@ -1,12 +1,14 @@
 import {
   AgentTypeSchema,
   EnvLayerSchema,
+  JsonObjectSchema,
   type JsonValue,
   NameSchema,
   NodeTypeSchema,
   NonEmptyStringSchema,
   type Notifier,
   NotifierSchema,
+  PermissionModeSchema,
   type PolicyLayer,
   PolicyLayerSchema,
   type ProcessRecord,
@@ -17,8 +19,10 @@ import {
   type TiersConfig,
   TiersConfigSchema,
 } from "@yok/sdk";
+import { AgentModeSchema } from "@yok/sdk/internal";
+import { Cron } from "croner";
 import { z } from "zod";
-import { AgentModeSchema, type ArtifactDeclaration, type Stage } from "../stage.ts";
+import type { ArtifactDeclaration, Stage } from "../stage.ts";
 
 export const NodeIdSchema = z
   .string()
@@ -221,6 +225,41 @@ export const DoctorDeclarationSchema = z.strictObject({
 export const WorkflowAgentSchema = AgentTypeSchema.extract(["claude", "codex"]);
 export type WorkflowAgent = z.infer<typeof WorkflowAgentSchema>;
 
+const succeeds = (attempt: () => boolean): boolean => {
+  try {
+    return attempt();
+  } catch {
+    return false;
+  }
+};
+
+// Five fields, no seconds: the scheduler fires at most once a minute. A pattern with no next
+// run (February 30) would never fire, so it is refused here rather than stored.
+export const CronSchema = z
+  .string()
+  .refine(
+    (pattern) =>
+      succeeds(() => new Cron(pattern, { mode: "5-part", paused: true }).nextRun() !== null),
+    "must be a 5-part cron expression that fires, like 0 9 * * 1-5",
+  );
+
+export const TimeZoneSchema = z
+  .string()
+  .refine(
+    (zone) => succeeds(() => new Intl.DateTimeFormat("en-US", { timeZone: zone }) !== null),
+    "must be an IANA time zone, like Asia/Kolkata",
+  );
+
+export const TriggerBlockSchema = z.strictObject({
+  cron: CronSchema,
+  // the server's own zone when left out
+  timezone: TimeZoneSchema.optional(),
+  // a firing has nobody to answer a permission menu
+  permissionMode: PermissionModeSchema.default("auto"),
+  inputs: JsonObjectSchema.default({}),
+});
+export type TriggerBlock = z.infer<typeof TriggerBlockSchema>;
+
 export const WorkflowSchema = z.strictObject({
   name: NonEmptyStringSchema,
   version: z.union([z.string(), z.number()]).optional(),
@@ -239,6 +278,8 @@ export const WorkflowSchema = z.strictObject({
   subscribers: SubscribersSchema,
   notifier: NotifierSchema.optional(),
   samskara: SamskaraSchema.optional(),
+  // the cron schedule `yok trigger add` registers; only the top workflow's applies
+  trigger: TriggerBlockSchema.optional(),
   nodes: z.array(NodeSchema).min(1),
 });
 
@@ -340,29 +381,42 @@ export type PlanStage = Readonly<{
 
 // Compiled nodes carry what they need: the ids of the containers around them (the path to their
 // entry in state.json), a stage node its loaded SKILL.md, an include node the workflow it
-// includes, and loops and switches their compiled children.
+// includes, and loops and switches their compiled children. `after` names the node before it in
+// run order when it has no dependsOn: it waits for that node to end, but neither inherits its skip
+// nor may read its output.
 export type PlanExecNode = ExecNode & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   outputSchema?: z.ZodType | undefined;
 };
-export type PlanWaitNode = WaitNode & { readonly parents: readonly string[] };
-export type PlanContextNode = ContextNode & { readonly parents: readonly string[] };
+export type PlanWaitNode = WaitNode & {
+  readonly parents: readonly string[];
+  readonly after: readonly string[];
+};
+export type PlanContextNode = ContextNode & {
+  readonly parents: readonly string[];
+  readonly after: readonly string[];
+};
 export type PlanAgentNode = Omit<AgentNode, "stage"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   stage?: PlanStage;
   outputSchema?: z.ZodType | undefined;
 };
 export type PlanIncludeNode = IncludeNode & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   plan: WorkflowPlan;
 };
 export type PlanLoopNode = Omit<LoopNode, "nodes"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   nodes: PlanNode[];
 };
 export type PlanSwitchCase = Omit<SwitchCase, "nodes"> & { nodes: PlanNode[] };
 export type PlanSwitchNode = Omit<SwitchNode, "cases" | "default"> & {
   readonly parents: readonly string[];
+  readonly after: readonly string[];
   cases: PlanSwitchCase[];
   default?: PlanNode[] | undefined;
 };
@@ -388,6 +442,7 @@ export type WorkflowPlan = Readonly<{
   notifier: Notifier | undefined;
   // the workflow's own block; it replaces the config's whole
   samskara: Samskara | undefined;
+  trigger: TriggerBlock | undefined;
   nodes: readonly PlanNode[];
 }>;
 
@@ -426,3 +481,29 @@ export class NodeFailure extends Error {
     this.name = "NodeFailure";
   }
 }
+
+const INPUT_TYPES: Record<InputDeclarations[string]["type"], z.ZodType<JsonValue>> = {
+  string: z.string(),
+  number: z.number(),
+  boolean: z.boolean(),
+  object: z.record(z.string(), z.json()),
+  array: z.array(z.json()),
+};
+
+// The workflow's inputs with their defaults filled in; an input that breaks its declaration throws.
+export const resolveWorkflowInputs = (
+  declarations: InputDeclarations,
+  given: Readonly<Record<string, JsonValue>>,
+): Record<string, JsonValue> => {
+  const fields = Object.entries(declarations).map(([name, declaration]) => {
+    const base = INPUT_TYPES[declaration.type];
+    if (declaration.default !== undefined) return [name, base.prefault(declaration.default)];
+    return [name, declaration.required ? base : base.optional()];
+  });
+  const parsed = z.strictObject(Object.fromEntries(fields)).safeParse(given);
+  if (parsed.success) return parsed.data as Record<string, JsonValue>;
+  const [issue] = parsed.error.issues;
+  const where =
+    issue === undefined || issue.path.length === 0 ? "inputs" : `inputs.${issue.path.join(".")}`;
+  throw new WorkflowError("input", `${where}: ${issue?.message ?? "invalid inputs"}`);
+};

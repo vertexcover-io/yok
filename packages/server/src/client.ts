@@ -2,15 +2,23 @@ import { type ILogger, noopLogger, type Result } from "@yok/sdk";
 import type { ClientResponse } from "hono/client";
 import { hc } from "hono/client";
 import type { SuccessStatusCode } from "hono/utils/http-status";
-import type { AppType } from "./app.ts";
+import type { ApiType } from "./app.ts";
 import {
   type AddProjectRequest,
+  type AddTriggerBody,
   type ApiError,
+  type DoctorBody,
   ErrorBodySchema,
-  type StartRunRequest,
+  type ResumeRunBody,
+  type StartRunBody,
+  type TriggerRef,
 } from "./protocol.ts";
 
-export type YokClientOptions = Readonly<{ url: string; apiKey: string; log?: ILogger }>;
+export type YokClientOptions = Readonly<{
+  url: string;
+  login?: Readonly<{ user: string; password: string }>;
+  log?: ILogger;
+}>;
 
 // The body a response carries on its 2xx statuses, as the server's routes declare it.
 type SuccessBody<R> =
@@ -67,16 +75,18 @@ const loggedFetch = (log: ILogger) =>
   }) as typeof fetch;
 
 // One method per API call, named like the CLI command that makes it. Inputs and outputs are
-// typed from the server's routes, so neither side restates the other's schemas.
-export const createYokClient = ({ url, apiKey, log = noopLogger }: YokClientOptions) => {
+// typed from the server's routes, so neither side restates the other's schemas. url is the
+// server's origin; login is for the reverse proxy in front of a remote server.
+export const createYokClient = ({ url, login, log = noopLogger }: YokClientOptions) => {
   const fetch = loggedFetch(log.child({ component: "client" }));
-  // /health goes without the key: the CLI asks it to learn whether the port is still its own
-  // server's, and another local user may have taken the port while the server was down.
-  const open = hc<AppType>(url, { fetch });
-  const api = hc<AppType>(url, { fetch, headers: { authorization: `Bearer ${apiKey}` } });
+  const basic = login && Buffer.from(`${login.user}:${login.password}`).toString("base64");
+  const headers = basic === undefined ? {} : { authorization: `Basic ${basic}` };
+  const api = hc<ApiType>(`${url.replace(/\/+$/, "")}/api`, { fetch, headers });
   return {
-    health: () => unwrap(open.health.$get()),
-    run: (body: StartRunRequest) => unwrap(api.runs.$post({ json: body })),
+    health: () => unwrap(api.health.$get()),
+    run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),
+    resume: (runId: string, body: ResumeRunBody) =>
+      unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
     projects: () => unwrap(api.projects.$get()),
     addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
     removeProject: (name: string, purge: boolean) =>
@@ -86,8 +96,14 @@ export const createYokClient = ({ url, apiKey, log = noopLogger }: YokClientOpti
           query: { purge: purge ? "true" : "false" },
         }),
       ),
+    doctor: (body: DoctorBody) => unwrap(api.doctor.$post({ json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
+    addTrigger: (body: AddTriggerBody) => unwrap(api.triggers.$post({ json: body })),
+    listTriggers: () => unwrap(api.triggers.$get()),
+    fireTrigger: (ref: TriggerRef) => unwrap(api.triggers.fire.$post({ json: ref })),
+    triggerLog: (ref: TriggerRef) => unwrap(api.triggers.log.$get({ query: ref })),
+    removeTrigger: (ref: TriggerRef) => unwrap(api.triggers.$delete({ query: ref })),
   };
 };
 

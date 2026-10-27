@@ -150,6 +150,7 @@ const initCommand = () =>
       const runId = opts.runId ?? process.env.YOK_RUN_ID;
       if (!runId) return fail("no run: pass --run-id or run inside a yok session");
       await runWorkflowCommand(async () => {
+        const linked = await registry().findRun(runId);
         const result = await initializeRun({
           registry: registry(),
           runId,
@@ -157,6 +158,7 @@ const initCommand = () =>
           git: createGit(),
           log,
           terminal: currentTerminal(),
+          provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
@@ -658,7 +660,8 @@ const loadHelperRun = async (
     log.error({ sessionId: flags.sessionId }, "no provider for the session's agent");
     return undefined;
   }
-  return { run, log, provider };
+  const permissionMode = linked?.permissionMode;
+  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
 };
 
 const contextCommand = () =>
@@ -673,7 +676,7 @@ const contextCommand = () =>
     .action(async (nodeRunId, opts) => {
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
-      const { run, log, provider } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       const runDir = runDirOf(run.cwd, run.name);
       const [state, events] = await Promise.all([
         readState(runDir),
@@ -693,6 +696,7 @@ const contextCommand = () =>
           pluginDir: devPluginDir(),
           // a switched model outlives the session it was switched in
           ...tierLaunch(current),
+          ...modeLaunch,
         },
         home: yokHome(),
         log,
@@ -711,14 +715,19 @@ const modelCommand = () =>
     .action(async (seq, opts) => {
       const helper = await loadHelperRun(opts, "yok-model", "model.log");
       if (helper === undefined) return;
-      const { run, log, provider } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       await runModelStep({
         run,
         seq: Number(seq),
         sessionId: opts.sessionId,
         terminal: currentTerminal(process.env, log),
         provider,
-        launch: { cwd: run.cwd, orchestrateArgv: orchestrateArgv(), pluginDir: devPluginDir() },
+        launch: {
+          cwd: run.cwd,
+          orchestrateArgv: orchestrateArgv(),
+          pluginDir: devPluginDir(),
+          ...modeLaunch,
+        },
         home: yokHome(),
         log,
       });

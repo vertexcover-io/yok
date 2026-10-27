@@ -71,6 +71,9 @@ export const TokenUsageSchema = z.strictObject({
   cachedOutput: z.int().nonnegative().optional(),
 });
 
+// How the session runs an agent node: itself, or by handing it whole to a subagent.
+export const AgentModeSchema = z.enum(["inline", "subagent"]);
+
 export const AgentStateSchema = z.strictObject({
   agent: NonEmptyStringSchema,
   // null when the run cannot switch models and has no tiers, so the model is unknown
@@ -148,6 +151,21 @@ export const SkipOutputSchema = z.discriminatedUnion("reason", [
   }),
 ]);
 
+// What a context step ends with: the action it took, or why the action did not happen.
+export const ContextOutputSchema = z.discriminatedUnion("applied", [
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(true),
+    sessionId: NonEmptyStringSchema,
+  }),
+  z.strictObject({
+    action: z.enum(["new", "compact"]),
+    applied: z.literal(false),
+    reason: NonEmptyStringSchema,
+  }),
+]);
+export type ContextOutput = z.infer<typeof ContextOutputSchema>;
+
 // A node's current run: state.json is the graph as it stands now, not its history (that is
 // event.jsonl). A loop, switch or include holds its children in `nodes`, keyed by the ids
 // workflow.yaml gives them; a loop holds only its current pass, numbered by `iteration`, with the
@@ -169,6 +187,8 @@ const NodeRunFieldsSchema = z.strictObject({
   iteration: z.int().positive().optional(),
   stage: SlugSchema.optional(),
   agentState: AgentStateSchema.optional(),
+  // an agent node: whether the session runs it itself or in a background subagent
+  mode: AgentModeSchema.optional(),
   awaitingApproval: ArtifactPathSchema.optional(),
 });
 

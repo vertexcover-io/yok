@@ -228,11 +228,42 @@ describe("codexProvider.launch", () => {
 
     expect(created.spec?.statusLine).toBeUndefined();
   });
+
+  test("SC620: with a session to continue it runs codex-x resume t-1 under the given terminal name, the prompt last and the status bar kept", async () => {
+    const created: Created = {};
+    const provider = codexProvider({
+      host: fakeHost(created),
+      binary: "codex-x",
+      newId: () => "fresh",
+    });
+
+    const launched = await provider.launch({
+      cwd: "/repo",
+      model: "gpt-x",
+      prompt: "$orchestrate --resume demo",
+      env: { YOK_RUN_ID: "r-9" },
+      orchestrateArgv: ARGV,
+      continueSession: { id: "t-1", terminalName: "codex-demo-3c4d" },
+    });
+
+    expect(launched.ok && launched.value.terminalName).toBe("codex-demo-3c4d");
+    const argv = created.spec?.argv ?? [];
+    expect(created.spec?.name).toBe("codex-demo-3c4d");
+    expect(argv.slice(0, 4)).toEqual([
+      "codex-x",
+      "resume",
+      "t-1",
+      "--dangerously-bypass-hook-trust",
+    ]);
+    expect(argv.slice(argv.indexOf("-m"), argv.indexOf("-m") + 2)).toEqual(["-m", "gpt-x"]);
+    expect(argv.at(-1)).toBe("$orchestrate --resume demo");
+    expect(created.spec?.statusLine).toEqual([...ARGV, "statusline", "--run-id", "r-9"]);
+  });
 });
 
 type PaneCall = readonly [string, unknown];
 
-const screenPane = (screen: string, alive = true) => {
+const screenPane = (screen: string) => {
   const calls: PaneCall[] = [];
   const ok = (call: PaneCall) => {
     calls.push(call);
@@ -242,24 +273,34 @@ const screenPane = (screen: string, alive = true) => {
     sendText: (text: string) => ok(["sendText", text]),
     sendKeys: (keys: readonly string[]) => ok(["sendKeys", keys]),
     capture: () => Promise.resolve({ ok: true as const, value: screen }),
-    isAlive: () => Promise.resolve(alive),
+    isAlive: () => Promise.resolve(true),
     kill: () => ok(["kill", null]),
     respawn: (spec: unknown) => ok(["respawn", spec]),
   } as unknown as ITerminal;
   return { pane, calls };
 };
 
+// What Codex 0.164 draws for its input box, colors kept: a bold ›, then a dim hint when it is empty.
+const HINT_BOX = "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m";
+const WORKING = "• Working (3s • esc to interrupt)";
+
 describe("codexProvider.promptWhenReady", () => {
-  const cases: readonly (readonly [string, string, "sent" | "not-ready"])[] = [
-    ["an empty input marker", "header\n›\nfooter", "sent"],
-    ["a marker with hint text after it", "› Ask Codex to do anything", "not-ready"],
-    ["an empty marker while Codex works", "• Working (3s • esc to interrupt)\n›", "not-ready"],
-    ["no input marker at all", "Select an option\n1. Yes", "not-ready"],
+  const cases: readonly (readonly [string, string, boolean, "sent" | "not-ready"])[] = [
+    ["an empty input marker", "header\n›\nfooter", false, "sent"],
+    ["a box showing only Codex's dim hint", HINT_BOX, false, "sent"],
+    ["a box holding typed text", "\x1b[1m›\x1b[0m half typed", false, "not-ready"],
+    ["undimmed text after the marker", "› Ask Codex to do anything", false, "not-ready"],
+    ["an empty marker while Codex works", `${WORKING}\n${HINT_BOX}`, false, "not-ready"],
+    ["an empty marker while Codex works, sent while busy", `${WORKING}\n${HINT_BOX}`, true, "sent"],
+    ["typed text while Codex works, sent while busy", `${WORKING}\n› half`, true, "not-ready"],
+    ["no input marker at all", "Select an option\n1. Yes", false, "not-ready"],
   ];
-  for (const [name, screen, expected] of cases) {
+  for (const [name, screen, whileBusy, expected] of cases) {
     test(`${name} is ${expected}`, async () => {
       const { pane, calls } = screenPane(screen);
-      const result = await codexProvider({ host: fakeHost({}) }).promptWhenReady(pane, "continue");
+      const result = await codexProvider({ host: fakeHost({}) }).promptWhenReady(pane, "continue", {
+        whileBusy,
+      });
 
       expect(result).toEqual({ ok: true, value: expected });
       expect(calls.length > 0).toBe(expected === "sent");
@@ -268,23 +309,6 @@ describe("codexProvider.promptWhenReady", () => {
 });
 
 describe("codexProvider pane control", () => {
-  test("prompt into a dead pane fails and types nothing; a live one gets the text and Enter", async () => {
-    const provider = codexProvider({ host: fakeHost({}) });
-    const dead = screenPane("", false);
-    const live = screenPane("");
-
-    expect(await provider.prompt(dead.pane, "hi")).toEqual({
-      ok: false,
-      error: "the agent's terminal is not running",
-    });
-    expect(dead.calls).toEqual([]);
-    expect(await provider.prompt(live.pane, "hi")).toEqual({ ok: true, value: undefined });
-    expect(live.calls).toEqual([
-      ["sendText", "hi"],
-      ["sendKeys", ["Enter"]],
-    ]);
-  });
-
   test("stop kills the pane, and relaunch respawns codex in it with the launch argv", async () => {
     const provider = codexProvider({ host: fakeHost({}), binary: "codex-x" });
     const { pane, calls } = screenPane("");

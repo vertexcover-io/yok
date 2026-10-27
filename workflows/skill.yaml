@@ -1,0 +1,72 @@
+# Writes a new agent skill, or edits one that exists, from a prompt; then audits and fixes it,
+# two passes at most. A new skill with no path: skill-author asks where to save it, project or
+# user, .agents or .claude.
+name: skill
+inputs:
+  # The skill to edit: its folder, or its name. Empty creates a new skill, unless the prompt
+  # names one that exists.
+  skill:
+    type: string
+    default: ""
+  # true makes the skill a yok stage: its frontmatter contract, its schemas and verifiers. A
+  # skill that already is a stage stays one.
+  yok:
+    type: boolean
+    default: false
+  prompt:
+    type: string
+    required: true
+  # The folder the skill's own folder is made in; when set, scope and folder are ignored.
+  path:
+    type: string
+    default: ""
+  # project or user
+  scope:
+    type: string
+    default: ""
+  # .agents or .claude
+  folder:
+    type: string
+    default: ""
+tiers:
+  default: high
+  models:
+    high: { model: claude-fable-5-1, effort: high }
+nodes:
+  - id: skill-author
+    type: agent
+    stage: skill-author
+    input:
+      skill: "{{ inputs.skill }}"
+      yok: "{{ inputs.yok }}"
+      prompt: "{{ inputs.prompt }}"
+      path: "{{ inputs.path }}"
+      scope: "{{ inputs.scope }}"
+      folder: "{{ inputs.folder }}"
+
+  # Each pass audits, then fixes what the audit found. A clean audit skips the fix and ends
+  # the loop; the second pass's fix is not audited again.
+  - id: audit-loop
+    type: loop
+    dependsOn: [skill-author]
+    until: "{{ iteration.nodes.skill-audit.output.clean or iteration.index == iteration.max }}"
+    maxIterations: 2
+    input:
+      path: "{{ nodes.skill-author.output.path }}"
+    nodes:
+      - id: skill-audit
+        type: agent
+        stage: skill-audit
+        input:
+          path: "{{ inputs.path }}"
+          round: "{{ iteration.index }}"
+
+      - id: skill-fix
+        type: agent
+        stage: skill-fix
+        dependsOn: [skill-audit]
+        when: "{{ not nodes.skill-audit.output.clean }}"
+        input:
+          path: "{{ inputs.path }}"
+          findings: "{{ nodes.skill-audit.output.findings }}"
+          round: "{{ iteration.index }}"

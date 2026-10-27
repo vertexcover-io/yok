@@ -35,30 +35,64 @@ const SPINNER = /^[·✢✳✶✻✽*] \S.*…/;
 export const CLAUDE_NOTHING_TO_COMPACT = "Not enough messages to compact.";
 // Empties the input line; C-c would exit Claude when the box is already empty.
 export const CLAUDE_CLEAR_INPUT_KEY = "C-u";
+// Claude reads an Escape followed within 50 ms by another key as one Alt key, so the Escape is
+// lost; after this pause it counts as a lone Escape (300 ms was proven on a live pane).
+export const CLAUDE_ESCAPE_PAUSE_MS = 300;
+// One Escape may not close a popup: /config opens with focus in its search box, where the first
+// Escape only leaves the box. Two Escapes on a bare prompt open the Rewind menu, so another is
+// sent only while the input box stays hidden, up to this many in all.
+export const CLAUDE_MAX_ESCAPES = 3;
 
 export const isClaudeBusy = (screen: string): boolean =>
   screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
 
-const RULE = /^\s*─{10,}\s*$/;
-const DIALOG_FOOTER = /enter to confirm|esc to cancel/i;
+// A named session draws its name into the rule, `──── fix-login ─`, with fewer dashes before it
+// in a narrow pane, or none.
+const RULE = /^\s*(?:─{10,}|─*\s.*\S\s─+)\s*$/;
+const INPUT_LINE = /^❯(?:\s|$)/;
+const MENU_OPTION = /^❯\s*\d+\.\s/;
+const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;
 
-// Claude's empty input box: a bare ❯ between two rules. A dialog replaces the box, so seeing it
-// is the positive sign that Enter submits a message.
-const hasEmptyInputBox = (screen: string): boolean =>
-  screen
-    .split("\n")
-    .some(
-      (line, i, lines) =>
-        line.trim() === "❯" && RULE.test(lines[i - 1] ?? "") && RULE.test(lines[i + 1] ?? ""),
-    );
+// The lowest line shaped like Claude's input box: a ❯ line between two rules. A menu option's
+// ❯ cursor (`❯ 1. Yes`) can sit between rules too, where Enter would pick it.
+const findInputBoxLine = (lines: readonly string[]): number =>
+  lines.findLastIndex(
+    (line, i) =>
+      INPUT_LINE.test(line.trim()) &&
+      !MENU_OPTION.test(line.trim()) &&
+      RULE.test(lines[i - 1] ?? "") &&
+      RULE.test(lines[i + 1] ?? ""),
+  );
+
+// The text in Claude's input box, or undefined when no box shows. A popup or dialog replaces the
+// box, so seeing it is the sign that Enter submits a message. A dialog, or a popup such as /config
+// under a box left in scrollback, shows its footer below that line, which then means no box. Only
+// below: the capture holds scrollback, where the transcript can quote a footer above a real box.
+const readInputBox = (screen: string): string | undefined => {
+  const lines = screen.split("\n");
+  const at = findInputBoxLine(lines);
+  if (at === -1 || DIALOG_FOOTER.test(lines.slice(at + 1).join("\n"))) return undefined;
+  return lines[at]?.trim().slice(1).trim();
+};
+
+// A permission prompt or a question waits on a person's pick and draws no spinner; an Escape would
+// reject or decline it. Only an option below the lowest box-shaped line counts: an answered prompt
+// can linger in the capture's scrollback above the box that replaced it.
+export const isClaudeChoicePending = (screen: string): boolean => {
+  const lines = screen.split("\n");
+  return lines.slice(findInputBoxLine(lines) + 1).some((line) => MENU_OPTION.test(line.trim()));
+};
+
+export const hasClaudeInputBox = (screen: string): boolean => readInputBox(screen) !== undefined;
+
+const hasEmptyInputBox = (screen: string): boolean => readInputBox(screen) === "";
 
 const isAwaitingInput = (screen: string): boolean =>
-  hasEmptyInputBox(screen) && !isClaudeBusy(screen) && !DIALOG_FOOTER.test(screen);
+  hasEmptyInputBox(screen) && !isClaudeBusy(screen);
 
 // Claude queues a message submitted while it works, so a comment only needs the empty box and no
 // menu; waiting for idle would hold it for the length of the agent's task.
-export const canTypeComment = (screen: string): boolean =>
-  hasEmptyInputBox(screen) && !DIALOG_FOOTER.test(screen);
+export const canTypeComment = (screen: string): boolean => hasEmptyInputBox(screen);
 
 // Some Claude versions preselect "Upgrade your plan" in the limit menu, so a bare Enter would buy
 // an upgrade; this picks "Stop and wait". Returns the screen to judge next, or null for a menu it
@@ -107,6 +141,7 @@ export type ClaudeArgOptions = Readonly<{
   effort?: Effort;
   permissionMode?: PermissionMode;
   systemPrompt?: string;
+  name?: string;
   prompt?: string;
   orchestrateArgv?: readonly string[];
   pluginDir?: string | undefined;
@@ -126,6 +161,7 @@ export const claudeArgs = (options: ClaudeArgOptions): string[] => {
     ...(options.effort !== undefined ? ["--effort", options.effort] : []),
     ...(options.permissionMode !== undefined ? ["--permission-mode", options.permissionMode] : []),
     ...(options.systemPrompt !== undefined ? ["--append-system-prompt", options.systemPrompt] : []),
+    ...(options.name !== undefined ? ["--name", options.name] : []),
     ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
     ...(options.pluginDir !== undefined ? ["--plugin-dir", options.pluginDir] : []),
     ...(options.prompt !== undefined ? [options.prompt] : []),
@@ -216,7 +252,9 @@ export const claudeProvider = ({
   const launch = async (
     options: LaunchOptions,
   ): Promise<Result<{ terminalName: string; terminal: ITerminal }>> => {
-    const terminalName = newId();
+    const { continueSession } = options;
+    const terminalName = continueSession?.terminalName ?? newId();
+    const session = continueSession === undefined ? [] : ["--resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const settings = {
       cwd: options.cwd,
@@ -226,7 +264,7 @@ export const claudeProvider = ({
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...claudeArgs(options)],
+      argv: [binary, ...session, ...claudeArgs(options)],
       env: options.env ?? {},
     });
     if (!created.ok) {

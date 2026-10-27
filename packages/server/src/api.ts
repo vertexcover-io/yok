@@ -9,7 +9,7 @@ export type Vars = { log: ILogger };
 
 export const errorResponse = (
   c: Context,
-  status: 400 | 401 | 404 | 409 | 500 | 502,
+  status: 400 | 404 | 409 | 422 | 500 | 502,
   code: ErrorCode,
   message: string,
   details?: JsonValue,
@@ -24,6 +24,13 @@ export const errorResponse = (
 // Checks a JSON body against its schema; a body that fails is a 400 in the API's error shape.
 export const jsonBody = <T extends z.ZodType>(schema: T) =>
   zValidator("json", schema, (result, c) =>
+    result.success
+      ? undefined
+      : errorResponse(c, 400, "bad-request", z.prettifyError(result.error)),
+  );
+
+export const queryParams = <T extends z.ZodType>(schema: T) =>
+  zValidator("query", schema, (result, c) =>
     result.success
       ? undefined
       : errorResponse(c, 400, "bad-request", z.prettifyError(result.error)),

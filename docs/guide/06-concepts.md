@@ -4,7 +4,7 @@ Each section here is one idea: what it is, the shape it has in code, and where i
 
 ## Workflow
 
-A YAML file naming a graph of nodes. The engine walks it top to bottom, starting each node whose dependencies are done. [workflows/task.yaml](../../workflows/task.yaml) is the shipped one.
+A YAML file naming a graph of nodes. The engine walks it top to bottom and starts every node whose dependencies are done, so nodes that each name their dependency in `dependsOn` run side by side once those are done. [workflows/task.yaml](../../workflows/task.yaml) is the shipped one.
 
 ```yaml
 name: task
@@ -22,7 +22,7 @@ nodes:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 ```
 
-Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, and `envFile`. A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
+Top-level keys: `name`, `inputs` (each with a type, `required`, and `default`), `doctor` (extra checks `yok run` makes before starting), `nodes`, and optionally `tiers`, `subscribers`, `notifier`, `samskara`, `env`, `envFile`, and `trigger` (see [Trigger](#trigger)). A workflow's copy is frozen into `.yok/RUN_NAME/workflow.yaml` at init.
 
 `yok verify workflows/task.yaml` compiles a workflow and prints the first error, so you can check a change without starting a run.
 
@@ -42,7 +42,7 @@ One step in the graph. Seven types. The schemas are in [workflow/types.ts](../..
 
 Every node has `id`, `input`, `dependsOn`, `allowFailure`, and `always`. All but `switch` also take `when`. The leaf types (`agent`, `exec`, `wait`, `context`) also take `cwd`, `timeoutMs`, and `retry`.
 
-- `dependsOn` lists node ids that must complete first. A dependency that was skipped skips this node too.
+- `dependsOn` lists node ids that must end first. A dependency that was skipped skips this node too. A node with no `dependsOn` waits for the node before it to end, but is not skipped with it. Two nodes run side by side only when each names its dependency.
 - `when` is an expression. False means skipped, with the reason recorded.
 - `allowFailure: true` means this node failing does not fail the run.
 - `always: true` means this node still starts after an earlier node in its scope failed. The retro node uses it. See [ADR 0008](../adr/0008-a-node-marked-always-still-starts-after-an-earlier-failure.md).
@@ -196,7 +196,7 @@ Agent hooks are about the session. Subscribers are about the run. They are diffe
 
 ## Context step and model switch
 
-A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
+A `context` node with `action: new` replaces the session with a fresh one in the same tmux pane. `compact` compacts the one it has. Both start only when the agent ends its turn, because the Stop hook is what launches the helper. The new or compacted session receives `/yok:orchestrate --resume RUN_NAME` and continues. Yok types a line as soon as Claude's input box (the lowest `❯` line between two rules, with no dialog footer such as `Esc to cancel` below it) shows, even while Claude finishes its turn, after clearing the box. While the box is hidden, by a popup for instance, yok sends Escape, up to three, until it shows. It never sends Escape while Claude shows busy, where an Escape could reject a permission dialog or cancel a compaction; it waits up to 30 seconds for the box instead. If the box never shows, yok types nothing on that try. `/compact` is typed once, and the compaction's SessionStart confirms it. Yok waits at least 180 seconds for that SessionStart, and longer while Claude shows the compaction busy: it gives up 30 seconds after Claude last looked busy, and at 10 minutes in all. The resume line counts once the run records `orchestrate.resume`, which the `--resume` skill runs first; yok waits for 30 seconds of continuous idle, starting the count again whenever Claude shows busy and stopping at 180 seconds in all, and types the line once more if it does not come. A context step whose action did not happen still completes, so the steps after it run. Only the resume line pings a person, since nobody else would drive the run without it: when no try could reach Claude's input box, so nothing was typed, yok records `agent.input.unreachable` and the Slack notifier posts it, asking the person to close whatever covers the box and type the resume line. A line typed at a visible box that Claude did not take on either try is only logged. The notice does not change the run's status. A model switch works the same way but keeps the conversation, using `claude --resume` on the new model. Codex has neither. The code is [context-step.ts](../../packages/core/src/context-step.ts).
 
 ## Limit wait
 
@@ -214,11 +214,33 @@ Where a run writes code. `layout: mono` means one repo: a worktree at `.worktree
 
 `registry.json` in the yok home lists every run on the machine: id, workflow, inputs, cwd, name, tmux session, Claude session ids, tiers. The server adds a run; init names it; the SessionStart hook links sessions. It is read and written under a file lock by both the server and orchestrate.
 
-The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, API key, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
+The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
 
 ## Doctor
 
 `yok doctor` checks what a run needs: git and a repo, jq, curl, tmux 3.3 or newer, the agent binary, the plugin at the binary's version, `.yok/` in `.gitignore`, exactly one `orchestrate.config.yaml`, and for QA `agent-browser` and `ffmpeg`. `gh` and `samskara` are optional, but while `samskara` is on, the `samskara-upload` row requires a paired CLI that has `artifacts upload`. A workflow adds its own `doctor` block. The server runs the same checks when a run starts, and refuses the run on any failure. Adding a project runs no checks. The list is [CHECKS](../../packages/core/src/doctor.ts#L182).
+
+## Trigger
+
+A cron schedule that starts a workflow by itself, with nobody attached. The workflow declares it:
+
+```yaml
+name: daily-digest
+trigger:
+  cron: "0 9 * * 1-5"          # 5 fields, no seconds
+  timezone: Asia/Kolkata       # optional; default is the server's zone
+  permissionMode: auto         # optional; default auto, so no run waits on a permission menu
+  inputs:
+    prompt: "Summarise yesterday's merged PRs"
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - ...
+```
+
+Compile checks the block: the cron must parse and fire, the zone must be real, `trigger.inputs` must fit the workflow's `inputs`, and the workflow's `agent` must be `claude`, since Codex has no permission mode to launch in. `yok trigger add WORKFLOW` registers it for a project: the one `--project NAME` names, or the checkout you are in, added as a project under its folder's name the first time, as `yok run` does. Adding the same workflow again updates it, and a second workflow with the same `name` in that project is refused. `list`, `fire NAME` (run it now), `log NAME` (last 20 firings) and `rm NAME` do the rest, each taking `--project NAME` or the checkout's project. The trigger's name is the workflow's `name`, unique per project. A project that still has triggers cannot be removed.
+
+The server keeps only the schedule, in `triggers.json` in the yok home, so an edited `cron` or `timezone` takes effect only after you run `yok trigger add` again, while edited `inputs` or `permissionMode` apply at the next firing. Every 15 seconds it starts each trigger whose `nextFireAt` has passed, through the same start-up path as `yok run`: a `git pull --ff-only` on a project yok cloned, the doctor, the env, then a run named `NAME-YYYYMMDD-HHMMSS` with `interaction: false` and the block's `permissionMode`. Each firing is one line in `trigger-fires.jsonl`: `started` with the run id, `skipped` (the previous run's agent is still working, or started under 5 minutes ago and has not named its run yet; the slot is over 6h old; earlier slots were slept through; or the trigger was removed while the doctor ran), or `failed` with the reason, such as a doctor check or a failed pull. After a sleep, only the latest missed slot fires. Triggers fire only while the server is up. A trigger saved before triggers named projects names a folder; on start the server moves it to the project at that folder, and adds one under the folder's name when there is none. [ADR 0023](../adr/0023-the-yok-server-fires-cron-triggers-from-a-15-second-tick.md).
 
 ## Not built yet
 
@@ -226,7 +248,6 @@ These show up in schemas or in conversation but have no behaviour behind them to
 
 | Thing | Where you see it | What it will mean |
 |---|---|---|
-| parallel nodes | two nodes with no `dependsOn` between them | they still run one at a time; `next` replies `waiting` while any step is open |
 | detached stages | conversation | a stage running as its own headless session |
 | `scopes` | a stage's frontmatter | a named level of rigour for a run, such as experiment or enterprise, that stages would read to decide how much to do |
 | `protocols` | a stage's frontmatter | shared rules, such as a writing style, loaded into a stage without the skill naming them |

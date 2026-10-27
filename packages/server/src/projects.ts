@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { zValidator } from "@hono/zod-validator";
 import {
   type IGit,
+  type ILogger,
   type ITerminalHost,
-  loadStartConfig,
   parseYaml,
   type Result,
   readIfExists,
@@ -15,7 +15,7 @@ import {
   type WorkflowRun,
   withLock,
 } from "@yok/sdk";
-import { isRunLive, type Registry, stringifyYaml } from "@yok/sdk/internal";
+import { isRunLive, type Registry, stringifyYaml, type TriggerStore } from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import * as z from "zod";
@@ -25,6 +25,7 @@ import {
   type AddProjectBody,
   AddProjectBodySchema,
   type ErrorCode,
+  folderSlug,
   type Project,
   ProjectSchema,
   type ProjectView,
@@ -32,7 +33,8 @@ import {
 
 export const CLONE_TIMEOUT_MS = 10 * 60_000;
 
-const ProjectsFileSchema = z.record(SlugSchema, ProjectSchema);
+// Not strict: a file that still holds a project's old `verdict` reads, and the next write drops it.
+const ProjectsFileSchema = z.record(SlugSchema, z.object(ProjectSchema.shape));
 type ProjectsFile = z.infer<typeof ProjectsFileSchema>;
 
 export type ProjectDeps = Readonly<{
@@ -40,6 +42,7 @@ export type ProjectDeps = Readonly<{
   registry: Registry;
   host: ITerminalHost;
   git: IGit;
+  triggers: TriggerStore;
 }>;
 
 const projectsPath = (home: string): string => join(home, "projects.yaml");
@@ -61,16 +64,36 @@ export const writeProjects = async (home: string, projects: ProjectsFile): Promi
   await rename(tempPath, projectsPath(home));
 };
 
-const projectStatus = (project: Project): ProjectView["status"] => {
-  if (!existsSync(project.path)) return "missing";
-  if (project.verdict?.startsWith("BLOCKED")) return "blocked";
-  return "ready";
+// The name `yok run` gives the folder. Nobody is asked here, so a name another folder holds
+// gets the first free number, and a folder with no usable name starts with "project".
+const chooseProjectName = (projects: ProjectsFile, folder: string): string => {
+  const slug = folderSlug(basename(folder));
+  const base = /^[a-z]/.test(slug) ? slug : `project-${slug}`.replace(/-$/, "");
+  const numbered = Object.keys(projects).map((_name, index) => `${base}-${index + 2}`);
+  return [base, ...numbered].find((name) => projects[name] === undefined) ?? base;
 };
+
+// The project at FOLDER, added when there is none. Never refuses: a trigger saved on main for
+// this folder must keep a project to fire in.
+export const findOrAddFolderProject = (home: string, folder: string): Promise<string> =>
+  withLock(projectsLockPath(home), async () => {
+    const projects = await readProjects(home);
+    const known = Object.entries(projects).find(([, project]) => project.path === folder);
+    if (known !== undefined) return known[0];
+    const name = chooseProjectName(projects, folder);
+    const project: Project = {
+      path: folder,
+      addedBy: { channel: "server" },
+      addedAt: new Date().toISOString(),
+    };
+    await writeProjects(home, { ...projects, [name]: project });
+    return name;
+  });
 
 const viewProject = (name: string, project: Project): ProjectView => ({
   name,
   ...project,
-  status: projectStatus(project),
+  status: existsSync(project.path) ? "ready" : "missing",
 });
 
 const checkoutRoot = async (git: IGit, path: string): Promise<Result<string>> => {
@@ -83,24 +106,39 @@ const checkoutRoot = async (git: IGit, path: string): Promise<Result<string>> =>
   return { ok: true, value: root };
 };
 
-// The named project, or the only one when none is named.
+const knownNames = (projects: ProjectsFile): string => {
+  const known = Object.keys(projects);
+  return known.length === 0 ? "none; add one with yok project add" : known.join(", ");
+};
+
+// The named project's checkout, and whether yok cloned it: a run pulls a clone first.
 export const pickProject = async (
   home: string,
-  name: string | undefined,
-): Promise<Result<Readonly<{ name: string; path: string }>>> => {
+  name: string,
+): Promise<Result<Readonly<{ name: string; path: string; cloned: boolean }>>> => {
   const projects = await readProjects(home);
-  const known = Object.keys(projects);
-  const list = known.length === 0 ? "none; add one with yok project add" : known.join(", ");
-  const picked = name ?? (known.length === 1 ? known[0] : undefined);
-  if (picked === undefined) return { ok: false, error: `name a project; known projects: ${list}` };
-  const project = projects[picked];
+  const project = projects[name];
   if (project === undefined) {
-    return { ok: false, error: `unknown project "${picked}"; known projects: ${list}` };
+    return {
+      ok: false,
+      error: `unknown project "${name}"; known projects: ${knownNames(projects)}`,
+    };
   }
   if (!existsSync(project.path)) {
-    return { ok: false, error: `project ${picked}'s checkout ${project.path} is gone` };
+    return { ok: false, error: `project ${name}'s checkout ${project.path} is gone` };
   }
-  return { ok: true, value: { name: picked, path: project.path } };
+  return { ok: true, value: { name, path: project.path, cloned: isClone(home, project) } };
+};
+
+// A body that fails its schema. When the project is what failed, the reply lists the known
+// projects, because the server never picks one.
+export const refuseBody = async (c: Context, home: string, error: z.core.$ZodError) => {
+  const message = z.prettifyError(error);
+  if (!error.issues.some((issue) => issue.path[0] === "project")) {
+    return errorResponse(c, 400, "bad-request", message);
+  }
+  const known = knownNames(await readProjects(home));
+  return errorResponse(c, 400, "bad-request", `${message}\nknown projects: ${known}`);
 };
 
 // Under the lock a removal takes, so the removal either sees the pending run or has already
@@ -116,17 +154,8 @@ export const addRunIfProjectKept = (
     return true;
   });
 
-// A project removed while its run was starting is left removed.
-export const saveVerdict = (home: string, name: string, line: string): Promise<void> =>
-  withLock(projectsLockPath(home), async () => {
-    const projects = await readProjects(home);
-    const project = projects[name];
-    if (project === undefined) return;
-    await writeProjects(home, { ...projects, [name]: { ...project, verdict: line } });
-  });
-
-// Only a folder yok cloned is purged: a project added by path, or a symlink, that sits in the
-// clones folder belongs to the person who named it.
+// Only a folder yok cloned is purged or pulled: a project added by path, or a symlink, that sits
+// in the clones folder belongs to the person who named it.
 const isClone = (home: string, project: Project): boolean => {
   const clones = clonesDir(home);
   if (project.git === undefined || !existsSync(project.path) || !existsSync(clones)) return false;
@@ -154,8 +183,9 @@ const conflictWith = (
 const claimAndClone = async (
   git: IGit,
   { home, url, path }: Readonly<{ home: string; url: string; path: string }>,
+  log: ILogger,
 ): Promise<
-  Result<void, Readonly<{ status: 400 | 409 | 502; code: ErrorCode; message: string }>>
+  Result<void, Readonly<{ status: 400 | 409 | 422; code: ErrorCode; message: string }>>
 > => {
   await mkdir(dirname(path), { recursive: true });
   const failed = await mkdir(path).then(
@@ -174,12 +204,17 @@ const claimAndClone = async (
   const cloned = await git.clone(home, url, path);
   if (cloned.ok) return cloned;
   await rm(path, { recursive: true, force: true });
-  return { ok: false, error: { status: 502, code: "git-failed", message: cloned.error } };
+  // git's stderr can echo the URL or the server's paths; it goes to the log, not to the caller.
+  log.info({ url, err: cloned.error }, "git clone failed");
+  return {
+    ok: false,
+    error: { status: 422, code: "git-failed", message: "git clone failed; see the server log" },
+  };
 };
 
 // The clone runs outside the projects lock, so a slow clone holds up no run start; the conflicts
-// are checked again under it. Each refusal leaves no entry and no clone behind. The doctor does
-// not run here: a run start checks the checkout.
+// are checked again under it. Each refusal leaves no entry and no clone behind. Neither the
+// config nor the doctor is checked here: a run start checks the checkout.
 const addProject = async (
   c: Context<{ Variables: Vars }>,
   deps: ProjectDeps,
@@ -191,7 +226,11 @@ const addProject = async (
   if (taken !== null) return errorResponse(c, 409, "conflict", taken);
   const path = body.path ?? join(clonesDir(deps.home), name);
   if (git !== undefined) {
-    const cloned = await claimAndClone(deps.git, { home: deps.home, url: git, path });
+    const cloned = await claimAndClone(
+      deps.git,
+      { home: deps.home, url: git, path },
+      c.get("log"),
+    );
     if (!cloned.ok) {
       return errorResponse(c, cloned.error.status, cloned.error.code, cloned.error.message);
     }
@@ -204,9 +243,6 @@ const addProject = async (
   if (!root.ok) return refuse(400, root.error);
   const owned = conflictWith(projects, { name, root: root.value });
   if (owned !== null) return refuse(409, owned);
-  // A missing config is not an error: the doctor reports it when a run starts.
-  const config = await loadStartConfig(null, root.value);
-  if (!config.ok) return refuse(400, config.error);
   const project: Project = {
     path: root.value,
     ...(git === undefined ? {} : { git }),
@@ -251,6 +287,12 @@ const removeProject = (
     if (live.length > 0) {
       return errorResponse(c, 409, "conflict", `${name} has runs still going: ${live.join(", ")}`);
     }
+    const triggers = (await deps.triggers.list()).filter((t) => t.project === name);
+    if (triggers.length > 0) {
+      const names = triggers.map((t) => t.name).join(", ");
+      const message = `${name} still has triggers: ${names}; remove them first with yok trigger rm NAME --project ${name}`;
+      return errorResponse(c, 409, "conflict", message);
+    }
     await writeProjects(deps.home, rest);
     const cloned = isClone(deps.home, project);
     if (purge && cloned) await rm(project.path, { recursive: true, force: true });
@@ -259,7 +301,7 @@ const removeProject = (
     return c.json({ removed: name, purged: purge && cloned, note }, 200);
   });
 
-// Mounted at /projects by app.ts. Chained, so each route's types reach AppType.
+// Mounted at /projects by app.ts. Chained, so each route's types reach ApiType.
 export const projectRoutes = (deps: ProjectDeps) =>
   new Hono<{ Variables: Vars }>()
     .get("/", async (c) => {

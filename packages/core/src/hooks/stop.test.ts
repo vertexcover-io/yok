@@ -27,7 +27,7 @@ import {
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
 import { recordGuard, runPreToolUse } from "./pre-tool-use.ts";
-import { decideStop, runStopHook, type StopCheck } from "./stop.ts";
+import { decideStop, offerLearn, runStopHook, type StopCheck } from "./stop.ts";
 
 const seed: State = {
   schemaVersion: 1,
@@ -248,6 +248,37 @@ describe("decideStop", () => {
     );
     expect(decision).toEqual({ reason: "background-task", blockStreak: 1 });
   });
+
+  test("SC20 (regression): with only a subagent agent node and an exec node open, a stop while a background task runs ends as background-task", () => {
+    const review = { ...nodeRun("review", "running"), mode: "subagent" as const };
+    const decision = decide(
+      { nodeRuns: { review, check: nodeRun("check", "running", "exec") } },
+      { waitingOnBackground: true },
+    );
+    expect(decision).toEqual({ reason: "background-task", blockStreak: 0 });
+  });
+
+  test("SC21: with interaction off, a second stop in a row with subagent review listed before inline write is unanswered-stop for write", () => {
+    const review = { ...nodeRun("review", "running"), mode: "subagent" as const };
+    const write = { ...nodeRun("write", "running"), mode: "inline" as const };
+    const decision = decide({
+      nodeRuns: { review, write },
+      policies: UNATTENDED,
+      stopHook: { blockStreak: 1, seq: 12 },
+      lastEventSeq: 12,
+    });
+    expect(decision).toMatchObject({ reason: "unanswered-stop", nodeRunId: "write" });
+  });
+
+  test("SC23 (regression): an inline node awaiting approval lets the turn end as awaiting-approval while a background task runs", () => {
+    const design = {
+      ...nodeRun("design", "running"),
+      mode: "inline" as const,
+      awaitingApproval: "artifacts/design.md",
+    };
+    const decision = decide({ nodeRuns: { design } }, { waitingOnBackground: true });
+    expect(decision).toEqual({ reason: "awaiting-approval", blockStreak: 0, nodeRunId: "design" });
+  });
 });
 
 const setUp = async (
@@ -430,6 +461,26 @@ describe("runStopHook", () => {
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
     expect((await readState(runDir))?.status).toBe("running");
+  });
+
+  test("SC19: with inline write open and a background task running, the first stop sends the agent back to write's done, and the next with no progress ends as background-task with no agent.stuck", async () => {
+    const write = { ...nodeRun("write", "running"), mode: "inline" as const };
+    const { deps, runDir } = await setUp({ write });
+    const waiting = input(undefined, "claude", true);
+
+    const first = await runStopHook(waiting, deps);
+    const second = await runStopHook(waiting, deps);
+
+    expect(first).toMatchObject({
+      kind: "continue",
+      message: expect.stringContaining("yok orchestrate done write --run feat-x"),
+    });
+    expect(second).toEqual({ kind: "allow" });
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.map((event) => [event.type, event.payload])).toEqual([
+      ["hooks.stop.called", expect.objectContaining({ reason: "node-not-done", blockStreak: 1 })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 1 })],
+    ]);
   });
 
   test("a tool call between two stops is not progress, and any other event is", async () => {
@@ -652,5 +703,89 @@ describe("an open context node", () => {
     });
 
     expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toEqual({ kind: "allow" });
+  });
+});
+
+describe("offerLearn", () => {
+  // A run whose PR stage has finished while retro still runs: the user now reviews the code and
+  // asks for changes.
+  const setUpPrDone = () =>
+    setUp({ pr: nodeRun("pr", "completed"), retro: nodeRun("retro", "running") });
+
+  const firstPr: TranscriptEntry[] = [
+    { kind: "prompt", text: "run the ticket" },
+    { kind: "command", command: "git push -u origin feat-x" },
+    { kind: "command", command: "yok orchestrate done n9 --run feat-x" },
+  ];
+  const reviewPush: TranscriptEntry[] = [
+    ...firstPr,
+    { kind: "prompt", text: "why is there no error handling here? fix it and push" },
+    { kind: "command", command: "git -C /repo push origin feat-x" },
+  ];
+  const offer = (entries: readonly TranscriptEntry[], deps: Parameters<typeof offerLearn.run>[1]) =>
+    offerLearn.run(input(entries), deps);
+  const eventTypes = async (runDir: string) =>
+    (await jsonlEventStore(runDir).read()).map((event) => event.type);
+
+  test("before the PR stage completes it never offers, even after a push", async () => {
+    const { deps, runDir } = await setUp({ pr: nodeRun("pr", "running") });
+    expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
+    expect(await eventTypes(runDir)).toEqual([]);
+  });
+
+  test("once the PR stage completed, its own push has the agent ask before running learn", async () => {
+    const { deps, runDir } = await setUpPrDone();
+    const reply = await offer(firstPr, deps);
+    expect(reply).toMatchObject({ kind: "continue" });
+    expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
+    expect(await eventTypes(runDir)).toEqual(["learning.offered"]);
+  });
+
+  test("it asks once per push: the stop after the user answers lets the turn end", async () => {
+    const { deps, runDir } = await setUpPrDone();
+    await offer(firstPr, deps);
+    expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
+    expect(await eventTypes(runDir)).toEqual(["learning.offered", "learning.offered"]);
+    expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("a turn without a push since the user's last message lets the turn end", async () => {
+    const { deps } = await setUpPrDone();
+    await offer(firstPr, deps);
+    const chatAfterPush: TranscriptEntry[] = [
+      ...reviewPush,
+      { kind: "prompt", text: "what does this function do?" },
+      { kind: "command", command: "cat src/jobs.ts" },
+    ];
+    const notAPush: TranscriptEntry[] = [
+      ...firstPr,
+      { kind: "prompt", text: "check the branch" },
+      { kind: "command", command: "git status && echo push later" },
+      { kind: "command", command: 'git commit -m "fix it and push"' },
+    ];
+    expect(await offer(chatAfterPush, deps)).toEqual({ kind: "allow" });
+    expect(await offer(notAPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("the push of a learning session's own file, with nothing typed since its mark, lets the turn end", async () => {
+    const { deps } = await setUpPrDone();
+    await offer(firstPr, deps);
+    await offer(reviewPush, deps);
+    const learnPush: TranscriptEntry[] = [
+      ...reviewPush,
+      { kind: "prompt", text: "yes" },
+      {
+        kind: "command",
+        command: "yok orchestrate emit learning.reviewed --source learn --payload '{}'",
+      },
+      { kind: "command", command: "git push" },
+    ];
+    expect(await offer(learnPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("a session that is not a yok run's lets the turn end", async () => {
+    const { deps } = await setUpPrDone();
+    const stranger = { ...input(reviewPush), sessionId: "someone-else" };
+    expect(await offerLearn.run(stranger, { ...deps, env: {} })).toEqual({ kind: "allow" });
   });
 });

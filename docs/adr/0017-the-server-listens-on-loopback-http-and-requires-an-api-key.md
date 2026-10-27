@@ -1,5 +1,5 @@
 ---
-status: active
+status: inactive
 date: 2026-10-16
 source: server-run.md (steps 1-3), .yok/server-run/artifacts/design.md
 tags: [harness-server, harness-cli, cli-to-server]

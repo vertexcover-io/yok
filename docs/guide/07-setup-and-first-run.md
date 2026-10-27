@@ -103,6 +103,13 @@ Detach with `Ctrl-b d`. The session keeps running without you. Reattach any time
 yok-dev attach --run-id r-1a2b3c4d
 ```
 
+A reboot or an agent crash ends the session but not the run. Bring it back where it stopped,
+on the model and in the conversation it had:
+
+```bash
+yok-dev resume step-demo
+```
+
 You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
 
 Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.
@@ -123,6 +130,82 @@ yok-dev run task --prompt "Describe a small change to this repo"
 
 This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it even for a plain prompt), `gh` logged in, and about an hour. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
+## 9. Run yok on a server
+
+To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1` and has no login of its own. Caddy does https and the login, then forwards each request to yok. On the server itself, nothing asks for a login.
+
+On the server, as the user who will own the runs:
+
+1. Install yok, tmux, git, claude (or codex) and Caddy. Log in to claude once: every run uses that login.
+2. Set the public domain in `~/.yok/.env`, so dashboard links point at Caddy and yok accepts the requests Caddy forwards:
+
+   ```sh
+   SERVER_DOMAIN=yok.example.com
+   ```
+
+   yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+
+3. Write `~/.config/systemd/user/yok.service`:
+
+   ```ini
+   [Unit]
+   Description=yok server
+   After=network-online.target
+
+   [Service]
+   ExecStart=%h/.yok/bin/yok server start --port 7777
+   Restart=on-failure
+   Environment=PATH=%h/.yok/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   The `PATH` line matters because a service does not load your shell profile. Without it, yok cannot find claude, tmux or git. `--port 7777` pins the port the Caddyfile points at.
+
+4. Start it, and keep it running when nobody is logged in:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now yok
+   sudo loginctl enable-linger "$USER"   # keep it running with nobody logged in
+   journalctl --user -u yok -f           # follow the log
+   ```
+
+5. Print a password hash with `caddy hash-password`, then write `/etc/caddy/Caddyfile`. The domain on its first line must match `SERVER_DOMAIN`:
+
+   ```caddyfile
+   yok.example.com {
+       basic_auth {
+           ritesh HASH_FROM_CADDY_HASH_PASSWORD
+       }
+       reverse_proxy 127.0.0.1:7777
+   }
+   ```
+
+   ```sh
+   sudo systemctl enable --now caddy
+   ```
+
+   Caddy gets and renews the https certificate itself. That needs the domain pointing at the server's public IP, and ports 80 and 443 open. A machine without those can use Tailscale Serve instead.
+
+On your laptop:
+
+```bash
+yok remote login https://yok.example.com --user ritesh   # asks for the password, hidden
+yok remote project add web --git git@github.com:acme/web.git
+yok remote run task --prompt "fix login" --project web
+yok remote status
+```
+
+`login` asks for the password without echoing it. A script can pipe it on stdin or set `YOK_SERVER_PASSWORD`; `--password` stays for CI, but shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev remote …` does the same from this checkout, with `~/.yok-dev/.env`. `yok-remote` is a shortcut for `yok remote`.
+
+Every remote command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
+
+A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, SSH into the server and attach to the run there.
+
+You know it worked when `yok remote status` prints the server's version and pid, and the `view:` link from `yok remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
+
 ## Useful commands
 
 ```bash
@@ -131,11 +214,16 @@ yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
-yok-dev server use URL --key KEY  # point this CLI at a server; `use --unset` to come back
+yok-dev remote login URL --user U  # asks for the password; save a server's login; checks it first
+yok-dev remote status           # the server's version, pid and start time
+yok-dev remote run task --prompt "…" --project NAME  # start a run there, unattended
+yok-dev remote project list     # the server's projects; also doctor, trigger
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine
 yok-dev verify path/to.yaml     # compile a workflow, print the first error
+yok-dev trigger list            # every cron trigger, its next and last fire
+yok-dev trigger log NAME        # a trigger's last 20 firings, with run ids
 LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 ```
 

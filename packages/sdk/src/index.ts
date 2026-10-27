@@ -65,6 +65,8 @@ export {
   AskedQuestionSchema,
   type Blocker,
   BlockerSchema,
+  type ContextOutput,
+  ContextOutputSchema,
   ERROR_MESSAGE_LIMIT,
   ErrorSchema,
   type Event,
@@ -128,6 +130,7 @@ export {
 } from "./contracts.ts";
 export { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
 export {
+  AgentInputUnreachableEvent,
   AgentResumedEvent,
   AgentStoppedEvent,
   AgentStuckEvent,

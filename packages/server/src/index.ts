@@ -1,13 +1,14 @@
-export { type AppDeps, type AppType, createApp } from "./app.ts";
+export { type ApiDeps, type ApiType, createApi } from "./app.ts";
 export { createYokClient, type YokClient, type YokClientOptions } from "./client.ts";
 export {
   AddProjectBodySchema,
   type AddProjectRequest,
   type ApiError,
+  type DoctorBody,
   type ErrorBody,
   ErrorBodySchema,
   type ErrorCode,
-  ensureApiKey,
+  folderSlug,
   homeEnvPath,
   logPath,
   type Project,
@@ -15,7 +16,6 @@ export {
   type ProjectView,
   pidPath,
   portPath,
-  readApiKey,
   readHomeEnv,
   readPort,
   type StartRunBody,

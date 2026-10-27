@@ -12,38 +12,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addComments, agentBinary, readComments, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
-import { runDirOf } from "@yok/sdk";
+import { noopLogger, registryPath, runDirOf } from "@yok/sdk";
+import { createRegistry } from "@yok/sdk/internal";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { ensureApiKey, updateHomeEnv } from "./protocol.ts";
+import { publicOrigin, serverDomain, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
 const readyCheckout: CheckCheckout = () =>
   Promise.resolve({ env: { ok: true, value: {} }, report: summarize([]) });
 
-test("SC101: a first start writes a key to the home's .env with mode 0600, and a later start keeps it", async () => {
-  const home = join(mkdtempSync(join(tmpdir(), "yok-key-")), "home");
+test.each([
+  ["SERVER_DOMAIN=yok.example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=Yok.Example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=https://yok.example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=http://yok.example.com/\n", "yok.example.com"],
+  ["SERVER_DOMAIN=yok.example.com//\n", "yok.example.com"],
+  ["SERVER_DOMAIN=HTTPS://Yok.Example.com:8443/\n", "yok.example.com:8443"],
+  [null, "localhost:7777"],
+  ["LINEAR_API_KEY=lin\n", "localhost:7777"],
+])(
+  "SC1001: a home whose .env holds %p gives the server domain %p, ignoring SERVER_DOMAIN in the process env",
+  (env, domain) => {
+    const home = mkdtempSync(join(tmpdir(), "yok-domain-"));
+    if (env !== null) writeFileSync(join(home, ".env"), env);
+    const before = process.env.SERVER_DOMAIN;
+    process.env.SERVER_DOMAIN = "decoy.example.com";
+    try {
+      expect(serverDomain(home, 7777)).toBe(domain);
+    } finally {
+      if (before === undefined) delete process.env.SERVER_DOMAIN;
+      else process.env.SERVER_DOMAIN = before;
+    }
+  },
+);
 
-  const key = await ensureApiKey(home);
-  const again = await ensureApiKey(home);
-
-  const text = readFileSync(join(home, ".env"), "utf8");
-  expect(key).toMatch(/^[\w-]{40,}$/);
-  expect(again).toBe(key);
-  expect(text.match(/YOK_API_KEY=/g)).toHaveLength(1);
-  expect(text).toContain(`YOK_API_KEY=${key}\n`);
-  expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
-});
-
-test("SC101: a home whose .env already holds other lines keeps them beside the new key, and the file becomes 0600", async () => {
-  const home = mkdtempSync(join(tmpdir(), "yok-key-"));
-  writeFileSync(join(home, ".env"), "LINEAR_API_KEY=lin\n", { mode: 0o644 });
-
-  const key = await ensureApiKey(home);
-
-  expect(readFileSync(join(home, ".env"), "utf8")).toBe(
-    `LINEAR_API_KEY=lin\n\nYOK_API_KEY=${key}\n`,
-  );
-  expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
+test.each([
+  ["localhost", "http"],
+  ["localhost:7777", "http"],
+  ["127.0.0.1:7777", "http"],
+  ["[::1]:7777", "http"],
+  ["yok.example.com", "https"],
+  ["yok.example.com:8443", "https"],
+  ["localhost.example.com", "https"],
+])("SC1002: the domain %p gets a %p origin", (domain, scheme) => {
+  expect(publicOrigin(domain)).toBe(`${scheme}://${domain}`);
 });
 
 test("SC102: updateHomeEnv sets and removes keys in .env, keeps the other lines, and leaves the file 0600", async () => {
@@ -115,7 +127,7 @@ test("SC106: a named port is bound or the start fails, and an unnamed start fall
 
   const first = await startServer({ home: a, runtime: runtime(), port });
   try {
-    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`);
     expect(health.status).toBe(200);
     expect(readFileSync(join(a, "server.port"), "utf8")).toBe(String(port));
 
@@ -162,3 +174,128 @@ test("a first start creates the home readable by this user alone", async () => {
 
   expect(statSync(home).mode & 0o777).toBe(0o700);
 });
+
+const fakeRuntime = () => {
+  const { host } = fakeHost(EMPTY_BOX);
+  return { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout };
+};
+
+const namedRun = (id: string): WorkflowRun => ({
+  id,
+  workflow: "w",
+  workflowPath: "/w.yaml",
+  inputs: {},
+  cwd: "/nowhere",
+  sessions: [],
+  name: id,
+  terminal: null,
+  config: null,
+  tiers: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+
+// A server started in a fresh home, asked at the port it wrote to server.port.
+const startedServer = async (env?: string) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
+  if (env !== undefined) writeFileSync(join(home, ".env"), env);
+  await createRegistry(registryPath(home), noopLogger).addRun(namedRun("r-1"));
+  const server = await startServer({ home, runtime: fakeRuntime() });
+  const port = Number(readFileSync(join(home, "server.port"), "utf8"));
+  return { home, server, port, origin: `http://127.0.0.1:${port}` };
+};
+
+test.each([
+  ["SERVER_DOMAIN=yok.example.com\n", "https://yok.example.com"],
+  [undefined, null],
+])(
+  "SC1008: with .env %p, dashboard links start with %p, else http://localhost:PORT",
+  async (env, domainOrigin) => {
+    const { server, port, origin } = await startedServer(env);
+    const expected = domainOrigin ?? `http://localhost:${port}`;
+    try {
+      expect(await (await fetch(`${origin}/api/runs/view`)).json()).toEqual({
+        view: `${expected}/`,
+      });
+      expect(await (await fetch(`${origin}/api/runs/r-1/view`)).json()).toEqual({
+        view: `${expected}/runs/r-1`,
+      });
+    } finally {
+      await server.stop();
+    }
+  },
+);
+
+test("SC1009: a server started in an empty home answers the API with no authorization header and writes no key", async () => {
+  const home = join(realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-"))), "home");
+  const server = await startServer({ home, runtime: fakeRuntime() });
+  const origin = `http://127.0.0.1:${readFileSync(join(home, "server.port"), "utf8")}`;
+  try {
+    const health = await fetch(`${origin}/api/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({
+      pid: process.pid,
+      version: expect.any(String),
+      startedAt: expect.any(Number),
+    });
+    const projects = await fetch(`${origin}/api/projects`);
+    expect([projects.status, await projects.json()]).toEqual([200, { projects: [] }]);
+    expect((await fetch(`${origin}/health`)).status).toBe(404);
+  } finally {
+    await server.stop();
+  }
+  expect(existsSync(join(home, ".env"))).toBe(false);
+  expect(existsSync(join(home, "viewer.port"))).toBe(false);
+});
+
+test("SC1010: on the one port in server.port, /runs/view is the dashboard page and /api/runs/view is the API's link", async () => {
+  const { server, origin } = await startedServer();
+  try {
+    const page = await fetch(`${origin}/runs/view`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    const link = await fetch(`${origin}/api/runs/view`);
+    expect(link.status).toBe(200);
+    expect(await link.json()).toEqual({
+      view: expect.stringMatching(/^http:\/\/localhost:\d+\/$/),
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+// Reads the stream until the next whole runs event and returns its data.
+type RunsEvent = { runs: { id: string }[] };
+
+const nextRunsEvent = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<RunsEvent> => {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const match = /event: runs\ndata: (.*)\n\n/.exec(text);
+    if (match?.[1] !== undefined) return JSON.parse(match[1]) as RunsEvent;
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`stream closed after: ${text}`);
+    text += decoder.decode(value, { stream: true });
+  }
+};
+
+test("SC1011: a dashboard /stream connection stays open through 11 idle seconds and delivers the next change", async () => {
+  const { home, server, origin } = await startedServer();
+  const controller = new AbortController();
+  try {
+    const res = await fetch(`${origin}/stream`, { signal: controller.signal });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    expect((await nextRunsEvent(reader)).runs.map((run) => run.id)).toEqual(["r-1"]);
+
+    // Bun checks its 10-second idle limit in coarse ticks and cuts at about 12 seconds.
+    await Bun.sleep(13_000);
+    await createRegistry(registryPath(home), noopLogger).addRun(namedRun("r-2"));
+
+    const next = await Promise.race([nextRunsEvent(reader), Bun.sleep(3_000).then(() => null)]);
+    expect(next?.runs.map((run) => run.id).sort()).toEqual(["r-1", "r-2"]);
+  } finally {
+    controller.abort();
+    await server.stop();
+  }
+}, 30_000);

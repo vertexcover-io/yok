@@ -12,7 +12,7 @@
     },
     "packages/cli": {
       "name": "@yok/cli",
-      "version": "0.0.1",
+      "version": "0.0.5",
       "bin": {
         "yok-dev": "./src/index.ts",
       },
@@ -27,11 +27,12 @@
     },
     "packages/core": {
       "name": "@yok/core",
-      "version": "0.0.1",
+      "version": "0.0.5",
       "dependencies": {
         "@commander-js/extra-typings": "^15.0.0",
         "@yok/sdk": "workspace:*",
         "commander": "^15.0.0",
+        "croner": "^10.0.1",
         "pino": "^9",
         "yaml": "^2.9.1",
         "zod": "^4",
@@ -39,14 +40,14 @@
     },
     "packages/plugins": {
       "name": "@yok/plugins",
-      "version": "0.0.1",
+      "version": "0.0.5",
       "dependencies": {
         "@yok/core": "workspace:*",
       },
     },
     "packages/sdk": {
       "name": "@yok/sdk",
-      "version": "0.0.1",
+      "version": "0.0.5",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4",
@@ -54,11 +55,12 @@
     },
     "packages/server": {
       "name": "@yok/server",
-      "version": "0.0.1",
+      "version": "0.0.5",
       "dependencies": {
         "@hono/zod-validator": "^0.9.1",
         "@yok/core": "workspace:*",
         "@yok/sdk": "workspace:*",
+        "croner": "^10.0.1",
         "highlight.js": "^11.12.0",
         "hono": "^4.13.9",
         "markdown-it": "^14.1.0",
@@ -164,6 +166,8 @@
     "colorette": ["colorette@2.0.20", "", {}, "sha512-IfEDxwoWIjkeXL1eXcDiow4UbKjhLdq6/EuSVR9GMN7KVH3r9gQ83e73hsz1Nd1T3ijd5xv1wcWRYO+D6kCI2w=="],
 
     "commander": ["commander@15.0.0", "", {}, "sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg=="],
+
+    "croner": ["croner@10.0.1", "", {}, "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g=="],
 
     "dateformat": ["dateformat@4.6.3", "", {}, "sha512-2P0p0pFGzHS5EMnhdxQi7aJN+iMheud0UhG4dlE1DLAlvL8JHjJJTX/CSm4JXwV0Ka5nGk3zC5mcb5bUQUxxMA=="],
 

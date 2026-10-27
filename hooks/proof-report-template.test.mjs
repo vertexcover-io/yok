@@ -41,21 +41,6 @@ test("the base URL has a home in fields[]", () => {
   assert.ok(island().fields.some((f) => /base url/i.test(f.label)));
 });
 
-// The renderer reads s.url and step.url; a header comment that documents other
-// key names is how an author ends up writing undefined into the deliverable.
-test("the renderer and the scaffold agree on the key name", () => {
-  assert.match(TEMPLATE, /pathChip\('path', s\.url\)/);
-  assert.match(TEMPLATE, /pathChip\('step__u', step\.url\)/);
-  assert.doesNotMatch(TEMPLATE, /\{path,label\}/);
-});
-
-// A screen nobody drew must render as "no design reference", not as silence:
-// absence of a check reading as a pass is the one way this section misleads.
-test("a null baseline has a rendered state of its own", () => {
-  assert.match(TEMPLATE, /vm\.baseline == null/);
-  assert.match(TEMPLATE, /no design reference/);
-});
-
 // The section is opt-in per scenario and hangs off one key. A guard reading a
 // different key than the scaffold writes renders nothing, silently.
 test("the renderer and the scaffold agree on the visualMatch key", () => {

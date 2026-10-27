@@ -9,9 +9,11 @@ import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
-import { runCommand } from "./run.ts";
+import { remoteCommand } from "./remote.ts";
+import { resumeCommand, runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
+import { triggerCommand } from "./trigger.ts";
 import { typesCommand } from "./types.ts";
 import { verifyCommand } from "./verify.ts";
 import { viewCommand } from "./view.ts";
@@ -36,8 +38,11 @@ await new Command()
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())
   .addCommand(projectCommand())
+  .addCommand(remoteCommand())
   .addCommand(runCommand())
+  .addCommand(resumeCommand())
   .addCommand(serverCommand())
+  .addCommand(triggerCommand())
   .addCommand(typesCommand())
   .addCommand(uninstallCommand())
   .addCommand(updateCommand())

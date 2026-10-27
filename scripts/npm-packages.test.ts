@@ -27,7 +27,7 @@ describe("writeNpmPackages", () => {
     for (const platform of PLATFORMS) {
       const [os, cpu] = platform.split("-")
       const manifest = readJson(join(out, `yok-${platform}`, "package.json"))
-      assert.equal(manifest.name, `@vertexcover-io/yok-${platform}`)
+      assert.equal(manifest.name, `@vertexcover/yok-${platform}`)
       assert.equal(manifest.version, "1.2.3-rc.1")
       assert.deepEqual(manifest.os, [os])
       assert.deepEqual(manifest.cpu, [cpu])
@@ -35,12 +35,25 @@ describe("writeNpmPackages", () => {
     }
 
     const main = readJson(join(out, "yok", "package.json"))
-    assert.equal(main.name, "@vertexcover-io/yok")
-    assert.deepEqual(main.bin, { yok: "bin/yok.js" })
+    assert.equal(main.name, "@vertexcover/yok")
+    assert.deepEqual(main.bin, { yok: "bin/yok.js", "yok-remote": "bin/yok-remote.js" })
     assert.deepEqual(
       main.optionalDependencies,
-      Object.fromEntries(PLATFORMS.map((p) => [`@vertexcover-io/yok-${p}`, "1.2.3-rc.1"])),
+      Object.fromEntries(PLATFORMS.map((p) => [`@vertexcover/yok-${p}`, "1.2.3-rc.1"])),
     )
+  })
+
+  // npm trusted publishing rejects a package whose repository does not match the publishing repo.
+  test("names the GitHub repo in every package, so trusted publishing accepts it", () => {
+    const out = temp("yok-npm-")
+    writeNpmPackages(fakeDist(), "1.2.3", out)
+
+    for (const name of [...PLATFORMS.map((p) => `yok-${p}`), "yok"]) {
+      assert.deepEqual(readJson(join(out, name, "package.json")).repository, {
+        type: "git",
+        url: "git+https://github.com/vertexcover-io/yok.git",
+      })
+    }
   })
 
   test("fails when a platform binary is missing, before writing anything", () => {
@@ -53,16 +66,16 @@ describe("writeNpmPackages", () => {
 
 describe("the launcher", () => {
   // Lays the packages out the way npm installs them, then runs the launcher with node.
-  const installed = (exit: string) => {
+  const installed = (exit: string, bin = "yok.js") => {
     const out = temp("yok-npm-")
     writeNpmPackages(fakeDist(), "1.2.3", out)
-    const scope = join(temp("yok-prefix-"), "node_modules", "@vertexcover-io")
+    const scope = join(temp("yok-prefix-"), "node_modules", "@vertexcover")
     mkdirSync(scope, { recursive: true })
     const platform = `${process.platform}-${process.arch}`
     cpSync(join(out, "yok"), join(scope, "yok"), { recursive: true })
     cpSync(join(out, `yok-${platform}`), join(scope, `yok-${platform}`), { recursive: true })
     chmodSync(join(scope, `yok-${platform}`, "bin", "yok"), 0o755)
-    return spawnSync("node", [join(scope, "yok", "bin", "yok.js"), "run", "--flag"], {
+    return spawnSync("node", [join(scope, "yok", "bin", bin), "run", "--flag"], {
       encoding: "utf8",
       env: { ...process.env, YOK_EXIT: exit },
     })
@@ -78,11 +91,18 @@ describe("the launcher", () => {
     assert.equal(installed("3").status, 3)
   })
 
+  test("SC4016: yok-remote runs this platform's binary with remote in front, and passes its exit code through", () => {
+    const result = installed("0", "yok-remote.js")
+    assert.equal(result.stdout, `${process.platform}-${process.arch} remote run --flag\n`)
+    assert.equal(result.status, 0)
+    assert.equal(installed("3", "yok-remote.js").status, 3)
+  })
+
   test("names the missing package when npm skipped this platform's binary", () => {
     const out = temp("yok-npm-")
     writeNpmPackages(fakeDist(), "1.2.3", out)
     const result = spawnSync("node", [join(out, "yok", "bin", "yok.js")], { encoding: "utf8" })
     assert.equal(result.status, 1)
-    assert.match(result.stderr, new RegExp(`@vertexcover-io/yok-${process.platform}-${process.arch}`))
+    assert.match(result.stderr, new RegExp(`@vertexcover/yok-${process.platform}-${process.arch}`))
   })
 })

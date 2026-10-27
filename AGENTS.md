@@ -25,8 +25,6 @@ Explain reasoning for non-obvious decisions
 
 ## Prior Learnings
 - Before implementing, read `docs/learnings/index.md` and open the learnings that apply
-- Also check `.yok/knowledge/lessons/` for relevant gotchas and patterns
-- Search by tags/keywords related to the feature area: `Grep pattern="<keyword>" path=.yok/knowledge/lessons/`
 - Critical gotchas that caused pipeline failures:
   - In a nested worktree, run `bun install --frozen-lockfile` before testing. Otherwise Bun may resolve workspace packages from the parent checkout and test stale code.
 

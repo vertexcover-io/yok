@@ -37,11 +37,6 @@ const CASES: Case[] = [
     ],
   },
   {
-    name: "currentBranch",
-    run: (git) => git.currentBranch("/cwd"),
-    expected: [{ command: "git", args: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: "/cwd" }],
-  },
-  {
     name: "headSha",
     run: (git) => git.headSha("/cwd"),
     expected: [{ command: "git", args: ["rev-parse", "HEAD"], cwd: "/cwd" }],
@@ -97,6 +92,21 @@ describe("createGit", () => {
   test("SC32: repoRoot resolves null, not a thrown error, when exec rejects", async () => {
     const exec: Exec = () => Promise.reject(new Error("timed out after 5s"));
     await expect(createGit(exec).repoRoot("/cwd")).resolves.toBeNull();
+  });
+
+  test("SC2001: pullFastForward runs git pull --ff-only in the checkout and returns git's message when it fails", async () => {
+    const stderr = "fatal: Not possible to fast-forward, aborting.\n";
+    const { exec, calls } = recordingExec({ code: 1, stderr });
+
+    const pulled = await createGit(exec).pullFastForward("/cwd");
+
+    expect(calls).toEqual([
+      { command: "git", args: ["pull", "--ff-only", "--quiet"], cwd: "/cwd" },
+    ]);
+    expect(pulled).toEqual({
+      ok: false,
+      error: "fatal: Not possible to fast-forward, aborting.",
+    });
   });
 });
 
@@ -191,6 +201,40 @@ describe("createGit (integration)", () => {
     gitCmd(clonePath, "remote", "set-url", "origin", join(tempDir(), "gone"));
     const fetched = await git.fetch(clonePath, { remote: "origin", ref: "main" });
     expect(fetched.ok ? "" : fetched.error).toContain("gone");
+  });
+
+  test("SC2002: pullFastForward fast-forwards a clone behind its origin, and refuses a diverged clone with its HEAD unchanged", async () => {
+    const origin = makeRepo();
+    const git = createGit(realExec);
+    const clonePath = join(tempDir(), "clone");
+    gitCmd(tmpdir(), "clone", "-q", origin, clonePath);
+    const commit = (cwd: string, message: string): string => {
+      gitCmd(
+        cwd,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        message,
+      );
+      return gitCmd(cwd, "rev-parse", "HEAD");
+    };
+
+    const ahead = commit(origin, "ahead");
+    const behind = await git.pullFastForward(clonePath);
+    const fastForwarded = gitCmd(clonePath, "rev-parse", "HEAD");
+    const local = commit(clonePath, "local");
+    commit(origin, "diverged");
+    const diverged = await git.pullFastForward(clonePath);
+
+    expect(behind).toEqual({ ok: true, value: null });
+    expect(fastForwarded).toBe(ahead);
+    expect(diverged.ok ? "" : diverged.error).toContain("fast-forward");
+    expect(gitCmd(clonePath, "rev-parse", "HEAD")).toBe(local);
   });
 
   test("remoteHasBranch is true for a branch on origin, false for one that is not, and an error once origin is gone", async () => {

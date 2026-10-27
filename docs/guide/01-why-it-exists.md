@@ -50,7 +50,7 @@ Yok is Archon's workflow file, AIDLC's step loop, and the skills we already had,
 
 Yok was built in about ten days of part-time work and has been used since to build itself. It is not finished. The parts planned but not built, as of this writing:
 
-- Nodes run one at a time. Two nodes with no dependency between them still run in sequence. A detached mode, running a stage as its own headless session, is also planned.
+- A detached mode, running a stage as its own headless session, is planned.
 - `scopes` and `protocols` in a stage's frontmatter are parsed and unused. They come from AIDLC: a scope would set how much rigour a run applies, a protocol would load a shared rule such as a writing style into every stage without each skill naming it.
 - Only Claude and Codex have providers. The agent type enum also lists pi and opencode.
 - An unattended "auto" mode, where a run tells you over Slack that a ticket is too complex for it and stops, instead of asking questions.

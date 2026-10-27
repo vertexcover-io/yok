@@ -19,7 +19,7 @@ tags: [harness-server, harness-cli, cli-to-server]
 
 ## Decision Outcome
 
-Chosen: a project name with the server doing the start-up work, because a remote caller knows a name but not the server's folders, and one way to name a checkout keeps the project list the only record of what can run; a path in the body would give local and remote callers two contracts. The start-up work moves to the server because only the server has the checkout, its `.env` and the agent's tools, so its doctor checks the machine the run will use. `yok run` in a checkout that is not yet a project adds it under its folder's name; `project add` reports the doctor's FAIL rows without refusing, and a run on that project is refused until they pass.
+Chosen: a project name with the server doing the start-up work, because a remote caller knows a name but not the server's folders, and one way to name a checkout keeps the project list the only record of what can run; a path in the body would give local and remote callers two contracts. The start-up work moves to the server because only the server has the checkout, its `.env` and the agent's tools, so its doctor checks the machine the run will use. `yok run` in a checkout that is not yet a project adds it under its folder's name. Every request that acts on a project names it: the server never picks a project when none is named, and a request without one is refused with the list of known names.
 
 ## Consequences
 

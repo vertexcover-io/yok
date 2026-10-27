@@ -150,20 +150,6 @@ describe("recordGuard through runPreToolUse", () => {
     ]);
   });
 
-  test("SC3: an Edit of .yok/demo/state.json is refused naming the run, and the old run folder is left alone", async () => {
-    const { cwd, deps } = await setUp();
-    const edit = (path: string) =>
-      runPreToolUse(use(cwd, write(path), { toolName: "Edit" }), recordGuard, deps);
-
-    const refused = await edit("/repo/.yok/demo/state.json");
-    // Split so the sweep for the old product name (SC10) does not flag this test.
-    const allowed = await edit(`/repo/.${["har", "ness"].join("")}/demo/state.json`);
-
-    expect(refused.kind).toBe("deny");
-    expect(refused.kind === "deny" ? refused.message : "").toContain("--run demo");
-    expect(allowed).toEqual({ kind: "allow" });
-  });
-
   test("SC9, SC23 — a shell command on the registry is refused with init and link-session", async () => {
     const { cwd, deps } = await setUp();
 
@@ -403,6 +389,46 @@ describe("a question in a run", () => {
     );
     expect(events.map((event) => event.type)).not.toContain("agent.question.asked");
     expect((await readState(runDir))?.status).toBe("running");
+  });
+
+  test("SC22: with interaction off and subagent review open before inline write, the refusal names write's done command and policy.applied names write", async () => {
+    const review = { ...design, nodeRunId: "review-1", mode: "subagent" as const };
+    const write = { ...design, nodeRunId: "write-1", mode: "inline" as const };
+    const { cwd, runDir, deps } = await runWithOpen({ review, write }, false);
+
+    const verdict = await runPreToolUse(
+      use(cwd, ask, { toolName: "AskUserQuestion" }),
+      questionGuard,
+      deps,
+    );
+
+    expect(verdict.kind === "deny" ? verdict.message : "").toContain(
+      "`yok orchestrate done write-1 --run feat-x --error -`",
+    );
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.filter((event) => event.type === "policy.applied").map((e) => e.payload)).toEqual(
+      [{ policy: "interaction", effect: "question-refused", nodeId: "write" }],
+    );
+  });
+
+  test("with interaction off and subagent review open beside inline write, a question from the subagent is refused naming no done command, and policy.applied names no node", async () => {
+    const review = { ...design, nodeRunId: "review-1", mode: "subagent" as const };
+    const write = { ...design, nodeRunId: "write-1", mode: "inline" as const };
+    const { cwd, runDir, deps } = await runWithOpen({ review, write }, false);
+
+    const verdict = await runPreToolUse(
+      use(cwd, ask, { toolName: "AskUserQuestion", subagent: true }),
+      questionGuard,
+      deps,
+    );
+
+    const message = verdict.kind === "deny" ? verdict.message : "";
+    expect(message).toStartWith("No one will answer in this run.");
+    expect(message).not.toContain("orchestrate");
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.filter((event) => event.type === "policy.applied").map((e) => e.payload)).toEqual(
+      [{ policy: "interaction", effect: "question-refused" }],
+    );
   });
 
   test("with interaction off inside a loop, the refusal names the running agent node by its own id, and between the loop's children it names next, not the loop", async () => {

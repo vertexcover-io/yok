@@ -1,31 +1,45 @@
 import { basename, resolve } from "node:path";
-import { Command } from "@commander-js/extra-typings";
-import { type DoctorReport, DoctorReportSchema, isWorkflowFile } from "@yok/core";
+import { Command, type CommandUnknownOpts } from "@commander-js/extra-typings";
+import {
+  builtInChecks,
+  compileRunWorkflow,
+  type DoctorReport,
+  DoctorReportSchema,
+  isWorkflowFile,
+  runDoctor,
+  verdict,
+  type WorkflowPlan,
+  workflowChecks,
+} from "@yok/core";
 import {
   createGit,
+  type ILogger,
   type JsonObject,
+  loadEnv,
+  loadRunConfig,
   POLICY_NAMES,
   PoliciesSchema,
   type Result,
-  readPolicies,
+  registryPath,
+  requireRun,
   spawnInteractive,
 } from "@yok/sdk";
-import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import type { ApiError } from "@yok/server";
+import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
+import { type ApiError, folderSlug, runtimeChecks } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
+  cliLog,
   commandLog,
-  configuredServerUrl,
   ensureServer,
+  errorText,
   fail,
   openForPerson,
   yokClient,
 } from "./client.ts";
-import { folderSlug } from "./project.ts";
 import { writeProjectTypes } from "./types.ts";
 
-const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
+export const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {
   const index = pair.indexOf("=");
   if (index === -1) throw new Error(`--input must be KEY=VALUE, got "${pair}"`);
   return { ...acc, [pair.slice(0, index)]: pair.slice(index + 1) };
@@ -39,12 +53,78 @@ const blockedText = (message: string, report: DoctorReport): string =>
       .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
   ].join("\n");
 
-const startError = (error: ApiError): string => {
+// The run's saved policies have no say here: an unattended run can still be watched.
+export const followUps = ({
+  open,
+  attach,
+  hasTerminal,
+}: {
+  open: boolean;
+  attach: boolean;
+  hasTerminal: boolean;
+}): { noOpen: boolean; attach: boolean } => ({ noOpen: !open, attach: attach && hasTerminal });
+
+// The doctor yok run and yok resume run before the server: the runtime, workflow and built-in
+// checks over the env the session will get. Returns why the run is blocked, or null.
+const checkBeforeStart = async (
+  cwd: string,
+  config: string | undefined,
+  plan: WorkflowPlan,
+  env: Result<Record<string, string>>,
+): Promise<string | null> => {
+  const report = await runDoctor({
+    cwd,
+    config,
+    extraChecks: [
+      ...runtimeChecks(plan.agent),
+      ...workflowChecks(plan.doctor, env),
+      ...builtInChecks(plan, env),
+    ],
+    log: cliLog(),
+  });
+  return verdict(report).startsWith("BLOCKED") ? blockedText(verdict(report), report) : null;
+};
+
+// Only what is read here: the server client's JSON type for a run is looser than WorkflowRun.
+type StartedRun = Readonly<{
+  run: Readonly<{ id: string; terminal: string | null }>;
+  attach: readonly string[];
+  view: string;
+}>;
+
+const showStartedRun = async (
+  { run, attach, view }: StartedRun,
+  flags: Readonly<{ open: boolean; attach: boolean }>,
+  cwd: string,
+  log: ILogger,
+): Promise<void> => {
+  console.log(run.id);
+  console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
+  console.log(`view: ${view}`);
+  // A script, CI job or test has no terminal for tmux to attach to.
+  const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const next = followUps({ open: flags.open, attach: flags.attach, hasTerminal });
+  openForPerson(view, next.noOpen);
+  if (!next.attach) return;
+  const [command, ...args] = attach;
+  // Without TMUX, the attach also works from inside the user's own tmux.
+  const exitCode = await spawnInteractive(command as string, args, {
+    cwd,
+    env: { TMUX: undefined },
+  });
+  log.info({ runId: run.id, terminal: run.terminal, exitCode }, "detached from the session");
+  process.exitCode = exitCode;
+};
+
+export const startError = (error: ApiError): string => {
   const report = DoctorReportSchema.safeParse(error.details);
   return report.success ? blockedText(error.message, report.data) : apiErrorText(error);
 };
 
-const projectAt = async (client: YokClient, root: string): Promise<Result<string | null>> => {
+export const projectAt = async (
+  client: YokClient,
+  root: string,
+): Promise<Result<string | null>> => {
   const listed = await client.projects();
   if (!listed.ok) return { ok: false, error: apiErrorText(listed.error) };
   const known = listed.value.projects.find((project) => project.path === root);
@@ -80,7 +160,7 @@ const checkoutProject = async (client: YokClient, root: string): Promise<Result<
 };
 
 // --project names the project; without it, the checkout this command runs in.
-const pickProjectName = async (
+export const pickProjectName = async (
   client: YokClient,
   project: string | undefined,
   root: string | null,
@@ -100,7 +180,7 @@ type RunOptions = Readonly<{
   config?: string;
 }>;
 
-type RunTarget = Readonly<{ project?: string; workflow: string; config?: string }>;
+type RunTarget = Readonly<{ project: string; workflow: string; config?: string }>;
 
 // The checkout's project, added if new, with its .yok/types written. Paths go absolute, which
 // the server's resolve against the project root leaves as they are.
@@ -122,13 +202,12 @@ const localTarget = async (
   return { ok: true, value: { project: project.value, workflow: path, ...config } };
 };
 
-// The current folder is on another machine: no checkout to add, no .yok/types to write, and the
-// workflow and config go as typed, for the server to resolve against the project's root.
-const remoteTarget = (workflow: string, opts: RunOptions): RunTarget => ({
-  workflow,
-  ...(opts.project === undefined ? {} : { project: opts.project }),
-  ...(opts.config === undefined ? {} : { config: opts.config }),
-});
+// One `--NAME <value>` option per policy, with its help text, for parsePolicyFlags to read.
+export const addPolicyOptions = (command: CommandUnknownOpts): void => {
+  for (const name of POLICY_NAMES) {
+    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
+  }
+};
 
 export const runCommand = () => {
   const command = new Command("run")
@@ -149,10 +228,7 @@ export const runCommand = () => {
       // Before the project lookup, which calls the server.
       await ensureServer();
       const client = yokClient();
-      const configured = configuredServerUrl() !== null;
-      const target = configured
-        ? { ok: true as const, value: remoteTarget(workflowArg, opts) }
-        : await localTarget(client, { workflow: workflowArg, opts, cwd });
+      const target = await localTarget(client, { workflow: workflowArg, opts, cwd });
       if (!target.ok) return fail(target.error);
 
       const result = await client.run({
@@ -163,34 +239,58 @@ export const runCommand = () => {
       });
       if (!result.ok) return fail(startError(result.error));
       const { run } = result.value;
-      console.log(run.id);
-      // Attach and the browser need the server's machine, so a run elsewhere prints its page only.
-      if (configured) return console.log(`view: ${result.value.view}`);
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
-
-      console.log(`${isCompiled ? "yok" : "yok-dev"} attach --run-id ${run.id}`);
-      console.log(`view: ${result.value.view}`);
-      // the run's saved value decides, so a workflow that turns interaction off never opens one either
-      const unattended = !readPolicies(run.policies).interaction;
-      openForPerson(result.value.view, opts.open === false || unattended);
-
-      // A script, CI job or test has no terminal for tmux to attach to.
-      const hasTerminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
-      if (opts.attach && hasTerminal && !unattended) {
-        const [command, ...args] = result.value.attach;
-        // Without TMUX, the attach also works from inside the user's own tmux.
-        const exitCode = await spawnInteractive(command as string, args, {
-          cwd,
-          env: { TMUX: undefined },
-        });
-        log.info({ runId: run.id, terminal, exitCode }, "detached from the session");
-        process.exitCode = exitCode;
-      }
+      await showStartedRun(result.value, opts, cwd, log);
     });
-  // one `--NAME <value>` option per policy, with the policy's help text
-  for (const name of POLICY_NAMES) {
-    command.option(`--${name} <value>`, PoliciesSchema.shape[name].description ?? name);
-  }
+  addPolicyOptions(command);
   return command;
 };
+
+export const resumeCommand = () =>
+  new Command("resume")
+    .description("Bring back a run whose agent session is gone, after a reboot or a crash")
+    .argument("[name]", "run name in this repo (default: $YOK_RUN_ID)")
+    .option("--run-id <id>", "resume by run id instead of name")
+    .option("--no-attach", "do not attach to the session's terminal once it starts")
+    .option("--no-open", "do not open the run's page in the browser")
+    .action(async (name, opts) => {
+      const log = commandLog("resume");
+      const registry = createRegistry(registryPath());
+      const picked = await requireRun({
+        registry,
+        name,
+        id: opts.runId,
+        env: process.env,
+        cwd: process.cwd(),
+      });
+      if (!picked.ok) {
+        // A run that died before orchestrate init has no folder to resume from.
+        const found = opts.runId === undefined ? undefined : await registry.findRun(opts.runId);
+        return fail(
+          found?.name === null
+            ? `run ${found.id} never started its agent session; start it again with yok run`
+            : picked.error,
+        );
+      }
+      const run = picked.value;
+      const config = await loadRunConfig(run);
+      if (!config.ok) return fail(config.error);
+      const plan = await compileRunWorkflow(run, config.value).catch((error: unknown) => {
+        fail(errorText(error));
+        return null;
+      });
+      if (plan === null) return;
+
+      // the env every later session of the run gets, from the config init recorded
+      const env = await loadEnv(config.value, plan, run.cwd);
+      const blocked = await checkBeforeStart(run.cwd, config.value.path ?? undefined, plan, env);
+      if (blocked !== null) return fail(blocked);
+      if (!env.ok) return fail(env.error);
+
+      await ensureServer();
+      const result = await yokClient().resume(run.id, { env: env.value });
+      if (!result.ok) return fail(apiErrorText(result.error));
+      log.info({ runId: run.id, terminal: result.value.run.terminal }, "run resumed");
+      await showStartedRun(result.value, opts, process.cwd(), log);
+    });

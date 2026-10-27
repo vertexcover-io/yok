@@ -1,26 +1,12 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ILogger } from "@yok/sdk";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
-import { type RunDeps, runRoutes } from "./run.ts";
-
-// Hashed first: timingSafeEqual throws on inputs of different lengths.
-const digest = (text: string): Buffer => createHash("sha256").update(text).digest();
-
-// /health stays open: ensureServer polls it before the server has written the key.
-const requireKey =
-  (apiKey: string): MiddlewareHandler<{ Variables: Vars }> =>
-  async (c, next) => {
-    if (c.req.path === "/health") return next();
-    const given = c.req.header("authorization")?.replace(/^Bearer /, "") ?? "";
-    if (!timingSafeEqual(digest(given), digest(apiKey))) {
-      return errorResponse(c, 401, "unauthorized", "missing or wrong API key");
-    }
-    return next();
-  };
+import { doctorRoutes, runRoutes } from "./run.ts";
+import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 const requestLogger =
   (log: ILogger): MiddlewareHandler<{ Variables: Vars }> =>
@@ -35,26 +21,24 @@ const requestLogger =
     const fields = { ...route, status: c.res.status, durationMs: Date.now() - start };
     // Every CLI command checks /health first, so it would drown the other lines at info.
     if (c.res.status >= 500) reqLog.error(fields, "request finished");
-    else if (route.path === "/health") reqLog.debug(fields, "request finished");
+    else if (route.path === "/api/health") reqLog.debug(fields, "request finished");
     else reqLog.info(fields, "request finished");
   };
 
-export type AppDeps = RunDeps &
+export type ApiDeps = TriggerRouteDeps &
   ProjectDeps &
   Readonly<{
     log: ILogger;
     pid: number;
     version: string;
     startedAt: number;
-    apiKey: string;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the
-// client (client.ts) reads through AppType.
-export const createApp = (deps: AppDeps) =>
+// client (client.ts) reads through ApiType. createRoot (server.ts) mounts it at /api.
+export const createApi = (deps: ApiDeps) =>
   new Hono<{ Variables: Vars }>()
     .use("*", requestLogger(deps.log))
-    .use("*", requireKey(deps.apiKey))
     .onError((error, c) => {
       if (error instanceof HTTPException && error.status === 400) {
         return errorResponse(c, 400, "bad-request", error.message);
@@ -66,6 +50,8 @@ export const createApp = (deps: AppDeps) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
     .route("/runs", runRoutes(deps))
-    .route("/projects", projectRoutes(deps));
+    .route("/projects", projectRoutes(deps))
+    .route("/triggers", triggerRoutes(deps))
+    .route("/doctor", doctorRoutes(deps));
 
-export type AppType = ReturnType<typeof createApp>;
+export type ApiType = ReturnType<typeof createApi>;

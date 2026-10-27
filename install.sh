@@ -62,6 +62,13 @@ install_binary() {
   say "Installed $BIN_DIR/yok"
 }
 
+# yok-remote is `yok remote`: it runs the yok beside it, so both are always one version.
+install_remote_shortcut() {
+  # shellcheck disable=SC2016 # $0 and $@ belong to yok-remote, not to this installer
+  printf '#!/bin/sh\nexec "$(dirname "$0")/yok" remote "$@"\n' > "$BIN_DIR/yok-remote"
+  chmod 755 "$BIN_DIR/yok-remote"
+}
+
 add_to_path() {
   case "${SHELL:-}" in
     */zsh) rc="$HOME/.zshrc" ;;
@@ -86,20 +93,16 @@ check_tools() {
   done
 }
 
+# yok picks the agents itself when none is named, so it alone knows which agents it supports.
 install_plugins() {
   args=""
-  for agent in $(printf '%s' "${YOK_AGENTS:-claude codex}" | tr ',' ' '); do
-    command -v "$agent" >/dev/null 2>&1 && args="$args --agent $agent"
-  done
-  if [ -z "$args" ]; then
-    say "No claude or codex found. Install the plugin later with: yok plugin install --agent claude"
-    return 0
-  fi
+  for agent in $(printf '%s' "${YOK_AGENTS:-}" | tr ',' ' '); do args="$args --agent $agent"; done
   # shellcheck disable=SC2086 # args is a list of flags
   "$BIN_DIR/yok" plugin install $args
 }
 
 install_binary
+install_remote_shortcut
 add_to_path
 check_tools
 install_plugins

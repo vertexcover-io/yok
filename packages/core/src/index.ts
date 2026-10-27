@@ -1,5 +1,6 @@
 export { type ClaudeProviderOptions, claudeArgs, claudeProvider } from "./agents/claude.ts";
 export { type CodexProviderOptions, codexProvider } from "./agents/codex.ts";
+export { unwrap } from "./agents/common.ts";
 export { type AgentProviderOptions, agentBinary, agentProvider } from "./agents/index.ts";
 export { yokTerminalHost } from "./agents/tmux.ts";
 export {
@@ -15,7 +16,7 @@ export {
   readComments,
   replyToComment,
 } from "./comments.ts";
-export { findOpenContextRun } from "./context-step.ts";
+export { clearDeadSwitchLocks, findOpenContextRun } from "./context-step.ts";
 export {
   buildNotifierCheck,
   builtInChecks,

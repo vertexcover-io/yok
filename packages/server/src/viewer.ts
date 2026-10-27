@@ -41,6 +41,7 @@ import {
 } from "./overview.ts";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import SHARED_SOURCE from "./page-shared.ts" with { type: "text" };
+import { publicOrigin } from "./protocol.ts";
 import RUNS_HTML from "./runs.html" with { type: "text" };
 import VIEWER_HTML from "./viewer.html" with { type: "text" };
 
@@ -54,7 +55,6 @@ export type ViewerDeps = Readonly<{
   openInEditor: (target: EditorTarget) => Result<null>;
   registry: Registry;
   log: ILogger;
-  port: number;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   now: () => Date;
@@ -71,7 +71,6 @@ export type ViewedRun =
   | Readonly<{ kind: "missing" }>
   | Readonly<{ kind: "starting"; run: WorkflowRun }>
   | Readonly<{ kind: "ready"; run: WorkflowRun; runDir: string }>;
-export type Viewer = Readonly<{ origin: string; port: number; stop: () => Promise<void> }>;
 
 const lineRange = (map: readonly [number, number]): string => `${map[0] + 1}-${map[1]}`;
 
@@ -504,14 +503,21 @@ export const findViewedRun = async (registry: Registry, runId: string): Promise<
   return { kind: "ready", run, runDir: runDirOf(run.cwd, run.name) };
 };
 
-const hostGuard =
-  (port: number): MiddlewareHandler =>
+// A page another site serves to this machine's browser can reach the port, directly or through
+// DNS rebinding; either way its Host or its Origin is not one of these.
+export const hostGuard =
+  (port: number, domain: string): MiddlewareHandler =>
   async (c, next) => {
-    const hosts = [`localhost:${port}`, `127.0.0.1:${port}`];
+    const hosts = [...new Set([`localhost:${port}`, `127.0.0.1:${port}`, domain])];
+    const origins = [`http://localhost:${port}`, `http://127.0.0.1:${port}`, publicOrigin(domain)];
+    const host = c.req.header("host") ?? "";
     const origin = c.req.header("origin");
-    const hostOk = hosts.includes(c.req.header("host") ?? "");
-    const originOk = origin === undefined || hosts.some((host) => origin === `http://${host}`);
-    if (!hostOk || !originOk) return c.text("forbidden", 403);
+    if (!hosts.includes(host)) {
+      return c.text(`forbidden: Host ${host} is not one of ${hosts.join(", ")}`, 403);
+    }
+    if (origin !== undefined && !origins.includes(origin)) {
+      return c.text(`forbidden: Origin ${origin}`, 403);
+    }
     await next();
   };
 
@@ -711,9 +717,9 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
   }
 };
 
+// createRoot (server.ts) puts hostGuard in front of these routes.
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
-    .use("*", hostGuard(deps.port))
     .get("/", (c) => c.html(RUNS_HTML as unknown as string))
     .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.registry, deps.host) }))
     .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
@@ -836,56 +842,3 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       void scheduleDelivery(id, deps);
       return c.json({ comment: replied.value });
     });
-
-export const viewerPortPath = (home: string): string => join(home, "viewer.port");
-
-const savedPort = async (home: string): Promise<number | null> => {
-  const text = await readFile(viewerPortPath(home), "utf8").catch(() => "");
-  const port = Number.parseInt(text, 10);
-  return Number.isInteger(port) && port > 0 ? port : null;
-};
-
-const placeholder = (): Response => new Response("starting", { status: 503 });
-
-// The stream stays open and quiet between changes; the default 10-second idle limit would cut it.
-const bind = (port: number) =>
-  Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 0, fetch: placeholder });
-
-const bindPreferred = (preferred: number | null) => {
-  if (preferred === null) return bind(0);
-  try {
-    return bind(preferred);
-  } catch {
-    return bind(0);
-  }
-};
-
-export const startViewer = async (
-  deps: Readonly<{
-    home: string;
-    registry: Registry;
-    providerFor: (agent: WorkflowAgent) => IAgentProvider;
-    host: ITerminalHost;
-    log: ILogger;
-    openInEditor?: ViewerDeps["openInEditor"];
-  }>,
-): Promise<Viewer> => {
-  const server = bindPreferred(await savedPort(deps.home));
-  const port = server.port as number;
-  const { registry, providerFor, host, log } = deps;
-  const opener = deps.openInEditor ?? ((target) => openInEditor({ ...target, env: process.env }));
-  server.reload({
-    fetch: viewerRoutes({
-      registry,
-      providerFor,
-      host,
-      log,
-      port,
-      now: () => new Date(),
-      openInEditor: opener,
-    }).fetch,
-  });
-  await Bun.write(viewerPortPath(deps.home), String(port));
-  deps.log.info({ port }, "viewer listening");
-  return { origin: `http://localhost:${port}`, port, stop: () => server.stop() };
-};

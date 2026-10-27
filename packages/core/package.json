@@ -1,6 +1,6 @@
 {
   "name": "@yok/core",
-  "version": "0.0.1",
+  "version": "0.0.5",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,6 +13,7 @@
     "@commander-js/extra-typings": "^15.0.0",
     "@yok/sdk": "workspace:*",
     "commander": "^15.0.0",
+    "croner": "^10.0.1",
     "pino": "^9",
     "yaml": "^2.9.1",
     "zod": "^4"

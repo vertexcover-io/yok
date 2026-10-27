@@ -7,12 +7,14 @@ import {
   type ArtifactRef,
   type CheckoutConfig,
   type Config,
+  type ContextOutput,
   createGit,
   type EmitInput,
   type EnvLayer,
   type Event,
   type EventHandlerRefs,
   eventError,
+  type IAgentProvider,
   type IGit,
   type ILogger,
   type ITerminal,
@@ -59,6 +61,7 @@ import {
   VERSION,
 } from "@yok/sdk/internal";
 import * as z from "zod";
+import { unwrap } from "./agents/common.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { type AgentMode, extensionPath } from "./stage.ts";
@@ -83,6 +86,7 @@ import {
   findRunningLeaves,
   pickNodeTier,
   type RunningLeaf,
+  type StartedLeaf,
 } from "./workflow/next.ts";
 import {
   type ContextNode,
@@ -104,6 +108,8 @@ export type InitOptions = Readonly<{
   log: ILogger;
   // the agent's terminal, when init runs inside one
   terminal?: ITerminal | undefined;
+  // the provider of the agent in that terminal
+  provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
 }>;
@@ -111,11 +117,13 @@ export type InitOptions = Readonly<{
 export const terminalName = (agent: string, runName: string, runId: string): string =>
   `${agent}-${runName}-${runId.slice(-4)}`;
 
+const firstAgent = (run: WorkflowRun): AgentType => run.sessions[0]?.agent ?? "claude";
+
 // A failed rename is only logged: the run works, its tmux session just keeps the old name.
 const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
   const { terminal, registry, name, log } = options;
   if (terminal === undefined) return;
-  const sessionName = terminalName(run.sessions[0]?.agent ?? "claude", name, run.id);
+  const sessionName = terminalName(firstAgent(run), name, run.id);
   try {
     const renamed = await terminal.rename(sessionName);
     if (!renamed.ok) {
@@ -125,6 +133,22 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
     await registry.setTerminal(run.id, sessionName);
   } catch (error) {
     log.warn({ runId: run.id, err: error }, "tmux session not renamed");
+  }
+};
+
+// Claude (where /name is an alias) and Codex both run /rename at once, even mid-turn, instead of
+// queueing it. Like the tmux name, a session left unnamed is only logged.
+const nameSession = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
+  const { terminal, provider, name, log } = options;
+  if (terminal === undefined || provider === undefined) return;
+  try {
+    const named = unwrap(
+      await provider.promptWhenReady(terminal, `/rename ${name}`, { whileBusy: true }),
+    );
+    if (named === "not-ready")
+      log.warn({ runId: run.id }, "session not named: its input box is not free");
+  } catch (error) {
+    log.warn({ runId: run.id, err: error }, "session not named");
   }
 };
 
@@ -335,6 +359,7 @@ export const initializeRun = async (
     const state = await fillRunDir(checked.value, options);
     await options.registry.initRun(run.id, options.name);
     await renameTerminal(run, options);
+    await nameSession(run, options);
     options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
     return { ok: true, value: { dir, state } };
   } catch (error) {
@@ -355,7 +380,7 @@ export const linkRunSession = async (
   return { ok: true, value: linked?.sessions ?? [session.data] };
 };
 
-export type StepReply =
+type LeafReply =
   | Readonly<{
       kind: "exec";
       nodeRunId: string;
@@ -391,9 +416,12 @@ export type StepReply =
       input: JsonValue;
       policies: Policies;
       done: string;
-    }>
+    }>;
+
+export type StepReply =
+  | Readonly<{ kind: "steps"; steps: readonly LeafReply[] }>
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
-  | Exclude<Decision, { kind: "leaf" }>;
+  | Exclude<Decision, { kind: "steps" | "context" }>;
 
 type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
 
@@ -509,23 +537,22 @@ export const loadSessionEnv = async (
   return loadEnv(config.value, { ...plan, agent }, run.cwd);
 };
 
+// alone: the only node open, so an exec or wait may run in the foreground
 const buildLeafReply = (
-  decision: Extract<Decision, { kind: "leaf" }>,
+  leaf: StartedLeaf,
   run: RunRef,
   options: CheckoutConfig,
   policies: Policies,
-): StepReply => {
-  const { node, nodeRunId, input, variables, runsOn } = decision;
-  if (node.type === "context") {
-    return { kind: "context", nodeRunId, nodeId: node.id, action: node.action };
-  }
+  alone: boolean,
+): LeafReply => {
+  const { node, nodeRunId, input, variables, runsOn } = leaf;
   if (node.type !== "agent") {
-    const mode = node.type === "exec" ? node.mode : "inline";
+    const own = node.type === "exec" ? node.mode : "inline";
     return {
       kind: "exec",
       nodeRunId,
       nodeId: node.id,
-      mode,
+      mode: alone ? own : "background",
       command: orchestrateLine({ verb: "exec", run, nodeRunId }),
     };
   }
@@ -556,9 +583,34 @@ const buildLeafReply = (
   };
 };
 
-// What `next` needs to know about each agent: whether it can switch models, and start subagents.
+// Background work first, so it is going before the session starts its own node.
+const rankLaunch = (reply: LeafReply): number => {
+  if (reply.kind === "exec") return 0;
+  return reply.mode === "subagent" ? 1 : 2;
+};
+
+const buildReply = (
+  decision: Decision,
+  run: RunRef,
+  options: CheckoutConfig,
+  policies: Policies,
+): StepReply => {
+  if (decision.kind === "context") {
+    const { node, nodeRunId } = decision;
+    return { kind: "context", nodeRunId, nodeId: node.id, action: node.action };
+  }
+  if (decision.kind !== "steps") return decision;
+  const alone = decision.steps.length === 1 && !decision.othersRunning;
+  const steps = decision.steps
+    .map((leaf) => buildLeafReply(leaf, run, options, policies, alone))
+    .toSorted((a, b) => rankLaunch(a) - rankLaunch(b));
+  return { kind: "steps", steps };
+};
+
+// What `next` needs to know about each agent: whether it can switch models, start subagents, and
+// run several nodes at once.
 export type AgentAbilities = Readonly<
-  Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents">>
+  Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents" | "parallelSteps">>
 >;
 
 const walkToNextStep = async (
@@ -576,14 +628,13 @@ const walkToNextStep = async (
     if (appended.value.state === null) throw new Error(`${runDir}/state.json is missing`);
     return appended.value.state;
   };
-  const { contextSteps, subagents } = abilities[plan.agent];
+  const { contextSteps, subagents, parallelSteps } = abilities[plan.agent];
   const tiers = contextSteps ? state.tiers : null;
   const switching = foldModelSwitch(events, state.tiers);
-  const { decision } = await decideNext(plan, state, emit, { tiers, switching, subagents });
+  const models = { tiers, switching, subagents, parallel: parallelSteps };
+  const { decision } = await decideNext(plan, state, emit, models);
   const policies = readPolicies(state.policies);
-  const reply =
-    decision.kind === "leaf" ? buildLeafReply(decision, run, config.value, policies) : decision;
-  return { ok: true, value: reply };
+  return { ok: true, value: buildReply(decision, run, config.value, policies) };
 };
 
 export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
@@ -786,7 +837,7 @@ export const findContextPlanNode = async (
 export const completeContextStep = async (
   run: RunRef,
   nodeRunId: string,
-  output: JsonValue,
+  output: ContextOutput,
 ): Promise<Result<StepReport>> => {
   const leaf = await loadContextLeaf(run, nodeRunId);
   if (!leaf.ok) return leaf;

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,10 @@ const server = Bun.serve({
   },
 });
 afterAll(() => server.stop(true));
+beforeEach(() => {
+  seen.auth = [];
+  seen.urls = [];
+});
 
 const base = `http://${server.hostname}:${server.port}`;
 const api: Api = { url: `${base}/api/1.0`, key: "secret-key" };
@@ -107,7 +111,7 @@ describe("fetchTask", () => {
     const task = await fetchTask(api, "222");
     expect(task).toMatchObject({ ...TASK, comments: [STORIES[0], LATER_STORIES[0]] });
     expect(seen.auth.at(-1)).toBe("Bearer secret-key");
-    const attachments = seen.urls.find((url) => url.pathname.endsWith("/attachments"));
+    const attachments = seen.urls.findLast((url) => url.pathname.endsWith("/attachments"));
     expect(attachments?.searchParams.get("parent")).toBe("222");
     expect(attachments?.searchParams.get("limit")).toBe("50");
   });
