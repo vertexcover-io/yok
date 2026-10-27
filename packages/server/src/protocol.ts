@@ -162,6 +162,7 @@ export const AddProjectBodySchema = z
     name: SlugSchema,
     git: GitUrlSchema.optional(),
     // with git: where to clone to, default <home>/projects/NAME
+    // TODO: any absolute path is accepted here and in claimAndClone (projects.ts); confine it to HOME/projects.
     path: AbsolutePathSchema.optional(),
     addedBy: AddedBySchema.default({ channel: "api" }),
   })
