@@ -22,11 +22,15 @@ consumes:
     optional: true
   - artifact: implementation
     optional: true
+  - artifact: design-refs
+    optional: true
 produces:
   - artifact: proof-report
     optional: true
 protocols: []
 scopes: []
+verifiers:
+  - { id: design-coverage, module: scripts/qa.ts, functionName: checkDesignCoverage }
 references:
   driving-the-browser:
     path: references/driving-the-browser.md
@@ -113,10 +117,14 @@ Everything else comes from the run's artifacts:
 
 - **The feature's docs**: `.yok/RUN/artifacts/design.md`, `plan.md` and the phase files
   `phases/phase-N.md`, whatever exists. Scenarios come from what those docs say the feature must do.
-  Every phase file's `### QA Agent` scenarios are yours to prove; implement skipped them on purpose.
-- **The designs** plan.md's `## Design References` names — what each screen was supposed to look like. Those
-  images are the **baseline** for the screens they draw; the `visual-verification` reference owns what a
-  baseline is authoritative about and what it is not.
+  Every phase file's `## Test Scenarios` rows at level `qa-agent` are yours to prove; implement skipped them on purpose.
+- **The designs** plan.md's `## Design Frames` names, in `.yok/RUN/artifacts/design/`, each with the width
+  it was drawn at. Each image is the **baseline** for the screen it draws, written `../design/FILE` from the
+  report; the `visual-verification` reference owns what a baseline is authoritative about. Compare every frame
+  the plan builds against at least one scenario, at the width the index gives it. A frame whose screen no walk
+  could reach makes its scenario `NOT VERIFIED`, and the `mechanism` of that scenario's `gaps[]` entry names the
+  frame's `design/FILE` path. `done` checks each frame and its width, and rejects a PASS or PARTIAL whose report
+  carries a BLOCKER.
 - **The config's `environments` entry the `environment` variable picks** — how the stack starts, seeds
   and authenticates. Step 1 works its keys through the `stack-up` reference.
 - **The project's stack skill** — the app facts verification turns on that no key carries (self-lying surfaces,
@@ -127,9 +135,9 @@ Everything else comes from the run's artifacts:
   `phase-N-e2e-skipped.md` where a phase skipped its E2E leg — the raw JSON its
   runner wrote, listing every test that actually executed. Test titles carry a scenario id
   (`SC3: …`), not a requirement id, so read the report in two hops: title id → the phase file's
-  matching scenario heading → the requirement ids that heading traces to (`**SC3 — …** · R2, EC1`).
-  A requirement no executed scenario traces to was never covered end to end; one whose scenarios all
-  sit under `### Unit` was covered at the wrong altitude. Nobody hands you that list — deriving it is
+  scenario row with that id → the requirement ids in that row's `Traces` cell. A requirement no
+  executed scenario traces to was never covered end to end; one whose scenarios are all at level
+  `unit` was covered at the wrong altitude. Nobody hands you that list — deriving it is
   this skill's job.
 - **implement's report**, `.yok/RUN/artifacts/implementation.md` — which phases landed, and each
   phase's commit.
@@ -381,7 +389,8 @@ phone at all is a project fact like any other.
 - every UI scenario names the path it opened on;
 - every UI scenario's `NN_SLUG` frames in `screenshots/` tell its whole story;
 - every UI scenario carries a `visualMatch` — a derived fidelity, or the named absence of a baseline — with each of
-  the six questions evidenced or called clean;
+  the seven questions evidenced or called clean, and every frame the plan builds is some scenario's baseline, read at
+  the width the plan gives it, or named in the `mechanism` of the gap of the scenario that could not reach it;
 - every flow on the surface the change landed on has a phone replay driven to its closing assert, whatever it
   returned.
 

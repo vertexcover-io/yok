@@ -182,6 +182,7 @@ const describeApproval = (event: Event): Notice | undefined => {
   return makeNotice(`${name} ready for approval`, {
     mention: true,
     body: "_Approve in the viewer, or type approve in the session._",
+    files: [path],
   });
 };
 
@@ -395,9 +396,9 @@ export type OpenNotifier = typeof openNotifier;
 // it loads in a compiled binary, where this file has no path on disk.
 export const NOTIFIER_MODULE = "yok:notifier";
 
-// A file larger than this is named in the message instead of uploaded, so a 4 MB proof report
-// does not land in the channel.
-export const UPLOAD_LIMIT_BYTES = 1_000_000;
+// A file larger than this is named in the message instead of uploaded. A plan page embeds every
+// frame, so it runs to several MB.
+export const UPLOAD_LIMIT_BYTES = 100_000_000;
 
 const splitBySize = async (
   files: readonly string[],

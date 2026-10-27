@@ -50,24 +50,27 @@ will change.
 
 ### Reading the plan
 
-`plan.md` carries the overview, the `## Phases` digraph, `## Design References`, `## ADRs` and
-`## Project Docs`. Open every ADR and doc it lists before editing. When a step would go against
+`plan.md` carries the overview, the `## Phase Breakdown` digraph, `## ADRs`, `## Project Docs`
+and `## Design Frames`. Open every ADR and doc it lists before editing. When a step would go against
 an ADR, stop: that is blocked.
 
 A `phases/phase-N.md` is already decomposed; take it as given rather than re-deriving the
 feature:
 
-- `## Implementation`: the build steps, in order. Each change is a diff to apply.
-- `## Test Scenarios`: `### Unit`, `### Integration`, `### E2E`, each scenario numbered `SCn`.
-  One test per scenario, at the level it sits under. Carry the id in the test title
-  (`SC12: …`) so a reviewer can trace tests back to scenarios. `### QA Agent` scenarios are not
-  yours; the qa stage proves them.
+- `## Implementation`: the build steps, in order. Each change is a diff to apply. The names in
+  plan.md's `## Signature index` are what the phases hand each other: build and call each exactly
+  as it is written there. A design step's UI mapping names the component behind each element of
+  its frame: reuse or extend the component it names, and build new only where it says `new`.
+- `## Test Scenarios`: a table with one row per scenario, its id `SCn` and its `Level`. Write one
+  test per row, at the level the row gives, from its `Given` and `Expected` cells. Carry the id in
+  the test title (`SC12: …`) so a reviewer can trace tests back to scenarios. Rows at level
+  `qa-agent` belong to the qa stage, which proves them.
 - `## Commit`: the commit message.
 
 ## 3. Build the phases one at a time
 
-Build the phases one after another in the order of the `## Phases` digraph. Start a phase only
-after the one before it is committed. When a phase is `BLOCKED`, stop.
+Build the phases one after another in the order of the `## Phase Breakdown` digraph. Start a phase
+only after the one before it is committed. When a phase is `BLOCKED`, stop.
 
 The node's mode decides who builds each phase:
 
@@ -81,16 +84,18 @@ The node's mode decides who builds each phase:
 
 For each phase:
 
-- Use `tdd` one behavior at a time. Use the phase's scenarios and levels as written.
-- A scenario is done when a test **at its assigned level** ran green. "Already covered by a
-  unit test" does not satisfy an integration or E2E scenario; moving one to a cheaper level is
-  `BLOCKED`, not a pass.
-- Run affected tests and typecheck while iterating. Once the phase is built, run the full
-  tests, typecheck and lint. Documentation-only changes need the artifact checked, not
-  invented tests.
-- When building a screen, open the frame the step names first.
-- Commit the phase with its `## Commit` message. Stage only this phase's changes and leave
-  unrelated edits alone. Commit without asking.
+- **Read the design first.** When a step names a frame or a `Spec: design/spec.md` part, open
+  both before the step's first test and build to them; qa checks the running screen.
+- **Build one behavior at a time** with `tdd`, at each scenario's assigned level.
+- **Count a scenario done** only when a test at its assigned level is green. Moving it to a
+  cheaper level is `BLOCKED`, not a pass.
+- **Test as you go:** affected tests and typecheck while iterating; full tests, typecheck and
+  lint once the phase is built. Docs-only changes need the artifact checked, not invented tests.
+- **Account for every spec rule.** In `implementation.md`, list each rule the phase's steps point
+  at with its test, or `visual, for qa`. Build any rule with neither; one the code cannot meet
+  is `BLOCKED` with the reason.
+- **Commit the phase** with its `## Commit` message, staging only its changes. Commit without
+  asking.
 
 ### The E2E leg
 
@@ -99,7 +104,7 @@ For each phase:
 - **The report.** The runner writes its own JSON to `.yok/RUN/artifacts/phase-N-e2e.json`.
   The flag each runner needs is in the `tdd` skill's `references/hermetic-e2e.md`. Nothing in
   the file is hand-written.
-- **The flow is given.** The phase's `### E2E` block is the spec; use it as written. Before
+- **The flow is given.** The phase's `e2e` scenario rows are the spec; use it as written. Before
   creating a spec file, grep the e2e directory for the surface and extend the spec that covers
   it.
 - **The environment is the first task, not a blocker.** Bring the stack up, and confirm the
@@ -129,6 +134,7 @@ Load `writing-style`, then write `.yok/RUN/artifacts/implementation.md`:
 - each scenario id and the test that proves it
 - each check run, with pass and fail counts, and every justified skip
 - the E2E report or skip note per phase
+- per phase, each spec.md rule its steps point at, with the test that covers it or `visual, for qa`
 
 Finish the stage with `--artifact '{"type":"implementation","name":"implementation","path":"artifacts/implementation.md"}'` and one line as
 the output: how many phases were built and the pushed head. `COMPLETED` means the assignment

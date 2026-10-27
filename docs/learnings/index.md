@@ -7,3 +7,4 @@
 - [Don't pass a Result up unchanged; unwrap it and catch once where the error is handled](unwrap-forwarded-results.md) — Use when a function calls several Result-returning functions and only passes their errors up
 - [Build a new feature for every agent yok runs, not just Claude](build-for-all-agents.md) — Use when building a new feature that works with the agent, such as Claude Code or Codex
 - [Run the suite with `bun run test` and watch that it does not hang](run-tests-with-bun-run-test.md) — Use when running the project's whole test suite
+- [Rewrite the section a skill edit touches, in plain steps ordered by execution](skill-edit-rules.md) — Use when editing a skill's SKILL.md or its references

@@ -10,9 +10,10 @@ the feature being planned.
 
 | Consumer | Reads | Uses it for |
 |---|---|---|
-| `implement` | `plan.md`, the `## Phases` section | reads the digraph, builds the phases in order |
+| `implement` | `plan.md`, the `## Phase Breakdown` section | reads the digraph, builds the phases in order |
 | a coder | one `phases/phase-N.md`, plus `plan.md` | what it builds, and the scenarios that prove it |
 | `code-review`, spec persona | `design.md` and `plan.md` | the intent to review the diff against |
+| `qa` | `plan.md`, the `## Design Frames` section | the frame and width each screen is checked against |
 
 ## Contents
 
@@ -26,16 +27,17 @@ the feature being planned.
 
 ## Fixed format — do not vary
 
-Five things are matched by name or by shape. Rename or reshape one, and a downstream skill
+Six things are matched by name or by shape. Rename or reshape one, and a downstream skill
 fails without saying why.
 
 | Item | Read by | Rule |
 |---|---|---|
-| the `## Phases` heading | implement | exact text |
+| the `## Phase Breakdown` heading | implement | exact text |
 | the digraph inside it | implement | `digraph phases { … }`, one node per phase id, `pN -> pM` edges |
 | the `## Acceptance` heading | the coder | exact text |
 | `# Phase N: TITLE` and `Depends on:` | the coder | the first two lines of every phase file |
 | scenario ids | tdd | the format in `test-scenarios.md`, unique across the whole plan |
+| the `## Design Frames` heading | implement, qa | exact text |
 
 Everything else is prose. The rules below govern it.
 
@@ -65,35 +67,45 @@ Include a section when it has content that meets its trigger. Omit it otherwise.
 section costs nothing. A thin one costs context, and it states "considered, nothing found" —
 a claim you did not mean to make.
 
-The floor is real: a small change can be phases and their scenarios, and nothing else. That is
-a complete plan.
+The floor is real: a small change can be its overview, approach, phases and their scenarios, and
+nothing else. That is a complete plan.
+
+**Write plan.md in the table's order.** A reviewer reads it top to bottom: what the plan builds
+and how, the phases, what proves them, what was decided, and last the reference material a coder
+looks up.
 
 | plan.md section | Include when |
 |---|---|
-| `## Inputs` | always in a run — `design.md` and the ticket, plus one line on what this plan adds |
-| `## Requirements` | there is no requirements document, so planning established the ids itself |
-| `## Design corrections` | the code contradicted `design.md`, and the user's answer changed it: what it assumed, what the code shows, what it says now |
-| `## Phases` | always — capability title, repos touched, builds/needs, *why the cut is there*, and the digraph |
-| `## Global constraints` | something binds every phase and is invisible to one built in isolation — fixed values, verbatim copy, platform limits. A value used in one phase belongs in that step. |
+| `## Overview` | always — what the plan builds and for whom, the inputs it builds from (`design.md` and the ticket), and what it adds to them |
+| `## Approach` | always — what gets built, where it sits in the code, and which existing code it reuses, in a few sentences |
+| `## Diagrams and data changes` | the work has a flow, a structure or a state change worth drawing, or it changes stored data — mermaid diagrams, then each table, column, index and migration it adds or changes |
+| `## Phase Breakdown` | always — one entry per phase, linked to its file, then the digraph |
 | `## Signature index` | a name is defined in one phase and used in another |
-| `## Design References` | a phase builds a user-facing surface a design already defines — one row per screen, from `design/INDEX.md` |
-| `## ADRs` | the docs scout returned ADRs that bind this work, or this stage wrote a new ADR |
-| `## Project Docs` | the docs scout returned docs under `docs/`, outside `docs/adr/`, that bind this work |
+| `## Global constraints` | something binds every phase and is invisible to one built in isolation — fixed values, verbatim copy, platform limits. A value used in one phase belongs in that step. |
 | `## Blockers in existing code` | existing code must be repaired or worked around to build **or test** this |
 | `## Test Matrix` | requirements exist — one row per requirement |
 | `## Acceptance` | something is provable only after every phase lands |
-| `## Deferred` | work was deliberately excluded, or the design deferred it |
 | `## Assumptions` | the plan took a decision without asking anyone |
+| `## Decisions` | the user answered a question during planning, or the code contradicted `design.md` and the user's answer changed it |
+| `## ADRs` | the docs scout returned ADRs that bind this work, or this stage wrote a new ADR |
+| `## Project Docs` | the docs scout returned docs under `docs/`, outside `docs/adr/`, that bind this work |
+| `## Requirements` | there is no requirements document, so planning established the ids itself |
+| `## Deferred` | work was deliberately excluded, or the design deferred it |
 | `## Design System` | a project extension produced a component inventory — that extension owns the section's shape |
+| `## Design Frames` | a design exists — always the last section |
 
 No status fields — progress derives from git and the digraph. No file inventory, no patterns
-table: those belong in the steps they govern. A component inventory appears only as the
-`## Design System` section an extension defines, never as a table of the plan's own.
+table: those belong in the steps they govern. Which existing component draws each element of a
+frame is the UI mapping of the step that builds it, per `step-card.md`.
 
-### The phase digraph
+### Phase Breakdown
 
-One node per phase id. An edge means "must land first". `implement` reads this to order the
-phases.
+**One entry per phase, opened by a link to its file.** The link's text is `Phase N: CAPABILITY`
+and its target `phases/phase-N.md`; the plan page opens that phase when the reviewer clicks it.
+Under the link: the repos it touches, what it builds and needs, and why the cut sits there.
+
+**The digraph closes the section.** One node per phase id. An edge means "must land first".
+`implement` reads it to order the phases.
 
     digraph phases {
       p1 [label="1: CAPABILITY"]
@@ -103,32 +115,34 @@ phases.
 
 ### The signature index
 
-Flat, one line per new or changed signature, grouped by phase. It exists because the coder
-cannot open the phase file that defines the name. Duplication is the point of an index.
+**Flat, one line per new or changed signature, grouped by phase.** It exists because the coder
+cannot open the phase file that defines the name, so duplication is the point of an index.
 
-    // phase 1
-    register(email, password) → User | DuplicateError
-    POST /register → 201 | 409 | 422
+**It is the contract between phases.** Each entry is built by a step's diff in the phase it is
+listed under, and every later phase calls it exactly as written. A name here that no step builds
+is a finding.
 
-    // phase 2
-    issueToken(user) → Session
-    Session = { token: string, expiresAt: Date }
+### Blockers
 
-It introduces nothing. Every entry is defined by a step. A name here that no step builds is a
-finding.
+Only what must be repaired or worked around to build this — problems that block the work, or
+make the new code hard to write, test, or understand. Each one gets a phase.
 
-### Design References
+**A unit no test can construct is a blocker, even when the feature builds fine around it.** The
+symptom shows up in the Test Matrix, not in the steps: rows climb to `e2e` because
+nothing lower can reach the behavior. Name the shape that forces the climb, quote it, and give a
+phase the step that opens it up. `test-scenarios.md`'s red flag says when to go looking.
 
-Flat, one row per screen, copied from the design scout's `design/INDEX.md` and dropping its
-source column. It exists for the same reader as the signature index: a coder building one phase
-in isolation who needs to know that the checkout screen is already drawn, and where.
+Pre-existing problems in a file you happen to be touching are out of scope. A long list dilutes the entries that actually block. If a row's
+resolution would be "leave the code as is", it is not a blocker — delete the row.
 
-The step that builds the surface carries the instruction — *build to `design/checkout-empty.png`* —
-and the index carries the paths. A screen here that no step builds is a finding, as in the
-signature index; where that is deliberate, the row records it as
-`design/FILE — not built: REASON`.
+Quote the code. The coder matches the quoted text to find the place; four lines locate it, and
+a paragraph describing it does not.
 
-Omit the section when no design exists — and **say so in the step instead**, per `step-card.md`.
+### Decisions
+
+**One entry per answer that shaped the plan.** For a question the user answered: what was asked,
+the answer, and the steps it changed. For a contradiction between the code and `design.md`: what
+the design assumed, what the code shows, and what the design says now.
 
 ### ADRs
 
@@ -151,21 +165,18 @@ One line per doc under `docs/`, outside `docs/adr/`, that the docs scout returne
     - docs/architecture/search.md
     - docs/runbooks/reindex.md
 
-### Blockers
+### Design Frames
 
-Only what must be repaired or worked around to build this — problems that block the work, or
-make the new code hard to write, test, or understand. Each one gets a phase.
+**The last section: one row per screen**, copied from `design/INDEX.md` without its source
+column — the screen, its file and its width. A coder building one phase in isolation reads which
+screens are drawn, where, and at what width; qa reads each frame's width from it. The plan page
+shows every frame as a card under this section.
 
-**A unit no test can construct is a blocker, even when the feature builds fine around it.** The
-symptom shows up in the Test Matrix, not in the steps: rows climb to `e2e` because
-nothing lower can reach the behavior. Name the shape that forces the climb, quote it, and give a
-phase the step that opens it up. `test-scenarios.md`'s red flag says when to go looking.
+**The step carries the frame; this section carries the paths.** The step that builds the screen
+holds its Design line and UI mapping. A screen no step builds is a finding; where that is
+deliberate, its row reads `design/FILE — not built: REASON`.
 
-Pre-existing problems in a file you happen to be touching are out of scope. A long list dilutes the entries that actually block. If a row's
-resolution would be "leave the code as is", it is not a blocker — delete the row.
-
-Quote the code. The coder matches the quoted text to find the place; four lines locate it, and
-a paragraph describing it does not.
+Omit the section when no design exists, and say so in the step instead, per `step-card.md`.
 
 ## phase-N.md
 
@@ -173,14 +184,14 @@ Header: `# Phase N: THE CAPABILITY TITLE`, then a `Depends on:` line.
 
 | Section | Answers only | Must not contain |
 |---|---|---|
-| `## Goal` | why this phase exists, what it unlocks — folds into the header when the title already says it | file lists, steps |
-| `## Interfaces` | what this phase consumes from earlier phases and produces for later ones — **names from the signature index, never re-typed** | rationale, steps |
-| `## Implementation` | how, as ordered steps | scenario prose, done-criteria |
-| `## Test Scenarios` | the behavior that proves it, grouped `### Unit` · `### Integration` · `### E2E` · `### QA Agent` — only the subsections this phase has | implementation detail, cross-phase flows |
+| `## Goal` | why this phase exists, what it unlocks, and the `Done when` check it makes pass or the part of one it proves | file lists, steps |
+| `## Implementation` | how, as ordered steps, each written to `step-card.md` | scenario prose, done-criteria |
+| `## Test Scenarios` | the behavior that proves it, as one table with a row per scenario and its level, in the format `test-scenarios.md` gives | implementation detail, cross-phase flows |
 | `## Commit` | the message | — |
 
-`## Interfaces` appears only where a seam exists. There is no Done-When section — the scenarios
-are the definition of done. Content restating another section is cut.
+**What crosses phases lives in plan.md.** The names one phase hands another are listed once, in
+the signature index; the steps build and call them in their diffs. The scenarios are the
+definition of done. Cut content that restates another section.
 
 ## Implementation steps
 

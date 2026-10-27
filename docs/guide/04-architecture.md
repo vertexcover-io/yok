@@ -135,5 +135,6 @@ The release binary and the dev build never share a home, so they never share a s
 | change what a hook decides | `packages/core/src/hooks/*.ts` |
 | change what the doctor checks | `packages/core/src/doctor.ts` |
 | change the browser page | `packages/server/src/viewer.ts`, `viewer.html`, `overview.ts`, `runs.html` |
+| change how markdown renders, in the viewer and in plan.html | `packages/core/src/markdown.ts`, `doc.css`, `plan-page.ts`, `plan-page.html` |
 
 Next: [One task, end to end](05-one-task-end-to-end.md).

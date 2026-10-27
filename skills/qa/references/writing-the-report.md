@@ -160,11 +160,16 @@ screen was drawn before it was built and whether the build kept to the drawing.
 
 ```json
 "visualMatch": {
-  "baseline": "docs/design/reconciliation-detailed.png",
-  "fidelity": 92,
+  "baseline": "../design/reconciliation-detailed.png",
+  "build": "screenshots/NN_SLUG.design.png",
+  "width": 1440,
+  "fidelity": 75,
   "matched": "Region order, the filter row's controls, the Complete Match chip and its copy all read as drawn.",
+  "specRules": [
+    { "rule": "<the spec rule as written>", "held": true, "evidence": "<the computed style that shows it>" }
+  ],
   "findings": [
-    { "severity": "HIGH",
+    { "severity": "BLOCKER",
       "what": "The period selector is drawn as the screen's primary control and renders as a tertiary one",
       "baselineShows": "filled accent button, 16px label",
       "buildShows": "ghost button, 13px label",
@@ -173,19 +178,23 @@ screen was drawn before it was built and whether the build kept to the drawing.
 }
 ```
 
-- **`baseline`** is the reference image's path, or `null` for a screen nobody drew. `null` renders as
-  **no design reference** — visibly not a pass, because absence of a check must never read as one.
+- **`baseline`** is the reference image's report-relative path, or `null` for a screen nobody drew. `null` renders
+  as **no design reference** — visibly not a pass, because absence of a check must never read as one.
+- **`build`** and **`width`** are the re-shoot at the width the plan gives the frame. Leave both out when the
+  scenario was already shot at that width. The report renders the baseline beside `build`, or beside the
+  scenario's first frame when there was no re-shoot, so a reader compares them without leaving the page.
 - **`fidelity`** is derived, per `visual-verification.md`: 100, less 25 a BLOCKER and 8 a HIGH, floored at 0.
   It is `null` wherever `baseline` is. **A scenario whose findings carry a BLOCKER is a `FAILURE`** — the
   divergence is a bug, filmed from its own repro like any other, and its fidelity is not a second opinion the
   reader gets to weigh against the verdict.
 - **`matched`** is one sentence on what lined up. A findings list with nothing beside it reads as a broken screen
   even when nine tenths of it was right.
-- **`findings[]`** carry `severity` of `BLOCKER` or `HIGH` only. **A spacing or pixel delta against the baseline
-  is not a finding** and never appears here; where one broke something in the build, that break is a sanity
-  finding on its own terms, with its own measurement.
-- The report renders the baseline and the scenario's first frame side by side, so a reader compares them without
-  leaving the page.
+- **`specRules[]`** lists every `design/spec.md` rule a plan step cites for this screen, each with `held` set to
+  whether the build kept it and `evidence` holding the computed style or measurement that shows it. Write it only
+  when the run has a `spec.md`.
+- **`findings[]`** carry `severity` of `BLOCKER` or `HIGH` only. **Grade a divergence by what it changes for the
+  user, never by a spacing or pixel delta against the baseline**; where a spacing delta broke something in the
+  build, record that break as a sanity finding on its own terms, with its own measurement.
 
 ### Coverage and the derived verdict
 
@@ -205,6 +214,13 @@ Several ids pointing at one scenario is normal and good — a single walk that p
 walk. One id proven by more than one walk — a desktop scenario and its phone replay — stays **one row** whose
 `scenario` names them both (`"01, 09"`), carrying `FAILURE` if either failed and `NOT VERIFIED` if either went
 unproven. What is not allowed is an id in the docs with no row here.
+
+**Every rule in `design/spec.md` is a requirement too.** When the run has a spec, read it top to bottom, whether or
+not a plan step points at the part a rule sits in, and give each rule it states its own row, `req` set to
+`SPEC: <the rule in a few words>`. Its verdict comes from the scenario that checked it, through that scenario's
+`visualMatch.specRules`: `SUCCESS` when it held, `FAILURE` when it broke. A rule no scenario reached is
+`NOT VERIFIED` with a `gaps[]` entry, and a rule that does not apply to this build is `INVALID` with why. The
+spec has no fixed format, so read rules as the spec writes them: a sentence, a bullet or a table row each count.
 
 **`verdict` is derived from that table, never chosen:** any scenario `FAILURE` → `FAIL`; else any requirement
 `NOT VERIFIED` → `PARTIAL`; only an all-covered, all-`SUCCESS` run is `PASS`. Compute it after the table is
@@ -279,6 +295,8 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
   this done.
 - `coverage[]` has a row for every requirement id the docs list, and `verdict` is what the derivation rule computes
   from it. Grep the docs for their id pattern and diff that set against the table before you call this done.
+- When the run has `design/spec.md`, `coverage[]` has a `SPEC:` row for every rule it states. Read the spec once more
+  against the table before you call this done.
 - Every `NOT VERIFIED` scenario has a `gaps[]` entry whose `mechanism` names a line, condition, credential or
   absent datum, with `attempted` listing distinct approaches and `wouldClose` naming the concrete unblock.
 - Every `bugs[]` entry carries a `reachedBy` naming a real actor and the surface they used, and an `origin` of
@@ -302,9 +320,9 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
   measured rect, a captured webhook body. Where that observation is mechanism rather than surface, it is a `proofs[]`
   entry, written once.
 - Every UI scenario carries a `visualMatch`: a `baseline` path with a derived `fidelity` where a design defines the
-  screen, or `baseline: null` where none does. No `findings[]` entry rests on a spacing delta alone, every entry
-  cites a measurement or a computed style, and every `BLOCKER` has made its scenario a `FAILURE` with a `bugs[]`
-  entry behind it.
+  screen, read at the frame's width, or `baseline: null` where none does. Every spec rule a step cites is in
+  `specRules[]`. No `findings[]` entry rests on a spacing delta alone, every entry cites a measurement or a computed
+  style, and every `BLOCKER` has made its scenario a `FAILURE` with a `bugs[]` entry behind it.
 - Every UI scenario names its `video`, every path is report-relative, and every file named in `artifacts[]` exists
   beside the report under the same `NN_<slug>` prefix. No frame or file resolves to a broken link.
 - The `report-media` script with `--inline` ran after the last edit to the report and printed `ok` for every file it names.
