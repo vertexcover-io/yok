@@ -602,6 +602,19 @@ async function drawMermaid(root) {
   await mermaid.run({ nodes: blocks }).catch(() => {});
 }
 
+const MARK_CSS = "mark.hl{color:inherit;background:#fde7a4;border-bottom:2px solid #c99400;border-radius:2px;cursor:pointer;padding:0 1px}mark.hl.k-delete{background:#fbe2df;border-bottom-color:#b2362d;text-decoration:line-through}mark.hl.k-replace{background:#ebe5fa;border-bottom-color:#6449b0}mark.hl.is-draft{background:transparent;border-bottom-style:dashed}mark.hl.is-done{background:transparent;border-bottom-width:1px}mark.hl.pulse{animation:pulseMark 1.2s ease-out}@keyframes pulseMark{0%,40%{box-shadow:0 0 0 4px #c99400}100%{box-shadow:0 0 0 0 transparent}}";
+
+function iframeLoaded(iframe) {
+  const doc = iframe.contentDocument;
+  if (!doc) return;
+  const style = doc.createElement("style");
+  style.textContent = MARK_CSS;
+  doc.head.append(style);
+  doc.addEventListener("selectionchange", scheduleSelection);
+  doc.addEventListener("click", onMarkClick);
+  refresh();
+}
+
 /* ---------- sections and code tools ---------- */
 
 // Every control added inside the article takes its label from CSS, so the page's text, which
@@ -787,14 +800,15 @@ function docView(reply) {
     const frame = el("div", "html-frame");
     const chrome = el("div", "html-chrome");
     chrome.append(el("i"), el("i"), el("i"), el("span", "", reply.path));
+    // Same-origin and unsandboxed on purpose: the agent that writes artifacts already runs as this
+    // user with a shell and yok, and a sandbox breaks sibling module scripts, fetch() and comments
+    // on text a script writes after load.
     const iframe = el("iframe");
     iframe.id = "htmlFrame";
     iframe.src = `${reply.raw}?v=${Date.now()}`;
     iframe.title = reply.path;
-    iframe.setAttribute("sandbox", "allow-scripts");
     iframe.style.cssText = "width:100%;height:70vh;border:0;background:#fff";
-    frameText = null;
-    frameSel = null;
+    iframe.addEventListener("load", () => iframeLoaded(iframe));
     frame.append(chrome, iframe);
     return frame;
   }
@@ -851,31 +865,11 @@ $("#docPane").addEventListener("scroll", () => {
   outlineFrame = requestAnimationFrame(markOutline);
 }, { passive: true });
 
-const docRoot = () => $("#docRoot");
-
-// An HTML artifact runs in a sandboxed frame the page cannot read: the frame's agent (frame-agent.js)
-// reports its text and selection, and takes highlight and focus commands, by postMessage.
-let frameText = null;
-let frameSel = null;
-const toFrame = (message) => $("#htmlFrame")?.contentWindow?.postMessage(message, "*");
-
-const isRect = (r) => ["left", "top", "width", "bottom"].every((k) => typeof r?.[k] === "number");
-const isFrameSel = (s) => typeof s?.quote === "string" && typeof s.start === "number" && typeof s.selector === "string" && isRect(s.rect);
-
-window.addEventListener("message", (e) => {
-  const frame = $("#htmlFrame");
-  if (!frame || e.source !== frame.contentWindow) return;
-  const m = e.data;
-  if (m?.t === "ready" && typeof m.text === "string") {
-    frameText = m.text;
-    refresh();
-  } else if (m?.t === "selection") {
-    frameSel = isFrameSel(m.sel) ? m.sel : null;
-    scheduleSelection();
-  } else if (m?.t === "mark" && typeof m.id === "string") {
-    focusComment(m.id, "card");
-  }
-});
+const docRoot = () => {
+  const article = $("#docRoot");
+  if (article) return article;
+  return $("#htmlFrame")?.contentDocument?.body ?? null;
+};
 
 const blockKey = (block) => `${block.dataset.lines}|${block.textContent}`;
 
@@ -933,11 +927,6 @@ function clearMarks(root) {
   }
 }
 
-function markClass(comment) {
-  const done = ["answered", "declined", "changed"].includes(comment.status) ? " is-done" : "";
-  return `hl k-${comment.kind}${comment.draft ? " is-draft" : ""}${done}`;
-}
-
 function wrapRange(root, [start, end], comment) {
   const doc = root.ownerDocument;
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -954,7 +943,9 @@ function wrapRange(root, [start, end], comment) {
     if (a > 0) text = text.splitText(a);
     if (b - a < text.data.length) text.splitText(b - a);
     const mark = doc.createElement("mark");
-    mark.className = markClass(comment);
+    mark.className = `hl k-${comment.kind}`;
+    if (comment.draft) mark.classList.add("is-draft");
+    if (["answered", "declined", "changed"].includes(comment.status)) mark.classList.add("is-done");
     mark.dataset.cid = comment.id;
     text.parentNode.insertBefore(mark, text);
     mark.appendChild(text);
@@ -963,14 +954,13 @@ function wrapRange(root, [start, end], comment) {
 
 function applyHighlights() {
   const root = docRoot();
-  const inFrame = currentReply?.type === "html";
   for (const c of forFile(current ?? "")) {
     c.orphan = false;
     c.pos = Number.POSITIVE_INFINITY;
   }
-  const full = inFrame ? frameText : root?.textContent;
-  if (full == null || !currentReply) return;
-  if (root) clearMarks(root);
+  if (!root || !currentReply) return;
+  clearMarks(root);
+  const full = root.textContent;
   for (const c of forFile(current)) {
     if (!c.anchor) continue;
     const range = findQuote(full, c.anchor);
@@ -981,11 +971,6 @@ function applyHighlights() {
     c.pos = range[0];
   }
   const placed = forFile(current).filter((c) => c.anchor && !c.orphan).sort((a, b) => b.pos - a.pos);
-  if (inFrame) {
-    const marks = placed.map((c) => ({ start: c.pos, end: c.pos + c.anchor.quote.length, id: c.id, cls: markClass(c) }));
-    toFrame({ t: "highlight", marks });
-    return;
-  }
   for (const c of placed) wrapRange(root, [c.pos, c.pos + c.anchor.quote.length], c);
 }
 
@@ -1005,7 +990,6 @@ function pulse(mark) {
 function focusComment(id, target) {
   focusId = id;
   renderThreads();
-  if (target === "doc" && currentReply?.type === "html") return toFrame({ t: "focus", id });
   if (target === "doc") {
     const mark = docRoot()?.querySelector(`mark[data-cid="${id}"]`);
     if (!mark) return;
@@ -1242,25 +1226,30 @@ function mergedLines(a, b) {
   return [Math.min(...found.map((l) => l[0])), Math.max(...found.map((l) => l[1]))];
 }
 
-function frameOffset() {
-  const frame = $("#htmlFrame");
-  if (!frame) return { x: 0, y: 0 };
-  const box = frame.getBoundingClientRect();
-  return { x: box.left, y: box.top };
+function cssPath(node, root) {
+  let cur = elementOf(node);
+  const parts = [];
+  while (cur && cur !== root) {
+    if (cur.tagName !== "MARK") {
+      const same = [...cur.parentElement.children].filter((c) => c.tagName === cur.tagName);
+      const nth = same.length > 1 ? `:nth-of-type(${same.indexOf(cur) + 1})` : "";
+      parts.unshift(cur.tagName.toLowerCase() + (cur.classList[0] ? `.${cur.classList[0]}` : "") + nth);
+    }
+    cur = cur.parentElement;
+  }
+  return parts.join(" > ");
 }
 
-function frameSelection() {
-  if (!frameSel || frameText === null) return null;
-  const { quote, start, selector, rect: box } = frameSel;
-  const off = frameOffset();
-  const rect = { left: box.left + off.x, top: box.top + off.y, width: box.width, bottom: box.bottom + off.y };
-  return { rect, anchor: { quote, ...quoteContext(frameText, start, quote), selector } };
+function frameOffset() {
+  const frame = $("#htmlFrame");
+  if (!frame?.contentDocument?.body) return { x: 0, y: 0 };
+  const box = frame.getBoundingClientRect();
+  return { x: box.left, y: box.top };
 }
 
 function captureSelection() {
   const file = currentFile();
   if (!commentMode || !file || !canComment(file.type)) return null;
-  if (file.type === "html") return frameSelection();
   const root = docRoot();
   if (!root) return null;
   const sel = root.ownerDocument.getSelection();
@@ -1272,10 +1261,14 @@ function captureSelection() {
   if (!quote) return null;
   const start = textOffset(root, range.startContainer, range.startOffset) + (raw.length - raw.trimStart().length);
   const anchor = { quote, ...quoteContext(root.textContent, start, quote) };
-  const lines = mergedLines(range.startContainer, range.endContainer);
-  if (lines) anchor.lines = lines;
-  const heading = headingFor(root, range.startContainer);
-  if (heading) anchor.heading = heading;
+  if (file.type === "html") {
+    anchor.selector = cssPath(range.startContainer, root);
+  } else {
+    const lines = mergedLines(range.startContainer, range.endContainer);
+    if (lines) anchor.lines = lines;
+    const heading = headingFor(root, range.startContainer);
+    if (heading) anchor.heading = heading;
+  }
   const box = range.getBoundingClientRect();
   const off = frameOffset();
   const rect = { left: box.left + off.x, top: box.top + off.y, width: box.width, bottom: box.bottom + off.y };
@@ -1394,7 +1387,7 @@ function closeComposer() {
   $("#composer").hidden = true;
   composing = null;
   window.getSelection()?.removeAllRanges();
-  toFrame({ t: "clearSelection" });
+  $("#htmlFrame")?.contentDocument?.getSelection()?.removeAllRanges();
 }
 
 $("#composerCancel").addEventListener("click", closeComposer);

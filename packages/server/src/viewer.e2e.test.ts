@@ -121,6 +121,12 @@ const MOCKUP = `<!doctype html><html><body>
 <script>document.getElementById("go").textContent = "Continue";</script>
 </body></html>`;
 
+const MODULE_PAGE = `<!doctype html><html><body>
+<p id="mod">waiting</p><p id="data">waiting</p>
+<script type="module" src="./module.js"></script>
+<script>fetch("./module.json").then((r) => r.json()).then((d) => { document.getElementById("data").textContent = d.word; });</script>
+</body></html>`;
+
 // Async on purpose: the viewer runs in this process, and a sync spawn would freeze it while the
 // browser waits for its page.
 const browser = async (...args: string[]): Promise<string> => {
@@ -157,15 +163,10 @@ const until = async (js: string, ms = 5000): Promise<void> => {
 };
 
 const selectText = async (inFrame: boolean, text: string): Promise<void> => {
-  if (inFrame) {
-    // The frame is sandboxed, so its own agent makes the selection.
-    await evaluate(
-      `document.querySelector('#htmlFrame').contentWindow.postMessage({ t: "select", text: ${JSON.stringify(text)} }, "*")`,
-    );
-    return;
-  }
+  const doc = inFrame ? "document.querySelector('#htmlFrame').contentDocument" : "document";
+  const root = inFrame ? `${doc}.body` : "document.querySelector('#docRoot')";
   await evaluate(`(() => {
-    const doc = document; const root = document.querySelector('#docRoot');
+    const doc = ${doc}; const root = ${root};
     const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const at = n.data.indexOf(${JSON.stringify(text)});
@@ -197,6 +198,9 @@ const ensureCommentMode = async (): Promise<void> => {
 const ARTIFACTS: Readonly<Record<string, string>> = {
   "design.md": DESIGN,
   "mock.html": MOCKUP,
+  "module.html": MODULE_PAGE,
+  "module.js": 'document.getElementById("mod").textContent = "module ran";',
+  "module.json": '{ "word": "fetched" }',
   "code.md": CODE,
   "outline.md": OUTLINE,
   "steps.md": STEPS,
@@ -401,9 +405,8 @@ describe("viewer in a browser", () => {
   test("SC35: text selected inside an HTML artifact becomes a comment with an element path", async () => {
     await browser("open", `${url}#artifacts/mock.html`);
     await until(
-      "document.querySelector('#htmlFrame')?.getAttribute('sandbox') === 'allow-scripts'",
+      "document.querySelector('#htmlFrame')?.contentDocument?.getElementById('go')?.textContent === 'Continue'",
     );
-    await Bun.sleep(500);
     await ensureCommentMode();
     await selectText(true, "Sign in");
     await until(barShown);
@@ -416,6 +419,27 @@ describe("viewer in a browser", () => {
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('div.mk-card > h2.mk-title'))",
     );
+  }, 30000);
+
+  test("an HTML artifact loads a sibling module script and fetches a sibling file, and the fetched text takes a comment", async () => {
+    await browser("open", `${url}#artifacts/module.html`);
+    const text = (id: string): string =>
+      `document.querySelector('#htmlFrame')?.contentDocument?.getElementById('${id}')?.textContent`;
+    await until(`${text("mod")} === 'module ran' && ${text("data")} === 'fetched'`);
+    await ensureCommentMode();
+    await selectText(true, "fetched");
+    await until(barShown);
+    await browser("click", "#selbar button[data-kind=comment]");
+    await browser("fill", "#composerText", "Say where this came from");
+    await browser("click", "#sendNowBtn");
+    await until(
+      "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('module.html · p:nth-of-type(2)'))",
+    );
+    expect(
+      await evaluate(
+        "[...document.querySelectorAll('#threads .group-label')].some((l) => l.textContent === 'Text no longer in the file')",
+      ),
+    ).toBe(false);
   }, 30000);
 
   test("a code block is one wrapped box with diff colors, not a stack of inline chips", async () => {
