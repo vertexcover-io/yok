@@ -89,13 +89,14 @@ One `Given` is one scene: every outcome observable in it belongs to that scenari
 however many facts that is. A second scenario is earned by a different starting state or a
 different trigger — never by a further fact visible in the same scene.
 
-The heading is the line the user reads at the plan gate. It states one observable outcome,
+**The heading is the line the user reads at the plan gate.** It states one observable outcome,
 present tense, and carries no rationale clause — the `Given` and the outcomes supply the why by
 being concrete.
 
-In the phase file, group the scenarios under level subsections — `### Unit` ·
+**Group the scenarios under level subsections** in the phase file — `### Unit` ·
 `### Integration` · `### E2E` · `### QA Agent` — including only the subsections the phase
-has.
+has. The plan page lays them out as one table: a row per scenario, holding its heading, its
+`Given` and its outcomes, with the level its subsection gives it beside it.
 
 ## Choose the level — pyramid, not ladder
 

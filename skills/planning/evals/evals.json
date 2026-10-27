@@ -10,7 +10,7 @@
       "expectations": [
         "design.md is read before any other file is written.",
         "An Agent call with an Explore sweep is made before plan.md is written.",
-        "plan.md has a ## Phases section holding a digraph, and one phases/phase-N.md exists per node.",
+        "plan.md has a ## Phase Breakdown section holding a digraph, and one phases/phase-N.md exists per node.",
         "A step implements D1 as streaming."
       ],
       "anti_expectations": [
@@ -41,11 +41,11 @@
       "id": 3,
       "name": "contradiction-goes-to-the-user",
       "prompt": "Run the planning stage. The approved design.md says the webhook sender already retries through a shared `retry()` helper and the plan should raise its limit. In this repo the sender has no retry at all.",
-      "expected_output": "The stage finds the code disproves the design, shows the user the evidence with a file:line, recommends a new decision, and asks. After the answer, design.md states the new decision and plan.md's ## Design corrections records the change.",
+      "expected_output": "The stage finds the code disproves the design, shows the user the evidence with a file:line, recommends a new decision, and asks. After the answer, design.md states the new decision and plan.md's ## Decisions records the change.",
       "files": [],
       "expectations": [
         "An AskUserQuestion names the contradiction and cites the sender's file:line.",
-        "plan.md has a ## Design corrections section recording what the design assumed, what the code shows, and what the user decided.",
+        "plan.md has a ## Decisions section recording what the design assumed, what the code shows, and what the user decided.",
         "design.md states the corrected decision, and is edited only after the user answered."
       ],
       "anti_expectations": [
@@ -62,7 +62,7 @@
       "files": [],
       "expectations": [
         "AskUserQuestion with header Approve? is called at least twice.",
-        "After the revision, the ## Phases digraph and the phase files show the merged phase.",
+        "After the revision, the ## Phase Breakdown digraph and the phase files show the merged phase.",
         "The done command with an --artifact of type plan (artifacts/plan.md) and one of type plan-page (artifacts/plan.html) runs only after an Approve answer."
       ],
       "anti_expectations": [

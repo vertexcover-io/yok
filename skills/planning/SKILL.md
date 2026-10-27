@@ -48,10 +48,11 @@ writing the plan: `yok orchestrate skill run create-workspace.workspace add RUN 
 reads `.yok/RUN/artifacts/design.md` and writes `.yok/RUN/artifacts/plan.md` and
 `.yok/RUN/artifacts/phases/phase-N.md`, one per phase.
 
-**The design is decided.** Build what it says; never reopen a decision or ask what it answers.
+**The design is decided.** Build what it says, and take each decision it records as settled.
 When the design leaves a detail open, choose it yourself and write the choice in plan.md's
 `## Assumptions`. When the gap is a new component, library, contract or stored data, or
-anything hard to undo, ask the user instead. Code that disproves the design is step 3's.
+anything hard to undo, ask the user and record the answer in plan.md's `## Decisions`. Code
+that disproves the design is step 3's.
 
 **Never assume.** State a claim about the code only after you read the code, the user confirmed
 it, or you recorded it in `## Assumptions`.
@@ -77,7 +78,9 @@ step 2. Load the `writing-style` skill before you write the plan: a person appro
 2. Dispatch in parallel on a fast model (`sonnet`):
    - one **Explore** agent per repo the design touches: for each component and contract the
      design names, where it lands, its call sites, the conventions and tests around it, and what
-     is fragile nearby. Findings come back with `file:line` pointers.
+     is fragile nearby. When `design/INDEX.md` lists frames, give it their paths too: for each
+     element a frame shows, the existing component that draws it, or that none does. Findings
+     come back with `file:line` pointers.
    - the **docs scout**, with the `docs-scout` reference as its brief.
 3. The agents locate; you read. Open every file an `Approach` point or a decision lands in,
    every doc the docs scout returns, and every frame `.yok/RUN/artifacts/design/INDEX.md`
@@ -89,7 +92,8 @@ When the design's front matter says `route: atomic`, the plan is one phase with 
 step 2's cut, derive its scenarios, and write it.
 
 **Done when:** for every point of the design's `Approach` and every decision, you can name the
-code it lands in, each cited with `file:line`.
+code it lands in, and for every element a frame shows, the component that draws it or that none
+exists, each cited with `file:line`.
 
 ## Step 2 — Cut the phases
 
@@ -118,9 +122,9 @@ names a failure no other scenario catches.
 
 ## Step 3 — Write the plan
 
-Write each `phases/phase-N.md` first, then `plan.md`, per the `plan-format` and `step-card`
-references. The test: **a coder who has the task but not the codebase can follow every step
-without opening a file.**
+Write each `phases/phase-N.md` first, then `plan.md` in the section order the `plan-format`
+reference gives, and every step to the `step-card` reference. The test: **a coder who has the
+task but not the codebase can follow every step without opening a file.**
 
 These rules bind every step:
 
@@ -129,16 +133,24 @@ These rules bind every step:
 - **A contradiction goes to the user.** When the code disproves the design, ask: show the
   evidence and recommend the new decision. With `interaction` off, it is a blocker. On the
   answer, fix that line in `design.md`, within its caps, so it stays true, and record the
-  change in plan.md's `## Design corrections`.
+  change in plan.md's `## Decisions`.
 - **Open each step with a summary.** Two or three lines of plain English say what changes in
   the file and why, so the developer has the gist before reading the code.
+- **Name the seams on the step.** A step that uses a name another phase builds carries a Uses
+  line, and a step that builds a name another phase uses carries a Provides line, each copied
+  from plan.md's `## Signature index`.
 - **Show every code change as a diff.** Every step that changes code carries its diff, whether
   or not it builds to a frame or points at the spec. The logic lives in the diff, not in prose.
-- **Every frame gets a step.** A step that builds a surface a frame defines names it on its
-  Design line, `build to design/FILE at WIDTHpx` with the width the index gives, or `build to
-  design/FILE` when the index gives none, and its diff builds what the frame shows. A screen no
-  step builds is recorded in plan.md as `design/FILE — not built: REASON`. `done` checks that
-  every frame has one or the other.
+- **Put each frame on the step that builds what it shows.** The step whose diff creates the
+  screen, component or interaction a frame draws names it on its Design line, `build to
+  design/FILE at WIDTHpx` with the width the index gives, or `build to design/FILE` when the
+  index gives none. A step that only mounts or calls that component leaves the frame to the step
+  that built it. A screen no step builds is recorded in plan.md's `## Design Frames` as
+  `design/FILE — not built: REASON`. `done` checks that every frame has one or the other.
+- **Map each frame to the code that draws it.** Under its Design line, a step writes its UI
+  mapping: every element the frame shows, the existing component that draws it with its file or
+  the new one the step creates, and whether it is reused, extended or new. Step 1's sweep supplies
+  the components.
 - **Every spec rule gets a pointer.** A step that builds a surface `design/spec.md` governs
   names the parts that hold its rules on its Spec line, `design/spec.md — PART · PART`, in the
   spec's own words. The rule text stays in spec.md. A rule about a screen, viewport or state no
@@ -150,16 +162,18 @@ These rules bind every step:
 
 **Self-review.** Each check is a lookup. Fix what fails:
 
-- **Inputs.** Every decision in `design.md` appears in a step · every design correction is
-  applied in `design.md` · every point of its `Approach` is built by a phase · every `Done
+- **Inputs.** Every decision in `design.md` appears in a step · every correction in
+  `## Decisions` is applied in `design.md` · every point of its `Approach` is built by a phase · every `Done
   when` check is proved by a phase's scenarios · every row in `## ADRs` points to an
   active ADR · every path in `## Project Docs` exists.
 - **Phasing.** No two phases change the same file unless ordered · every phase is provable by
   its own scenarios the moment it lands · a phase that uses what another builds depends on it.
 - **Steps.** Every step opens with a plain-English summary of what changes and why · every
-  step that changes code has a diff, with or without a frame or spec · a step's Design and
-  Spec lines are list items, one per line · no step tells the coder to discover something ·
-  every title opens with an imperative verb.
+  step that changes code has a diff, with or without a frame or spec · every name a phase takes
+  from or hands to another phase sits on a step's Uses or Provides line · each frame sits on the
+  step that builds what it shows, with a UI mapping row for every element it shows · a step's
+  Seams, Design and Spec lines are list items, one per line · no step tells the coder to discover
+  something · every title opens with an imperative verb.
 - **Coverage.** Every requirement has a matrix row · every scenario appears once across the
   phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
   real-browser fact or a named Blocker · every frame in `design/INDEX.md` is built or recorded
@@ -184,7 +198,7 @@ In the reply:
 
 1. The phases, one line each: number, capability title, what it depends on, what it unlocks.
 2. The test matrix as counts per level.
-3. Every design correction, ADR written, deferred item and repo added to the workspace, one
+3. Every entry in `## Decisions`, ADR written, deferred item and repo added to the workspace, one
    line each.
 4. The paths to `plan.html`, `plan.md` and each phase file as `file://` links.
 

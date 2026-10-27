@@ -33,7 +33,7 @@ wrong-footed by, a bug that routes through Step 4.
 
 ## The baseline, and what it is authoritative about
 
-Where `plan.md`'s `## Design References` names an image for the screen, **that image is the baseline**. It sits in
+Where `plan.md`'s `## Design Frames` names an image for the screen, **that image is the baseline**. It sits in
 `.yok/RUN/artifacts/design/` and the report names it `../design/FILE`. The questions marked *(design)* below
 have an answer.
 
@@ -51,7 +51,7 @@ report looking exactly like a measured one.
 
 **A phone replay has a baseline only where one was drawn at phone width.** The mockup that defines a screen is
 almost always a desktop drawing, and a phone layout is *supposed* to differ from it. So a replay runs the *(design)*
-questions only where `## Design References` names an image drawn for the phone; otherwise its `baseline` is `null`
+questions only where `## Design Frames` names an image drawn for the phone; otherwise its `baseline` is `null`
 and only the *(always)* questions run.
 
 ## The three grades

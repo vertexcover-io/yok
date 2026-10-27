@@ -9,17 +9,21 @@ governs where things go and what they are called. It never governs how much a st
 |---|---|---|
 | **Title**: the action and its file | always | `1. **Change \`src/x.ts:31-40\`**` |
 | **Summary**: what changes in the file and why | always | two or three lines of plain English under the title, so the developer has the gist before reading the code |
-| **Design**: the frame this step builds to, and where its spec rules are | the step builds a surface a design defines | two list items under the summary, as **Designs** below shows |
+| **Seams**: what the step takes from other phases and hands to them | the step uses a name another phase builds, or builds a name another phase uses | one list item per name under the summary, `- **Uses:** SIGNATURE` or `- **Provides:** SIGNATURE`, the signature copied from plan.md's signature index |
+| **Design**: the frame this step builds, and where its spec rules are | the step builds the screen, component or interaction a frame draws | two list items, as **Designs** below shows |
+| **UI mapping**: the component behind each element of the frame | the step has a Design part | a table right after the list items, as **Designs** below shows |
 | **Diff**: the change | the step changes code, whether or not it has a Design part or a Spec line | a line naming the file and range, then a ```` ```diff ```` block |
 | **Pattern**: existing code to imitate | the step copies a shape from elsewhere rather than changing that code | a fenced block, with the reason it is shown on the line above |
 | **Why this way**: the rejected alternative, or the constraint | the location or shape had a plausible alternative | closing sentence |
 | **Trap**: what breaks if the developer does the obvious thing | code that looks safe to change and is not | its own paragraph |
 
-Parts are triggered, not filled. An omitted part costs nothing; a padded part states
-"considered, nothing found". Two parts are owed: a step that changes code carries its Diff, and
-a step that builds a surface `design/INDEX.md` names a frame for carries its Design part. The
-summary says what and why in words; the logic, its branches and its error paths live in the
-diff's code.
+**Write the parts in the table's order.** Parts are triggered, not filled. An omitted part costs
+nothing; a padded part states "considered, nothing found".
+
+**Some parts are owed.** A step that changes code carries its Diff. A step that crosses a phase
+seam carries its Seams. A step that builds what a frame in `design/INDEX.md` draws carries its
+Design part and its UI mapping. The summary says what and why in words; the logic, its branches
+and its error paths live in the diff's code.
 
 A step can also say something that is none of these. An environment warning, or a note on how
 to see the change, is plain prose.
@@ -57,8 +61,13 @@ asks them to fetch what the step could have handed them.
 
 ## Designs
 
-**A design step carries two list items between its summary and its diff**, each on its own
-line:
+**Put the frame on the step that builds what it shows.** The Design part belongs to the step
+whose diff creates the screen, component or interaction the frame draws: its markup, its states
+and the behaviour the user sees. A step that only imports, mounts or calls that component names
+it in its summary and leaves the frame to the step that built it. The plan page shows each frame
+under the step that carries it, beside the code that draws it.
+
+**Two list items name the frame and the spec**, each on its own line:
 
 ```markdown
    - **Design:** build to design/FILE at WIDTHpx
@@ -69,12 +78,26 @@ The Design line names the frame and the width `design/INDEX.md` gives it. The Sp
 every part of `design/spec.md` the surface must keep, in the spec's own words, on that one line.
 The rule text stays in spec.md: implement and qa read those parts there and check them.
 
+**The UI mapping follows the list items**, as a table with these columns:
+
+```markdown
+   | Element | Component | Use |
+   |---|---|---|
+```
+
+One row per element the step's frames show. **Element** names what the user sees, in the frame's own
+words. **Component** names the component that draws it: a component from the repo with its
+repo-relative file, a library component with its package name, or the new component this step
+creates. **Use** is `reuse` when the component is taken as it is, `extend` when the diff changes it,
+and `new` when this step builds it. The plan page shows the mapping under the step's frames, closed
+until the reader opens it.
+
 **The frame shows the screen; the diff builds it.** What the frame settles, its element order,
 spacing, type, colour roles, component variants and copy, lands in the diff's code, never in a
 prose description of the screen.
 
-Where no design exists, say so in the summary. A surface with no design is one the developer is
-authorized to invent.
+**Where no design exists, say so in the summary.** A surface with no design is one the developer
+is authorized to invent.
 
 ## Register
 

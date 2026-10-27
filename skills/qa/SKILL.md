@@ -118,7 +118,7 @@ Everything else comes from the run's artifacts:
 - **The feature's docs**: `.yok/RUN/artifacts/design.md`, `plan.md` and the phase files
   `phases/phase-N.md`, whatever exists. Scenarios come from what those docs say the feature must do.
   Every phase file's `### QA Agent` scenarios are yours to prove; implement skipped them on purpose.
-- **The designs** plan.md's `## Design References` names, in `.yok/RUN/artifacts/design/`, each with the width
+- **The designs** plan.md's `## Design Frames` names, in `.yok/RUN/artifacts/design/`, each with the width
   it was drawn at. Each image is the **baseline** for the screen it draws, written `../design/FILE` from the
   report; the `visual-verification` reference owns what a baseline is authoritative about. Compare every frame
   the plan builds against at least one scenario, at the width the index gives it. A frame whose screen no walk

@@ -50,14 +50,17 @@ will change.
 
 ### Reading the plan
 
-`plan.md` carries the overview, the `## Phases` digraph, `## Design References`, `## ADRs` and
-`## Project Docs`. Open every ADR and doc it lists before editing. When a step would go against
+`plan.md` carries the overview, the `## Phase Breakdown` digraph, `## ADRs`, `## Project Docs`
+and `## Design Frames`. Open every ADR and doc it lists before editing. When a step would go against
 an ADR, stop: that is blocked.
 
 A `phases/phase-N.md` is already decomposed; take it as given rather than re-deriving the
 feature:
 
-- `## Implementation`: the build steps, in order. Each change is a diff to apply.
+- `## Implementation`: the build steps, in order. Each change is a diff to apply. A step's Uses
+  and Provides lines name the signatures it takes from other phases and hands to them; keep each
+  one exactly as written. A design step's UI mapping names the component behind each element of
+  its frame: reuse or extend the component it names, and build new only where it says `new`.
 - `## Test Scenarios`: `### Unit`, `### Integration`, `### E2E`, each scenario numbered `SCn`.
   One test per scenario, at the level it sits under. Carry the id in the test title
   (`SC12: …`) so a reviewer can trace tests back to scenarios. `### QA Agent` scenarios are not
@@ -66,8 +69,8 @@ feature:
 
 ## 3. Build the phases one at a time
 
-Build the phases one after another in the order of the `## Phases` digraph. Start a phase only
-after the one before it is committed. When a phase is `BLOCKED`, stop.
+Build the phases one after another in the order of the `## Phase Breakdown` digraph. Start a phase
+only after the one before it is committed. When a phase is `BLOCKED`, stop.
 
 The node's mode decides who builds each phase:
 
