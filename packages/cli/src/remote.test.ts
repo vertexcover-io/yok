@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { login, remoteSettings } from "./remote.ts";
+import { login, loginPassword, remoteSettings } from "./remote.ts";
 
 const dirs: string[] = [];
 const tempHome = (): string => {
@@ -105,5 +105,21 @@ describe("login", () => {
     await expect(attempt).rejects.toThrow("wrong username or password");
     server.stop();
     expect(readFileSync(join(home, ".env"), "utf8")).toBe(working);
+  });
+});
+
+describe("loginPassword", () => {
+  const never = async (): Promise<string> => {
+    throw new Error("asked");
+  };
+
+  test("SC4010: the flag wins, then YOK_SERVER_PASSWORD, and only then is the password asked for", async () => {
+    expect(await loginPassword("flag", { YOK_SERVER_PASSWORD: "env" }, never)).toBe("flag");
+    expect(await loginPassword(undefined, { YOK_SERVER_PASSWORD: "env" }, never)).toBe("env");
+    expect(await loginPassword(undefined, {}, async () => "typed")).toBe("typed");
+  });
+
+  test("SC4011: a password read from stdin loses its line ending only", async () => {
+    expect(await loginPassword(undefined, {}, async () => " p w \r\n")).toBe(" p w ");
   });
 });

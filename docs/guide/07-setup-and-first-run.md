@@ -190,13 +190,13 @@ On the server, as the user who will own the runs:
 On your laptop:
 
 ```bash
-yok remote login https://yok.example.com --user ritesh --password SECRET
+yok remote login https://yok.example.com --user ritesh   # asks for the password, hidden
 yok remote project add web --git git@github.com:acme/web.git
 yok remote run task --prompt "fix login" --project web
 yok remote status
 ```
 
-`login` sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. The same three variables set in the shell win over the file, so a CI job needs no login. `yok-dev remote …` does the same from this checkout, with `~/.yok-dev/.env`. `yok-remote` is a shortcut for `yok remote`.
+`login` asks for the password without echoing it. A script can pipe it on stdin or set `YOK_SERVER_PASSWORD`; `--password` stays for CI, but shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. The same three variables set in the shell win over the file, so a CI job needs no login. `yok-dev remote …` does the same from this checkout, with `~/.yok-dev/.env`. `yok-remote` is a shortcut for `yok remote`.
 
 Every remote command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 
@@ -212,7 +212,7 @@ yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
-yok-dev remote login URL --user U --password P  # save a server's login; checks it first
+yok-dev remote login URL --user U  # asks for the password; save a server's login; checks it first
 yok-dev remote status           # the server's version, pid and start time
 yok-dev remote run task --prompt "…" --project NAME  # start a run there, unattended
 yok-dev remote project list     # the server's projects; also doctor, trigger
