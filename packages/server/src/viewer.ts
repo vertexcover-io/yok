@@ -31,6 +31,7 @@ import * as z from "zod";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import ANCHOR_SOURCE from "./anchor.ts" with { type: "text" };
 import { isAgentAlive, lastDelivery, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+// @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import FRAME_AGENT from "./frame-agent.js" with { type: "text" };
 import {
   listRunSummaries,
@@ -775,7 +776,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
         "x-content-type-options": "nosniff",
       };
       if (fileType(abs) !== "html") return new Response(Bun.file(abs), { headers });
-      const html = `${await Bun.file(abs).text()}\n<script>${FRAME_AGENT}</script>`;
+      const html = `${await Bun.file(abs).text()}\n<script>${FRAME_AGENT as string}</script>`;
       return new Response(html, { headers });
     })
     .get("/runs/:id/comments", async (c) => {
