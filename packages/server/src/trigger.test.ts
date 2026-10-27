@@ -911,4 +911,40 @@ describe("adoptLegacyTriggers", () => {
     expect(await readProjects(home)).toEqual(projects);
     expect(readFileSync(triggersPath(home), "utf8")).toBe(triggersBefore);
   });
+
+  test(
+    "one trigger that cannot move is logged by name, and the others still move and fire while it never does",
+    async () => {
+      const env = await setup();
+      await env.store.remove(env.trigger.id);
+      writeLegacy(env.home, [
+        legacyTrigger("t-0000aaaa", "broken", env.cwd),
+        legacyTrigger("t-0000bbbb", "digest", env.cwd),
+      ]);
+      const store = {
+        ...env.store,
+        adopt: (id: string, project: string) =>
+          id === "t-0000aaaa"
+            ? Promise.reject(new Error("disk full"))
+            : env.store.adopt(id, project),
+      };
+      const failures: unknown[] = [];
+      const log = { ...noopLogger, error: (fields: unknown) => failures.push(fields) };
+
+      await adoptLegacyTriggers(env.home, { triggers: store, log });
+
+      expect(failures).toEqual([expect.objectContaining({ trigger: "broken" })]);
+      expect((await env.store.list()).map((t) => t.name)).toEqual(["digest"]);
+      await tick(env.deps("2026-10-23T09:00:10.000Z"));
+      expect(env.launches).toHaveLength(1);
+      expect((await env.store.listLegacy()).map((t) => t.name)).toEqual(["broken"]);
+
+      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
+      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
+
+      expect((await env.store.list()).map((t) => t.name).toSorted()).toEqual(["broken", "digest"]);
+      expect(await env.store.listLegacy()).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
 });

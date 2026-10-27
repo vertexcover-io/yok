@@ -245,12 +245,17 @@ export const adoptLegacyTriggers = async (
   deps: Readonly<{ triggers: TriggerStore; log: ILogger }>,
 ): Promise<void> => {
   for (const legacy of await deps.triggers.listLegacy()) {
-    const project = await findOrAddFolderProject(home, legacy.cwd);
-    await deps.triggers.adopt(legacy.id, project);
-    deps.log.info(
-      { trigger: legacy.name, cwd: legacy.cwd, project },
-      "trigger moved to its project",
-    );
+    try {
+      const project = await findOrAddFolderProject(home, legacy.cwd);
+      await deps.triggers.adopt(legacy.id, project);
+      deps.log.info(
+        { trigger: legacy.name, cwd: legacy.cwd, project },
+        "trigger moved to its project",
+      );
+    } catch (error) {
+      // It stays legacy, so the next start tries it again, and no tick fires it meanwhile.
+      deps.log.error({ trigger: legacy.name, cwd: legacy.cwd, err: error }, "trigger not moved");
+    }
   }
 };
 
