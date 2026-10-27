@@ -5,7 +5,8 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
-import { type RunDeps, runRoutes } from "./run.ts";
+import { runRoutes } from "./run.ts";
+import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 // Hashed first: timingSafeEqual throws on inputs of different lengths.
 const digest = (text: string): Buffer => createHash("sha256").update(text).digest();
@@ -39,7 +40,7 @@ const requestLogger =
     else reqLog.info(fields, "request finished");
   };
 
-export type AppDeps = RunDeps &
+export type AppDeps = TriggerRouteDeps &
   ProjectDeps &
   Readonly<{
     log: ILogger;
@@ -66,6 +67,7 @@ export const createApp = (deps: AppDeps) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
     .route("/runs", runRoutes(deps))
-    .route("/projects", projectRoutes(deps));
+    .route("/projects", projectRoutes(deps))
+    .route("/triggers", triggerRoutes(deps));
 
 export type AppType = ReturnType<typeof createApp>;

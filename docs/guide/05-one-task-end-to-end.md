@@ -96,7 +96,7 @@ flowchart TD
     style F fill:#dfd,stroke:#3a3
 ```
 
-Two things the picture makes plain. First, every arrow back to `next` goes through a recorded event, so the engine always knows where the run stands. Second, the agent box never holds the workflow. It holds one card at a time.
+Two things the picture makes plain. First, every arrow back to `next` goes through a recorded event, so the engine always knows where the run stands. Second, the agent box never holds the workflow. It holds only the cards it was handed.
 
 ## Hop 1. The CLI gets ready
 
@@ -171,31 +171,37 @@ yok orchestrate next --run add-json-flag-to-doctor
 
 This is the heart of the engine, so slow down here.
 
-[walkToNextStep](../../packages/core/src/runs.ts#L520) reads `state.json` and `event.jsonl`, recompiles `workflow.yaml`, and hands all of it to [decideNext](../../packages/core/src/workflow/next.ts#L554). `decideNext` walks the nodes top to bottom. For each one, [decideStart](../../packages/core/src/workflow/next.ts#L227) asks three questions:
+[walkToNextStep](../../packages/core/src/runs.ts#L592) reads `state.json` and `event.jsonl`, recompiles `workflow.yaml`, and hands all of it to [decideNext](../../packages/core/src/workflow/next.ts#L706). `decideNext` walks the nodes top to bottom. For each one, [decideStart](../../packages/core/src/workflow/next.ts#L299) asks three questions:
 
-1. Are all its `dependsOn` nodes completed?
+1. Has every node it waits for (its `dependsOn`, or with none the node before it) ended?
 2. Is its `when:` expression true, or absent?
 3. If it is a stage, does every artifact it `consumes` exist from an earlier node?
 
-The first node that passes and has not run yet is the answer. Its `input:` block is filled in by [resolveValue](../../packages/core/src/workflow/evaluate.ts#L277), which replaces every `{{ … }}` with a value from the inputs or from an earlier node's output. Then [recordStart](../../packages/core/src/workflow/next.ts#L293) appends a `workflow.node.started` event, and `next` prints the step.
+Every node that passes and has not run yet is started, unless it must wait for open work: a context or model step waits until nothing is open, and a second inline agent node waits for the first. Its `input:` block is filled in by [resolveValue](../../packages/core/src/workflow/evaluate.ts#L277), which replaces every `{{ … }}` with a value from the inputs or from an earlier node's output. Then [recordStart](../../packages/core/src/workflow/next.ts#L372) appends a `workflow.node.started` event for each, and `next` prints them as one `steps` list.
 
-For our run the first node is `ticket-fetcher`. It has no dependencies and its input is `request: "{{ inputs.prompt }}"`. The reply:
+For our run the first node is `ticket-fetcher`. It has no dependencies and its input is `request: "{{ inputs.prompt }}"`. Nothing else is ready yet, so the list holds one card:
 
 ```json
 {
-  "kind": "stage",
-  "nodeRunId": "nr-5e6f7a8b9c0d1e2f",
-  "nodeId": "ticket-fetcher",
-  "stage": "ticket-fetcher",
-  "skill": "/…/skills/ticket-fetcher/SKILL.md",
-  "extension": null,
-  "input": { "request": "Add a --json flag to the doctor command" },
-  "variables": { "provider": "auto" },
-  "done": "yok orchestrate done nr-5e6f7a8b9c0d1e2f --run add-json-flag-to-doctor"
+  "kind": "steps",
+  "steps": [
+    {
+      "kind": "stage",
+      "nodeRunId": "nr-5e6f7a8b9c0d1e2f",
+      "nodeId": "ticket-fetcher",
+      "mode": "inline",
+      "stage": "ticket-fetcher",
+      "skill": "/…/skills/ticket-fetcher/SKILL.md",
+      "extension": null,
+      "input": { "request": "Add a --json flag to the doctor command" },
+      "variables": { "provider": "auto" },
+      "done": "yok orchestrate done nr-5e6f7a8b9c0d1e2f --run add-json-flag-to-doctor"
+    }
+  ]
 }
 ```
 
-The shape is [StepReply](../../packages/core/src/runs.ts#L337), built by [buildLeafReply](../../packages/core/src/runs.ts#L482). Notice what is in it: the exact file to read, the exact data to work on, and the exact command to run when finished. The agent does not have to know the workflow, only this one card.
+The shape is [StepReply](../../packages/core/src/runs.ts#L397), built by [buildReply](../../packages/core/src/runs.ts#L568). Notice what is in it: the exact file to read, the exact data to work on, and the exact command to run when finished. The agent does not have to know the workflow, only these cards.
 
 Notice also what is *not* anywhere: a process holding the run in memory. `next` rebuilt everything from files and exited. If the session crashes, gets compacted, or is replaced, the next `next` gives the same answer. That is the decision in [ADR 0002](../adr/0002-session-drives-workflow-step-by-step-through-stateless-orchestrate-commands.md), and it is why a run can survive a laptop reboot.
 
@@ -287,18 +293,18 @@ Codex does not switch. It runs the whole workflow on its launch model.
 
 Agents drift. They finish a step and forget to report it, or they answer you and wait, or they declare victory early. The Stop hook is what keeps a run moving without a person watching.
 
-Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/hooks/stop.ts#L242) runs. [decideStop](../../packages/core/src/hooks/stop.ts#L147) reads the run's state and answers one question: is the agent allowed to stop?
+Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/hooks/stop.ts#L340) runs. [decideStop](../../packages/core/src/hooks/stop.ts#L169) reads the run's state and answers one question: is the agent allowed to stop?
 
 | State of the run | Decision |
 |---|---|
 | Status is not `running` | Allow. The run is over. |
 | A context or model node is waiting for the turn to end | Allow, and start that switch. |
-| Claude reports a background task (a helper agent, a background shell command) still running | Allow. The agent is waiting on it, and the task's end wakes it. |
-| A stage or exec node is still open | Send the agent back with the exact `done` or `exec` command it owes. |
+| Claude reports a background task (a helper agent, a background shell command) still running | Allow, unless an inline agent node is open; then send the agent back once, as below. |
+| An inline stage or exec node is still open | Send the agent back with the exact `done` or `exec` command it owes. |
 | Between nodes, and the agent ran no orchestrate command since your last message | Allow. You were chatting with it. |
 | Between nodes, and it did run orchestrate commands | Send it back: "run `yok orchestrate next --run …`". |
 
-It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. A turn that ends while a background task runs is never counted toward that limit and never records `agent.stuck`. Claude lists those tasks in the Stop hook's `background_tasks` input; with Codex, or a Claude Code too old to send it, the hook behaves as if none were running. Every kind of task counts, so an agent that stops mid-step while a job that never ends, such as a dev server, runs in the background is not sent back or marked stuck. yok accepts that miss so an agent waiting on a background test run or build is never marked stuck. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
+It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. A turn that ends while a background task runs never records `agent.stuck`, and counts toward that limit only while an inline agent node is open. Claude lists those tasks in the Stop hook's `background_tasks` input; with Codex, or a Claude Code too old to send it, the hook behaves as if none were running. Every kind of task counts, so an agent that stops mid-step while a job that never ends, such as a dev server, runs in the background is never marked stuck, and is sent back at most once. yok accepts that miss so an agent waiting on a background test run or build is never marked stuck. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
 
 A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L61) is a PreToolUse hook that refuses any tool call writing to `state.json`, `event.jsonl`, or `registry.json`. The agent may read them. Only `next`, `exec`, and `done` may write them. Beside it on the same Bash and file-write calls, [recordResumed](../../packages/core/src/hooks/pre-tool-use.ts#L75) records `agent.resumed` when the main agent makes such a call on a blocked run, which puts the run back to `running`. A sub-agent's call never does, since a sub-agent can keep working while the main agent waits on the person.
 
@@ -367,6 +373,6 @@ The first eight events of our run, trimmed:
 
 **The engine decides and records. The agent only performs.**
 
-`next` evaluates `when`, `dependsOn`, loops, switches, and templates, and writes the start event. `done` validates and writes the end event. The agent never sees the workflow as a whole. It reads one card, does one piece of work, reports it, and asks for the next card. Every piece of state lives in files, so any process can pick up where another left off.
+`next` evaluates `when`, `dependsOn`, loops, switches, and templates, and writes the start event. `done` validates and writes the end event. The agent never sees the workflow as a whole. It reads its cards, does that work, reports each, and asks for more. Every piece of state lives in files, so any process can pick up where another left off.
 
 When you add a stage, a node type, or a hook, ask where it falls on that line. Deciding goes in `packages/core/src/workflow`. Performing goes in a skill. Recording goes through `appendRunEvent` and nowhere else.

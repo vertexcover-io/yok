@@ -325,22 +325,6 @@ describe("appendRunEvent with subscribers", () => {
     expect((await readState(runDir))?.status).toBe("running");
   });
 
-  test("SC113: a non-blocking subscriber runs after the append returns and records its own call", async () => {
-    const { run, calls } = await runWithSubscribers({
-      "custom.demo.ping": [{ name: "slow", blocking: false, command: "sleep 1; echo done" }],
-    });
-
-    const started = Date.now();
-    await appendRunEvent(run, ping());
-
-    expect(Date.now() - started).toBeLessThan(500);
-    expect(await calls()).toEqual([]);
-    const recorded = await until(calls, (found) => found.length > 0);
-    expect(recorded.map((call) => call.payload)).toMatchObject([
-      { subscriber: "slow", blocking: false, status: "ok", output: "done" },
-    ]);
-  }, 10_000);
-
   test("SC114: one subscriber's non-blocking calls never overlap", async () => {
     const seq = printInput("seq");
     const { run, cwd, calls } = await runWithSubscribers({

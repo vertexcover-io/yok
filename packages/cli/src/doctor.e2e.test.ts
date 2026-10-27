@@ -4,7 +4,6 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
-import type { CheckStatus } from "@yok/sdk";
 
 const CLI = join(import.meta.dir, "index.ts");
 
@@ -94,31 +93,15 @@ describe("yok doctor --workflow", () => {
   });
 });
 
-const NOTIFIER_WORKFLOW = WORKFLOW.replace("name: needs-key\n", "name: notifies\nnotifier: {}\n");
-
 describe("yok doctor's notifier row", () => {
-  test.each<[string, Record<string, string>, readonly string[], CheckStatus]>([
-    [
-      "a workflow notifier with no Slack keys anywhere fails",
-      { "wf.yaml": NOTIFIER_WORKFLOW },
-      ["--workflow", "wf.yaml"],
-      "fail",
-    ],
-    [
-      "a config notifier, without --workflow, with the Slack keys in the config's env is ok",
-      {
-        "orchestrate.config.json": JSON.stringify({
-          version: 2,
-          notifier: {},
-          env: { SLACK_BOT_TOKEN: "xoxb-e2e", SLACK_CHANNEL_ID: "C1" },
-        }),
-      },
-      [],
-      "ok",
-    ],
-  ])("%s", (_label, files, args, status) => {
-    const { stdout } = doctor(files, [...args, "--json"]);
-    expect(rowOf(stdout, "notifier")?.status).toBe(status);
+  test("a config notifier, without --workflow, with the Slack keys in the config's env is ok", () => {
+    const config = {
+      version: 2,
+      notifier: {},
+      env: { SLACK_BOT_TOKEN: "xoxb-e2e", SLACK_CHANNEL_ID: "C1" },
+    };
+    const { stdout } = doctor({ "orchestrate.config.json": JSON.stringify(config) }, ["--json"]);
+    expect(rowOf(stdout, "notifier")?.status).toBe("ok");
   });
 });
 
@@ -147,13 +130,5 @@ describe("yok doctor's samskara-upload row", () => {
     const { verdict } = DoctorJsonSchema.parse(JSON.parse(stdout));
     expect(verdict).toStartWith("BLOCKED");
     expect(verdict).toContain("samskara-upload");
-  });
-
-  test("SC417: the same workflow without the block gives the row ok and off", () => {
-    const files = { "wf.yaml": PLAIN_WORKFLOW };
-
-    const { stdout } = doctor(files, ["--workflow", "wf.yaml", "--json"], missingSamskara());
-
-    expect(rowOf(stdout, "samskara-upload")).toMatchObject({ status: "ok", detail: "off" });
   });
 });

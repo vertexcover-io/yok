@@ -1,5 +1,13 @@
 import { claudeProvider } from "@yok/core";
-import type { IAgentProvider, ITerminal, ITerminalHost, NodeRun, State } from "@yok/sdk";
+import type {
+  IAgentProvider,
+  ITerminal,
+  ITerminalHost,
+  LaunchOptions,
+  NodeRun,
+  Result,
+  State,
+} from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 
 export const RULE = "─".repeat(40);
@@ -31,6 +39,37 @@ export const fakeHost = (screen: string | (() => string), alive = true) => {
   };
   return { host, calls };
 };
+
+const done = () => Promise.resolve({ ok: true as const, value: undefined });
+
+export const fakePane = (name: string): ITerminal => ({
+  sendText: done,
+  sendKeys: done,
+  capture: () => Promise.resolve({ ok: true, value: "" }),
+  isAlive: () => Promise.resolve(true),
+  rename: done,
+  respawn: done,
+  kill: done,
+  attachCommand: () => ["tmux", "attach-session", "-t", name],
+});
+
+export const fakeProvider = (
+  type: IAgentProvider["type"],
+  launch: (
+    options: LaunchOptions,
+  ) => Promise<Result<{ terminalName: string; terminal: ITerminal }>>,
+): IAgentProvider => ({
+  type,
+  skillPrefix: type === "codex" ? "$" : "/",
+  checks: [],
+  launch,
+  relaunch: () => Promise.resolve({ ok: true, value: undefined }),
+  prompt: () => Promise.resolve({ ok: true, value: undefined }),
+  stop: () => Promise.resolve({ ok: true, value: undefined }),
+  run: () => Promise.resolve({ ok: false, error: new Error("not implemented") }),
+  limitResetWait: () => Promise.resolve(null),
+  promptWhenReady: () => Promise.resolve({ ok: true, value: "not-ready" }),
+});
 
 // The real Claude provider over a fake pane, so delivery runs the same screen checks as in a run.
 export const claudeOver = (host: ITerminalHost): IAgentProvider =>

@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { compilePlan, createLogger, resolveLevel, type WorkflowPlan } from "@yok/core";
+import {
+  compileWithProjectConfig,
+  createLogger,
+  resolveLevel,
+  WorkflowError,
+  type WorkflowPlan,
+} from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
 import { type ApiError, logPath, pidPath, readApiKey, readHomeEnv, readPort } from "@yok/server";
@@ -47,16 +53,24 @@ export const fail = (problem: string | Error): void => {
   process.exitCode = 1;
 };
 
+// The original error stays as the cause, so LOG_LEVEL=debug still shows its stack.
+export const errorText = (error: unknown): string | Error => {
+  if (error instanceof WorkflowError) {
+    return new Error(`${error.code}: ${error.message}`, { cause: error });
+  }
+  return error instanceof Error ? error : String(error);
+};
+
 // null means the error is already printed and the exit code set.
 export const compileOrFail = async (
   path: string,
   cwd: string,
   configFile: string | null = null,
 ): Promise<WorkflowPlan | null> => {
-  const plan = await compilePlan(path, cwd, configFile);
-  if (plan.ok) return plan.value;
-  fail(plan.error);
-  return null;
+  return compileWithProjectConfig(path, cwd, configFile).catch((error: unknown) => {
+    fail(errorText(error));
+    return null;
+  });
 };
 
 export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;

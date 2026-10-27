@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -189,6 +189,30 @@ const ensureCommentMode = async (): Promise<void> => {
   await until(commenting);
 };
 
+const ARTIFACTS: Readonly<Record<string, string>> = {
+  "design.md": DESIGN,
+  "mock.html": MOCKUP,
+  "code.md": CODE,
+  "outline.md": OUTLINE,
+  "steps.md": STEPS,
+  "list.md": LIST,
+  "factors.md": CHECKLIST,
+  "scenarios.md": CHECKLIST,
+};
+
+// Every test starts from the seeded files, no comments, no state, and its own tab. Each test closes
+// its tab after: pages only navigated away from kept their event streams open until they used up
+// Chrome's six connections to the viewer.
+const resetRun = async (runDir: string): Promise<void> => {
+  stopDeliveries();
+  await browser("tab", "new");
+  // A seeded state.json starts at event 0, so events left from other tests would replay onto it.
+  for (const name of ["comments.json", "state.json", "event.jsonl"])
+    rmSync(join(runDir, name), { force: true });
+  for (const [name, text] of Object.entries(ARTIFACTS))
+    writeFileSync(join(runDir, "artifacts", name), text);
+};
+
 const cardWith = (text: string): string =>
   `[...document.querySelectorAll('#threads .card')].find((c) => c.textContent.includes(${JSON.stringify(text)}))`;
 
@@ -207,14 +231,6 @@ describe("viewer in a browser", () => {
     execFileSync("git", ["init", "-q"], { cwd });
     runDir = join(cwd, ".yok", "demo");
     mkdirSync(join(runDir, "artifacts"), { recursive: true });
-    writeFileSync(join(runDir, "artifacts", "design.md"), DESIGN);
-    writeFileSync(join(runDir, "artifacts", "mock.html"), MOCKUP);
-    writeFileSync(join(runDir, "artifacts", "code.md"), CODE);
-    writeFileSync(join(runDir, "artifacts", "outline.md"), OUTLINE);
-    writeFileSync(join(runDir, "artifacts", "steps.md"), STEPS);
-    writeFileSync(join(runDir, "artifacts", "list.md"), LIST);
-    writeFileSync(join(runDir, "artifacts", "factors.md"), CHECKLIST);
-    writeFileSync(join(runDir, "artifacts", "scenarios.md"), CHECKLIST);
     mkdirSync(join(cwd, "src"));
     writeFileSync(join(cwd, "src", "sample.ts"), `${SAMPLE.join("\n")}\n`);
     const registry = createRegistry(join(home, "registry.json"), noopLogger);
@@ -247,6 +263,9 @@ describe("viewer in a browser", () => {
     });
     url = `${viewer.origin}/runs/r1`;
   });
+
+  beforeEach(() => resetRun(runDir), 30000);
+  afterEach(() => browser("tab", "close"), 30000);
 
   afterAll(async () => {
     stopDeliveries();
@@ -308,6 +327,24 @@ describe("viewer in a browser", () => {
   }, 60000);
 
   test("SC34: a reply and an edit by the agent appear without a reload", async () => {
+    const anchor = {
+      quote: "one file per run",
+      before: "Keep ",
+      after: " so the page stays simple.",
+      lines: [7, 7],
+      heading: "Approach",
+    };
+    const posted = await fetch(`${url}/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        comments: [{ file: "artifacts/design.md", kind: "comment", text: "Why one?", anchor }],
+      }),
+    });
+    expect(posted.status).toBe(201);
+    await browser("open", `${url}#artifacts/design.md`);
+    await until("!!document.querySelector('#threads .card[data-cid=c1]')");
+
     const reply = spawnSync(
       "bun",
       [
@@ -355,6 +392,7 @@ describe("viewer in a browser", () => {
     await until(
       "document.querySelector('#htmlFrame')?.contentDocument?.getElementById('go')?.textContent === 'Continue'",
     );
+    await ensureCommentMode();
     await selectText(true, "Sign in");
     await until(barShown);
     await browser("click", "#selbar button[data-kind=comment]");
@@ -485,6 +523,8 @@ describe("viewer in a browser", () => {
     await until(`${shown} === '1-21'`);
     expect(await evaluate(`${hunk}.querySelector('.expand-btn[data-dir=up]').hidden`)).toBe(true);
     for (const expected of ["1-31", "1-40"]) {
+      // agent-browser clicks the middle of a button cut off by the window's bottom edge, and misses
+      await browser("scrollintoview", "#docRoot .expand-btn[data-dir=down]");
       await browser("click", "#docRoot .expand-btn[data-dir=down]");
       await until(`${shown} === '${expected}'`);
     }
@@ -521,6 +561,7 @@ describe("viewer in a browser", () => {
       },
     });
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    const typedBefore = typed.length;
     try {
       const approveHidden = "document.querySelector('#approveBtn').hidden";
       await browser("open", `${url}#artifacts/code.md`);
@@ -542,9 +583,10 @@ describe("viewer in a browser", () => {
       expect(await evaluate(approveHidden)).toBe(true);
       const after = JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
       expect(after.nodeRuns.design).not.toHaveProperty("awaitingApproval");
-      for (let i = 0; i < 50 && !typed.some((t) => t.includes("approved:")); i++)
+      const typedNow = () => typed.slice(typedBefore);
+      for (let i = 0; i < 50 && !typedNow().some((t) => t.includes("approved:")); i++)
         await Bun.sleep(100);
-      expect(typed.filter((t) => t.includes("approved: finish the stage"))).toHaveLength(1);
+      expect(typedNow().filter((t) => t.includes("approved: finish the stage"))).toHaveLength(1);
     } finally {
       rmSync(join(runDir, "state.json"), { force: true });
     }
@@ -564,8 +606,6 @@ describe("viewer in a browser", () => {
       );
     } finally {
       rmSync(join(runDir, "state.json"), { force: true });
-      // the next test opens this same URL, which does not reload the page
-      await until("document.querySelector('#modeBtn').hidden === false");
     }
   }, 30000);
 
@@ -683,7 +723,6 @@ describe("viewer in a browser", () => {
       await until(`!${approveHidden}`);
     } finally {
       rmSync(join(runDir, "state.json"), { force: true });
-      await browser("reload");
     }
   }, 30000);
 

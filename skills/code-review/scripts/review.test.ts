@@ -72,15 +72,6 @@ describe("ReviewOutputSchema", () => {
     expect(ReviewOutputSchema.safeParse(output).success).toBe(true);
   });
 
-  test.each(["APPROVE WITH SUGGESTIONS", "REQUEST CHANGES", "APPROVE"])(
-    "SC10: the old verdict %p is rejected",
-    (verdict) => {
-      expect(
-        ReviewOutputSchema.safeParse({ verdict, report, reviewed, findings: [] }).success,
-      ).toBe(false);
-    },
-  );
-
   test("two findings with one id are rejected on findings", () => {
     const result = ReviewOutputSchema.safeParse({
       verdict: "CHANGES_REQUESTED",

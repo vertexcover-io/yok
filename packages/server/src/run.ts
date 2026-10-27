@@ -2,26 +2,42 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  clearDeadSwitchLocks,
   compilePlan,
   findWorkflowPath,
   orchestrateArgv,
+  resolveWorkflowInputs,
   verdict,
   type WorkflowAgent,
+  WorkflowAgentSchema,
+  WorkflowError,
   type WorkflowPlan,
 } from "@yok/core";
 import {
+  type Event,
   type IAgentProvider,
+  type ILogger,
+  type ITerminalHost,
+  type JsonObject,
+  type JsonValue,
   loadStartConfig,
+  type PermissionMode,
   type PolicyLayer,
   type ResolvedTiers,
   type Result,
+  runDirOf,
   type SavedPolicies,
+  type SessionRef,
+  SessionStartCalledEvent,
   sessionEnv,
   tierLaunch,
   type WorkflowRun,
 } from "@yok/sdk";
 import {
   devPluginDir,
+  foldModelSwitch,
+  isRunLive,
+  jsonlEventStore,
   type Registry,
   resolvePolicies,
   resolveTiers,
@@ -31,23 +47,41 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
+import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
 import { addRunIfProjectKept, pickProject, saveVerdict } from "./projects.ts";
-import { type StartRunBody, StartRunBodySchema } from "./protocol.ts";
+import {
+  type ResumeRunBody,
+  ResumeRunBodySchema,
+  type StartRunBody,
+  StartRunBodySchema,
+} from "./protocol.ts";
 // A type import only: server.ts imports app.ts, which imports this file.
 import type { CheckCheckout } from "./server.ts";
 
 export type RunDeps = Readonly<{
   registry: Registry;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
+  host: ITerminalHost;
   home: string;
   viewerOrigin: string;
   checkCheckout: CheckCheckout;
 }>;
 
+const checkInputs = (plan: WorkflowPlan, inputs: JsonObject): Result<null> => {
+  try {
+    resolveWorkflowInputs(plan.inputs, inputs);
+    return { ok: true, value: null };
+  } catch (error) {
+    if (error instanceof WorkflowError)
+      return { ok: false, error: `${error.code}: ${error.message}` };
+    throw error;
+  }
+};
+
 const viewUrl = (deps: RunDeps, runId: string): string => `${deps.viewerOrigin}/runs/${runId}`;
 
 // The run's tier set and policies, merged once here; init copies both into the run's state.
-// The request's policies are the caller's layer; the workflow's come from the compiled plan.
+// The caller's layer wins over the workflow's, which comes from the compiled plan.
 const resolveRunSettings = async (
   config: string | null,
   cwd: string,
@@ -66,47 +100,76 @@ const resolveRunSettings = async (
   return { ok: true, value: { tiers: tiers.value, policies } };
 };
 
-// Every refusal comes before registry.addRun, so a refused start records no run.
-const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
-  const log = c.get("log").child({ component: "runs" });
-  const { inputs, name } = body;
-  const project = await pickProject(deps.home, body.project);
-  if (!project.ok) return errorResponse(c, 400, "bad-request", project.error);
-  const cwd = project.value.path;
-  // Checked before compiling, so a mistyped shipped workflow is not a compile error about a
-  // file under the plugin folder.
-  const workflowPath = findWorkflowPath(body.workflow, cwd);
-  if (!existsSync(workflowPath)) {
-    return errorResponse(c, 400, "bad-request", `no workflow at ${workflowPath}`);
-  }
-  const config = body.config === undefined ? null : resolve(cwd, body.config);
-  const compiled = await compilePlan(workflowPath, cwd, config);
-  if (!compiled.ok) return errorResponse(c, 400, "bad-request", compiled.error);
-  const plan = compiled.value;
+export type LaunchReply = Readonly<{
+  run: WorkflowRun;
+  attach: readonly string[];
+  view: string;
+}>;
+export type LaunchError = Readonly<{
+  status: 400 | 409 | 502;
+  code: "bad-request" | "conflict" | "agent-failed";
+  message: string;
+  details?: JsonValue;
+}>;
+
+export type LaunchRequest = Readonly<{
+  plan: WorkflowPlan;
+  workflowPath: string;
+  cwd: string;
+  config: string | null;
+  inputs: JsonObject;
+  name?: string;
+  policies: PolicyLayer;
+  permissionMode?: PermissionMode;
+  // Adds the run to the registry unless what it starts from went away during the checks.
+  register: (add: () => Promise<void>) => Promise<Result<null, string>>;
+  // Sees the doctor's verdict line, as the project that started the run records it.
+  onVerdict?: (line: string) => Promise<void>;
+}>;
+
+const refused = (
+  status: LaunchError["status"],
+  code: LaunchError["code"],
+  message: string,
+  details?: JsonValue,
+): Result<never, LaunchError> => ({
+  ok: false,
+  error: { status, code, message, ...(details === undefined ? {} : { details }) },
+});
+
+// Checks a compiled workflow and starts its agent session; the /runs route and the trigger
+// scheduler both call it. Every refusal comes before register, so a refused start records no run.
+export const launchRun = async (
+  request: LaunchRequest,
+  deps: RunDeps,
+  log: ILogger,
+): Promise<Result<LaunchReply, LaunchError>> => {
+  const { plan, workflowPath, cwd, config, inputs, name, permissionMode } = request;
   const workflow = plan.name;
   const agent = plan.agent;
+  const checkedInputs = checkInputs(plan, inputs);
+  if (!checkedInputs.ok) return refused(400, "bad-request", checkedInputs.error);
 
   const checked = await deps.checkCheckout({ cwd, plan, ...(config === null ? {} : { config }) });
   const line = verdict(checked.report);
-  await saveVerdict(deps.home, project.value.name, line);
+  await request.onVerdict?.(line);
   if (checked.report.failed.length > 0) {
     log.info({ workflow, verdict: line }, "run not started: the doctor blocked it");
-    return errorResponse(c, 400, "bad-request", line, checked.report);
+    return refused(400, "bad-request", line, checked.report);
   }
-  if (!checked.env.ok) return errorResponse(c, 400, "bad-request", checked.env.error);
+  if (!checked.env.ok) return refused(400, "bad-request", checked.env.error);
 
-  const resolved = await resolveRunSettings(config, cwd, plan, body.policies ?? {});
+  const resolved = await resolveRunSettings(config, cwd, plan, request.policies);
   if (!resolved.ok) {
     log.error(
       { err: resolved.error, workflow, agent },
       "run not started: its tiers do not resolve",
     );
-    return errorResponse(c, 400, "bad-request", resolved.error);
+    return refused(400, "bad-request", resolved.error);
   }
   const { tiers, policies } = resolved.value;
 
   const provider = deps.providerFor(agent);
-
   const id = `r-${randomBytes(4).toString("hex")}`;
   const runLog = log.child({ runId: id });
   // Saved before the agent starts: its first step is `orchestrate init`, which must find the run.
@@ -122,14 +185,13 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
     config,
     tiers,
     policies,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
     createdAt: new Date().toISOString(),
   };
-  const added = await addRunIfProjectKept(deps.home, project.value, () =>
-    deps.registry.addRun(pending),
-  );
-  if (!added) {
-    runLog.info({ project: project.value.name }, "run not started: its project was removed");
-    return errorResponse(c, 409, "conflict", `project ${project.value.name} was removed`);
+  const registered = await request.register(() => deps.registry.addRun(pending));
+  if (!registered.ok) {
+    runLog.info({ reason: registered.error }, "run not started");
+    return refused(409, "conflict", registered.error);
   }
 
   // A run whose agent never started is removed, so a failed start records nothing.
@@ -142,6 +204,7 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
       ...tierLaunch(tiers === null ? null : (tiers.models[tiers.default] ?? null)),
+      ...(permissionMode === undefined ? {} : { permissionMode }),
     })
     .catch(async (error: unknown) => {
       await deps.registry.removeRun(id);
@@ -153,20 +216,162 @@ const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: St
       { err: String(launched.error) },
       "run not started: the agent session failed to launch",
     );
-    return errorResponse(c, 502, "agent-failed", String(launched.error));
+    return refused(502, "agent-failed", String(launched.error));
   }
 
   const { terminalName, terminal } = launched.value;
   await deps.registry.setTerminal(id, terminalName);
   const run = (await deps.registry.findRun(id)) ?? { ...pending, terminal: terminalName };
   runLog.info({ workflow, cwd, agent, terminalName }, "run started");
-  return c.json({ run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) }, 201);
+  return {
+    ok: true,
+    value: { run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) },
+  };
+};
+
+const startRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, body: StartRunBody) => {
+  const project = await pickProject(deps.home, body.project);
+  if (!project.ok) return errorResponse(c, 400, "bad-request", project.error);
+  const cwd = project.value.path;
+  // Checked before compiling, so a mistyped shipped workflow is not a compile error about a
+  // file under the plugin folder.
+  const workflowPath = findWorkflowPath(body.workflow, cwd);
+  if (!existsSync(workflowPath)) {
+    return errorResponse(c, 400, "bad-request", `no workflow at ${workflowPath}`);
+  }
+  const config = body.config === undefined ? null : resolve(cwd, body.config);
+  const compiled = await compilePlan(workflowPath, cwd, config);
+  if (!compiled.ok) return errorResponse(c, 400, "bad-request", compiled.error);
+
+  const launched = await launchRun(
+    {
+      plan: compiled.value,
+      workflowPath,
+      cwd,
+      config,
+      inputs: body.inputs,
+      ...(body.name === undefined ? {} : { name: body.name }),
+      policies: body.policies ?? {},
+      register: async (add) =>
+        (await addRunIfProjectKept(deps.home, project.value, add))
+          ? { ok: true, value: null }
+          : { ok: false, error: `project ${project.value.name} was removed` },
+      onVerdict: (line) => saveVerdict(deps.home, project.value.name, line),
+    },
+    deps,
+    c.get("log").child({ component: "runs" }),
+  );
+  if (!launched.ok) {
+    const { status, code, message, details } = launched.error;
+    return errorResponse(c, status, code, message, details);
+  }
+  return c.json(launched.value, 201);
+};
+
+const conflict = (c: Context<{ Variables: Vars }>, message: string) =>
+  errorResponse(c, 409, "conflict", message);
+
+// A context new step links its session before Claude starts on it and keeps the link when the
+// relaunch fails, so the registry's last session may never have started; the event log knows.
+const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
+  events
+    .flatMap((event) => {
+      if (event.type !== "hooks.session-start.called") return [];
+      const parsed = SessionStartCalledEvent.safeParse(event);
+      if (!parsed.success) return [];
+      const { agent, sessionId } = parsed.data.payload;
+      return [{ agent, sessionId }];
+    })
+    .at(-1);
+
+// Brings back a run whose agent session is gone: the last linked session continues on the
+// model the run was on, in a tmux session under the run's old name.
+const resumeRun = async (
+  c: Context<{ Variables: Vars }>,
+  deps: RunDeps,
+  id: string,
+  body: ResumeRunBody,
+) => {
+  const log = c.get("log").child({ component: "runs", runId: id });
+  const run = await deps.registry.findRun(id);
+  if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+  const linked = run.sessions.at(-1);
+  if (run.name === null || run.terminal === null || linked === undefined) {
+    return conflict(c, `run ${id} never started its agent session; start it again with yok run`);
+  }
+  const runDir = runDirOf(run.cwd, run.name);
+  const state = await readStateOrNull(runDir);
+  if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
+  if (!isRunLive(state.status)) {
+    return conflict(
+      c,
+      `run ${run.name} is ${state.status}; there is nothing to resume, so start a new run with yok run`,
+    );
+  }
+  if (await isAgentAlive(run, deps.host)) {
+    return conflict(c, `run ${run.name} still has its agent session; use yok attach ${run.name}`);
+  }
+  const events = await jsonlEventStore(runDir).read();
+  const session = lastStartedSession(events) ?? linked;
+  const agent = WorkflowAgentSchema.safeParse(session.agent);
+  if (!agent.success) {
+    return conflict(c, `run ${run.name} ran on ${session.agent}, which yok cannot resume`);
+  }
+
+  const { removed, held } = await clearDeadSwitchLocks(runDir, state, events);
+  if (removed.length > 0) log.info({ locks: removed }, "dead switch locks removed");
+  // A live helper would take the resumed session's SessionStart as its own switch's.
+  if (held.length > 0) {
+    return conflict(
+      c,
+      `run ${run.name} is still switching its model or context; try again in a minute`,
+    );
+  }
+
+  const provider = deps.providerFor(agent.data);
+  const { current } = foldModelSwitch(events, state.tiers);
+  const launched = await provider.launch({
+    cwd: run.cwd,
+    prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
+    env: sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
+    pluginDir: devPluginDir(),
+    orchestrateArgv: orchestrateArgv(),
+    continueSession: { id: session.sessionId, terminalName: run.terminal },
+    ...tierLaunch(current),
+    ...(run.permissionMode === undefined ? {} : { permissionMode: run.permissionMode }),
+  });
+  // The run is left as it was: removing it, as a failed start does, would lose it.
+  if (!launched.ok) {
+    log.error(
+      { err: String(launched.error) },
+      "run not resumed: the agent session failed to launch",
+    );
+    return errorResponse(c, 502, "agent-failed", String(launched.error));
+  }
+  log.info(
+    {
+      agent: agent.data,
+      sessionId: session.sessionId,
+      terminal: run.terminal,
+      model: current?.model,
+    },
+    "run resumed",
+  );
+  // Comments posted while the session was down; delivery waits until the agent is ready for them.
+  void scheduleDelivery(id, { ...deps, log, now: () => new Date() });
+  return c.json(
+    { run, attach: [...launched.value.terminal.attachCommand()], view: viewUrl(deps, id) },
+    200,
+  );
 };
 
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach AppType.
 export const runRoutes = (deps: RunDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(StartRunBodySchema), (c) => startRun(c, deps, c.req.valid("json")))
+    .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
+      resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
+    )
     .get("/view", (c) => c.json({ view: `${deps.viewerOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");

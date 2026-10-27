@@ -103,6 +103,13 @@ Detach with `Ctrl-b d`. The session keeps running without you. Reattach any time
 yok-dev attach --run-id r-1a2b3c4d
 ```
 
+A reboot or an agent crash ends the session but not the run. Bring it back where it stopped,
+on the model and in the conversation it had:
+
+```bash
+yok-dev resume step-demo
+```
+
 You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
 
 Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.
@@ -136,6 +143,8 @@ tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine
 yok-dev verify path/to.yaml     # compile a workflow, print the first error
+yok-dev trigger list            # every cron trigger, its next and last fire
+yok-dev trigger log NAME        # a trigger's last 20 firings, with run ids
 LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 ```
 

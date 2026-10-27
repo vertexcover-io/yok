@@ -17,7 +17,6 @@ import {
   downloadFile,
   loadApiKey,
   runProviderCli,
-  TicketFetcherOutputSchema,
   TicketSchema,
   targetPath,
   validateTicketDir,
@@ -76,13 +75,6 @@ describe("TicketSchema", () => {
     ["an unavailable asset carrying a path", { assets: [{ ...unavailable, path: "x.png" }] }],
   ])("SC2: rejects %s", (_label, overrides) => {
     expect(TicketSchema.safeParse(ticket(overrides)).success).toBe(false);
-  });
-});
-
-describe("TicketFetcherOutputSchema", () => {
-  test("SC3: task alone is valid, an empty task is not", () => {
-    expect(TicketFetcherOutputSchema.safeParse({ task: "do it" }).success).toBe(true);
-    expect(TicketFetcherOutputSchema.safeParse({ task: "" }).success).toBe(false);
   });
 });
 

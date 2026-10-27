@@ -142,12 +142,21 @@ export const redactCodexRunArgs = (args: readonly string[]): string[] =>
     i === args.length - 1 || arg.startsWith("developer_instructions=") ? "[redacted]" : arg,
   );
 
-// Only a bare › counts as an empty input box; a hint after it could also be typed-in text.
+// Only a bare › counts as an empty input box. Codex draws an empty box's hint dim, so a screen
+// captured with colors drops dim text, then every other color code, leaving what was typed.
 const EMPTY_INPUT = /^\s*›\s*$/;
 const BUSY = /esc to interrupt/i;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal color codes
+const DIM_TEXT = /\x1b\[(?:[\d;]*;)?2(?:;[\d;]*)?m[^\x1b]*/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal color codes
+const COLOR_CODE = /\x1b\[[\d;]*m/g;
 
-const isAwaitingInput = (screen: string): boolean =>
-  screen.split("\n").some((line) => EMPTY_INPUT.test(line)) && !BUSY.test(screen);
+const hasEmptyInput = (screen: string): boolean =>
+  screen
+    .replace(DIM_TEXT, "")
+    .replace(COLOR_CODE, "")
+    .split("\n")
+    .some((line) => EMPTY_INPUT.test(line));
 
 const statusLineOf = ({
   orchestrateArgv,
@@ -186,13 +195,15 @@ export const codexProvider = ({
   const launch = async (
     options: LaunchOptions,
   ): Promise<Result<{ terminalName: string; terminal: ITerminal }>> => {
-    const terminalName = newId();
+    const { continueSession } = options;
+    const terminalName = continueSession?.terminalName ?? newId();
+    const session = continueSession === undefined ? [] : ["resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const statusLine = statusLineOf(options);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...codexArgs(options)],
+      argv: [binary, ...session, ...codexArgs(options)],
       env: options.env ?? {},
       ...(statusLine === undefined ? {} : { statusLine }),
     });
@@ -223,13 +234,16 @@ export const codexProvider = ({
   const prompt = (terminal: ITerminal, text: string): Promise<Result<void>> =>
     promptTerminal(terminal, text, log);
 
+  // While busy, Codex runs a typed slash command such as /rename at once.
   const promptWhenReady = async (
     terminal: ITerminal,
     text: string,
+    options: Readonly<{ whileBusy?: boolean }> = {},
   ): Promise<Result<"sent" | "not-ready">> => {
-    const screen = await terminal.capture();
+    const screen = await terminal.capture(undefined, { colors: true });
     if (!screen.ok) return screen;
-    if (!isAwaitingInput(screen.value)) return { ok: true, value: "not-ready" };
+    const busy = options.whileBusy !== true && BUSY.test(screen.value);
+    if (busy || !hasEmptyInput(screen.value)) return { ok: true, value: "not-ready" };
     const typed = await typeLine(terminal, text);
     return typed.ok ? { ok: true, value: "sent" } : typed;
   };

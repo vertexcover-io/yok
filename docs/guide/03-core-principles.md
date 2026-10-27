@@ -4,7 +4,7 @@ These are the rules the design keeps. Each one says what it is, why we hold it, 
 
 ## 1. The engine decides and records. The agent performs.
 
-`yok orchestrate next` evaluates every `when`, `dependsOn`, loop, switch, and template, and writes the start event. `yok orchestrate done` validates the result and writes the end event. The agent reads one card, does one piece of work, and reports.
+`yok orchestrate next` evaluates every `when`, `dependsOn`, loop, switch, and template, and writes the start event. `yok orchestrate done` validates the result and writes the end event. The agent reads its cards, does that work, and reports each.
 
 **Why.** When the agent was the scheduler, one skipped sentence stopped a run or lost a record. Code does not skip sentences.
 

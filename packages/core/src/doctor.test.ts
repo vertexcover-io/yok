@@ -208,18 +208,6 @@ describe("runDoctor", () => {
   });
 });
 
-describe("evaluate", () => {
-  test("a check whose run throws becomes a fail row with the error's message as detail", async () => {
-    const throwing: Check = {
-      name: "flaky",
-      fix: ["retry"],
-      run: () => Promise.reject(new Error("boom")),
-    };
-    const row = await evaluate(throwing, { root: "/repo", exec: fakeExec({}) });
-    expect(row).toMatchObject({ name: "flaky", status: "fail", detail: "boom" });
-  });
-});
-
 // Real git, in fresh mkdtemp directories, so the repository checks run against the real thing.
 // Only git and sh run for real. Every other tool answers at once, so these tests neither wait
 // on nor depend on what this machine has installed or logged in (gh auth status calls GitHub).

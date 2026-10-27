@@ -4,18 +4,19 @@ import { fileURLToPath } from "node:url"
 
 /**
  * Lays out the npm packages for a release, from the binaries the release job built:
- * one package per platform holding its binary, and @vertexcover-io/yok, whose launcher runs the
+ * one package per platform holding its binary, and @vertexcover/yok, whose launcher runs the
  * one npm installed. npm skips the platform packages whose os and cpu do not match.
  *   node scripts/npm-packages.ts DIST_DIR VERSION OUT_DIR
  */
 export const PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
 
-const SCOPE = "@vertexcover-io"
+const SCOPE = "@vertexcover"
 const LAUNCHER = fileURLToPath(new URL("npm-launcher.cjs", import.meta.url))
 
 const common = {
   license: "UNLICENSED",
   homepage: "https://github.com/vertexcover-io/yok",
+  repository: { type: "git", url: "git+https://github.com/vertexcover-io/yok.git" },
 }
 
 const writeJson = (path: string, value: unknown): void =>

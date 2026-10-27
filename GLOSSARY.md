@@ -118,7 +118,7 @@ A named value a workflow's stage node passes to its stage.
 ## Stepping through a run
 
 **Orchestrate**:
-The skill and script a session uses to walk a run one node at a time.
+The skill and script a session uses to walk a run, running every node that is ready.
 
 **Step**:
 The node run that `next` hands the session, which it then carries out and reports back on with `done`.

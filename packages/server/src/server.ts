@@ -14,12 +14,13 @@ import {
 } from "@yok/core";
 import type { Check, IAgentProvider, ILogger, ITerminalHost, Result } from "@yok/sdk";
 import { createGit, execWithTimeout, noopLogger, registryPath } from "@yok/sdk";
-import { createRegistry, VERSION } from "@yok/sdk/internal";
+import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
 import prettyFactory from "pino-pretty";
 import { createApp } from "./app.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { ensureApiKey, pidPath, portPath, readPort } from "./protocol.ts";
+import { startScheduler, stopScheduler } from "./trigger.ts";
 import { startViewer } from "./viewer.ts";
 
 export type CheckCheckout = (
@@ -48,17 +49,23 @@ export const runtimeChecks = (agent: WorkflowAgent): readonly Check[] => {
 
 // What yok doctor checks on a checkout, plus a workflow's own checks when one is starting. Its
 // env checks fall back to process.env, which is the server's.
-const checkCheckout: CheckCheckout = async ({ cwd, config, plan }) => {
+export const checkCheckoutWith = async (
+  runtime: readonly Check[],
+  { cwd, config, plan }: Parameters<CheckCheckout>[0],
+): ReturnType<CheckCheckout> => {
   const agent = plan?.agent ?? "claude";
   const env = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent });
   const declared = plan === undefined ? [] : workflowChecks(plan.doctor, env);
   const report = await runDoctor({
     cwd,
     config,
-    extraChecks: [...runtimeChecks(agent), ...declared, ...builtInChecks(plan, env)],
+    extraChecks: [...runtime, ...declared, ...builtInChecks(plan, env)],
   });
   return { env, report };
 };
+
+const checkCheckout: CheckCheckout = (input) =>
+  checkCheckoutWith(runtimeChecks(input.plan?.agent ?? "claude"), input);
 
 type Fetch = (request: Request) => Response | Promise<Response>;
 
@@ -117,9 +124,23 @@ export const startServer = async ({
   const viewerLog = log.child({ component: "viewer" });
   const viewer = await startViewer({ home, registry, providerFor, host, log: viewerLog });
   void resumeDeliveries({ registry, providerFor, host, log: viewerLog, now: () => new Date() });
-  const app = createApp({
+  const triggers = createTriggerStore(home, log);
+  startScheduler({
+    triggers,
     registry,
     providerFor,
+    host,
+    home,
+    viewerOrigin: viewer.origin,
+    checkCheckout,
+    log: log.child({ component: "triggers" }),
+    now: () => new Date(),
+  });
+  const app = createApp({
+    registry,
+    triggers,
+    providerFor,
+    host,
     log,
     home,
     viewerOrigin: viewer.origin,
@@ -127,7 +148,6 @@ export const startServer = async ({
     version,
     startedAt: Date.now(),
     apiKey,
-    host,
     git: createGit(execWithTimeout(CLONE_TIMEOUT_MS)),
     checkCheckout,
   });
@@ -148,6 +168,7 @@ export const startServer = async ({
 
   const stop = async (): Promise<void> => {
     stopDeliveries();
+    await stopScheduler();
     // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
     await server.stop();
     await Promise.all([viewer.stop(), removeOwnPid(home)]);

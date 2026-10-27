@@ -104,7 +104,22 @@ export const StartRunBodySchema = z.strictObject({
   policies: PolicyLayerSchema.optional(),
 });
 export type StartRunBody = z.infer<typeof StartRunBodySchema>;
-export type StartRunRequest = StartRunBody;
+
+export const AddTriggerBodySchema = z.strictObject({
+  workflowPath: AbsolutePathSchema,
+  // the repo root the trigger's runs start in
+  cwd: AbsolutePathSchema,
+  config: AbsolutePathSchema.optional(),
+});
+export type AddTriggerBody = z.infer<typeof AddTriggerBodySchema>;
+
+// A trigger's name is unique within its repo.
+export const TriggerRefSchema = z.strictObject({ cwd: AbsolutePathSchema, name: SlugSchema });
+export type TriggerRef = z.infer<typeof TriggerRefSchema>;
+
+// The env the resumed session starts with, which yok resume builds the way yok run does
+export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
+export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
 
 export type ApiError = ErrorBody["error"];
 

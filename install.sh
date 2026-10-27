@@ -86,15 +86,10 @@ check_tools() {
   done
 }
 
+# yok picks the agents itself when none is named, so it alone knows which agents it supports.
 install_plugins() {
   args=""
-  for agent in $(printf '%s' "${YOK_AGENTS:-claude codex}" | tr ',' ' '); do
-    command -v "$agent" >/dev/null 2>&1 && args="$args --agent $agent"
-  done
-  if [ -z "$args" ]; then
-    say "No claude or codex found. Install the plugin later with: yok plugin install --agent claude"
-    return 0
-  fi
+  for agent in $(printf '%s' "${YOK_AGENTS:-}" | tr ',' ' '); do args="$args --agent $agent"; done
   # shellcheck disable=SC2086 # args is a list of flags
   "$BIN_DIR/yok" plugin install $args
 }

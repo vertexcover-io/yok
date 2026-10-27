@@ -3,6 +3,7 @@ import * as z from "zod";
 import { AgentTypeSchema } from "./agent.ts";
 import {
   AbsolutePathSchema,
+  AgentModeSchema,
   AgentStateSchema,
   ArtifactRefSchema,
   AskedQuestionSchema,
@@ -64,6 +65,8 @@ export const NodeStartedEvent = nodeEvent(
     notify: z.boolean().optional(),
     stage: SlugSchema.optional(),
     agentState: AgentStateSchema.optional(),
+    // an agent node: whether the session runs it itself or in a background subagent
+    mode: AgentModeSchema.optional(),
     ...placement,
   }),
 );
@@ -281,6 +284,18 @@ export const AgentStuckEvent = z.object({
     agent: AgentTypeSchema,
     sessionId: NonEmptyStringSchema,
     message: z.string().optional(),
+  }),
+});
+
+// The agent's input box showed in its pane on no try at the resume line, so yok typed
+// nothing and nobody drives the run; the notifier pings a person to type line. step is the node
+// the line was meant for.
+export const AgentInputUnreachableEvent = z.object({
+  payload: z.strictObject({
+    agent: AgentTypeSchema,
+    sessionId: NonEmptyStringSchema,
+    step: NonEmptyStringSchema,
+    line: NonEmptyStringSchema,
   }),
 });
 
@@ -540,6 +555,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
   "agent.stuck": AgentStuckEvent,
+  "agent.input.unreachable": AgentInputUnreachableEvent,
   "agent.resumed": AgentResumedEvent,
   "subscriber.called": SubscriberCalledEvent,
   "notification.thread.started": NotificationThreadStartedEvent,
@@ -701,6 +717,7 @@ const onStarted: EventHandler = (state, event) => {
     ...(payload.notify === undefined ? {} : { notify: payload.notify }),
     ...(payload.stage === undefined ? {} : { stage: payload.stage }),
     ...(payload.agentState === undefined ? {} : { agentState: payload.agentState }),
+    ...(payload.mode === undefined ? {} : { mode: payload.mode }),
     ...(payload.nodeType === "loop" ? { iteration: 1 } : {}),
     ...(CONTAINER_TYPES.has(payload.nodeType) ? { nodes: {} } : {}),
   };
@@ -919,15 +936,30 @@ const onCommentAdded: EventHandler = (state, event) => {
   return { ...state, nodeRuns: withoutWaitOn(state.nodeRuns, approved) };
 };
 
-// The deepest running node: the step the run is on now, under its dotted path such as "qa-loop.qa".
+type RunningEntry = Readonly<{ path: string; run: NodeRun }>;
+
+// Every running node with no running node inside it, under its dotted path such as "qa-loop.qa".
+const listRunningLeaves = (nodes: Nodes, parents: readonly string[]): readonly RunningEntry[] =>
+  Object.entries(nodes).flatMap(([id, run]) => {
+    if (run.status !== "running") return [];
+    const inside = listRunningLeaves(run.nodes ?? {}, [...parents, id]);
+    return inside.length > 0 ? inside : [{ path: nodePath(parents, id), run }];
+  });
+
+// The step the run is on now: the inline agent node the session works on itself, else an agent
+// node, which may ask a question, else the first running step, else a container waiting between
+// its children.
 export const findRunningLeaf = (
   nodes: Nodes,
   parents: readonly string[] = [],
-): Readonly<{ path: string; run: NodeRun }> | undefined => {
-  const entry = Object.entries(nodes).find(([, run]) => run.status === "running");
-  if (entry === undefined) return undefined;
-  const [id, run] = entry;
-  return findRunningLeaf(run.nodes ?? {}, [...parents, id]) ?? { path: nodePath(parents, id), run };
+): RunningEntry | undefined => {
+  const leaves = listRunningLeaves(nodes, parents);
+  return (
+    leaves.find(({ run }) => run.nodeType === "agent" && run.mode === "inline") ??
+    leaves.find(({ run }) => run.nodeType === "agent") ??
+    leaves.find(({ run }) => !CONTAINER_TYPES.has(run.nodeType)) ??
+    leaves[0]
+  );
 };
 
 const blockerBase = (state: State, event: Event) => {

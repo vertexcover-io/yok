@@ -30,7 +30,7 @@ AI coding tools are fast and careless: no design, no tests, no proof the change 
 Ticket → Workspace → Baseline → Design → Plan → Implement → Review → QA → Commit → PR → Retro
 ```
 
-You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships three, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
+You type one command. The engine decides what comes next, checks each stage's result with code, and keeps the agent moving when nobody is watching. A workflow is a YAML file: yok ships four, and you can write your own ([Workflows](#workflows)). Each stage is a skill you can also call on its own inside a normal agent session ([Skills](#skills)).
 
 Yok is a private repository. Installing it needs a GitHub account that can see `vertexcover-io/yok`.
 
@@ -74,8 +74,8 @@ Options, set as environment variables before the command:
 Both install only the binary. The plugin install still clones `vertexcover-io/yok`, so the `gh auth` steps above still apply.
 
 ```bash
-brew install vertexcover-io/tap/yok      # or: npm i -g @vertexcover-io/yok
-yok plugin install --agent claude
+brew install vertexcover-io/tap/yok      # or: npm i -g @vertexcover/yok
+yok plugin install                       # every agent found on PATH; --agent claude limits it
 ```
 
 ### 2. Check it
@@ -105,15 +105,16 @@ Tool names differ between Claude Code and Codex. The mapping is in [references/c
 Run the install command again, or:
 
 ```bash
-yok update --agent claude                 # newest stable release; the plugin moves with it
-yok update --agent claude --pre-release   # release candidates too
+yok update                    # newest stable release; the plugin moves with it for every agent on PATH
+yok update --agent claude     # move the plugin for claude only (repeat --agent for several)
+yok update --pre-release      # release candidates too
 ```
 
-On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover-io/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install --agent claude` yourself; the next `yok` command that needs the server replaces the one still running the old version.
+On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
 
 `yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
 
-The binary and the plugin always ship at the same version, and `yok doctor` and `yok run` stop when they differ. `yok plugin install --agent claude` puts the plugin back at the binary's version. Agent sessions that are already open keep the old skills until `/reload-plugins` or a restart.
+The binary and the plugin always ship at the same version, and `yok doctor` and `yok run` stop when they differ. `yok plugin install` puts the plugin back at the binary's version. Agent sessions that are already open keep the old skills until `/reload-plugins` or a restart.
 
 ## Project setup
 
@@ -180,7 +181,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships three, `task`, `quick` and `regression`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
 
 ### task: the full pipeline
 
@@ -222,6 +223,24 @@ yok run regression --prompt "Signing up with an email invite"
 ```
 
 Pick `regression` when the code already does the right thing and you want tests that keep it that way. It changes no product code.
+
+### skill: write or edit an agent skill
+
+[workflows/skill.yaml](./workflows/skill.yaml) runs `skill-author → audit loop (skill-audit, skill-fix)` on the `high` tier, which it maps to `claude-fable-5-1` at high effort. `skill-author` plans the skill from Anthropic's skill-creator steps and Matt Pocock's writing-for-agents rules, shows you the plan, and writes the skill so any agent can run it. Each audit pass checks it against a rubric; while blockers or majors remain, `skill-fix` fixes them, at most twice.
+
+```bash
+yok run skill --prompt "Pull every table out of a PDF into CSV files"
+yok run skill --prompt "..." --input scope=user --input folder=.agents
+yok run skill --prompt "..." --input path=~/tools/skills
+yok run skill --prompt "Also handle scanned PDFs" --input skill=pdf-tables
+yok run skill --prompt "Make it a yok stage" --input skill=pdf-tables --input yok=true
+```
+
+To edit, pass `skill` as the skill's folder or name, or name the skill in the prompt. A name is looked up in `.agents/skills` and `.claude/skills`, in the repo and then in your home folder; if it matches more than one, `skill-author` asks which. An edit changes only what the prompt asks for. Skills inside a plugin cache are never edited.
+
+With `yok=true`, or a prompt that asks for it, the skill becomes a yok stage: `skill-author` works out its contract (`outputs`, `produces`, `consumes`, `verifiers` and the rest) from what the skill does, writes the schema and verifier modules with their tests, and runs `yok verify` on a one-node workflow until the contract loads. A skill that already is a stage stays one, and the audit checks its contract too.
+
+A new skill with no `path` goes to `FOLDER/skills/NAME` in the repo (`scope=project`) or in your home folder (`scope=user`), where `FOLDER` is `.agents` or `.claude`. Whatever you leave out, `skill-author` asks in the same question as the plan. A `path` overrides both. The workflow writes evals but never runs them.
 
 ### Write your own
 
@@ -290,8 +309,8 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
-| `yok update --agent NAME` | Install the newest release, move the plugin to it, restart the server. `--pre-release` |
-| `yok plugin install --agent NAME` | Reinstall the plugin at the binary's version |
+| `yok update` | Install the newest release, move the plugin to it for every agent on PATH, restart the server. `--agent NAME` (repeatable) limits it, `--pre-release` |
+| `yok plugin install` | Reinstall the plugin at the binary's version for every agent on PATH. `--agent NAME` (repeatable) limits it |
 | `yok uninstall` | Remove yok from this machine. `--plugin`, `--no-plugin` |
 | `yok types` | Write the SDK's type files to `.yok/types/` for your editor |
 | `yok claude` / `yok codex` | Open an agent session by hand with the yok plugin loaded |
@@ -333,7 +352,7 @@ yok uninstall --plugin      # remove the plugin without asking
 yok uninstall --no-plugin   # keep the plugin without asking
 ```
 
-This stops the yok server, deletes `~/.yok` (the binary, the run registry and the server log), and removes the `PATH` line the installer added to `~/.zshrc`, `~/.bashrc` or `~/.profile`. Run folders inside your projects stay, and so do running tmux sessions. Without a terminal to answer the question, the plugin stays. A Homebrew or npm install keeps its binary; finish with `brew uninstall yok` or `npm rm -g @vertexcover-io/yok`.
+This stops the yok server, deletes `~/.yok` (the binary, the run registry and the server log), and removes the `PATH` line the installer added to `~/.zshrc`, `~/.bashrc` or `~/.profile`. Run folders inside your projects stay, and so do running tmux sessions. Without a terminal to answer the question, the plugin stays. A Homebrew or npm install keeps its binary; finish with `brew uninstall yok` or `npm rm -g @vertexcover/yok`.
 
 ## Extending yok
 

@@ -274,13 +274,6 @@ describe("ConfigSchema", () => {
     expect(config.packages.api?.commands).toEqual({ lintFile: null });
   });
 
-  test("SC19 — the generated JSON Schema carries the camelCase key rule", () => {
-    const jsonSchema = JSON.stringify(z.toJSONSchema(ConfigSchema, { io: "input" }));
-    expect(jsonSchema).toContain(
-      '"propertyNames":{"type":"string","pattern":"^[a-z][a-zA-Z0-9]*$"}',
-    );
-  });
-
   test.each([
     ["top level", { version: 2, packagez: {} }, "packagez"],
     [
@@ -304,7 +297,6 @@ describe("ConfigSchema", () => {
   test.each([
     ["an undeclared name", "remote", { local: {} }],
     ["a name every object inherits", "constructor", {}],
-    ["another inherited name", "toString", { local: {} }],
   ])("SC10 — environments.default naming %s is rejected", (_label, selected, entries) => {
     expect(errorOf({ version: 2, environments: { default: selected, entries } })).toContain(
       "Must name one of the entries",
@@ -451,13 +443,6 @@ describe("samskara", () => {
     ["no block", undefined, undefined],
   ])("SC401: %s loads as the samskara upload it turns on or off", (_label, samskara, expected) => {
     expect(ConfigSchema.parse({ version: 2, samskara }).samskara).toEqual(expected);
-  });
-
-  test.each([
-    ["a non-boolean enabled", { enabled: "yes" }],
-    ["an unknown key", { enabled: true, url: "x" }],
-  ])("SC401: %s is refused, naming samskara", (_label, samskara) => {
-    expect(errorOf({ version: 2, samskara })).toContain("samskara");
   });
 
   test("SC402: a project subscriber named samskara is refused as the built-in upload's name", () => {

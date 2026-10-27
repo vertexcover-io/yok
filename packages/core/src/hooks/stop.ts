@@ -18,11 +18,13 @@ import {
 } from "@yok/sdk";
 import {
   appendRunEvent,
+  findRunningLeaf,
   foldModelSwitch,
   isRunLive,
   jsonlEventStore,
   type ModelSwitch,
 } from "@yok/sdk/internal";
+import * as z from "zod";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
 import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
@@ -41,6 +43,7 @@ type ActiveLeaf = Readonly<{
   nodeRunId: string;
   nodeType: NodeRun["nodeType"];
   awaitingApproval: string | undefined;
+  mode: NodeRun["mode"];
 }>;
 
 export type StopCheck = Readonly<{
@@ -83,25 +86,20 @@ type Position =
   | Readonly<{ kind: "between-nodes" }>;
 
 // A loop, switch or include stays running while it waits between children, so the node being
-// worked on is the running entry of any other type.
+// worked on is the running entry of any other type; with several open, the session's inline one.
 const CONTAINERS: ReadonlySet<NodeRun["nodeType"]> = new Set(["loop", "switch", "include"]);
 
 const findActiveLeaf = (nodeRuns: Readonly<Record<string, NodeRun>>): ActiveLeaf | undefined => {
-  for (const [nodeId, run] of Object.entries(nodeRuns)) {
-    if (run.status !== "running") continue;
-    if (!CONTAINERS.has(run.nodeType)) {
-      return {
-        nodeId,
-        nodeRunId: run.nodeRunId,
-        nodeType: run.nodeType,
-        awaitingApproval: run.awaitingApproval,
-      };
-    }
-    if (run.nodes === undefined) continue;
-    const child = findActiveLeaf(run.nodes);
-    if (child !== undefined) return child;
-  }
-  return undefined;
+  const leaf = findRunningLeaf(nodeRuns);
+  if (leaf === undefined || CONTAINERS.has(leaf.run.nodeType)) return undefined;
+  const { path, run } = leaf;
+  return {
+    nodeId: path.slice(path.lastIndexOf(".") + 1),
+    nodeRunId: run.nodeRunId,
+    nodeType: run.nodeType,
+    awaitingApproval: run.awaitingApproval,
+    mode: run.mode,
+  };
 };
 
 const touchedRunSinceLastPrompt = (
@@ -192,8 +190,12 @@ export const decideStop = ({
   if (position.kind === "between-nodes" && pendingSwitch !== null) {
     return { reason: "model-switch", blockStreak: prior, seq: pendingSwitch.seq };
   }
-  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck.
-  if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
+  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck. An
+  // inline node is the session's own work, so background work beside it never excuses its done.
+  const owesInline = position.kind === "open-node" && position.leaf.mode === "inline";
+  if (waitingOnBackground && (!owesInline || prior >= maxBlocks)) {
+    return { reason: "background-task", blockStreak: prior };
+  }
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
@@ -389,9 +391,87 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
 // Keeps a workflow run moving: sends the agent back when it stops with work still owed.
 export const continueWorkflow: StopHandler = { name: "continue-workflow", run: runStopHook };
 
+// `git push` or `git -C dir push`, but not `git commit -m "fix and push"`
+const PUSH = /(?:^|[\s;&|(])git\s+(?:-[Cc]\s+\S+\s+|-\S+\s+)*push\b/;
+// the command learn runs last, which marks everything said so far as looked at
+const LEARN_MARK = /\bemit\s+learning\.reviewed\b/;
+const LEARN_OFFER =
+  "You pushed changes after the run's PR was created. If nothing the user said since the last " +
+  "learning session corrected you, reply only with: No new learnings from your messages. Otherwise ask the user one question: " +
+  "start a learning session now, from their corrections since the last one? If they say yes, run " +
+  `the learn skill (/yok:learn) with trigger auto. If they say no, end your turn. ${ASK_RULE}`;
+const OfferedEvent = z.object({
+  type: z.literal("learning.offered"),
+  payload: z.object({ prompts: z.int() }),
+});
+
+type LearnOffer = Readonly<{ kind: "allow" }> | Readonly<{ kind: "offer"; prompts: number }>;
+
+const lastCommandIndex = (entries: readonly TranscriptEntry[], pattern: RegExp): number =>
+  entries.findLastIndex((entry) => entry.kind === "command" && pattern.test(entry.command));
+
+// The agent pushed since the user's last message, and that message came after the last learning
+// session, so it may hold a correction no session has looked at.
+const pushedAfterNewPrompt = (entries: readonly TranscriptEntry[]): boolean => {
+  const lastPrompt = entries.findLastIndex((entry) => entry.kind === "prompt");
+  return (
+    lastCommandIndex(entries, PUSH) > lastPrompt &&
+    lastPrompt > lastCommandIndex(entries, LEARN_MARK)
+  );
+};
+
+export const decideLearnOffer = (
+  events: readonly Event[],
+  entries: readonly TranscriptEntry[] | undefined,
+): LearnOffer => {
+  if (entries === undefined || !pushedAfterNewPrompt(entries)) return { kind: "allow" };
+  const prompts = entries.filter((entry) => entry.kind === "prompt").length;
+  const offered = events.some(
+    (event) => OfferedEvent.safeParse(event).data?.payload.prompts === prompts,
+  );
+  return offered ? { kind: "allow" } : { kind: "offer", prompts };
+};
+
+// Never throws, like the workflow's Stop handler: a failure lets the turn end.
+const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookReply> => {
+  try {
+    const run = await findSessionRun(input, deps);
+    if (run === undefined) return ALLOW;
+    const runDir = runDirOf(run.cwd, run.name);
+    const state = await readState(runDir);
+    if (state?.nodeRuns.pr?.status !== "completed") return ALLOW;
+    const [events, entries] = await Promise.all([
+      jsonlEventStore(runDir).read(),
+      input.readTranscript(),
+    ]);
+    const offer = decideLearnOffer(events, entries);
+    if (offer.kind === "allow") return ALLOW;
+    const stored = await appendRunEvent(run, {
+      type: "learning.offered",
+      source: "hooks",
+      payload: { prompts: offer.prompts },
+    });
+    if (!stored.ok) {
+      // An unrecorded offer would be made again at every stop.
+      deps.log.warn({ error: stored.error }, "learn not offered: the offer was not recorded");
+      return ALLOW;
+    }
+    return { kind: "continue", message: LEARN_OFFER };
+  } catch (error) {
+    deps.log.error({ err: error }, "learn not offered: the offer check failed");
+    return ALLOW;
+  }
+};
+
+// Runs when the agent finishes a reply. If the run's `pr` stage has completed, the agent ran
+// `git push` since the user's last message, and that message came after the last learning
+// session, it sends the agent LEARN_OFFER. The agent asks the user if it can start a learning
+// session only if there are user corrections since the previous learning session.
+export const offerLearn: StopHandler = { name: "offer-learn", run: runLearnOffer };
+
 // The handlers an agent can register, by the name `orchestrate hook stop --handler` takes.
 export const stopHandlers: Readonly<Record<string, StopHandler>> = Object.fromEntries(
-  [continueWorkflow].map((handler) => [handler.name, handler]),
+  [continueWorkflow, offerLearn].map((handler) => [handler.name, handler]),
 );
 
 // Runs one Stop handler. It never throws: a handler that fails lets the turn end, or it could

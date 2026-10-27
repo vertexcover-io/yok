@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// npm's bin for @vertexcover-io/yok: runs the binary from this platform's package.
+// npm's bin for @vertexcover/yok: runs the binary from this platform's package.
 const { spawnSync } = require("node:child_process");
 
-const pkg = `@vertexcover-io/yok-${process.platform}-${process.arch}`;
+const pkg = `@vertexcover/yok-${process.platform}-${process.arch}`;
 
 let binary;
 try {
@@ -10,7 +10,7 @@ try {
 } catch {
   console.error(
     `yok: ${pkg} is not installed. yok runs on macOS and Linux, arm64 and x64; ` +
-      "reinstall without --no-optional: npm i -g @vertexcover-io/yok",
+      "reinstall without --no-optional: npm i -g @vertexcover/yok",
   );
   process.exit(1);
 }
