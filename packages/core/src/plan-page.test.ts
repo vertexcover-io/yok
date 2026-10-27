@@ -218,6 +218,146 @@ describe("buildPlanPage", () => {
     );
   });
 
+  test("a step's UI mapping follows its frames as a closed dropdown: a count on its toggle, each element with its component and a pill for its use", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(
+      artifacts,
+      "phases/phase-1.md",
+      [
+        "# Phase 1",
+        "",
+        "1. **Create the modal**",
+        "",
+        "   Summary.",
+        "",
+        "   - **Design:** build to design/a.png at 1200px",
+        "",
+        "   | Element | Component | Use |",
+        "   |---|---|---|",
+        "   | Save | `Button` — `node_modules/@refrens/disco/dist/es5/components/Button` | reuse |",
+        "   | Key rows | `CredentialGrid` — `src/styles.ts` | new |",
+        "   | Title | `Header` | new |",
+        "",
+      ].join("\n"),
+    );
+    put(artifacts, "design/a.png", pngBytes(1200, 1000));
+
+    const page = await build(artifacts);
+    const phase = page.match(/<article id="phase-1"[\s\S]*?<\/article>/)?.[0] ?? "";
+
+    expect(phase).not.toContain("<table");
+    expect(phase).toMatch(
+      /<div class="frames">[\s\S]*?<\/div><details class="ui-map"><summary>UI mapping <span class="ui-count">2 new · 1 reuse<\/span><\/summary><ul>/,
+    );
+    expect(phase).toContain(
+      '<li class="el" data-use="reuse"><span class="el-name">Save</span><span class="pill">reuse</span><span class="el-comp"><code>Button</code> — <code title="node_modules/@refrens/disco/dist/es5/components/Button">@refrens/disco</code></span></li>',
+    );
+    expect(phase).toContain('data-use="new"><span class="el-name">Key rows</span>');
+  });
+
+  test("a table after a step's frames that is not a UI mapping stays a table", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(
+      artifacts,
+      "phases/phase-1.md",
+      "# Phase 1\n\nbuild to design/a.png\n\n| Width | Note |\n|---|---|\n| 1200 | desk |\n",
+    );
+    put(artifacts, "design/a.png", pngBytes(1200, 1000));
+
+    const page = await build(artifacts);
+
+    expect(page).not.toContain('class="ui-map"');
+    expect(page).toMatch(/<div class="table-wrap"><table[\s\S]*?desk/);
+  });
+
+  test("a phase's test scenarios become one table, a row per scenario with its level beside it", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(artifacts, "plan.md", "# Plan\n");
+    put(
+      artifacts,
+      "phases/phase-1.md",
+      [
+        "# Phase 1",
+        "",
+        "## Test Scenarios",
+        "",
+        "### Unit",
+        "",
+        "**SC1 — A weak password is rejected** · R2",
+        "",
+        "Given a password with no digit:",
+        "- registration is blocked",
+        "",
+        "**SC2 — A strong password is kept** · R2",
+        "",
+        "Given a password with a digit:",
+        "- registration goes through",
+        "",
+        "### E2E",
+        "",
+        "**SC3 — The form shows the rule** · R3",
+        "",
+        "Given the page is open:",
+        "- the rule is shown",
+        "",
+        "## Commit",
+        "",
+        "feat: passwords",
+        "",
+      ].join("\n"),
+    );
+
+    const page = await build(artifacts);
+    const section = page.match(/id="phase-1-test-scenarios"[\s\S]*?(?=<h2)/)?.[0] ?? "";
+
+    expect(section).not.toContain("<h3");
+    expect(section.match(/<table class="scenarios">/g)?.length).toBe(1);
+    expect(
+      [
+        ...section.matchAll(
+          /<tr><td class="sc">[\s\S]*?(SC\d)[\s\S]*?<\/td><td class="sc-level">([^<]+)<\/td><\/tr>/g,
+        ),
+      ].map((m) => `${m[1]} ${m[2]}`),
+    ).toEqual(["SC1 Unit", "SC2 Unit", "SC3 E2E"]);
+    expect(section).toContain("registration is blocked");
+    expect(page).toMatch(/<h2 id="phase-1-commit"/);
+  });
+
+  test("a link to a phase file or to plan.md opens that document on the page", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(
+      artifacts,
+      "plan.md",
+      "# Plan\n\n## Phase Breakdown\n\n- [Phase 1: First](phases/phase-1.md)\n",
+    );
+    put(artifacts, "phases/phase-1.md", "# Phase 1\n\nSee [the plan](../plan.md).\n");
+
+    const page = await build(artifacts);
+
+    expect(page).toContain('<a href="#phase-1">Phase 1: First</a>');
+    expect(page).toContain('<a href="#plan">the plan</a>');
+  });
+
+  test("plan.md's Design Frames section holds the gallery, under its own heading only", async () => {
+    const artifacts = tempDir("plan-artifacts");
+    put(
+      artifacts,
+      "design/INDEX.md",
+      "| Screen | Local file | Width | Source | Source of truth for |\n|---|---|---|---|---|\n| Home | `design/a.png` | 1200 | figma | layout |\n",
+    );
+    put(artifacts, "design/a.png", pngBytes(1200, 1000));
+    put(artifacts, "plan.md", "# Plan\n\n## Design Frames\n\nThe screens.\n");
+
+    const page = await build(artifacts);
+
+    expect(page.match(/>Design [Ff]rames<\/h2>/g)?.length).toBe(1);
+    expect(page).toMatch(
+      /<h2 id="plan-design-frames"[^>]*>Design Frames<\/h2>[\s\S]*?The screens\.[\s\S]*?<div class="gallery">/,
+    );
+  });
+
   test("a phase keeps its own number when a revision left a gap, with no count beside it", async () => {
     const artifacts = tempDir("plan-gap");
     put(artifacts, "plan.md", "# Plan\n");
@@ -336,7 +476,8 @@ describe("buildPlanPage", () => {
     const page = await build(artifacts);
 
     expect(page).not.toContain("outlineHost.innerHTML");
-    expect(page).toContain("link.textContent = h.textContent");
+    expect(page).toContain("link.textContent = text;");
+    expect(page).toContain("outlineLink(h.id, h.textContent)");
   });
 
   test("SC705: a step's Spec line, in its list form or its older line form, is left off the page, and design/spec.md is never embedded", async () => {

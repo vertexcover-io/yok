@@ -26,6 +26,12 @@ body { display: block; overflow: auto; background: var(--bg); }
 .side .outline-btn { display: block; padding: 4px 10px; border-radius: 6px; color: var(--muted); font-size: 13px; text-decoration: none; }
 .side .outline-btn:hover { color: var(--fg); background: var(--panel-2); }
 .side .outline-btn.on { color: var(--accent); background: var(--accent-soft); }
+.side .outline-parent { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; }
+.side .outline-toggle { width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: 12px/1 var(--ui); cursor: pointer; transition: transform .15s; }
+.side .outline-toggle:hover { color: var(--fg); background: var(--panel-2); }
+.side .outline-toggle[aria-expanded="false"] { transform: rotate(-90deg); }
+.side .outline-steps { grid-column: 1 / -1; margin: 2px 0 4px 10px; padding-left: 6px; border-left: 1px solid var(--line); }
+.side .outline-steps .outline-btn { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side .side-note { margin: auto 10px 0; padding-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .content { min-width: 0; }
 .content .doc[hidden] { display: none; }
@@ -43,6 +49,28 @@ body { display: block; overflow: auto; background: var(--bg); }
 .doc figure.frame .frame-name { color: var(--fg); font-weight: 600; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .doc figure.frame .frame-truth { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .frame-missing { color: var(--del); font-size: 12.5px; }
+
+/* ---- a step's UI mapping, under its frames: each element, a pill for its use, its component beneath ---- */
+.doc .ui-map { margin: -6px 0 20px; max-width: 760px; }
+.doc .ui-map summary { cursor: pointer; width: fit-content; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-size: 13px; font-weight: 600; }
+.doc .ui-map summary:hover { background: var(--panel-2); }
+.doc .ui-map[open] summary { margin-bottom: 8px; }
+.doc .ui-map .ui-count { margin-left: 6px; color: var(--muted); font-weight: 400; }
+.doc .ui-map ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.doc .ui-map li.el { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); }
+.doc .ui-map li.el:first-child { border-top: 0; }
+.doc .ui-map .el-name { font-weight: 600; font-size: 14px; }
+.doc .ui-map .el-comp { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; }
+.doc .ui-map .el-comp code { font-size: 11.5px; }
+.doc .ui-map .pill { align-self: start; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; background: var(--panel-2); color: var(--muted); }
+.doc .ui-map [data-use="new"] .pill { background: var(--ok-soft); color: var(--ok); }
+.doc .ui-map [data-use="extend"] .pill { background: var(--warn-soft); color: var(--warn); }
+
+/* ---- a phase's scenarios: one row each, the level beside it ---- */
+.doc table.scenarios td { vertical-align: top; }
+.doc table.scenarios td.sc-level { white-space: nowrap; color: var(--muted); }
+.doc table.scenarios td > p { margin: 0 0 4px; }
+.doc table.scenarios td > ul, .doc table.scenarios td > ol { margin: 4px 0 0; }
 
 /* ---- lightbox: any frame at full size. Click, Enter or Space opens; ✕, backdrop or Esc closes ---- */
 img[data-img] { cursor: zoom-in; }
@@ -226,21 +254,61 @@ document.addEventListener("keydown", (e) => {
 const docs = [...document.querySelectorAll(".content .doc")];
 const fileBtns = [...document.querySelectorAll(".file-btn")];
 const outlineHost = document.getElementById("outline");
+const outlineLink = (id, text) => {
+  const link = document.createElement("a");
+  link.className = "outline-btn";
+  link.href = "#" + id;
+  link.textContent = text;
+  link.title = text;
+  return link;
+};
+// The steps of an Implementation section: the items of every numbered list up to the next section,
+// each with the number its list gives it.
+const stepsOf = (h) => {
+  const steps = [];
+  for (let el = h.nextElementSibling; el && el.tagName !== "H2"; el = el.nextElementSibling) {
+    if (el.tagName !== "OL") continue;
+    const items = [...el.children].filter((li) => li.tagName === "LI");
+    steps.push(...items.map((li, i) => ({ li, n: el.start + i })));
+  }
+  return steps;
+};
+// Implementation is a parent in the outline: a link per step under it, shown or hidden by its toggle.
+const outlineItem = (h) => {
+  const item = document.createElement("li");
+  item.append(outlineLink(h.id, h.textContent));
+  const steps = h.textContent.trim().toLowerCase() === "implementation" ? stepsOf(h) : [];
+  if (steps.length === 0) return item;
+  const list = document.createElement("ul");
+  list.className = "outline-steps";
+  list.append(
+    ...steps.map(({ li, n }, k) => {
+      li.id ||= `${h.id}-${k + 1}`;
+      const title = (li.querySelector("strong") ?? li).textContent.trim();
+      const step = document.createElement("li");
+      step.append(outlineLink(li.id, `${n}. ${title}`));
+      return step;
+    }),
+  );
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "outline-toggle";
+  toggle.textContent = "▾";
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.setAttribute("aria-label", "Show or hide the steps");
+  toggle.addEventListener("click", () => {
+    list.hidden = !list.hidden;
+    toggle.setAttribute("aria-expanded", String(!list.hidden));
+  });
+  item.className = "outline-parent";
+  item.append(toggle, list);
+  return item;
+};
 const show = (id, scrollTo) => {
   const doc = docs.find((d) => d.id === id) ?? docs[0];
   for (const d of docs) d.hidden = d !== doc;
   for (const b of fileBtns) b.classList.toggle("on", b.dataset.doc === doc.id);
-  outlineHost.replaceChildren(
-    ...[...doc.querySelectorAll("h2[id]")].map((h) => {
-      const item = document.createElement("li");
-      const link = document.createElement("a");
-      link.className = "outline-btn";
-      link.href = "#" + h.id;
-      link.textContent = h.textContent;
-      item.append(link);
-      return item;
-    }),
-  );
+  outlineHost.replaceChildren(...[...doc.querySelectorAll("h2[id]")].map(outlineItem));
   const target = scrollTo && document.getElementById(scrollTo);
   if (target) target.scrollIntoView({ block: "start" }); else window.scrollTo(0, 0);
 };
@@ -258,21 +326,27 @@ const spy = () => {
   const links = [...outlineHost.querySelectorAll(".outline-btn")];
   const y = window.scrollY + 80;
   let on = -1;
-  links.forEach((a, i) => { const h = document.getElementById(a.getAttribute("href").slice(1)); if (h && h.offsetTop <= y) on = i; });
+  links.forEach((a, i) => { const h = document.getElementById(a.getAttribute("href").slice(1)); if (h && h.getBoundingClientRect().top + window.scrollY <= y) on = i; });
   links.forEach((a, i) => { a.classList.toggle("on", i === on); });
 };
 addEventListener("scroll", spy, { passive: true });
 </script>
 <script type="module">
-/* ---- mermaid: drawn only when a document has a diagram ---- */
-const blocks = document.querySelectorAll("pre.mermaid");
-if (blocks.length > 0) {
+/* ---- mermaid: loaded only when a document has a diagram ---- */
+// A diagram in a hidden document has no size to lay out in, so each one is drawn when its document
+// is first shown.
+const draw = async () => {
+  const nodes = [...document.querySelectorAll(".doc:not([hidden]) pre.mermaid:not([data-processed])")];
+  if (nodes.length > 0) await window.mermaid.run({ nodes }).catch(() => {});
+};
+if (document.querySelector("pre.mermaid")) {
   const s = document.createElement("script");
   s.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
   s.onload = async () => {
     const dark = matchMedia("(prefers-color-scheme: dark)").matches;
     window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
-    await window.mermaid.run({ nodes: blocks }).catch(() => {});
+    addEventListener("hashchange", draw);
+    await draw();
   };
   document.head.append(s);
 }

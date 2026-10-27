@@ -51,6 +51,15 @@ const HEADING = /<h([1-4])([^>]*)>([\s\S]*?)<\/h\1>/g;
 const INNER_LIST = /<ul\b[^>]*>(?:(?!<\/?(?:ul|ol)\b)[\s\S])*?<\/ul>/g;
 const FRAMES = /<div class="frames">([\s\S]*?)<\/div>/g;
 const TABLE = /<table\b[\s\S]*?<\/table>/g;
+// A step's frames with the table written right after its Design line, its UI mapping.
+const MAPPED_FRAMES = /(<div class="frames">[\s\S]*?<\/div>)\s*(<table\b[\s\S]*?<\/table>)/g;
+// A phase's Test Scenarios section, up to the next section.
+const SCENARIO_SECTION = /(<h2\b[^>]*>\s*Test Scenarios\s*<\/h2>)([\s\S]*?)(?=<h2\b|$)/g;
+const LEVEL_HEADING = /<h3\b[^>]*>([\s\S]*?)<\/h3>/;
+const SCENARIO_START = /(?=<p\b[^>]*>\s*<strong>\s*SC\d)/;
+const SCENARIO = /^\s*<p\b[^>]*>\s*<strong>\s*SC\d/;
+// A link to plan.md or a phase file, from either folder.
+const DOC_LINK = /href="(?:\.{1,2}\/)*(?:phases\/)?(plan|phase-\d+)\.md"/g;
 // A step's pointer into design/spec.md, plain or bold, bulleted or not.
 const SPEC_LINE = /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?Spec:(?:\*\*)?[ \t]*`?design\/spec\.md\b/;
 const FENCE = /^[ \t]*(?:```|~~~)/;
@@ -214,6 +223,78 @@ const gatherListFrames = (html: string): string =>
     return `${rest}<div class="frames">${[...new Set(cards)].join("")}</div>`;
   });
 
+const ROW = /<tr\b[^>]*>([\s\S]*?)<\/tr>/g;
+const CELL = /<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/g;
+// A library component cited by its file under node_modules, and the package that file is in.
+const LIBRARY_PATH = /<code>(node_modules\/((?:@[^/<]+\/)?[^/<]+)[^<]*)<\/code>/g;
+const USES = ["new", "extend", "reuse"] as const;
+
+const cellsOf = (row: string): readonly string[] =>
+  [...row.matchAll(CELL)].map((m) => (m[1] ?? "").trim());
+
+// A library component reads by its package; its full path shows on hover.
+const shortenLibraryPaths = (html: string): string =>
+  html.replace(
+    LIBRARY_PATH,
+    (_whole, path: string, pkg: string) => `<code title="${path}">${pkg}</code>`,
+  );
+
+// A UI mapping table, Element · Component · Use, as a closed dropdown: its toggle counts what is new,
+// extended and reused, and it opens on each element with its component and a pill for its use. Any
+// other table stays a table.
+const mappingList = (table: string): string | undefined => {
+  const [head = [], ...rows] = [...table.matchAll(ROW)].map((m) => cellsOf(m[1] ?? ""));
+  const names = head.map((cell) => textOf(cell).trim().toLowerCase());
+  const [el, comp, use] = ["element", "component", "use"].map((name) => names.indexOf(name));
+  if (el === undefined || comp === undefined || use === undefined || Math.min(el, comp, use) < 0) {
+    return undefined;
+  }
+  const useOf = (cells: readonly string[]): string =>
+    textOf(cells[use] ?? "")
+      .trim()
+      .toLowerCase();
+  const count = USES.map((u) => [u, rows.filter((cells) => useOf(cells) === u).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([u, n]) => `${n} ${u}`)
+    .join(" · ");
+  const items = rows.map(
+    (cells) =>
+      `<li class="el" data-use="${escapeHtml(useOf(cells))}"><span class="el-name">${cells[el] ?? ""}</span><span class="pill">${cells[use] ?? ""}</span><span class="el-comp">${shortenLibraryPaths(cells[comp] ?? "")}</span></li>`,
+  );
+  return `<details class="ui-map"><summary>UI mapping <span class="ui-count">${count}</span></summary><ul>${items.join("")}</ul></details>`;
+};
+
+// The UI mapping written after a step's Design line reads under its frames.
+const pairMappings = (html: string): string =>
+  html.replace(MAPPED_FRAMES, (whole, frames: string, table: string) => {
+    const list = mappingList(table);
+    return list === undefined ? whole : `${frames}${list}`;
+  });
+
+const scenarioRow = (part: string, level: string): string =>
+  SCENARIO.test(part)
+    ? `<tr><td class="sc">${part.trim()}</td><td class="sc-level">${escapeHtml(textOf(level).trim())}</td></tr>`
+    : `<tr><td class="sc-note" colspan="2">${part.trim()}</td></tr>`;
+
+// A phase's scenarios read as one table, a row each, with the level its heading gave it beside it.
+const tableScenarios = (html: string): string =>
+  html.replace(SCENARIO_SECTION, (whole, heading: string, body: string) => {
+    const [lead = "", ...groups] = body.split(LEVEL_HEADING);
+    const rows = Array.from({ length: Math.floor(groups.length / 2) }, (_, i) => {
+      const [level = "", chunk = ""] = [groups[2 * i], groups[2 * i + 1]];
+      return chunk
+        .split(SCENARIO_START)
+        .filter((part) => part.trim() !== "")
+        .map((part) => scenarioRow(part, level));
+    }).flat();
+    if (!rows.some((row) => row.startsWith('<tr><td class="sc">'))) return whole;
+    return `${heading}${lead}<table class="scenarios"><thead><tr><th>Scenario</th><th>Level</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+  });
+
+// The page holds every plan file, so a link to one opens its document here.
+const linkDocs = (html: string): string =>
+  html.replace(DOC_LINK, (_whole, doc: string) => `href="#${doc}"`);
+
 // As in yok view: doc.css scrolls a wrapped table inside its own box, so a wide one cannot
 // widen the page on a phone.
 const wrapTables = (html: string): string =>
@@ -226,24 +307,22 @@ const addHeadingIds = (html: string, prefix: string): string =>
       `<h${level} id="${prefix}-${slugify(textOf(inner))}"${attrs}>${inner}</h${level}>`,
   );
 
-const galleryOf = (page: Page): string => {
+// plan.md ends with its Design Frames section, so the gallery takes that heading when it is there.
+const galleryOf = (page: Page, titled: boolean): string => {
   const cards = [...page.rows.keys()].map((frame) => frameCard(frame, page)).join("");
-  return `<h2 id="plan-design-frames">Design frames</h2><p>Every frame in <code>design/INDEX.md</code>. A step that builds to a frame shows it again under that step.</p><div class="gallery">${cards}</div>`;
+  const heading = titled ? "" : `<h2 id="plan-design-frames">Design Frames</h2>`;
+  return `${heading}<p>Every frame in <code>design/INDEX.md</code>. A step that builds to a frame shows it again under that step.</p><div class="gallery">${cards}</div>`;
 };
 
 const renderDoc = (doc: Doc, page: Page): string => {
   // No "of N": a revision that deletes a phase leaves a gap in the numbers.
   const label =
     doc.phase === undefined ? "" : `<span class="phase-label">Phase ${doc.phase}</span>`;
-  const body = addHeadingIds(
-    wrapTables(
-      gatherListFrames(
-        decorateSteps(renderMarkdown(withoutSpecLines(doc.markdown), page.repo), page),
-      ),
-    ),
-    doc.id,
-  );
-  const gallery = doc.phase === undefined && page.rows.size > 0 ? galleryOf(page) : "";
+  const html = renderMarkdown(withoutSpecLines(doc.markdown), page.repo);
+  const steps = pairMappings(gatherListFrames(decorateSteps(html, page)));
+  const body = addHeadingIds(wrapTables(tableScenarios(linkDocs(steps))), doc.id);
+  const titled = /^##[ \t]+Design Frames[ \t]*$/im.test(doc.markdown);
+  const gallery = doc.phase === undefined && page.rows.size > 0 ? galleryOf(page, titled) : "";
   return `<article id="${doc.id}" class="doc" hidden>${label}${body}${gallery}</article>`;
 };
 
