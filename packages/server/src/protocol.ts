@@ -34,8 +34,15 @@ export const readHomeEnv = (home: string): Record<string, string | undefined> =>
   parseEnv(readHomeFile(homeEnvPath(home)));
 
 // The domain a reverse proxy in front of yok answers on; this machine's own address without one.
-export const serverDomain = (home: string, port: number): string =>
-  readHomeEnv(home).SERVER_DOMAIN || `localhost:${port}`;
+// A browser sends its Host lowercase and without a scheme, so the saved value is cleaned to match.
+export const serverDomain = (home: string, port: number): string => {
+  const domain = (readHomeEnv(home).SERVER_DOMAIN ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+    .replace(/\/+$/, "");
+  return domain || `localhost:${port}`;
+};
 
 // Plain http only for this machine: any other domain is reached through a proxy doing https.
 export const publicOrigin = (domain: string): string =>

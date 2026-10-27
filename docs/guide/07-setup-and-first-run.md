@@ -143,6 +143,8 @@ On the server, as the user who will own the runs:
    SERVER_DOMAIN=yok.example.com
    ```
 
+   yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+
 3. Write `~/.config/systemd/user/yok.service`:
 
    ```ini

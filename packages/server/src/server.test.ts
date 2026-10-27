@@ -23,6 +23,11 @@ const readyCheckout: CheckCheckout = () =>
 
 test.each([
   ["SERVER_DOMAIN=yok.example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=Yok.Example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=https://yok.example.com\n", "yok.example.com"],
+  ["SERVER_DOMAIN=http://yok.example.com/\n", "yok.example.com"],
+  ["SERVER_DOMAIN=yok.example.com//\n", "yok.example.com"],
+  ["SERVER_DOMAIN=HTTPS://Yok.Example.com:8443/\n", "yok.example.com:8443"],
   [null, "localhost:7777"],
   ["LINEAR_API_KEY=lin\n", "localhost:7777"],
 ])(
