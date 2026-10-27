@@ -118,9 +118,9 @@ Under the link: the repos it touches, what it builds and needs, and why the cut 
 **Flat, one line per new or changed signature, grouped by phase.** It exists because the coder
 cannot open the phase file that defines the name, so duplication is the point of an index.
 
-**The steps copy from it.** A step that uses a name another phase builds, or builds a name
-another phase uses, carries that entry on its Uses or Provides line, per `step-card.md`. Every
-entry is defined by a step; a name here that no step builds is a finding.
+**It is the contract between phases.** Each entry is built by a step's diff in the phase it is
+listed under, and every later phase calls it exactly as written. A name here that no step builds
+is a finding.
 
 ### Blockers
 
@@ -185,13 +185,13 @@ Header: `# Phase N: THE CAPABILITY TITLE`, then a `Depends on:` line.
 | Section | Answers only | Must not contain |
 |---|---|---|
 | `## Goal` | why this phase exists, what it unlocks, and the `Done when` check it makes pass or the part of one it proves | file lists, steps |
-| `## Implementation` | how, as ordered steps; each step names the signatures it uses from other phases and provides to them | scenario prose, done-criteria |
-| `## Test Scenarios` | the behavior that proves it, grouped `### Unit` · `### Integration` · `### E2E` · `### QA Agent` — only the subsections this phase has | implementation detail, cross-phase flows |
+| `## Implementation` | how, as ordered steps, each written to `step-card.md` | scenario prose, done-criteria |
+| `## Test Scenarios` | the behavior that proves it, as one table with a row per scenario and its level, in the format `test-scenarios.md` gives | implementation detail, cross-phase flows |
 | `## Commit` | the message | — |
 
-**A seam lives on the step that crosses it.** The names a phase takes from earlier phases and
-hands to later ones sit on the Uses and Provides lines of the steps that use or build them. The
-scenarios are the definition of done. Cut content that restates another section.
+**What crosses phases lives in plan.md.** The names one phase hands another are listed once, in
+the signature index; the steps build and call them in their diffs. The scenarios are the
+definition of done. Cut content that restates another section.
 
 ## Implementation steps
 

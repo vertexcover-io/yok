@@ -57,14 +57,14 @@ an ADR, stop: that is blocked.
 A `phases/phase-N.md` is already decomposed; take it as given rather than re-deriving the
 feature:
 
-- `## Implementation`: the build steps, in order. Each change is a diff to apply. A step's Uses
-  and Provides lines name the signatures it takes from other phases and hands to them; keep each
-  one exactly as written. A design step's UI mapping names the component behind each element of
+- `## Implementation`: the build steps, in order. Each change is a diff to apply. The names in
+  plan.md's `## Signature index` are what the phases hand each other: build and call each exactly
+  as it is written there. A design step's UI mapping names the component behind each element of
   its frame: reuse or extend the component it names, and build new only where it says `new`.
-- `## Test Scenarios`: `### Unit`, `### Integration`, `### E2E`, each scenario numbered `SCn`.
-  One test per scenario, at the level it sits under. Carry the id in the test title
-  (`SC12: …`) so a reviewer can trace tests back to scenarios. `### QA Agent` scenarios are not
-  yours; the qa stage proves them.
+- `## Test Scenarios`: a table with one row per scenario, its id `SCn` and its `Level`. Write one
+  test per row, at the level the row gives, from its `Given` and `Expected` cells. Carry the id in
+  the test title (`SC12: …`) so a reviewer can trace tests back to scenarios. Rows at level
+  `qa-agent` belong to the qa stage, which proves them.
 - `## Commit`: the commit message.
 
 ## 3. Build the phases one at a time
@@ -104,7 +104,7 @@ For each phase:
 - **The report.** The runner writes its own JSON to `.yok/RUN/artifacts/phase-N-e2e.json`.
   The flag each runner needs is in the `tdd` skill's `references/hermetic-e2e.md`. Nothing in
   the file is hand-written.
-- **The flow is given.** The phase's `### E2E` block is the spec; use it as written. Before
+- **The flow is given.** The phase's `e2e` scenario rows are the spec; use it as written. Before
   creating a spec file, grep the e2e directory for the surface and extend the spec that covers
   it.
 - **The environment is the first task, not a blocker.** Bring the stack up, and confirm the

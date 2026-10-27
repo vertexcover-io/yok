@@ -117,7 +117,7 @@ Everything else comes from the run's artifacts:
 
 - **The feature's docs**: `.yok/RUN/artifacts/design.md`, `plan.md` and the phase files
   `phases/phase-N.md`, whatever exists. Scenarios come from what those docs say the feature must do.
-  Every phase file's `### QA Agent` scenarios are yours to prove; implement skipped them on purpose.
+  Every phase file's `## Test Scenarios` rows at level `qa-agent` are yours to prove; implement skipped them on purpose.
 - **The designs** plan.md's `## Design Frames` names, in `.yok/RUN/artifacts/design/`, each with the width
   it was drawn at. Each image is the **baseline** for the screen it draws, written `../design/FILE` from the
   report; the `visual-verification` reference owns what a baseline is authoritative about. Compare every frame
@@ -135,9 +135,9 @@ Everything else comes from the run's artifacts:
   `phase-N-e2e-skipped.md` where a phase skipped its E2E leg — the raw JSON its
   runner wrote, listing every test that actually executed. Test titles carry a scenario id
   (`SC3: …`), not a requirement id, so read the report in two hops: title id → the phase file's
-  matching scenario heading → the requirement ids that heading traces to (`**SC3 — …** · R2, EC1`).
-  A requirement no executed scenario traces to was never covered end to end; one whose scenarios all
-  sit under `### Unit` was covered at the wrong altitude. Nobody hands you that list — deriving it is
+  scenario row with that id → the requirement ids in that row's `Traces` cell. A requirement no
+  executed scenario traces to was never covered end to end; one whose scenarios are all at level
+  `unit` was covered at the wrong altitude. Nobody hands you that list — deriving it is
   this skill's job.
 - **implement's report**, `.yok/RUN/artifacts/implementation.md` — which phases landed, and each
   phase's commit.

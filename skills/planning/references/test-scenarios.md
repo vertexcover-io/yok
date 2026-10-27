@@ -67,36 +67,32 @@ file in the setup is fine; the expectations assert only what an actor observes.
 
 ## Format
 
-Heading `**SCn — OBSERVABLE OUTCOME** · TRACE_IDS` — the id is globally unique across
-the plan; `tdd` carries it in the test title. A scenario tracing to nothing is dropped, or
-flags a missing requirement.
+Write a phase's scenarios as **one table** under its `## Test Scenarios` heading, one row per
+scenario, ordered by level with `unit` first and `qa-agent` last:
 
-```markdown
-**SC3 — A weak password is rejected with the rule's error** · R2, EC1
+| Column | Holds |
+|---|---|
+| `ID` | `SCn`, unique across the whole plan; `tdd` carries it in the test title. Mark a regression `SCn (regression)`. |
+| `Scenario` | the one observable outcome, present tense, with no rationale clause |
+| `Given` | the starting state and the trigger, as one situation |
+| `Expected` | every outcome observable in that situation, each on its own line opened with `•` |
+| `Level` | `unit`, `integration`, `e2e` or `qa-agent`, chosen as the next section says |
+| `Traces` | the requirement, edge-case and risk ids the row proves |
 
-Given registration is attempted with a password missing a digit:
-- registration is blocked
-- the message names the unmet rule
-```
+**One cell, one line of markdown.** Break a cell into lines with `<br>`: each `•` outcome in
+`Expected`, and each numbered setup step in `Given` when the setup is genuinely staged. Escape a
+`|` inside a cell as `\|`.
 
-A `Given …:` clause when state and trigger fuse into one situation; a numbered list only
-when setup is genuinely staged (then label the outcomes `Expected:`). A `Given` needing an
-"and" between two independent conditions wants the list — or it is two scenarios. Include
-the negative half where it matters ("edit and delete are **not** offered"). Regressions:
-`**SC12 (regression) — …**`.
+**The `Scenario` cell is the line the user reads at the plan gate.** It states the outcome alone;
+the `Given` and `Expected` cells supply the why by being concrete. Write the negative half into
+`Expected` where it matters, in bold.
 
-One `Given` is one scene: every outcome observable in it belongs to that scenario's list,
-however many facts that is. A second scenario is earned by a different starting state or a
-different trigger — never by a further fact visible in the same scene.
+**One `Given` is one scene.** Every outcome observable in it belongs to that row's `Expected`,
+however many facts that is. A second row is earned by a different starting state or a different
+trigger, never by a further fact visible in the same scene. A `Given` joining two independent
+conditions with "and" is either staged setup or two rows.
 
-**The heading is the line the user reads at the plan gate.** It states one observable outcome,
-present tense, and carries no rationale clause — the `Given` and the outcomes supply the why by
-being concrete.
-
-**Group the scenarios under level subsections** in the phase file — `### Unit` ·
-`### Integration` · `### E2E` · `### QA Agent` — including only the subsections the phase
-has. The plan page lays them out as one table: a row per scenario, holding its heading, its
-`Given` and its outcomes, with the level its subsection gives it beside it.
+**Trace every row.** A row with an empty `Traces` cell is dropped, or flags a missing requirement.
 
 ## Choose the level — pyramid, not ladder
 

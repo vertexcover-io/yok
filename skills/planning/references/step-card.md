@@ -8,8 +8,7 @@ governs where things go and what they are called. It never governs how much a st
 | Part | Include when | How it is written |
 |---|---|---|
 | **Title**: the action and its file | always | `1. **Change \`src/x.ts:31-40\`**` |
-| **Summary**: what changes in the file and why | always | two or three lines of plain English under the title, so the developer has the gist before reading the code |
-| **Seams**: what the step takes from other phases and hands to them | the step uses a name another phase builds, or builds a name another phase uses | one list item per name under the summary, `- **Uses:** SIGNATURE` or `- **Provides:** SIGNATURE`, the signature copied from plan.md's signature index |
+| **Summary**: what the step makes true and why | always | two or three sentences under the title, as **The summary** below says |
 | **Design**: the frame this step builds, and where its spec rules are | the step builds the screen, component or interaction a frame draws | two list items, as **Designs** below shows |
 | **UI mapping**: the component behind each element of the frame | the step has a Design part | a table right after the list items, as **Designs** below shows |
 | **Diff**: the change | the step changes code, whether or not it has a Design part or a Spec line | a line naming the file and range, then a ```` ```diff ```` block |
@@ -20,13 +19,37 @@ governs where things go and what they are called. It never governs how much a st
 **Write the parts in the table's order.** Parts are triggered, not filled. An omitted part costs
 nothing; a padded part states "considered, nothing found".
 
-**Some parts are owed.** A step that changes code carries its Diff. A step that crosses a phase
-seam carries its Seams. A step that builds what a frame in `design/INDEX.md` draws carries its
-Design part and its UI mapping. The summary says what and why in words; the logic, its branches
-and its error paths live in the diff's code.
+**Some parts are owed.** A step that changes code carries its Diff. A step that builds what a
+frame in `design/INDEX.md` draws carries its Design part and its UI mapping.
 
 A step can also say something that is none of these. An environment warning, or a note on how
 to see the change, is plain prose.
+
+## The summary
+
+The summary is the part every reader of the plan reads: the developer before the diff, the
+reviewer deciding whether to approve, and qa deciding what to check. Write it so each of them
+understands the step after one read, in two or three sentences of plain English, present tense.
+
+1. **Outcome first.** The first sentence says what is true once the step lands, seen from outside
+   the file: what a user, an API caller or another part of the system can now do, now gets, or
+   no longer gets.
+2. **Then the reason.** The next sentence says why the step is needed: the requirement it serves,
+   or what goes wrong without it.
+3. **Then what stays the same**, when a reader would worry about it: the behaviour the change
+   leaves untouched.
+
+**Leave the mechanics to the diff.** The names the diff adds, renames and deletes, its branches
+and its error paths are read in the diff's code. A rejected alternative goes in **Why this way**,
+and a hazard goes in **Trap**.
+
+**Gloss every name you use.** A function, type, route or file the summary names gets a few words
+saying what it is, in the sentence that first names it.
+
+**Write only for the reader.** Every diff is written against the file as the earlier phases
+leave it, for the whole plan, so a step states only what is true of this step. Test counts
+belong to the scenarios. Anything that depends on what another phase did is settled before the
+step is written, and the step states the settled answer.
 
 ## Show the change as a diff
 

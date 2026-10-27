@@ -134,11 +134,9 @@ These rules bind every step:
   evidence and recommend the new decision. With `interaction` off, it is a blocker. On the
   answer, fix that line in `design.md`, within its caps, so it stays true, and record the
   change in plan.md's `## Decisions`.
-- **Open each step with a summary.** Two or three lines of plain English say what changes in
-  the file and why, so the developer has the gist before reading the code.
-- **Name the seams on the step.** A step that uses a name another phase builds carries a Uses
-  line, and a step that builds a name another phase uses carries a Provides line, each copied
-  from plan.md's `## Signature index`.
+- **Open each step with a summary for every reader.** The developer, the reviewer and qa all
+  read it. Two or three sentences of plain English give the outcome, then the reason, then what
+  stays the same, as the `step-card` reference's summary section says.
 - **Show every code change as a diff.** Every step that changes code carries its diff, whether
   or not it builds to a frame or points at the spec. The logic lives in the diff, not in prose.
 - **Put each frame on the step that builds what it shows.** The step whose diff creates the
@@ -168,11 +166,12 @@ These rules bind every step:
   active ADR · every path in `## Project Docs` exists.
 - **Phasing.** No two phases change the same file unless ordered · every phase is provable by
   its own scenarios the moment it lands · a phase that uses what another builds depends on it.
-- **Steps.** Every step opens with a plain-English summary of what changes and why · every
-  step that changes code has a diff, with or without a frame or spec · every name a phase takes
-  from or hands to another phase sits on a step's Uses or Provides line · each frame sits on the
-  step that builds what it shows, with a UI mapping row for every element it shows · a step's
-  Seams, Design and Spec lines are list items, one per line · no step tells the coder to discover
+- **Steps.** Every summary opens with the outcome and its reason, glosses each name it uses, and
+  leaves the diff's mechanics and the planner's notes out · every step that changes code has a
+  diff, with or without a frame or spec · every entry in plan.md's `## Signature index` is built
+  by a step's diff in the phase it is listed under · each frame sits on the step that builds what
+  it shows, with a UI mapping row for every element it shows · a step's Design and Spec lines are
+  list items, one per line · no step tells the coder to discover
   something · every title opens with an imperative verb.
 - **Coverage.** Every requirement has a matrix row · every scenario appears once across the
   phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
