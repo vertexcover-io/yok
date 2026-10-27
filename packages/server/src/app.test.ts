@@ -1172,16 +1172,13 @@ describe("AddProjectBodySchema", () => {
     "https://user:token@github.com/o/r.git",
     "https://ghp_token@github.com/o/r.git",
     "ssh://git:pw@h/o/r",
-  ])(
-    "refuses the git URL %s, which holds a credential every GET /projects would echo",
-    (git) => {
-      const parsed = AddProjectBodySchema.safeParse({ name: "demo", git });
-      expect(parsed.success).toBe(false);
-      expect(parsed.error?.issues[0]?.message).toBe(
-        "must not hold a password or an https user name; use a git credential helper or an ssh key",
-      );
-    },
-  );
+  ])("refuses the git URL %s, which holds a credential every GET /projects would echo", (git) => {
+    const parsed = AddProjectBodySchema.safeParse({ name: "demo", git });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toBe(
+      "must not hold a password or an https user name; use a git credential helper or an ssh key",
+    );
+  });
 });
 
 describe("/projects", () => {
