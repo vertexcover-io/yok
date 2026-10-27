@@ -285,6 +285,53 @@ describe("tick", () => {
   );
 
   test(
+    "SC3007: a firing whose pull fails logs failed, records no run, and the schedule moves on",
+    async () => {
+      const setupEnv = await setup();
+      const { home, store, registry, deps, trigger } = setupEnv;
+      const cwd = join(realpathSync(home), "projects", "web");
+      mkdirSync(cwd, { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd });
+      writeFileSync(join(cwd, "orchestrate.config.json"), '{ "version": 2 }\n');
+      writeFileSync(join(cwd, "digest.yaml"), DIGEST);
+      await registerProject(home, "web", { path: cwd, git: "https://example.test/web.git" });
+      const base = deps("2026-10-23T09:00:10.000Z");
+
+      await tick({
+        ...base,
+        git: {
+          ...base.git,
+          pullFastForward: () => Promise.resolve({ ok: false, error: "diverged" }),
+        },
+      });
+
+      const [fired] = await store.readFires(trigger.id, 20);
+      expect(fired).toMatchObject({ status: "failed", slot: "2026-10-23T09:00:00.000Z" });
+      expect(fired?.status === "failed" ? fired.reason : "").toContain("git pull");
+      expect(await registry.listRuns()).toEqual([]);
+      expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC3007: a firing whose project folder is gone logs failed, records no run, and the schedule moves on",
+    async () => {
+      const { cwd, store, registry, launches, deps, trigger } = await setup();
+      rmSync(cwd, { recursive: true, force: true });
+
+      await tick(deps("2026-10-23T09:00:10.000Z"));
+
+      const [fired] = await store.readFires(trigger.id, 20);
+      expect(fired?.status).toBe("failed");
+      expect(launches).toEqual([]);
+      expect(await registry.listRuns()).toEqual([]);
+      expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "a restarted server ticking again in the same minute does not fire the slot a second time",
     async () => {
       const { store, launches, deps, trigger } = await setup();
