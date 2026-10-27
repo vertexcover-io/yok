@@ -477,11 +477,25 @@ describe("viewer routes", () => {
     const d = await read("d.png");
     const e = await read("e.bin");
     expect(c.raw).toBe("/runs/r-named/raw/artifacts/c.html");
-    expect((await get(c.raw as string)).headers.get("content-type")).toBe(
-      "text/html; charset=utf-8",
-    );
+    const rawHtml = await get(c.raw as string);
+    expect(rawHtml.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await rawHtml.text()).toStartWith("<p>x</p>\n<script>");
     expect((await get(d.raw as string)).headers.get("content-type")).toBe("image/png");
     expect([e.html, e.text, e.raw]).toEqual([undefined, undefined, undefined]);
+  });
+
+  test("an artifact served raw is sandboxed into an opaque origin and never sniffed", async () => {
+    const { get, runDir } = await setup();
+    put(runDir, "artifacts/c.html", "<p>x</p>");
+    put(runDir, "artifacts/i.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    for (const name of ["c.html", "i.svg"]) {
+      const res = await get(`/runs/r-named/raw/artifacts/${name}`);
+      expect([name, res.headers.get("content-security-policy")]).toEqual([
+        name,
+        "sandbox allow-scripts",
+      ]);
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    }
   });
 
   test("a range of a repo file comes back as colored lines, an artifact's diffs are placed in the repo, and a path outside the repo is 404", async () => {

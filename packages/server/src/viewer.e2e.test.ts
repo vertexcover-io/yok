@@ -157,10 +157,15 @@ const until = async (js: string, ms = 5000): Promise<void> => {
 };
 
 const selectText = async (inFrame: boolean, text: string): Promise<void> => {
-  const doc = inFrame ? "document.querySelector('#htmlFrame').contentDocument" : "document";
-  const root = inFrame ? `${doc}.body` : "document.querySelector('#docRoot')";
+  if (inFrame) {
+    // The frame is sandboxed, so its own agent makes the selection.
+    await evaluate(
+      `document.querySelector('#htmlFrame').contentWindow.postMessage({ t: "select", text: ${JSON.stringify(text)} }, "*")`,
+    );
+    return;
+  }
   await evaluate(`(() => {
-    const doc = ${doc}; const root = ${root};
+    const doc = document; const root = document.querySelector('#docRoot');
     const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const at = n.data.indexOf(${JSON.stringify(text)});
@@ -396,8 +401,9 @@ describe("viewer in a browser", () => {
   test("SC35: text selected inside an HTML artifact becomes a comment with an element path", async () => {
     await browser("open", `${url}#artifacts/mock.html`);
     await until(
-      "document.querySelector('#htmlFrame')?.contentDocument?.getElementById('go')?.textContent === 'Continue'",
+      "document.querySelector('#htmlFrame')?.getAttribute('sandbox') === 'allow-scripts'",
     );
+    await Bun.sleep(500);
     await ensureCommentMode();
     await selectText(true, "Sign in");
     await until(barShown);

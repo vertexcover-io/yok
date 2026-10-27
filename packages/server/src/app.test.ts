@@ -1088,7 +1088,7 @@ describe("createRoot guard", () => {
     expect((await deps.registry.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
   });
 
-  test.each(["http://evil.example", "http://yok.example.com"])(
+  test.each(["http://evil.example", "http://yok.example.com", "null"])(
     "SC1006: Origin %p gets 403 with an accepted Host, and nothing is written",
     async (origin) => {
       const { app, deps, commentsPath, launched } = await rootApp("yok.example.com");

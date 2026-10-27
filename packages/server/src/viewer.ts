@@ -31,6 +31,7 @@ import * as z from "zod";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import ANCHOR_SOURCE from "./anchor.ts" with { type: "text" };
 import { isAgentAlive, lastDelivery, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+import FRAME_AGENT from "./frame-agent.js" with { type: "text" };
 import {
   listRunSummaries,
   listSteps,
@@ -767,7 +768,15 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       const relPath = decodeURIComponent(c.req.path.slice(`/runs/${id}/raw/`.length));
       const abs = resolveArtifactPath(page.runDir, relPath);
       if (abs === null || !(await isFile(abs))) return notFound(c);
-      return new Response(Bun.file(abs), { headers: { "content-type": contentType(abs) } });
+      // An artifact is untrusted: it runs in an opaque origin so it cannot call /api as the viewer.
+      const headers = {
+        "content-type": contentType(abs),
+        "content-security-policy": "sandbox allow-scripts",
+        "x-content-type-options": "nosniff",
+      };
+      if (fileType(abs) !== "html") return new Response(Bun.file(abs), { headers });
+      const html = `${await Bun.file(abs).text()}\n<script>${FRAME_AGENT}</script>`;
+      return new Response(html, { headers });
     })
     .get("/runs/:id/comments", async (c) => {
       const page = await requireReadyRun(c, deps);
