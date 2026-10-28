@@ -121,6 +121,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "answers",
   "bodyOf",
   "checkBinary",
+  "closingLine",
   "createGit",
   "createRegistryReader",
   "emitRunEvent",
