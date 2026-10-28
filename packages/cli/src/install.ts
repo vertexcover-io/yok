@@ -148,6 +148,13 @@ const assetUrl = (releases: Releases, tag: string, name: string): string => {
   return url;
 };
 
+// The two lines install.sh writes, so an update leaves beside the binary what a fresh install does.
+const writeRemoteShortcut = async (execPath: string): Promise<void> => {
+  const shortcut = join(dirname(execPath), "yok-remote");
+  await writeFile(shortcut, '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n');
+  await chmod(shortcut, 0o755);
+};
+
 // Returns the problem, or null once the new binary is in place. Nothing is written on a mismatch.
 const replaceBinary = async (
   target: UpdateTarget,
@@ -169,6 +176,7 @@ const replaceBinary = async (
   await writeFile(next, binary);
   await chmod(next, 0o755);
   await rename(next, target.execPath);
+  await writeRemoteShortcut(target.execPath);
   return null;
 };
 

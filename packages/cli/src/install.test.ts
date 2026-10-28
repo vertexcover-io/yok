@@ -9,10 +9,11 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assetName,
   checksumFor,
@@ -170,6 +171,31 @@ describe("runUpdate", () => {
     expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
     expect(code).toBe(3);
     expect(binaryReady).toBe(true);
+  });
+
+  test("SC148: writes the yok-remote shortcut beside the swapped binary, as install.sh does, and leaves none on a wrong checksum", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const shortcut = join(dirname(execPath), "yok-remote");
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+
+    await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
+
+    expect(readFileSync(shortcut, "utf8")).toBe(
+      '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n',
+    );
+    expect(statSync(shortcut).mode & 0o777).toBe(0o755);
+
+    const stale = installed(log);
+    const { target: bad } = serveReleases({
+      tag: "v0.0.2",
+      script: fakeYok("0.0.2", log),
+      checksum: "0".repeat(64),
+    });
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+    await runUpdate({ ...bad, execPath: stale, version: "0.0.1" }, ["claude"], false);
+    errors.mockRestore();
+    expect(existsSync(join(dirname(stale), "yok-remote"))).toBe(false);
   });
 
   test("SC147: keeps the 0.0.1 binary and runs no plugin install when the checksum is wrong", async () => {
