@@ -40,9 +40,9 @@ import {
   type StepOutcome,
 } from "@yok/sdk/internal";
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
-import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
+import { currentTerminal, isRunPane, yokTerminalHost } from "./agents/tmux.ts";
 import { commentRepliedEvent, isOpen, readComments, replyToComment } from "./comments.ts";
-import { runContextStep, runModelStep } from "./context-step.ts";
+import { runCloseStep, runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
 import { postToolUseHandlers } from "./hooks/post-tool-use.ts";
 import { preToolUseHandlers } from "./hooks/pre-tool-use.ts";
@@ -664,7 +664,8 @@ const loadHelperRun = async (
     return undefined;
   }
   const permissionMode = linked?.permissionMode;
-  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
+  const modeLaunch = permissionMode === undefined ? {} : { permissionMode };
+  return { run, log, provider, modeLaunch, terminalName: linked?.terminal ?? null };
 };
 
 const contextCommand = () =>
@@ -734,6 +735,29 @@ const modelCommand = () =>
         home: yokHome(),
         log,
       });
+    });
+
+const closeCommand = () =>
+  new Command("close")
+    .description(
+      "Exit the agent and close its terminal once the run it finished has ended (started by the Stop hook)",
+    )
+    .argument("<finishSeq>", "seq of the run's workflow.completed or workflow.failed event")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .requiredOption("--session-id <id>", "the agent session whose turn just ended")
+    .action(async (finishSeq, opts) => {
+      const helper = await loadHelperRun(opts, "yok-close", "close.log");
+      if (helper === undefined) return;
+      const { run, log, provider, terminalName } = helper;
+      await runCloseStep({
+        run,
+        finishSeq: Number(finishSeq),
+        terminal: currentTerminal(process.env, log),
+        ownsPane: await isRunPane(terminalName),
+        provider,
+        log,
+      }).catch((error: unknown) => log.error({ err: error }, "close threw"));
     });
 
 // stderr is detached, so a helper logs to a file in the run's folder.
@@ -874,6 +898,7 @@ export const orchestrateCommand = () =>
     .addCommand(statuslineCommand())
     .addCommand(contextCommand())
     .addCommand(modelCommand())
+    .addCommand(closeCommand())
     .addCommand(limitWaitCommand())
     .addCommand(commentsCommand())
     .addCommand(runSubscriberCommand(), { hidden: true });

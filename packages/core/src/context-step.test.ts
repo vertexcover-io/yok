@@ -24,6 +24,7 @@ import { tmpdir, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type IAgentProvider,
+  type ILogger,
   type ITerminal,
   type LaunchOptions,
   type NodeRun,
@@ -37,9 +38,11 @@ import {
   clearDeadSwitchLocks,
   completeContextOnSessionStart,
   findOpenContextRun,
+  runCloseStep,
   runContextStep,
   runModelStep,
 } from "./context-step.ts";
+import { captureLogger } from "./logging.ts";
 
 const RESUME = "/yok:orchestrate --resume feat-x";
 // Claude's input box: a ❯ line between two rules. Claude keeps it on screen while it works.
@@ -1374,13 +1377,13 @@ describe("findOpenContextRun", () => {
   });
 });
 
-describe("clearDeadSwitchLocks", () => {
-  const deadPid = async (): Promise<number> => {
-    const child = Bun.spawn(["true"]);
-    await child.exited;
-    return child.pid;
-  };
+const deadPid = async (): Promise<number> => {
+  const child = Bun.spawn(["true"]);
+  await child.exited;
+  return child.pid;
+};
 
+describe("clearDeadSwitchLocks", () => {
   test("SC630: model-3.lock and context-nr-2.lock with a dead pid and an empty model-4.lock are removed; context-nr-1.lock held by this process and the state and subscriber lock folders stay", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "switch-locks-"));
     const locks = join(runDir, "locks");
@@ -1474,5 +1477,186 @@ describe("clearDeadSwitchLocks", () => {
 
     expect(await clearDeadSwitchLocks(runDir, seed(runDir), [])).toEqual({ removed: [], held: [] });
     expect(readdirSync(runDir)).toEqual([]);
+  });
+});
+
+describe("runCloseStep", () => {
+  const FINISH_SEQ = 7;
+
+  // An agent whose screen is `screen()`; it exits on a submitted /exit unless `exits` is false.
+  const closingTerminal = (screen: () => string, exits = true) => {
+    let alive = true;
+    const fake = fakeTerminal(screen, async (text) => {
+      if (text === "/exit" && exits) alive = false;
+    });
+    const terminal: ITerminal = { ...fake.terminal, isAlive: async () => alive };
+    const end = () => {
+      alive = false;
+    };
+    return { terminal, typed: fake.typed, end };
+  };
+
+  type StopResult = Awaited<ReturnType<IAgentProvider["stop"]>>;
+
+  // Types at an empty input box only, as the real providers do; counts the pane kills.
+  const closingProvider = (stop: () => StopResult = () => ({ ok: true, value: undefined })) => {
+    let stops = 0;
+    const provider: IAgentProvider = {
+      ...fakeProvider().provider,
+      promptWhenReady: async (terminal, text) => {
+        const screen = await terminal.capture();
+        if (!screen.ok || screen.value !== IDLE) return { ok: true, value: "not-ready" };
+        await terminal.sendText(text);
+        await terminal.sendKeys(["Enter"]);
+        return { ok: true, value: "sent" };
+      },
+      stop: async () => {
+        stops += 1;
+        return stop();
+      },
+    };
+    return { provider, stops: () => stops };
+  };
+
+  const close = (
+    context: Context,
+    terminal: ITerminal | undefined,
+    provider: IAgentProvider,
+    ownsPane = true,
+    log: ILogger = noopLogger,
+  ) => runCloseStep({ run: context.run, finishSeq: FINISH_SEQ, terminal, ownsPane, provider, log });
+  const messagesOf = (lines: readonly Readonly<{ msg?: unknown }>[]) =>
+    lines.map((line) => line.msg);
+  const closeLock = (runDir: string) => join(runDir, "locks", `close-${FINISH_SEQ}.lock`);
+  const exitsTyped = (typed: readonly Typed[]) => typed.filter((entry) => entry === "/exit");
+
+  test("SC804: an agent at an empty input box gets /exit typed once and submitted, its pane is not killed, and the close lock stays", async () => {
+    const context = await setUp("type: context, action: new");
+    const { terminal, typed } = closingTerminal(() => IDLE);
+    const { provider, stops } = closingProvider();
+
+    await close(context, terminal, provider);
+
+    expect(typesOf(typed)).toEqual(["/exit", "Enter"]);
+    expect(stops()).toBe(0);
+    expect(existsSync(closeLock(context.runDir))).toBe(true);
+  });
+
+  test("SC805: an agent that takes /exit but leaves its pane alive has the pane killed once", async () => {
+    const context = await setUp("type: context, action: new");
+    const { terminal, typed } = closingTerminal(() => IDLE, false);
+    const { provider, stops } = closingProvider();
+
+    await close(context, terminal, provider);
+
+    expect(exitsTyped(typed)).toHaveLength(1);
+    expect(stops()).toBe(1);
+  });
+
+  test("SC820: a pane that is not the run's own yok terminal gets /exit but is never killed", async () => {
+    const context = await setUp("type: context, action: new");
+    const { terminal, typed } = closingTerminal(() => IDLE, false);
+    const { provider, stops } = closingProvider();
+
+    await close(context, terminal, provider, false);
+
+    expect(exitsTyped(typed)).toHaveLength(1);
+    expect(stops()).toBe(0);
+  });
+
+  test("SC822: a pane that survives /exit and a failed kill leaves the session open, logs why, and marks the finish tried", async () => {
+    const context = await setUp("type: context, action: new");
+    const { terminal } = closingTerminal(() => IDLE, false);
+    const { provider, stops } = closingProvider(() => ({ ok: false, error: "kill-pane failed" }));
+    const { log, lines } = captureLogger();
+
+    await close(context, terminal, provider, true, log);
+
+    expect(stops()).toBe(1);
+    expect(await terminal.isAlive()).toBe(true);
+    expect(lines.find((line) => line.msg === "session not closed")).toMatchObject({
+      err: { message: "kill-pane failed" },
+    });
+    expect(readFileSync(closeLock(context.runDir), "utf8")).toBe("tried");
+  });
+
+  test("SC823: a failed kill of a pane that is gone anyway counts as closed", async () => {
+    const context = await setUp("type: context, action: new");
+    const { terminal, end } = closingTerminal(() => IDLE, false);
+    const { provider } = closingProvider(() => {
+      end();
+      return { ok: false, error: "can't find pane" };
+    });
+    const { log, lines } = captureLogger();
+
+    await close(context, terminal, provider, true, log);
+
+    expect(messagesOf(lines)).toContain("session closed");
+    expect(messagesOf(lines)).not.toContain("session not closed");
+  });
+
+  test("SC824: a helper outside tmux types nothing, logs why, and marks the finish tried", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider, stops } = closingProvider();
+    const { log, lines } = captureLogger();
+
+    await close(context, undefined, provider, true, log);
+
+    expect(stops()).toBe(0);
+    expect(messagesOf(lines)).toContain("session not closed: not in tmux");
+    expect(readFileSync(closeLock(context.runDir), "utf8")).toBe("tried");
+  });
+
+  test("SC806: an agent that stays busy gets nothing typed nor killed, and a later stop in the same session, idle again, starts no second close", async () => {
+    const context = await setUp("type: context, action: new");
+    const busy = closingTerminal(() => BUSY);
+    const { provider, stops } = closingProvider();
+
+    await close(context, busy.terminal, provider);
+
+    expect(busy.typed).toEqual([]);
+    expect(stops()).toBe(0);
+    expect(existsSync(closeLock(context.runDir))).toBe(true);
+
+    const idle = closingTerminal(() => IDLE);
+    await close(context, idle.terminal, provider);
+    expect(idle.typed).toEqual([]);
+  });
+
+  test("SC818: a close lock left by a helper that died mid-close is taken over, and the session gets /exit", async () => {
+    const context = await setUp("type: context, action: new");
+    mkdirSync(dirname(closeLock(context.runDir)), { recursive: true });
+    writeFileSync(closeLock(context.runDir), String(await deadPid()));
+    const { terminal, typed } = closingTerminal(() => IDLE);
+    const { provider } = closingProvider();
+
+    await close(context, terminal, provider);
+
+    expect(exitsTyped(typed)).toHaveLength(1);
+  });
+
+  test("SC819: a helper that gave up marks its lock tried, so the finish is not closed again once that helper has exited", async () => {
+    const context = await setUp("type: context, action: new");
+    const { provider } = closingProvider();
+
+    await close(context, closingTerminal(() => BUSY).terminal, provider);
+    expect(readFileSync(closeLock(context.runDir), "utf8")).toBe("tried");
+
+    const idle = closingTerminal(() => IDLE);
+    await close(context, idle.terminal, provider);
+    expect(idle.typed).toEqual([]);
+  });
+
+  test("SC807: a close lock already held for the finish seq means the helper types nothing and kills nothing", async () => {
+    const context = await setUp("type: context, action: new");
+    mkdirSync(dirname(closeLock(context.runDir)), { recursive: true });
+    writeFileSync(closeLock(context.runDir), String(process.pid));
+    const { terminal, typed } = closingTerminal(() => IDLE);
+    const { provider, stops } = closingProvider();
+
+    await close(context, terminal, provider);
+
+    expect(typed).toEqual([]);
+    expect(stops()).toBe(0);
   });
 });

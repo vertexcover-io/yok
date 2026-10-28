@@ -313,3 +313,21 @@ export const currentTerminal = (
   const options = { socketPath, configPath: configPathFor(env) };
   return tmuxPane(tmuxSocket(log === undefined ? options : { ...options, log }), pane);
 };
+
+// Whether the current pane is the run's own: on yok's tmux server, in the session the run
+// registered. Pane ids repeat across tmux servers, so the server's socket path is compared too.
+export const isRunPane = async (
+  terminalName: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> => {
+  const socketPath = env.TMUX?.split(",")[0];
+  const pane = env.TMUX_PANE;
+  if (terminalName === null || !socketPath || !pane) return false;
+  const socket = tmuxSocket({
+    socketName: env.YOK_TMUX_SOCKET ?? defaultTmuxSocket(),
+    configPath: configPathFor(env),
+  });
+  const format = "#{socket_path}\t#{session_name}";
+  const found = await runTmux(socket, ["display-message", "-p", "-t", pane, format], true);
+  return found.ok && found.value.trim() === `${socketPath}\t${terminalName}`;
+};

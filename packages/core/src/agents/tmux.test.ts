@@ -9,7 +9,13 @@ import { type CheckContext, type Exec, execWithTimeout, type ITerminalHost } fro
 import { captureLogger } from "../logging.ts";
 import { claudeProvider } from "./claude.ts";
 import TMUX_CONFIG from "./tmux.conf" with { type: "text" };
-import { currentTerminal, defaultTmuxSocket, tmuxHost, yokTerminalHost } from "./tmux.ts";
+import {
+  currentTerminal,
+  defaultTmuxSocket,
+  isRunPane,
+  tmuxHost,
+  yokTerminalHost,
+} from "./tmux.ts";
 
 const exec = execWithTimeout(10_000);
 const FAKE_AGENT = join(import.meta.dirname, "fixtures", "fake-agent.ts");
@@ -466,6 +472,33 @@ describe("currentTerminal and rename", () => {
 
   test("outside tmux there is no current pane", () => {
     expect(currentTerminal({})).toBeUndefined();
+  });
+
+  test("SC821: the current pane is the run's only on yok's tmux server, in the session the run registered", async () => {
+    const yok = makeTerminal();
+    const other = makeTerminal();
+    const name = `s-${randomUUID()}`;
+    const spec = { name, cwd: process.cwd(), argv: ["sleep", "60"], env: {} };
+    await created(yok.host, spec);
+    await created(other.host, spec);
+    const paneEnv = async (socketName: string) => {
+      const format = "#{socket_path},#{pane_id}";
+      const out = await exec(
+        "tmux",
+        ["-L", socketName, "display-message", "-p", "-t", `=${name}:`, format],
+        "/",
+      );
+      const [socket = "", pane = ""] = out.stdout.trim().split(",");
+      return { TMUX: `${socket},1,0`, TMUX_PANE: pane, YOK_TMUX_SOCKET: yok.socketName };
+    };
+    const inYok = await paneEnv(yok.socketName);
+    const inOther = await paneEnv(other.socketName);
+
+    expect(await isRunPane(name, inYok)).toBe(true);
+    expect(await isRunPane(`${name}-other`, inYok)).toBe(false);
+    expect(await isRunPane(null, inYok)).toBe(false);
+    expect(await isRunPane(name, inOther)).toBe(false);
+    expect(await isRunPane(name, {})).toBe(false);
   });
 });
 
