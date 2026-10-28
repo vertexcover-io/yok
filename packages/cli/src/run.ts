@@ -36,6 +36,7 @@ import {
   fail,
   isRemote,
   openForPerson,
+  PROJECT_REQUIRED,
   resolveClient,
   yokClient,
 } from "./client.ts";
@@ -206,8 +207,7 @@ const localTarget = async (
 
 // Paths are sent as typed: the server resolves them against its own copy of the project.
 const remoteTarget = (workflow: string, opts: RunOptions): Result<RunTarget> => {
-  if (opts.project === undefined)
-    return { ok: false, error: "--project NAME is required with --remote" };
+  if (opts.project === undefined) return { ok: false, error: PROJECT_REQUIRED };
   const config = opts.config === undefined ? {} : { config: opts.config };
   return { ok: true, value: { project: opts.project, workflow, ...config } };
 };

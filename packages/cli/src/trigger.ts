@@ -4,7 +4,7 @@ import { isWorkflowFile, unwrap } from "@yok/core";
 import { createGit } from "@yok/sdk";
 import type { Fire, Trigger } from "@yok/sdk/internal";
 import type { YokClient } from "@yok/server/client";
-import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
+import { apiErrorText, fail, isRemote, PROJECT_REQUIRED, resolveClient } from "./client.ts";
 import { pickProjectName, projectAt } from "./run.ts";
 
 // --project names the trigger's project; without it, the project of the checkout this runs in.
@@ -12,10 +12,8 @@ import { pickProjectName, projectAt } from "./run.ts";
 const resolveTriggerProject = async (
   client: YokClient,
   project: string | undefined,
-  remote: boolean,
 ): Promise<string> => {
   if (project !== undefined) return project;
-  if (remote) throw new Error("--project NAME is required with --remote");
   const root = await createGit().repoRoot(process.cwd());
   if (root === null) throw new Error("not inside a git repository; pass --project NAME");
   const known = unwrap(await projectAt(client, root));
@@ -59,8 +57,7 @@ export const triggerCommand = () => {
     .description("Register the workflow's trigger, or update it if already registered")
     .action(async (workflowArg, opts, command) => {
       const remote = isRemote(command);
-      if (remote && opts.project === undefined)
-        return fail("--project NAME is required with --remote");
+      if (remote && opts.project === undefined) return fail(PROJECT_REQUIRED);
       const client = await resolveClient(remote);
       const cwd = process.cwd();
       const root = opts.project === undefined ? await createGit().repoRoot(cwd) : null;
@@ -94,8 +91,9 @@ export const triggerCommand = () => {
     .description("Fire the trigger now, as its schedule would")
     .action(async (name, opts, command) => {
       const remote = isRemote(command);
+      if (remote && opts.project === undefined) return fail(PROJECT_REQUIRED);
       const client = await resolveClient(remote);
-      const project = await resolveTriggerProject(client, opts.project, remote);
+      const project = await resolveTriggerProject(client, opts.project);
       const result = await client.fireTrigger({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
       const { fire } = result.value;
@@ -110,8 +108,9 @@ export const triggerCommand = () => {
     .description("Show the trigger's last 20 firings")
     .action(async (name, opts, command) => {
       const remote = isRemote(command);
+      if (remote && opts.project === undefined) return fail(PROJECT_REQUIRED);
       const client = await resolveClient(remote);
-      const project = await resolveTriggerProject(client, opts.project, remote);
+      const project = await resolveTriggerProject(client, opts.project);
       const result = await client.triggerLog({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
       for (const fire of result.value.fires) console.log(describeFire(fire));
@@ -124,8 +123,9 @@ export const triggerCommand = () => {
     .description("Stop firing the trigger")
     .action(async (name, opts, command) => {
       const remote = isRemote(command);
+      if (remote && opts.project === undefined) return fail(PROJECT_REQUIRED);
       const client = await resolveClient(remote);
-      const project = await resolveTriggerProject(client, opts.project, remote);
+      const project = await resolveTriggerProject(client, opts.project);
       const result = await client.removeTrigger({ project, name });
       if (!result.ok) return fail(apiErrorText(result.error));
       console.log(`removed ${name} from ${project}`);

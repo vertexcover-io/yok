@@ -21,6 +21,7 @@ import {
   connect,
   fail,
   isRemote,
+  PROJECT_REQUIRED,
 } from "./client.ts";
 
 const HEADERS = ["CHECK", "REQUIRED", "STATUS", "DETAIL", "FIX"] as const;
@@ -106,7 +107,7 @@ export const doctorCommand = () =>
     .option("--project <name>", "with --remote: the server's project to check")
     .action(async ({ json, workflow, project }, command) => {
       if (isRemote(command)) {
-        if (project === undefined) return fail("--project NAME is required with --remote");
+        if (project === undefined) return fail(PROJECT_REQUIRED);
         const { client } = await connect(process.env, yokHome());
         const checked = await client.doctor({
           project,

@@ -183,6 +183,10 @@ export const connect = async (
 export const isRemote = (command: CommandUnknownOpts): boolean =>
   command.optsWithGlobals().remote === true;
 
+// The folder you are in means nothing on the server, so every --remote command names its project
+// and checks it before resolveClient sends anything.
+export const PROJECT_REQUIRED = "--project NAME is required with --remote";
+
 // The saved login is read only with --remote, so a plain command never leaves this machine.
 export const resolveClient = async (remote: boolean): Promise<YokClient> => {
   if (remote) return (await connect(process.env, yokHome())).client;

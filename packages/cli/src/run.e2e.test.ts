@@ -1558,6 +1558,10 @@ describe("yok --remote", () => {
       ["server", "start"],
       "yok server start works only on the server's machine: run it there, without --remote",
     ],
+    [["trigger", "fire", "digest"], "--project NAME is required with --remote"],
+    [["trigger", "log", "digest"], "--project NAME is required with --remote"],
+    [["trigger", "rm", "digest"], "--project NAME is required with --remote"],
+    [["doctor"], "--project NAME is required with --remote"],
   ])(
     "SC4021: --remote %j is refused with the command's own line, before any request",
     async (args, message) => {
