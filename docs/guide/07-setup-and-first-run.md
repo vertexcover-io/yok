@@ -192,7 +192,7 @@ On the server, as the user who will own the runs:
 On your laptop:
 
 ```bash
-yok-remote login https://yok.example.com --user ritesh   # asks for the password, hidden
+YOK_SERVER_PASSWORD=… yok-remote login https://yok.example.com --user ritesh
 yok-remote project add web --git git@github.com:acme/web.git
 yok-remote run task --prompt "fix login" --project web
 yok-remote server status
@@ -200,7 +200,7 @@ yok-remote server status
 
 `yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
 
-`login` asks for the password without echoing it. A script can pipe it on stdin or set `YOK_SERVER_PASSWORD`; `--password` stays for CI, but shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
+`login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
 
 Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 
@@ -216,7 +216,7 @@ yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
-yok-dev --remote login URL --user U  # asks for the password; save a server's login; checks it first
+yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
 yok-dev --remote project list   # the server's projects; also doctor, trigger

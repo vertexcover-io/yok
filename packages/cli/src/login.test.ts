@@ -133,17 +133,18 @@ describe("login", () => {
 });
 
 describe("loginPassword", () => {
-  const never = async (): Promise<string> => {
-    throw new Error("asked");
-  };
-
-  test("SC4010: the flag wins, then YOK_SERVER_PASSWORD, and only then is the password asked for", async () => {
-    expect(await loginPassword("flag", { YOK_SERVER_PASSWORD: "env" }, never)).toBe("flag");
-    expect(await loginPassword(undefined, { YOK_SERVER_PASSWORD: "env" }, never)).toBe("env");
-    expect(await loginPassword(undefined, {}, async () => "typed")).toBe("typed");
-  });
-
-  test("SC4011: a password read from stdin loses its line ending only", async () => {
-    expect(await loginPassword(undefined, {}, async () => " p w \r\n")).toBe(" p w ");
+  test("SC4010: the flag wins, then YOK_SERVER_PASSWORD, and with neither the login stops with the two ways to pass it", () => {
+    expect(loginPassword("flag", { YOK_SERVER_PASSWORD: "env" })).toEqual({
+      ok: true,
+      value: "flag",
+    });
+    expect(loginPassword(undefined, { YOK_SERVER_PASSWORD: "env" })).toEqual({
+      ok: true,
+      value: "env",
+    });
+    expect(loginPassword(undefined, {})).toEqual({
+      ok: false,
+      error: "no password: set YOK_SERVER_PASSWORD, or pass --password (visible in ps)",
+    });
   });
 });
