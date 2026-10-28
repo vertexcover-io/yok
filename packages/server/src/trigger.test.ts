@@ -708,13 +708,14 @@ describe("/triggers routes", () => {
     TIMEOUT_MS,
   );
 
-  test("SC3006: adding a trigger to unknown project mobile is 400 naming the known project web, and stores nothing", async () => {
+  test("SC3006: adding a trigger to unknown project mobile is 400 naming only mobile, and stores nothing", async () => {
     const { call } = await appFor();
 
     const res = await call("POST", "/triggers", { project: "mobile", workflow: "digest.yaml" });
 
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: { message: string } }).error.message).toContain("web");
+    const { message } = ((await res.json()) as { error: { message: string } }).error;
+    expect(message).toBe('unknown project "mobile"');
     expect((await (await call("GET", "/triggers")).json()) as unknown).toEqual({ triggers: [] });
   });
 

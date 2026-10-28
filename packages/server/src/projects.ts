@@ -106,11 +106,6 @@ const checkoutRoot = async (git: IGit, path: string): Promise<Result<string>> =>
   return { ok: true, value: root };
 };
 
-const knownNames = (projects: ProjectsFile): string => {
-  const known = Object.keys(projects);
-  return known.length === 0 ? "none; add one with yok project add" : known.join(", ");
-};
-
 // The named project's checkout, and whether yok cloned it: a run pulls a clone first.
 export const pickProject = async (
   home: string,
@@ -118,28 +113,17 @@ export const pickProject = async (
 ): Promise<Result<Readonly<{ name: string; path: string; cloned: boolean }>>> => {
   const projects = await readProjects(home);
   const project = projects[name];
-  if (project === undefined) {
-    return {
-      ok: false,
-      error: `unknown project "${name}"; known projects: ${knownNames(projects)}`,
-    };
-  }
+  if (project === undefined) return { ok: false, error: `unknown project "${name}"` };
   if (!existsSync(project.path)) {
     return { ok: false, error: `project ${name}'s checkout ${project.path} is gone` };
   }
   return { ok: true, value: { name, path: project.path, cloned: isClone(home, project) } };
 };
 
-// A body that fails its schema. When the project is what failed, the reply lists the known
-// projects, because the server never picks one.
-export const refuseBody = async (c: Context, home: string, error: z.core.$ZodError) => {
-  const message = z.prettifyError(error);
-  if (!error.issues.some((issue) => issue.path[0] === "project")) {
-    return errorResponse(c, 400, "bad-request", message);
-  }
-  const known = knownNames(await readProjects(home));
-  return errorResponse(c, 400, "bad-request", `${message}\nknown projects: ${known}`);
-};
+// A body that fails its schema. The reply never lists the server's projects: a caller who can
+// reach the route is not thereby entitled to its inventory.
+export const refuseBody = (c: Context, error: z.core.$ZodError) =>
+  errorResponse(c, 400, "bad-request", z.prettifyError(error));
 
 // Under the lock a removal takes, so the removal either sees the pending run or has already
 // happened, and then nothing is saved.
@@ -226,11 +210,7 @@ const addProject = async (
   if (taken !== null) return errorResponse(c, 409, "conflict", taken);
   const path = body.path ?? join(clonesDir(deps.home), name);
   if (git !== undefined) {
-    const cloned = await claimAndClone(
-      deps.git,
-      { home: deps.home, url: git, path },
-      c.get("log"),
-    );
+    const cloned = await claimAndClone(deps.git, { home: deps.home, url: git, path }, c.get("log"));
     if (!cloned.ok) {
       return errorResponse(c, cloned.error.status, cloned.error.code, cloned.error.message);
     }

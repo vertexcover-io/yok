@@ -17,12 +17,7 @@ import { noopLogger } from "@yok/sdk";
 import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
-import {
-  editorCommand,
-  listArtifacts,
-  resolveArtifactPath,
-  viewerRoutes,
-} from "./viewer.ts";
+import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
 
 const tempDir = (prefix: string): string =>
   realpathSync(mkdtempSync(join(tmpdir(), `yok-${prefix}-`)));

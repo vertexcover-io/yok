@@ -341,7 +341,7 @@ describe("POST /runs", () => {
     expect(await deps.registry.listRuns()).toEqual([]);
   });
 
-  test("SC2003: a start that names no project is 400 listing the known projects, even when only one exists", async () => {
+  test("SC2003: a start that names no project is 400 and names no project, even when only one exists", async () => {
     let launched = false;
     const deps = await buildDeps(() => {
       launched = true;
@@ -358,12 +358,13 @@ describe("POST /runs", () => {
     expect(res.status).toBe(400);
     const error = await errorOf(res);
     expect(error.code).toBe("bad-request");
-    expect(error.message).toContain("known projects: demo");
+    expect(error.message).toContain("project");
+    expect(error.message).not.toContain("demo");
     expect(launched).toBe(false);
     expect(await deps.registry.listRuns()).toEqual([]);
   });
 
-  test("SC2004: a start on an unknown project is 400 listing the known projects", async () => {
+  test("SC2004: a start on an unknown project is 400 naming only that project", async () => {
     let launched = false;
     const deps = await buildDeps(() => {
       launched = true;
@@ -377,7 +378,7 @@ describe("POST /runs", () => {
     expect(res.status).toBe(400);
     expect(await errorOf(res)).toEqual({
       code: "bad-request",
-      message: 'unknown project "nope"; known projects: demo, other',
+      message: 'unknown project "nope"',
     });
     expect(launched).toBe(false);
     expect(await deps.registry.listRuns()).toEqual([]);
@@ -751,8 +752,8 @@ describe("POST /doctor", () => {
   });
 
   test.each([
-    ["no project", {}, "known projects: demo"],
-    ["an unknown project", { project: "nope" }, 'unknown project "nope"; known projects: demo'],
+    ["no project", {}, "project"],
+    ["an unknown project", { project: "nope" }, 'unknown project "nope"'],
     ["a missing workflow", { project: "demo", workflow: "missing.yaml" }, "no workflow at"],
     ["a workflow that is not valid YAML", { project: "demo", workflow: "bad.yaml" }, "yaml:"],
   ])(
@@ -969,7 +970,7 @@ describe("createYokClient", () => {
       expect(checked).toEqual({ ok: true, value: { report: BLOCKED_REPORT } });
       expect(refused).toEqual({
         ok: false,
-        error: { code: "bad-request", message: 'unknown project "nope"; known projects: demo' },
+        error: { code: "bad-request", message: 'unknown project "nope"' },
       });
     } finally {
       await server.stop(true);

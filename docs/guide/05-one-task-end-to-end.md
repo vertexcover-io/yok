@@ -112,7 +112,7 @@ Then it sends one request: `POST /runs { project, workflow, inputs }`. A workflo
 
 [startRun](../../packages/server/src/run.ts#L52) handles that request. It is the only route a run needs. Before anything is recorded, it does the start-up work on the project's checkout:
 
-- **It finds the project** with [pickProject](../../packages/server/src/projects.ts#L88). With no name and one project, that one is used; otherwise the reply names the known projects.
+- **It finds the project** with [pickProject](../../packages/server/src/projects.ts#L88). With no name and one project, that one is used; otherwise the reply names the missing or unknown project and never lists the server's projects.
 - **It finds the workflow file.** A bare name like `task` means one of Yok's own workflows. A name with a slash or a `.yaml` ending means a file in the project. The rule is at [packages/core/src/stage.ts:169](../../packages/core/src/stage.ts#L169).
 - **It compiles the workflow.** [compilePlan](../../packages/core/src/workflow/compile.ts#L576) reads the YAML and turns it into a plan. It checks that every `stage:` names a skill that exists and that every `dependsOn` points at a real node. A typo in the YAML fails here, in a second, not forty minutes in.
 - **It loads the env and runs the doctor.** [checkCheckout](../../packages/server/src/server.ts#L51) builds the env from the checkout's `.env`, the config and the workflow, then checks tmux, the agent binary, the Yok plugin, and whatever the workflow asked for in its `doctor:` block. For `task` that is `LINEAR_API_KEY`, `bun`, and `gh`. One failing check answers 400 with the doctor's report as `findings`, and the CLI prints `BLOCKED` with the fix.

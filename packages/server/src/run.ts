@@ -436,7 +436,7 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
     .post(
       "/",
       zValidator("json", StartRunBodySchema, (result, c) =>
-        result.success ? undefined : refuseBody(c, deps.home, result.error),
+        result.success ? undefined : refuseBody(c, result.error),
       ),
       (c) => startRun(c, deps, c.req.valid("json")),
     )
@@ -457,7 +457,7 @@ export const doctorRoutes = (deps: RunDeps) =>
   new Hono<{ Variables: Vars }>().post(
     "/",
     zValidator("json", DoctorBodySchema, (result, c) =>
-      result.success ? undefined : refuseBody(c, deps.home, result.error),
+      result.success ? undefined : refuseBody(c, result.error),
     ),
     (c) => runProjectDoctor(c, deps, c.req.valid("json")),
   );
