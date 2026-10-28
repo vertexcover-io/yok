@@ -21,8 +21,8 @@ import {
   connect,
   fail,
   isRemote,
-  PROJECT_REQUIRED,
 } from "./client.ts";
+import { PROJECT_REQUIRED } from "./project.ts";
 
 const HEADERS = ["CHECK", "REQUIRED", "STATUS", "DETAIL", "FIX"] as const;
 // A version banner (curl prints its whole TLS stack) would push the FIX column off-screen.

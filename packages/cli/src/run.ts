@@ -36,10 +36,10 @@ import {
   fail,
   isRemote,
   openForPerson,
-  PROJECT_REQUIRED,
   resolveClient,
   yokClient,
 } from "./client.ts";
+import { PROJECT_REQUIRED } from "./project.ts";
 import { writeProjectTypes } from "./types.ts";
 
 export const collectInput = (pair: string, acc: Record<string, string>): Record<string, string> => {

@@ -4,6 +4,10 @@ import { createGit } from "@yok/sdk";
 import { folderSlug, type ProjectView } from "@yok/server";
 import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
 
+// The folder you are in means nothing on the server, so every --remote command names its project
+// and checks it before resolveClient sends anything.
+export const PROJECT_REQUIRED = "--project NAME is required with --remote";
+
 const HEADERS = ["NAME", "STATUS", "PATH", "ADDED BY"] as const;
 
 export const renderProjects = (projects: readonly ProjectView[]): string => {

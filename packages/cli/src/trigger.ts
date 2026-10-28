@@ -4,7 +4,8 @@ import { isWorkflowFile, unwrap } from "@yok/core";
 import { createGit } from "@yok/sdk";
 import type { Fire, Trigger } from "@yok/sdk/internal";
 import type { YokClient } from "@yok/server/client";
-import { apiErrorText, fail, isRemote, PROJECT_REQUIRED, resolveClient } from "./client.ts";
+import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
+import { PROJECT_REQUIRED } from "./project.ts";
 import { pickProjectName, projectAt } from "./run.ts";
 
 // --project names the trigger's project; without it, the project of the checkout this runs in.
