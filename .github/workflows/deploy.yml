@@ -1,0 +1,109 @@
+name: Deploy
+
+# Puts one release on the server. Fires when a release is published; by hand it takes a tag, so
+# a manual release deploys the same way, and re-running it with the current tag rotates a secret.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy, such as v0.0.8"
+        required: true
+
+permissions:
+  contents: read
+
+# Two deploys at once would race on the same binary and service; the second waits its turn.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+    steps:
+      # Before anything reaches the server: every required secret, named when missing.
+      - name: Check the secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+          YOK_USER: ${{ secrets.YOK_USER }}
+          YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          missing=""
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS SERVER_DOMAIN YOK_USER YOK_PASSWORD; do
+            eval "value=\${$name:-}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secrets:$missing. Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}${CODEX_API_KEY}" ]; then
+            echo "::error::set CLAUDE_CODE_OAUTH_TOKEN or CODEX_API_KEY: a run needs one agent."
+            exit 1
+          fi
+          # The tag reaches a remote shell line, so only a release tag's shape is allowed through.
+          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' ||
+            { echo "::error::'$TAG' is not a release tag like v0.0.8"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      # The host key is a secret you recorded once with ssh-keyscan, so the first connection is
+      # to the server you meant and not to whatever answers the address today.
+      - name: Trust the server and load the deploy key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # One file carries every secret, written at mode 600 here and on the server; nothing goes
+      # on a command line. An empty optional secret is left out, so the script sees it as unset.
+      - name: Write the secrets file
+        env:
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+          YOK_USER: ${{ secrets.YOK_USER }}
+          YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          umask 077
+          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY; do
+            eval "value=\${$name:-}"
+            [ -z "$value" ] || printf '%s=%s\n' "$name" "$value"
+          done > secrets.env
+
+      - name: Copy the deploy files to the server
+        run: |
+          ssh "$TARGET" 'rm -rf /tmp/yok-deploy && mkdir -m 700 /tmp/yok-deploy'
+          scp -q secrets.env deploy/Caddyfile deploy/yok.service deploy/deploy.sh "$TARGET:/tmp/yok-deploy/"
+
+      - name: Run the deploy on the server
+        run: ssh "$TARGET" "sh /tmp/yok-deploy/deploy.sh $TAG"
+
+      # The request a laptop makes: through Caddy, with the login, expecting the new version.
+      - name: Check the server through Caddy
+        env:
+          DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+          LOGIN: ${{ secrets.YOK_USER }}:${{ secrets.YOK_PASSWORD }}
+        run: |
+          version=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            version=$(curl -fsS -u "$LOGIN" "https://$DOMAIN/api/health" | jq -r .version) && break
+            sleep 6
+          done
+          test "$version" = "${TAG#v}"
