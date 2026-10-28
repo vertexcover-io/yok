@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { login, loginPassword, remoteSettings } from "./remote.ts";
+import { remoteSettings } from "./client.ts";
+import { login, loginPassword } from "./login.ts";
 
 const dirs: string[] = [];
 const tempHome = (): string => {
@@ -61,7 +62,7 @@ describe("remoteSettings", () => {
     writeFileSync(join(home, ".env"), "YOK_SERVER_URL=https://yok.example.com\n");
 
     expect(() => remoteSettings({}, home)).toThrow(
-      /YOK_SERVER_USER, YOK_SERVER_PASSWORD not set; run yok remote login/,
+      /YOK_SERVER_USER, YOK_SERVER_PASSWORD not set; run yok-remote login/,
     );
   });
 

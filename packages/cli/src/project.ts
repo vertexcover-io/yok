@@ -2,7 +2,7 @@ import { basename, resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { createGit } from "@yok/sdk";
 import { folderSlug, type ProjectView } from "@yok/server";
-import { apiErrorText, ensureServer, fail, yokClient } from "./client.ts";
+import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
 
 const HEADERS = ["NAME", "STATUS", "PATH", "ADDED BY"] as const;
 
@@ -27,9 +27,11 @@ export const projectCommand = () => {
     .description("Register a checkout on the server, or clone one")
     .argument("[name]", "project name (default: from the folder or the repository)")
     .option("--git <url>", "clone this repository (https or ssh)")
-    .option("--path <dir>", "a checkout on the server, or where --git clones to")
-    .action(async (nameArg, opts) => {
+    .option("--path <dir>", "a checkout on the server, or where --git clones to; sent as typed")
+    .action(async (nameArg, opts, command) => {
+      const remote = isRemote(command);
       const fromHere = opts.git === undefined && opts.path === undefined;
+      if (fromHere && remote) return fail("--remote needs --path DIR or --git URL");
       const here = fromHere ? await createGit().repoRoot(process.cwd()) : null;
       if (fromHere && here === null) {
         return fail("not inside a git repository; pass --path DIR or --git URL");
@@ -46,8 +48,8 @@ export const projectCommand = () => {
       if (!/^[a-z]/.test(name)) {
         return fail(`cannot name the project from "${folder}"; pass a NAME`);
       }
-      await ensureServer();
-      const added = await yokClient().addProject({
+      const client = await resolveClient(remote);
+      const added = await client.addProject({
         name,
         ...(opts.git === undefined ? {} : { git: opts.git }),
         ...(path === undefined ? {} : { path }),
@@ -62,9 +64,9 @@ export const projectCommand = () => {
     .command("list")
     .description("List the server's projects")
     .option("--json", "print the reply as JSON")
-    .action(async ({ json }) => {
-      await ensureServer();
-      const listed = await yokClient().projects();
+    .action(async ({ json }, command) => {
+      const client = await resolveClient(isRemote(command));
+      const listed = await client.projects();
       if (!listed.ok) return fail(apiErrorText(listed.error));
       if (json === true) return console.log(JSON.stringify(listed.value, null, 2));
       const { projects } = listed.value;
@@ -80,9 +82,9 @@ export const projectCommand = () => {
     .description("Forget a project; --purge also deletes a folder yok cloned")
     .argument("<name>", "project name")
     .option("--purge", "delete the folder too, when yok cloned it")
-    .action(async (name, opts) => {
-      await ensureServer();
-      const removed = await yokClient().removeProject(name, opts.purge === true);
+    .action(async (name, opts, command) => {
+      const client = await resolveClient(isRemote(command));
+      const removed = await client.removeProject(name, opts.purge === true);
       if (!removed.ok) return fail(apiErrorText(removed.error));
       console.log(`removed ${removed.value.removed}`);
       if (removed.value.note !== null) console.log(removed.value.note);

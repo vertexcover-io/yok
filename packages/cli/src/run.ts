@@ -34,7 +34,9 @@ import {
   ensureServer,
   errorText,
   fail,
+  isRemote,
   openForPerson,
+  resolveClient,
   yokClient,
 } from "./client.ts";
 import { writeProjectTypes } from "./types.ts";
@@ -202,6 +204,14 @@ const localTarget = async (
   return { ok: true, value: { project: project.value, workflow: path, ...config } };
 };
 
+// Paths are sent as typed: the server resolves them against its own copy of the project.
+const remoteTarget = (workflow: string, opts: RunOptions): Result<RunTarget> => {
+  if (opts.project === undefined)
+    return { ok: false, error: "--project NAME is required with --remote" };
+  const config = opts.config === undefined ? {} : { config: opts.config };
+  return { ok: true, value: { project: opts.project, workflow, ...config } };
+};
+
 // One `--NAME <value>` option per policy, with its help text, for parsePolicyFlags to read.
 export const addPolicyOptions = (command: CommandUnknownOpts): void => {
   for (const name of POLICY_NAMES) {
@@ -214,33 +224,40 @@ export const runCommand = () => {
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
     .requiredOption("--prompt <text>", "first message sent to the agent")
     .option("--name <name>", "run name (default: derived from the prompt)")
-    .option("--project <name>", "project to run on (default: this checkout, added if new)")
+    .option(
+      "--project <name>",
+      "project to run on (default: this checkout, added if new; required with --remote)",
+    )
     .option("--input <key=value>", "extra input, repeatable", collectInput, {})
     .option("--no-attach", "do not attach to the session's terminal once it starts")
     .option("--config <file>", "orchestrate config file the run reads (default: the checkout's)")
     .option("--no-open", "do not open the run's page in the browser")
-    .action(async (workflowArg, opts) => {
+    .action(async (workflowArg, opts, command) => {
       const log = commandLog("run");
       const cwd = process.cwd();
       // the flags are read as YAML and checked, so a bad value fails before anything starts
       const cliPolicies = parsePolicyFlags(opts);
       if (!cliPolicies.ok) return fail(cliPolicies.error);
+      const remote = isRemote(command);
+      const typed = remote ? remoteTarget(workflowArg, opts) : null;
+      if (typed !== null && !typed.ok) return fail(typed.error);
       // Before the project lookup, which calls the server.
-      await ensureServer();
-      const client = yokClient();
-      const target = await localTarget(client, { workflow: workflowArg, opts, cwd });
+      const client = await resolveClient(remote);
+      const target = typed ?? (await localTarget(client, { workflow: workflowArg, opts, cwd }));
       if (!target.ok) return fail(target.error);
 
       const result = await client.run({
         ...target.value,
         inputs: { prompt: opts.prompt, ...opts.input } satisfies JsonObject,
-        policies: cliPolicies.value,
+        // Nobody sits at a remote run's terminal, so by default no stage waits for an answer.
+        policies: remote ? { interaction: false, ...cliPolicies.value } : cliPolicies.value,
         ...(opts.name === undefined ? {} : { name: opts.name }),
       });
       if (!result.ok) return fail(startError(result.error));
       const { run } = result.value;
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
+      if (remote) return console.log(`${run.id}\nview: ${result.value.view}`);
       await showStartedRun(result.value, opts, cwd, log);
     });
   addPolicyOptions(command);

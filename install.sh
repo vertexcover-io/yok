@@ -62,10 +62,10 @@ install_binary() {
   say "Installed $BIN_DIR/yok"
 }
 
-# yok-remote is `yok remote`: it runs the yok beside it, so both are always one version.
+# yok-remote is `yok --remote`: it runs the yok beside it, so both are always one version.
 install_remote_shortcut() {
   # shellcheck disable=SC2016 # $0 and $@ belong to yok-remote, not to this installer
-  printf '#!/bin/sh\nexec "$(dirname "$0")/yok" remote "$@"\n' > "$BIN_DIR/yok-remote"
+  printf '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n' > "$BIN_DIR/yok-remote"
   chmod 755 "$BIN_DIR/yok-remote"
 }
 

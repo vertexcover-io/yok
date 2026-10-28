@@ -1,7 +1,8 @@
 import { Command, InvalidArgumentError } from "@commander-js/extra-typings";
 import { yokHome } from "@yok/sdk";
+import { VERSION } from "@yok/sdk/internal";
 import { startServer } from "@yok/server";
-import { commandLog, fail, runningServer, stopServer } from "./client.ts";
+import { commandLog, connect, fail, isRemote, runningServer, stopServer } from "./client.ts";
 
 const parsePort = (text: string): number => {
   const port = Number(text);
@@ -44,8 +45,21 @@ export const serverCommand = () => {
 
   server
     .command("status")
-    .description("Show whether the yok server is running")
-    .action(async () => {
+    .description("Show whether the yok server is running; with --remote, the saved server's")
+    .action(async (_opts, command) => {
+      if (isRemote(command)) {
+        const { url, health } = await connect(process.env, yokHome());
+        console.log(
+          [
+            `server   ${url}`,
+            `cli      ${VERSION}`,
+            `version  ${health.version}`,
+            `pid      ${health.pid}`,
+            `started  ${new Date(health.startedAt).toISOString()}`,
+          ].join("\n"),
+        );
+        return;
+      }
       const running = await runningServer();
       if (running === null) {
         console.log("not running");

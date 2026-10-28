@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkServerUrl, isCurrentServer, shouldOpenBrowser } from "./client.ts";
+import { checkRemoteFlag, checkServerUrl, isCurrentServer, shouldOpenBrowser } from "./client.ts";
 
 const base = { noOpen: false, isTTY: true, env: {}, platform: "darwin" as NodeJS.Platform };
 
@@ -62,5 +62,51 @@ describe("checkServerUrl", () => {
 
   test.each(["http://yok.example.com", "not a url"])("SC402: refuses %s", (url) => {
     expect(checkServerUrl(url).ok).toBe(false);
+  });
+});
+
+describe("checkRemoteFlag", () => {
+  test.each([
+    ["run", true],
+    ["project add", true],
+    ["trigger fire", true],
+    ["doctor", true],
+    ["login", true],
+    ["server status", true],
+    ["run", false],
+    ["attach", false],
+    ["server start", false],
+  ])("SC4024: %s with remote=%p passes", (path, remote) => {
+    expect(() => checkRemoteFlag(remote, path)).not.toThrow();
+  });
+
+  test.each([
+    [
+      "attach",
+      true,
+      "yok attach works only on this machine: run it as yok attach, without --remote",
+    ],
+    [
+      "orchestrate done",
+      true,
+      "yok orchestrate done works only on this machine: run it as yok orchestrate done, without --remote",
+    ],
+    [
+      "server start",
+      true,
+      "yok server start works only on the server's machine: run it there, without --remote",
+    ],
+    [
+      "server stop",
+      true,
+      "yok server stop works only on the server's machine: run it there, without --remote",
+    ],
+    [
+      "login",
+      false,
+      "yok login works only with a server on another machine: run it as yok-remote login",
+    ],
+  ])("SC4025: %s with remote=%p is refused with its own line", (path, remote, message) => {
+    expect(() => checkRemoteFlag(remote, path)).toThrow(message);
   });
 });

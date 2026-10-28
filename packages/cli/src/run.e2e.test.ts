@@ -1241,7 +1241,7 @@ const fakeRemote = (
   return { url: `http://127.0.0.1:${server.port}`, seen };
 };
 
-// `yok remote ARGS` with the login in the shell and an empty YOK_HOME of its own.
+// `yok --remote ARGS` with the login in the shell and an empty YOK_HOME of its own.
 const remoteYok = async (
   url: string,
   args: readonly string[],
@@ -1256,7 +1256,7 @@ const remoteYok = async (
     YOK_SERVER_USER: "ritesh",
     YOK_SERVER_PASSWORD: password,
   };
-  return { ...(await spawnHarness(home, env, ["remote", ...args])), home };
+  return { ...(await spawnHarness(home, env, ["--remote", ...args])), home };
 };
 
 const hasNoServer = (home: string): boolean =>
@@ -1296,7 +1296,7 @@ const DIGEST_FIRE = {
   at: "2026-10-27T09:00:01.000Z",
 };
 
-describe("yok remote", () => {
+describe("yok --remote", () => {
   test.each([
     ["a closed port", true],
     ["a proxy answering 502", false],
@@ -1328,7 +1328,7 @@ describe("yok remote", () => {
 
       const listed = await remoteYok(server.url, ["project", "list"], "wrong");
 
-      expect(listed.stderr).toContain("wrong username or password; run yok remote login again");
+      expect(listed.stderr).toContain("wrong username or password; run yok-remote login again");
       expect(listed.code).toBe(1);
       expect(server.seen.map((call) => call.request)).toEqual(["GET /api/health"]);
     },
@@ -1339,11 +1339,11 @@ describe("yok remote", () => {
     ["the same version", VERSION, ""],
     ["another version", "9.9.9", `warning: this CLI is ${VERSION}, the server is 9.9.9`],
   ])(
-    "SC4008: status against a server on %s prints both versions, the pid and the start time, and warns only on a mismatch",
+    "SC4008: server status --remote against a server on %s prints both versions, the pid and the start time, and warns only on a mismatch",
     async (_case, version, warning) => {
       const server = fakeRemote({}, version);
 
-      const status = await remoteYok(server.url, ["status"]);
+      const status = await remoteYok(server.url, ["server", "status"]);
 
       expect(status.code).toBe(0);
       expect(status.stdout).toBe(
@@ -1466,7 +1466,7 @@ describe("yok remote", () => {
       stdout: /^removed web\n$/,
     },
   ])(
-    "SC4012: yok remote $args.0 $args.1 calls the project route and prints what the local command prints",
+    "SC4012: yok --remote $args.0 $args.1 calls the project route and prints what the local command prints",
     async ({ args, answers, request, stdout }) => {
       const server = fakeRemote(answers);
 
@@ -1539,7 +1539,7 @@ describe("yok remote", () => {
       stdout: "removed digest from web\n",
     },
   ])(
-    "SC4014: yok remote trigger $args.1 names the project on its route",
+    "SC4014: yok --remote trigger $args.1 names the project on its route",
     async ({ args, answers, request, stdout }) => {
       const server = fakeRemote(answers);
 
@@ -1548,6 +1548,66 @@ describe("yok remote", () => {
       expect(result.stderr).toBe("");
       expect(routeCalls(server.seen)).toEqual([request]);
       expect(result.stdout).toBe(stdout);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each([
+    [["attach"], "yok attach works only on this machine: run it as yok attach, without --remote"],
+    [
+      ["server", "start"],
+      "yok server start works only on the server's machine: run it there, without --remote",
+    ],
+  ])(
+    "SC4021: --remote %j is refused with the command's own line, before any request",
+    async (args, message) => {
+      const server = fakeRemote();
+
+      const refused = await remoteYok(server.url, args);
+
+      expect(refused.stderr.trim()).toBe(message);
+      expect(refused.code).toBe(1);
+      expect(server.seen).toEqual([]);
+      expect(hasNoServer(refused.home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4022: login without --remote is refused and points at yok-remote login",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+
+      const refused = await spawnHarness(home, { ...process.env, YOK_HOME: home }, [
+        ...["login", "https://yok.example.com", "--user", "ritesh", "--password", "x"],
+      ]);
+
+      expect(refused.stderr.trim()).toBe(
+        "yok login works only with a server on another machine: run it as yok-remote login",
+      );
+      expect(refused.code).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4023: without --remote, a saved login in HOME/.env is never read: server status answers for this machine",
+    async () => {
+      const server = fakeRemote();
+      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+      writeFileSync(
+        join(home, ".env"),
+        `YOK_SERVER_URL=${server.url}\nYOK_SERVER_USER=ritesh\nYOK_SERVER_PASSWORD=${REMOTE_PASSWORD}\n`,
+      );
+
+      const status = await spawnHarness(home, { ...process.env, YOK_HOME: home }, [
+        ...["server", "status"],
+      ]);
+
+      expect(status.stdout.trim()).toBe("not running");
+      expect(server.seen).toEqual([]);
     },
     TIMEOUT_MS,
   );
@@ -1577,7 +1637,7 @@ const basicAuthProxy = (port: number): string => {
   return `http://127.0.0.1:${proxy.port}`;
 };
 
-describe("yok remote beside a local server", () => {
+describe("yok --remote beside a local server", () => {
   test(
     "SC4019: a run started through a Basic-auth proxy saves interaction false from cli, and the laptop side starts no server",
     async () => {

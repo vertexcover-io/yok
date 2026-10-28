@@ -91,9 +91,9 @@ describe("the launcher", () => {
     assert.equal(installed("3").status, 3)
   })
 
-  test("SC4016: yok-remote runs this platform's binary with remote in front, and passes its exit code through", () => {
+  test("SC4016: yok-remote runs this platform's binary with --remote in front, and passes its exit code through", () => {
     const result = installed("0", "yok-remote.js")
-    assert.equal(result.stdout, `${process.platform}-${process.arch} remote run --flag\n`)
+    assert.equal(result.stdout, `${process.platform}-${process.arch} --remote run --flag\n`)
     assert.equal(result.status, 0)
     assert.equal(installed("3", "yok-remote.js").status, 3)
   })

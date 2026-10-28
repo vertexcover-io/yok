@@ -5,12 +5,12 @@ import { isCompiled, VERSION } from "@yok/sdk/internal";
 import { agentCommand } from "./agent.ts";
 import { attachCommand } from "./attach.ts";
 import { buildPlanCommand } from "./build-plan.ts";
-import { fail } from "./client.ts";
+import { checkRemoteFlag, commandPath, fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
+import { loginCommand } from "./login.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
-import { remoteCommand } from "./remote.ts";
 import { resumeCommand, runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
@@ -32,15 +32,19 @@ await new Command()
   .description("Yok engineering CLI")
   .version(VERSION)
   .enablePositionalOptions()
+  .option("--remote", "act on the server saved by yok-remote login instead of this machine")
+  .hook("preAction", (root, action) =>
+    checkRemoteFlag(root.opts().remote === true, commandPath(action)),
+  )
   .addCommand(attachCommand())
   .addCommand(buildPlanCommand())
   .addCommand(agentCommand("claude"))
   .addCommand(agentCommand("codex"))
   .addCommand(doctorCommand())
+  .addCommand(loginCommand())
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())
   .addCommand(projectCommand())
-  .addCommand(remoteCommand())
   .addCommand(runCommand())
   .addCommand(resumeCommand())
   .addCommand(serverCommand())
