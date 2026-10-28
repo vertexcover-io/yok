@@ -1592,6 +1592,27 @@ describe("yok --remote", () => {
   );
 
   test(
+    "SC4026: login with neither --password nor YOK_SERVER_PASSWORD stops naming both, before any request",
+    async () => {
+      const server = fakeRemote();
+      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+      const env = { ...process.env, YOK_HOME: home, YOK_SERVER_PASSWORD: undefined };
+
+      const refused = await spawnHarness(home, env, [
+        ...["--remote", "login", server.url, "--user", "ritesh"],
+      ]);
+
+      expect(refused.stderr.trim()).toBe(
+        "no password: set YOK_SERVER_PASSWORD, or pass --password (visible in ps)",
+      );
+      expect(refused.code).toBe(1);
+      expect(server.seen).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "SC4023: without --remote, a saved login in HOME/.env is never read: server status answers for this machine",
     async () => {
       const server = fakeRemote();

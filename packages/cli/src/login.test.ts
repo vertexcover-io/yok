@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { remoteSettings } from "./client.ts";
-import { login, loginPassword } from "./login.ts";
+import { login } from "./login.ts";
 
 const dirs: string[] = [];
 const tempHome = (): string => {
@@ -129,22 +129,5 @@ describe("login", () => {
     await expect(attempt).rejects.toThrow("wrong username or password");
     server.stop();
     expect(readFileSync(join(home, ".env"), "utf8")).toBe(working);
-  });
-});
-
-describe("loginPassword", () => {
-  test("SC4010: the flag wins, then YOK_SERVER_PASSWORD, and with neither the login stops with the two ways to pass it", () => {
-    expect(loginPassword("flag", { YOK_SERVER_PASSWORD: "env" })).toEqual({
-      ok: true,
-      value: "flag",
-    });
-    expect(loginPassword(undefined, { YOK_SERVER_PASSWORD: "env" })).toEqual({
-      ok: true,
-      value: "env",
-    });
-    expect(loginPassword(undefined, {})).toEqual({
-      ok: false,
-      error: "no password: set YOK_SERVER_PASSWORD, or pass --password (visible in ps)",
-    });
   });
 });
