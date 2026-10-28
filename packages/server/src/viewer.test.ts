@@ -17,13 +17,7 @@ import { noopLogger } from "@yok/sdk";
 import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
-import {
-  editorCommand,
-  listArtifacts,
-  resolveArtifactPath,
-  startViewer,
-  viewerRoutes,
-} from "./viewer.ts";
+import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
 
 const tempDir = (prefix: string): string =>
   realpathSync(mkdtempSync(join(tmpdir(), `yok-${prefix}-`)));
@@ -136,7 +130,6 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
   const app = viewerRoutes({
     registry,
     log: noopLogger,
-    port: 4000,
     providerFor: () => claudeOver(host),
     host,
     now,
@@ -252,24 +245,6 @@ describe("viewer routes", () => {
     expect((await get("/runs/r-missing/files")).status).toBe(404);
   });
 
-  test("SC8: a request from another site is refused", async () => {
-    const { get } = await setup();
-    const evilHost = await get("/runs/r-named/files", { host: "evil.example:4000" });
-    const evilOrigin = await get("/runs/r-named/files", {
-      host: "localhost:4000",
-      origin: "http://evil.example",
-    });
-    const ok = await get("/runs/r-named/files", { host: "localhost:4000" });
-    const okOrigin = await get("/runs/r-named/files", {
-      host: "127.0.0.1:4000",
-      origin: "http://127.0.0.1:4000",
-    });
-    expect([evilHost.status, evilOrigin.status, ok.status, okOrigin.status]).toEqual([
-      403, 403, 200, 200,
-    ]);
-    expect(await evilHost.text()).not.toContain("files");
-  });
-
   test("SC9: each file type comes back in the form the page shows", async () => {
     const { get, runDir } = await setup();
     put(runDir, "artifacts/a.md", "# Hi\n");
@@ -381,37 +356,6 @@ describe("viewer routes", () => {
     expect((await get("/runs/r-named/file?path=artifacts/../state.json")).status).toBe(404);
     expect((await get("/runs/r-named/file?path=artifacts/none.md")).status).toBe(404);
     expect((await get("/runs/r-named/raw/artifacts/none.html")).status).toBe(404);
-  });
-});
-
-describe("startViewer", () => {
-  test("SC10: the port survives a restart and moves when it is taken", async () => {
-    const home = tempDir("viewer-home");
-    const registry = createRegistry(join(home, "registry.json"), noopLogger);
-    const { host } = fakeHost("");
-    const start = () =>
-      startViewer({ home, registry, providerFor: () => claudeOver(host), host, log: noopLogger });
-
-    const first = await start();
-    await first.stop();
-    const second = await start();
-    await second.stop();
-    expect(second.port).toBe(first.port);
-
-    const blocker = Bun.serve({
-      hostname: "127.0.0.1",
-      port: first.port,
-      fetch: () => new Response(),
-    });
-    const third = await start();
-    try {
-      expect(third.port).not.toBe(first.port);
-      expect(readFileSync(join(home, "viewer.port"), "utf8").trim()).toBe(String(third.port));
-      expect(third.origin).toBe(`http://localhost:${third.port}`);
-    } finally {
-      await third.stop();
-      await blocker.stop();
-    }
   });
 });
 
@@ -804,7 +748,6 @@ describe("shared page script", () => {
       "2m 05s",
       "1h 3m",
     ]);
-    expect((await get("/assets/shared.js", { host: "evil.example:4000" })).status).toBe(403);
   });
 });
 
@@ -861,7 +804,6 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
   return viewerRoutes({
     registry,
     log: noopLogger,
-    port: 4000,
     providerFor: () => claudeOver(host),
     host,
     now: () => new Date(),
@@ -934,22 +876,6 @@ describe("runs list", () => {
       { id: "r-live", status: "failed", steps: { total: 2 } },
       { id: "r-done", status: "completed", steps: { total: 2 } },
     ]);
-  });
-
-  test("SC106: another site's host or origin gets 403 on /, /runs and /stream, and localhost gets the runs page at /", async () => {
-    const app = listRoutes(createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger));
-    const refused = [
-      { host: "evil.example:4000" },
-      { host: "localhost:4000", origin: "http://evil.example" },
-    ].flatMap((headers) =>
-      ["/", "/runs", "/stream"].map(async (path) => (await app.request(path, { headers })).status),
-    );
-    expect(await Promise.all(refused)).toEqual([403, 403, 403, 403, 403, 403]);
-
-    const page = await app.request("/", { headers: { host: "localhost:4000" } });
-    expect(page.status).toBe(200);
-    expect(page.headers.get("content-type")).toContain("text/html");
-    expect(await page.text()).toContain("yok runs");
   });
 });
 

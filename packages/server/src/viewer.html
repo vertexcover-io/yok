@@ -684,6 +684,9 @@ function docView(reply) {
     const frame = el("div", "html-frame");
     const chrome = el("div", "html-chrome");
     chrome.append(el("i"), el("i"), el("i"), el("span", "", reply.path));
+    // Same-origin and unsandboxed on purpose: the agent that writes artifacts already runs as this
+    // user with a shell and yok, and a sandbox breaks sibling module scripts, fetch() and comments
+    // on text a script writes after load.
     const iframe = el("iframe");
     iframe.id = "htmlFrame";
     iframe.src = `${reply.raw}?v=${Date.now()}`;

@@ -1,5 +1,6 @@
 export {
   type CompileOptions,
+  compilePlan,
   compileRunWorkflow,
   compileWithProjectConfig,
   compileWorkflow,

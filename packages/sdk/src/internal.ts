@@ -36,6 +36,7 @@ export {
   type ModuleError,
   runLockPath,
   runScriptFile,
+  stringifyYaml,
 } from "./files.ts";
 export {
   type PolicyLayers,
@@ -64,6 +65,8 @@ export {
   createTriggerStore,
   type Fire,
   FireSchema,
+  type LegacyTrigger,
+  LegacyTriggerSchema,
   type Trigger,
   type TriggerDraft,
   TriggerSchema,

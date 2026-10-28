@@ -224,9 +224,13 @@ export const spawnDetached = (
 
 // Rejects when the command runs past the deadline, so a caller can tell a hang from a failed command.
 export const execWithTimeout =
-  (timeoutMs: number): Exec =>
+  (timeoutMs: number, env?: SpawnEnv): Exec =>
   async (command, args, cwd) => {
-    const { code, stdout, stderr, stopped } = await spawn(command, args, { cwd, timeoutMs });
+    const { code, stdout, stderr, stopped } = await spawn(command, args, {
+      cwd,
+      timeoutMs,
+      ...(env === undefined ? {} : { env }),
+    });
     if (stopped === "timeout") throw new Error(`timed out after ${timeoutMs / 1000}s`);
     return { code, stdout, stderr };
   };

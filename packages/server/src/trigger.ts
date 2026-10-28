@@ -1,20 +1,21 @@
-import { compileWithProjectConfig, WorkflowError } from "@yok/core";
+import { resolve } from "node:path";
+import { isWorkflowFile, unwrap, WorkflowError } from "@yok/core";
 import type { ILogger } from "@yok/sdk";
-import { runDirOf, SlugSchema } from "@yok/sdk";
+import { runDirOf, SlugSchema, withLock } from "@yok/sdk";
 import { type Fire, isRunLive, type Trigger, type TriggerStore } from "@yok/sdk/internal";
 import { Cron } from "croner";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
+import { findOrAddFolderProject, pickProject, projectsLockPath, readProjects } from "./projects.ts";
 import {
   type AddTriggerBody,
   AddTriggerBodySchema,
-  StartRunBodySchema,
   type TriggerRef,
   TriggerRefSchema,
 } from "./protocol.ts";
-import { launchRun, prepareRun, type RunDeps } from "./run.ts";
+import { compileWorkflow, type GitDeps, type RunDeps, startProjectRun } from "./run.ts";
 
 type Schedule = Readonly<{ cron: string; timezone: string }>;
 
@@ -60,7 +61,7 @@ export const dueSlot = (
   };
 };
 
-export type TriggerRouteDeps = RunDeps & Readonly<{ triggers: TriggerStore }>;
+export type TriggerRouteDeps = RunDeps & GitDeps & Readonly<{ triggers: TriggerStore }>;
 export type TriggerDeps = TriggerRouteDeps & Readonly<{ log: ILogger; now: () => Date }>;
 
 type Outcome = Pick<Fire, "status" | "reason" | "runId" | "runName">;
@@ -106,31 +107,38 @@ const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Pr
   if (await isLastRunGoing(trigger, deps)) {
     return { status: "skipped", reason: "previous run still running" };
   }
-  const plan = await compileWithProjectConfig(trigger.workflowPath, trigger.cwd, trigger.config);
+  // Compiled here only to read the trigger block; startProjectRun compiles it again after the pull.
+  const root = unwrap(await pickProject(deps.home, trigger.project)).path;
+  const { plan } = unwrap(await compileWorkflow(trigger.workflow, root, trigger.config));
   if (plan.trigger === undefined) {
-    return { status: "failed", reason: `${trigger.workflowPath} has no trigger block any more` };
-  }
-  const prepared = await prepareRun({
-    plan,
-    workflowPath: trigger.workflowPath,
-    cwd: trigger.cwd,
-    config: trigger.config,
-    inputs: plan.trigger.inputs,
-    checks: [...deps.host.checks, ...deps.providerFor(plan.agent).checks],
-    log: deps.log,
-  });
-  if (!prepared.ok) return { status: "failed", reason: prepared.error };
-  // `yok trigger rm` may have run while the doctor was checking; don't start a removed trigger.
-  if ((await deps.triggers.find(trigger.cwd, trigger.name))?.id !== trigger.id) {
-    return { status: "skipped", reason: "removed" };
+    return { status: "failed", reason: `${trigger.workflow} has no trigger block any more` };
   }
   const runName = runNameFor(trigger, slot);
-  const body = StartRunBodySchema.parse({
-    ...prepared.value,
-    name: runName,
-    permissionMode: plan.trigger.permissionMode,
-  });
-  const launched = await launchRun(body, deps, deps.log);
+  const launched = await startProjectRun(
+    {
+      project: trigger.project,
+      workflow: trigger.workflow,
+      ...(trigger.config === null ? {} : { config: trigger.config }),
+      inputs: plan.trigger.inputs,
+      name: runName,
+      // nobody is attached to answer a question
+      policies: { interaction: false },
+    },
+    deps,
+    deps.log,
+    {
+      permissionMode: plan.trigger.permissionMode,
+      // `yok trigger rm` may have run while the doctor was checking; don't start a removed trigger.
+      // The id, not the name: a trigger removed and re-added meanwhile is another trigger.
+      stillWanted: async () =>
+        (await deps.triggers.find(trigger.project, trigger.name))?.id === trigger.id,
+    },
+  );
+  // Only the registration step refuses with a conflict, and a project with triggers cannot be
+  // removed, so a conflict means the trigger was.
+  if (!launched.ok && launched.error.code === "conflict") {
+    return { status: "skipped", reason: "removed" };
+  }
   if (!launched.ok) return { status: "failed", reason: launched.error.message };
   return { status: "started", runId: launched.value.run.id, runName };
 };
@@ -153,7 +161,10 @@ const recordFire = async (
     at: deps.now().toISOString(),
   };
   await deps.triggers.appendFire(fire);
-  deps.log.info({ trigger: trigger.name, cwd: trigger.cwd, ...fire }, `trigger ${fire.status}`);
+  deps.log.info(
+    { trigger: trigger.name, project: trigger.project, ...fire },
+    `trigger ${fire.status}`,
+  );
   return fire;
 };
 
@@ -227,19 +238,43 @@ export const stopScheduler = (): Promise<void> => {
   return firing.then(() => undefined);
 };
 
+// A trigger saved on main names a folder. Each moves to the project at that folder, which is
+// added when there is none, so nothing is dropped. Run before the first tick.
+export const adoptLegacyTriggers = async (
+  home: string,
+  deps: Readonly<{ triggers: TriggerStore; log: ILogger }>,
+): Promise<void> => {
+  for (const legacy of await deps.triggers.listLegacy()) {
+    try {
+      const project = await findOrAddFolderProject(home, legacy.cwd);
+      await deps.triggers.adopt(legacy.id, project);
+      deps.log.info(
+        { trigger: legacy.name, cwd: legacy.cwd, project },
+        "trigger moved to its project",
+      );
+    } catch (error) {
+      // It stays legacy, so the next start tries it again, and no tick fires it meanwhile.
+      deps.log.error({ trigger: legacy.name, cwd: legacy.cwd, err: error }, "trigger not moved");
+    }
+  }
+};
+
 const LOG_LIMIT = 20;
 
 const addTrigger = async (
   c: Context<{ Variables: Vars }>,
   deps: TriggerRouteDeps,
-  { workflowPath, cwd, config }: AddTriggerBody,
+  { project, workflow, config }: AddTriggerBody,
 ) => {
-  const plan = await compileWithProjectConfig(workflowPath, cwd, config ?? null).catch(
-    (error: unknown) => new Error(describeError(error)),
-  );
-  if (plan instanceof Error) return errorResponse(c, 400, "bad-request", plan.message);
+  const picked = await pickProject(deps.home, project);
+  if (!picked.ok) return errorResponse(c, 400, "bad-request", picked.error);
+  const root = picked.value.path;
+  const configPath = config === undefined ? null : resolve(root, config);
+  const compiled = await compileWorkflow(workflow, root, configPath);
+  if (!compiled.ok) return errorResponse(c, 400, "bad-request", compiled.error);
+  const { plan, workflowPath } = compiled.value;
   if (plan.trigger === undefined) {
-    return errorResponse(c, 400, "bad-request", `${workflowPath} has no trigger block`);
+    return errorResponse(c, 400, "bad-request", `${workflow} has no trigger block`);
   }
   const name = SlugSchema.safeParse(plan.name);
   if (!name.success) {
@@ -254,21 +289,28 @@ const addTrigger = async (
     cron: plan.trigger.cron,
     timezone: plan.trigger.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
-  const saved = await deps.triggers.save({
+  const draft = {
     ...schedule,
     name: name.data,
-    workflowPath,
-    cwd,
-    config: config ?? null,
+    project,
+    // a file by its one absolute spelling; a shipped name as typed, so it follows `yok update`
+    workflow: isWorkflowFile(workflow) ? workflowPath : workflow,
+    config: configPath,
     nextFireAt: nextSlot(schedule, new Date()).toISOString(),
-  });
+  };
+  // Under the projects lock, so a removal of this project either sees the trigger or has already
+  // happened.
+  const saved = await withLock(projectsLockPath(deps.home), async () =>
+    (await readProjects(deps.home))[project]?.path === root ? deps.triggers.save(draft) : null,
+  );
+  if (saved === null) return errorResponse(c, 409, "conflict", `project ${project} was removed`);
   if (!saved.ok) {
     const clash = saved.error;
     return errorResponse(
       c,
       409,
       "conflict",
-      `trigger ${clash.name} already runs ${clash.workflowPath} in this repo; run yok trigger rm ${clash.name} first`,
+      `trigger ${clash.name} already runs ${clash.workflow} in project ${project}; run yok trigger rm ${clash.name} --project ${project} first`,
     );
   }
   const trigger = saved.value;
@@ -276,10 +318,10 @@ const addTrigger = async (
   return c.json({ trigger }, 201);
 };
 
-const notFound = (c: Context<{ Variables: Vars }>, { cwd, name }: TriggerRef) =>
-  errorResponse(c, 404, "not-found", `no trigger named ${name} in ${cwd}`);
+const notFound = (c: Context<{ Variables: Vars }>, { project, name }: TriggerRef) =>
+  errorResponse(c, 404, "not-found", `no trigger named ${name} in project ${project}`);
 
-// Mounted at /triggers by app.ts. Chained, so each route's input and output types reach AppType.
+// Mounted at /triggers by app.ts. Chained, so each route's input and output types reach ApiType.
 export const triggerRoutes = (deps: TriggerRouteDeps) =>
   new Hono<{ Variables: Vars }>()
     .post("/", jsonBody(AddTriggerBodySchema), (c) => addTrigger(c, deps, c.req.valid("json")))
@@ -294,7 +336,7 @@ export const triggerRoutes = (deps: TriggerRouteDeps) =>
     })
     .post("/fire", jsonBody(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("json");
-      const trigger = await deps.triggers.find(ref.cwd, ref.name);
+      const trigger = await deps.triggers.find(ref.project, ref.name);
       if (trigger === undefined) return notFound(c, ref);
       const fire = await inTurn(() =>
         fireTrigger(trigger, new Date(), {
@@ -307,13 +349,13 @@ export const triggerRoutes = (deps: TriggerRouteDeps) =>
     })
     .get("/log", queryParams(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("query");
-      const trigger = await deps.triggers.find(ref.cwd, ref.name);
+      const trigger = await deps.triggers.find(ref.project, ref.name);
       if (trigger === undefined) return notFound(c, ref);
       return c.json({ fires: await deps.triggers.readFires(trigger.id, LOG_LIMIT) }, 200);
     })
     .delete("/", queryParams(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("query");
-      const trigger = await deps.triggers.find(ref.cwd, ref.name);
+      const trigger = await deps.triggers.find(ref.project, ref.name);
       if (trigger === undefined || !(await deps.triggers.remove(trigger.id))) {
         return notFound(c, ref);
       }
