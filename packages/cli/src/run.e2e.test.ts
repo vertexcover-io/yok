@@ -1573,6 +1573,36 @@ describe("yok --remote", () => {
     TIMEOUT_MS,
   );
 
+  test.each([
+    [
+      ["attach", "--remote"],
+      "yok attach works only on this machine: run it as yok attach, without --remote",
+    ],
+    [["run", "task", "--prompt", "x", "--remote"], "--project NAME is required with --remote"],
+    [["server", "status", "--remote"], `server   `],
+  ])(
+    "SC4027: --remote anywhere on the line, %j, answers as the flag-first form does",
+    async (args, expected) => {
+      const server = fakeRemote();
+      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+      const env = {
+        ...process.env,
+        YOK_HOME: home,
+        YOK_SERVER_URL: server.url,
+        YOK_SERVER_USER: "ritesh",
+        YOK_SERVER_PASSWORD: REMOTE_PASSWORD,
+      };
+
+      const later = await spawnHarness(home, env, args);
+
+      expect(`${later.stdout}${later.stderr}`).toContain(expected);
+      expect(later.stderr).not.toContain("unknown option");
+      expect(hasNoServer(home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
   test(
     "SC4022: login without --remote is refused and points at yok-remote login",
     async () => {

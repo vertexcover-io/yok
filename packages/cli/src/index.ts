@@ -27,6 +27,12 @@ process.env.YOK_SELF = JSON.stringify(
 // Before any command runs, so every module it loads gets the served imports.
 serveModules();
 
+// Positional options stop the root reading flags after the command name, so --remote is moved to
+// the front: the same answer wherever it is typed.
+const [runtime = "", script = "", ...rest] = process.argv;
+const remote = rest.includes("--remote") ? ["--remote"] : [];
+const argv = [runtime, script, ...remote, ...rest.filter((arg) => arg !== "--remote")];
+
 await new Command()
   .name("yok")
   .description("Yok engineering CLI")
@@ -54,5 +60,5 @@ await new Command()
   .addCommand(updateCommand())
   .addCommand(verifyCommand())
   .addCommand(viewCommand())
-  .parseAsync(process.argv)
+  .parseAsync(argv)
   .catch((error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
