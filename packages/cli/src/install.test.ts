@@ -18,14 +18,19 @@ import {
   assetName,
   checksumFor,
   githubToken,
-  installedBy,
   managedUpdate,
   pickRelease,
   removeInstall,
   runUpdate,
   updateYok,
 } from "./install.ts";
-import { installAll, installPlugins, updateAgents } from "./plugin.ts";
+import {
+  installAll,
+  installedBy,
+  installPlugins,
+  updateAgents,
+  writeRemoteShortcut,
+} from "./plugin.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -173,29 +178,15 @@ describe("runUpdate", () => {
     expect(binaryReady).toBe(true);
   });
 
-  test("SC148: writes the yok-remote shortcut beside the swapped binary, as install.sh does, and leaves none on a wrong checksum", async () => {
+  test("SC148: the swap writes no shortcut itself; the new binary's plugin install does that", async () => {
     const log = join(temp("yok-log-"), "log");
     const execPath = installed(log);
-    const shortcut = join(dirname(execPath), "yok-remote");
     const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
 
     await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
 
-    expect(readFileSync(shortcut, "utf8")).toBe(
-      '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n',
-    );
-    expect(statSync(shortcut).mode & 0o777).toBe(0o755);
-
-    const stale = installed(log);
-    const { target: bad } = serveReleases({
-      tag: "v0.0.2",
-      script: fakeYok("0.0.2", log),
-      checksum: "0".repeat(64),
-    });
-    const errors = spyOn(console, "error").mockImplementation(() => undefined);
-    await runUpdate({ ...bad, execPath: stale, version: "0.0.1" }, ["claude"], false);
-    errors.mockRestore();
-    expect(existsSync(join(dirname(stale), "yok-remote"))).toBe(false);
+    expect(existsSync(join(dirname(execPath), "yok-remote"))).toBe(false);
+    expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
   });
 
   test("SC147: keeps the 0.0.1 binary and runs no plugin install when the checksum is wrong", async () => {
@@ -619,6 +610,26 @@ describe("removeInstall", () => {
       ]);
     },
   );
+});
+
+describe("writeRemoteShortcut", () => {
+  test("SC149: writes the installer's two-line yok-remote beside a curl-installed binary, mode 755, and nothing beside an npm or Homebrew one", async () => {
+    const dir = temp("yok-shortcut-");
+    const curl = join(dir, "yok");
+    writeFileSync(curl, "");
+
+    await writeRemoteShortcut(curl);
+
+    expect(readFileSync(join(dir, "yok-remote"), "utf8")).toBe(
+      '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n',
+    );
+    expect(statSync(join(dir, "yok-remote")).mode & 0o777).toBe(0o755);
+
+    const npm = join(temp("yok-npm-"), "node_modules", "@vertexcover", "yok-linux-x64", "bin");
+    mkdirSync(npm, { recursive: true });
+    await writeRemoteShortcut(join(npm, "yok"));
+    expect(existsSync(join(npm, "yok-remote"))).toBe(false);
+  });
 });
 
 describe("installedBy", () => {

@@ -9,7 +9,13 @@ import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sd
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
 import { fail, restartServer, runningServer, stopServer } from "./client.ts";
-import { agentOption, agentsOnPath, updateAgents } from "./plugin.ts";
+import {
+  agentOption,
+  agentsOnPath,
+  installedBy,
+  type PackageManager,
+  updateAgents,
+} from "./plugin.ts";
 
 const PLATFORMS: Readonly<Record<string, string>> = { darwin: "darwin", linux: "linux" };
 const ARCHES: Readonly<Record<string, string>> = { arm64: "arm64", x64: "x64" };
@@ -51,15 +57,6 @@ export const checksumFor = (checksums: string, asset: string): string | null =>
     .find(([, name]) => name === asset)?.[0] ?? null;
 
 const DEV_UPDATE = "yok-dev is this checkout: run git pull";
-
-type PackageManager = "homebrew" | "npm";
-
-// A binary Homebrew or npm put in place is theirs to replace and remove.
-export const installedBy = (execPath: string): PackageManager | null => {
-  if (execPath.includes("/Cellar/yok/")) return "homebrew";
-  if (execPath.includes("/node_modules/@vertexcover/yok-")) return "npm";
-  return null;
-};
 
 export type ManagedUpdate = Readonly<{ upgrade: readonly [string, ...string[]]; binary: string }>;
 
@@ -148,13 +145,6 @@ const assetUrl = (releases: Releases, tag: string, name: string): string => {
   return url;
 };
 
-// The two lines install.sh writes, so an update leaves beside the binary what a fresh install does.
-const writeRemoteShortcut = async (execPath: string): Promise<void> => {
-  const shortcut = join(dirname(execPath), "yok-remote");
-  await writeFile(shortcut, '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n');
-  await chmod(shortcut, 0o755);
-};
-
 // Returns the problem, or null once the new binary is in place. Nothing is written on a mismatch.
 const replaceBinary = async (
   target: UpdateTarget,
@@ -176,7 +166,6 @@ const replaceBinary = async (
   await writeFile(next, binary);
   await chmod(next, 0o755);
   await rename(next, target.execPath);
-  await writeRemoteShortcut(target.execPath);
   return null;
 };
 

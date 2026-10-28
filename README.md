@@ -110,7 +110,7 @@ yok update --agent claude     # move the plugin for claude only (repeat --agent 
 yok update --pre-release      # release candidates too
 ```
 
-On a curl install, `yok update` swaps the binary in place and writes the `yok-remote` shortcut beside it, so an update leaves the same files a fresh install does. On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
+On a curl install, `yok update` swaps the binary in place, and the new binary's plugin install writes the `yok-remote` shortcut beside it, so an update from any version leaves the same files a fresh install does. On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
 
 `yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
 
