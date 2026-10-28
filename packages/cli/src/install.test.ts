@@ -567,19 +567,32 @@ describe("removeInstall", () => {
     expect(done).toEqual([`removed ${home}`, `removed the yok PATH line from ${rc}`]);
   });
 
-  test("deletes a binary installed outside the yok home as well", async () => {
-    const root = temp("yok-uninstall-");
-    const home = join(root, ".yok");
-    mkdirSync(home);
-    const execPath = join(root, "yok");
-    writeFileSync(execPath, "binary");
+  test.each([
+    ["inside the yok home", (root: string) => join(root, ".yok", "bin"), false],
+    ["in a folder outside the yok home", (root: string) => join(root, "bin"), true],
+  ] as const)(
+    "SC4017: with yok and yok-remote %s, both are gone along with the yok home",
+    async (_layout, binDir, listed) => {
+      const root = temp("yok-uninstall-");
+      const home = join(root, ".yok");
+      mkdirSync(home);
+      mkdirSync(binDir(root), { recursive: true });
+      const execPath = join(binDir(root), "yok");
+      const shortcut = join(binDir(root), "yok-remote");
+      writeFileSync(execPath, "binary");
+      writeFileSync(shortcut, "shortcut");
 
-    const done = await removeInstall({ execPath, installDir: home, rcFiles: [] });
+      const done = await removeInstall({ execPath, installDir: home, rcFiles: [] });
 
-    expect(existsSync(execPath)).toBe(false);
-    expect(existsSync(home)).toBe(false);
-    expect(done).toEqual([`removed ${execPath}`, `removed ${home}`]);
-  });
+      expect(existsSync(execPath)).toBe(false);
+      expect(existsSync(shortcut)).toBe(false);
+      expect(existsSync(home)).toBe(false);
+      expect(done).toEqual([
+        ...(listed ? [`removed ${execPath}`, `removed ${shortcut}`] : []),
+        `removed ${home}`,
+      ]);
+    },
+  );
 });
 
 describe("installedBy", () => {
