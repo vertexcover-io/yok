@@ -1,8 +1,9 @@
 # Deploying the yok server
 
-One Linux box runs the yok server behind Caddy. The `Deploy` workflow puts a release on it: it
-fires when a release is published, and by hand with a tag (Actions, Deploy, Run workflow). The
-same run also sets the box up the first time, so there is no separate install step.
+One Linux box runs the yok server behind Caddy. The `Deploy` workflow puts a release on it. It
+runs by hand only (Actions, Deploy, Run workflow): with a tag, that release; with the tag left
+empty, the latest release. The same run also sets the box up the first time, so there is no
+separate install step.
 
 ```
 laptop ── https + login ──► Caddy :443 ──► yok server 127.0.0.1:7777 (systemd user unit)

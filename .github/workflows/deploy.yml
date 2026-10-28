@@ -1,15 +1,13 @@
 name: Deploy
 
-# Puts one release on the server. Fires when a release is published; by hand it takes a tag, so
-# a manual release deploys the same way, and re-running it with the current tag rotates a secret.
+# Puts one release on the server. Run by hand: with a tag, that release; with none, the latest
+# stable release. Re-running it with the current tag rotates a secret.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to deploy, such as v0.0.8"
-        required: true
+        description: "Release tag to deploy, such as v0.0.8 (default: the latest release)"
+        required: false
 
 permissions:
   contents: read
@@ -24,9 +22,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      TAG: ${{ inputs.tag || github.event.release.tag_name }}
       TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
     steps:
+      # The latest release is what install.sh with no version would pick, so the two agree.
+      - name: Pick the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "deploying $tag"
+
       # Before anything reaches the server: every required secret, named when missing.
       - name: Check the secrets
         env:
@@ -54,7 +61,8 @@ jobs:
             exit 1
           fi
           # The tag reaches a remote shell line, so only a release tag's shape is allowed through.
-          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' ||
+          # [[ =~ ]] matches the whole string, so a newline inside it fails the match.
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] ||
             { echo "::error::'$TAG' is not a release tag like v0.0.8"; exit 1; }
 
       - uses: actions/checkout@v7
@@ -93,7 +101,7 @@ jobs:
           scp -q secrets.env deploy/Caddyfile deploy/yok.service deploy/deploy.sh "$TARGET:/tmp/yok-deploy/"
 
       - name: Run the deploy on the server
-        run: ssh "$TARGET" "sh /tmp/yok-deploy/deploy.sh $TAG"
+        run: ssh "$TARGET" sh /tmp/yok-deploy/deploy.sh "$(printf %q "$TAG")"
 
       # The request a laptop makes: through Caddy, with the login, expecting the new version.
       - name: Check the server through Caddy

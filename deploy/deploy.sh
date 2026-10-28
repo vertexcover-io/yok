@@ -13,8 +13,14 @@ REPO=vertexcover-io/yok
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
 
+# Checked again here, since the tag lands on a shell line below and this script may be run by hand.
 TAG="${1:-}"
 [ -n "$TAG" ] || die "usage: deploy.sh vX.Y.Z"
+case "$TAG" in
+  *[!0-9A-Za-z.-]*) die "'$TAG' is not a release tag like v0.0.8" ;;
+  v[0-9]*.[0-9]*.[0-9]*) ;;
+  *) die "'$TAG' is not a release tag like v0.0.8" ;;
+esac
 
 # secrets.env is the one file the workflow wrote from the GitHub secrets. It is sourced here and
 # never echoed. SERVER_DOMAIN, YOK_USER and YOK_PASSWORD must be present; one agent credential
