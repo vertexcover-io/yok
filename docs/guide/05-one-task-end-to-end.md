@@ -15,8 +15,8 @@ yok run task --prompt "Add a --json flag to the doctor command"
 
 | Player | What it is | Where it lives |
 |---|---|---|
-| **The `yok` CLI** | The command you type. Checks your machine, then asks the server for a run. | `packages/cli` |
-| **The yok server** | One small HTTP server per machine, on a Unix socket. Starts agent sessions, keeps the list of runs, serves the viewer page. | `packages/server` |
+| **The `yok` CLI** | The command you type. Names the project, then asks the server for a run. | `packages/cli` |
+| **The yok server** | One small HTTP server per yok home, on loopback behind a Host/Origin guard. Compiles the workflow, runs the doctor, starts agent sessions, keeps the list of projects and runs, serves the viewer page. | `packages/server` |
 | **The agent session** | A Claude Code (or Codex) conversation running inside a tmux window. It does the actual work. | started by `packages/core/src/agents` |
 | **The orchestrate commands** | `yok orchestrate init`, `next`, `done`. The agent calls these to ask "what now?" and to report "finished". They are the workflow engine. | `packages/core/src/orchestrate.ts`, `runs.ts`, `workflow/` |
 | **The run folder** | `.yok/RUN_NAME/` inside your repo. The event log, the current state, and every file a stage produced. | written by `packages/sdk` |
@@ -33,8 +33,8 @@ sequenceDiagram
     participant Disk as .yok/RUN_NAME/
 
     You->>CLI: yok run task --prompt "…"
-    CLI->>CLI: compile workflow, run doctor
-    CLI->>Server: POST /runs
+    CLI->>Server: POST /runs { project, workflow, inputs }
+    Server->>Server: compile workflow, load env, run doctor
     Server->>Disk: registry.json gets run r-1a2b3c4d
     Server->>Agent: tmux new-session claude "/yok:orchestrate --workflow … --inputs …"
     Server-->>CLI: run id, attach command, view URL
@@ -60,8 +60,8 @@ The sequence above is the whole run. This is the loop inside it, the part that r
 
 ```mermaid
 flowchart TD
-    A([yok run task --prompt …]) --> B[CLI: compile workflow, run doctor, ensure server]
-    B --> C[Server: add run to registry, launch Claude in tmux]
+    A([yok run task --prompt …]) --> B[CLI: ensure server, name the project]
+    B --> C[Server: compile workflow, run doctor, add run to registry, launch Claude in tmux]
     C --> D[Agent: yok orchestrate init RUN_NAME]
     D --> E[Engine: create .yok/RUN_NAME, write event 1 workflow.started]
     E --> N[Agent: yok orchestrate next --run RUN_NAME]
@@ -100,27 +100,30 @@ Two things the picture makes plain. First, every arrow back to `next` goes throu
 
 ## Hop 1. The CLI gets ready
 
-[packages/cli/src/run.ts:53](../../packages/cli/src/run.ts#L53) is where `yok run` starts work. Before it talks to anyone, it does four things in your terminal.
+[packages/cli/src/run.ts:115](../../packages/cli/src/run.ts#L115) is where `yok run` starts work. It does two things before it asks for the run.
 
-**It finds the workflow file.** A bare name like `task` means one of Yok's own workflows. A name with a slash or a `.yaml` ending means a file in your project. The rule is six lines at [packages/core/src/stage.ts:164](../../packages/core/src/stage.ts#L164).
+**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L191) calls `GET /api/health` on `127.0.0.1` at the port in `~/.yok-dev/server.port` (or `~/.yok/server.port` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers. From source (`yok-dev`), a server that started before this command is stopped and started again, so it runs the current code; two commands started together do not restart each other's server. The API is under `/api` on that port, and the run pages are on every other path.
 
-**It compiles the workflow.** [compileWorkflow](../../packages/core/src/workflow/compile.ts#L531) reads the YAML and turns it into a plan. It checks that every `stage:` names a skill that exists and that every `dependsOn` points at a real node. A typo in the YAML fails here, in a second, not forty minutes in.
+**It names the project.** A project is a name the server knows for a checkout on its machine. With `--project`, that name is used. Without it, the CLI looks for the checkout it stands in among the server's projects, and the first time it is not there, adds it under its folder's name.
 
-**It runs the doctor.** [runDoctor](../../packages/cli/src/run.ts#L62) checks tmux, the agent binary, the Yok plugin, and whatever the workflow asked for in its `doctor:` block. For `task` that is `LINEAR_API_KEY`, `bun`, and `gh`. One failing check prints `BLOCKED` with the fix and stops.
-
-**It makes sure the server is up.** [ensureServer](../../packages/cli/src/client.ts#L133) calls `GET /health` on the socket at `~/.yok-dev/yok.sock` (or `~/.yok/yok.sock` for the release binary). No answer means no server, so it spawns `yok server start` detached and waits up to five seconds for health. A file lock stops two CLIs from starting two servers. From source (`yok-dev`), a server that started before this command is stopped and started again, so it runs the current code; two commands started together do not restart each other's server.
-
-Then it sends one request: `POST /runs` with the workflow name and path, the inputs, your repo root, the agent to use, the environment, and the model tiers.
+Then it sends one request: `POST /runs { project, workflow, inputs }`. A workflow file goes as an absolute path; a bare name like `task` goes as it is.
 
 ## Hop 2. The server starts the run
 
-[startRun](../../packages/server/src/run.ts#L35) handles that request. It is the only route a run needs.
+[startRun](../../packages/server/src/run.ts#L52) handles that request. It is the only route a run needs. Before anything is recorded, it does the start-up work on the project's checkout:
+
+- **It finds the project** with [pickProject](../../packages/server/src/projects.ts#L88). With no name and one project, that one is used; otherwise the reply names the missing or unknown project and never lists the server's projects.
+- **It finds the workflow file.** A bare name like `task` means one of Yok's own workflows. A name with a slash or a `.yaml` ending means a file in the project. The rule is at [packages/core/src/stage.ts:169](../../packages/core/src/stage.ts#L169).
+- **It compiles the workflow.** [compilePlan](../../packages/core/src/workflow/compile.ts#L576) reads the YAML and turns it into a plan. It checks that every `stage:` names a skill that exists and that every `dependsOn` points at a real node. A typo in the YAML fails here, in a second, not forty minutes in.
+- **It loads the env and runs the doctor.** [checkCheckout](../../packages/server/src/server.ts#L51) builds the env from the checkout's `.env`, the config and the workflow, then checks tmux, the agent binary, the Yok plugin, and whatever the workflow asked for in its `doctor:` block. For `task` that is `LINEAR_API_KEY`, `bun`, and `gh`. One failing check answers 400 with the doctor's report as `findings`, and the CLI prints `BLOCKED` with the fix.
+
+Then:
 
 1. It mints a run id, `r-` plus eight hex characters, for example `r-1a2b3c4d`.
-2. It writes the run into `registry.json` at [run.ts:71](../../packages/server/src/run.ts#L71). The name is still `null`. The agent will pick one.
-3. It builds the session's environment at [run.ts:79](../../packages/server/src/run.ts#L79): `YOK_RUN_ID=r-1a2b3c4d`, `YOK_HOME`, and a `PATH` whose first entry is a shim folder, so that plain `yok` inside the session means the same program that launched it. That is [ADR 0012](../adr/0012-skills-call-plain-yok-a-per-program-path-shim-picks-the-program.md).
+2. It writes the run into `registry.json` at [run.ts:108](../../packages/server/src/run.ts#L108). The name is still `null`. The agent will pick one.
+3. It builds the session's environment at [run.ts:116](../../packages/server/src/run.ts#L116): `YOK_RUN_ID=r-1a2b3c4d`, `YOK_HOME`, and a `PATH` whose first entry is a shim folder, so that plain `yok` inside the session means the same program that launched it. That is [ADR 0012](../adr/0012-skills-call-plain-yok-a-per-program-path-shim-picks-the-program.md).
 4. It launches Claude in a new tmux session. The launch args, built by [claudeArgs](../../packages/core/src/agents/claude.ts#L122), carry a `--settings` JSON that registers Yok's hooks: SessionStart, Stop, StopFailure, PreToolUse, PostToolUse, and the status line. Every hook is just `yok orchestrate hook …` run as a subprocess.
-5. The first message to Claude is the orchestrate skill with its arguments, from [run.ts:78](../../packages/server/src/run.ts#L78):
+5. The first message to Claude is the orchestrate skill with its arguments, from [run.ts:115](../../packages/server/src/run.ts#L115):
 
 ```
 /yok:orchestrate --workflow /…/workflows/task.yaml --inputs {"prompt":"Add a --json flag to the doctor command","environment":"default"}
@@ -338,7 +341,9 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
 
 ~/.yok-dev/                    or ~/.yok for the release binary
   registry.json                every run on this machine, with its sessions and tmux name
-  yok.sock                     the server's socket
+  server.port                  the port the server listens on at 127.0.0.1
+  .env                         SERVER_DOMAIN, the domain a proxy in front of yok answers on
+  projects.yaml                the projects: a name for each checkout the server runs on
   server.log
   shims/HASH/yok               the PATH shim from hop 2
 ```

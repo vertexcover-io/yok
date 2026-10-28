@@ -201,6 +201,11 @@ The agent hook that decides whether the agent may end its turn or must go back t
 
 ## Workspace and project
 
+In this section a project is a repository and its settings; a registered project (below) is the checkout itself.
+
+**Project**:
+A name the server knows for a checkout on its machine, kept in `projects.yaml` in the yok home. A run starts from a project's name.
+
 **Config**:
 A project's yok settings: packages, commands, environments, tiers, extensions and subscribers.
 
@@ -221,6 +226,12 @@ A named target a run verifies its change against, with its own commands.
 
 **Doctor**:
 The check that a machine, repository and config have everything a run needs.
+
+**Remote server**:
+A yok server on another machine, reached through the reverse proxy in front of it, which does https and the login.
+
+**Server domain**:
+`SERVER_DOMAIN` in the yok home's `.env`: the domain that proxy answers on. Dashboard links start with it, and the Host/Origin guard accepts it.
 
 ## People and feedback
 
