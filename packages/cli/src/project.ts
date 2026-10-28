@@ -40,7 +40,8 @@ export const projectCommand = () => {
       if (fromHere && here === null) {
         return fail("not inside a git repository; pass --path DIR or --git URL");
       }
-      const typed = opts.path === undefined ? undefined : resolve(opts.path);
+      // A remote path is the server's, so it goes as typed; a local one is this machine's.
+      const typed = opts.path === undefined ? undefined : remote ? opts.path : resolve(opts.path);
       const path = typed ?? here ?? undefined;
       const folder = basename(path ?? opts.git ?? "");
       const name = nameArg ?? folderSlug(folder);

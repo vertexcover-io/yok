@@ -119,6 +119,9 @@ export const doctorCommand = () =>
         process.exitCode = exitCodeFor(report);
         return;
       }
+      if (project !== undefined) {
+        return fail("--project needs --remote: yok doctor checks this checkout");
+      }
       stopRunningOnSignal();
       const declared = await declaredChecks(workflow);
       if (declared === null) return;

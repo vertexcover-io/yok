@@ -1457,6 +1457,15 @@ describe("yok --remote", () => {
       stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
     },
     {
+      args: ["project", "add", "web", "--path", "repos/web"],
+      answers: { "POST /api/projects": () => Response.json({ project: WEB }, { status: 201 }) },
+      request: {
+        request: "POST /api/projects",
+        body: { name: "web", path: "repos/web", addedBy: { channel: "cli" } },
+      },
+      stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
+    },
+    {
       args: ["project", "remove", "web", "--purge"],
       answers: {
         "DELETE /api/projects/web": () =>
@@ -1603,6 +1612,24 @@ describe("yok --remote", () => {
       expect(`${later.stdout}${later.stderr}`).toContain(expected);
       expect(later.stderr).not.toContain("unknown option");
       expect(hasNoServer(home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC4028: doctor --project without --remote is refused, since the local doctor checks this checkout",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
+      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+
+      const refused = await spawnHarness(home, { ...process.env, YOK_HOME: home }, [
+        ...["doctor", "--project", "web"],
+      ]);
+
+      expect(refused.stderr.trim()).toBe(
+        "--project needs --remote: yok doctor checks this checkout",
+      );
+      expect(refused.code).toBe(1);
     },
     TIMEOUT_MS,
   );
