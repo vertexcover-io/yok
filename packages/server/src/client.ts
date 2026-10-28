@@ -1,19 +1,24 @@
-import { type ILogger, noopLogger, type Result, yokHome } from "@yok/sdk";
+import { type ILogger, noopLogger, type Result } from "@yok/sdk";
 import type { ClientResponse } from "hono/client";
 import { hc } from "hono/client";
 import type { SuccessStatusCode } from "hono/utils/http-status";
-import type { AppType } from "./app.ts";
+import type { ApiType } from "./app.ts";
 import {
+  type AddProjectRequest,
   type AddTriggerBody,
   type ApiError,
+  type DoctorBody,
   ErrorBodySchema,
   type ResumeRunBody,
-  type StartRunRequest,
-  socketPath,
+  type StartRunBody,
   type TriggerRef,
 } from "./protocol.ts";
 
-export type YokClientOptions = Readonly<{ home?: string; log?: ILogger }>;
+export type YokClientOptions = Readonly<{
+  url: string;
+  login?: Readonly<{ user: string; password: string }>;
+  log?: ILogger;
+}>;
 
 // The body a response carries on its 2xx statuses, as the server's routes declare it.
 type SuccessBody<R> =
@@ -51,15 +56,13 @@ const unwrap = async <R extends ClientResponse<unknown, number, "json">>(
     : { ok: false, error: replyError(res.status, text, json) };
 };
 
-// Bun's fetch reaches a Unix socket through a `unix` option its types don't declare.
-const socketFetch = (socket: string, log: ILogger) =>
+const loggedFetch = (log: ILogger) =>
   (async (input: string | URL | Request, init?: RequestInit) => {
     const start = Date.now();
     const url = input instanceof Request ? input.url : input.toString();
     const fields = { method: init?.method ?? "GET", path: new URL(url).pathname };
-    // biome-ignore lint/suspicious/noExplicitAny: see above
-    const res = await fetch(input, { ...init, unix: socket } as any).catch((error: unknown) => {
-      log.debug({ ...fields, socket, err: error }, "server not reachable on its socket");
+    const res = await fetch(input, init).catch((error: unknown) => {
+      log.debug({ ...fields, err: error }, "server not reachable");
       throw error;
     });
     // reqId matches the server's own line for this request in server.log.
@@ -72,16 +75,28 @@ const socketFetch = (socket: string, log: ILogger) =>
   }) as typeof fetch;
 
 // One method per API call, named like the CLI command that makes it. Inputs and outputs are
-// typed from the server's routes, so neither side restates the other's schemas.
-export const createYokClient = ({ home = yokHome(), log = noopLogger }: YokClientOptions = {}) => {
-  const api = hc<AppType>("http://yok", {
-    fetch: socketFetch(socketPath(home), log.child({ component: "client" })),
-  });
+// typed from the server's routes, so neither side restates the other's schemas. url is the
+// server's origin; login is for the reverse proxy in front of a remote server.
+export const createYokClient = ({ url, login, log = noopLogger }: YokClientOptions) => {
+  const fetch = loggedFetch(log.child({ component: "client" }));
+  const basic = login && Buffer.from(`${login.user}:${login.password}`).toString("base64");
+  const headers = basic === undefined ? {} : { authorization: `Basic ${basic}` };
+  const api = hc<ApiType>(`${url.replace(/\/+$/, "")}/api`, { fetch, headers });
   return {
     health: () => unwrap(api.health.$get()),
-    run: (body: StartRunRequest) => unwrap(api.runs.$post({ json: body })),
+    run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),
     resume: (runId: string, body: ResumeRunBody) =>
       unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
+    projects: () => unwrap(api.projects.$get()),
+    addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
+    removeProject: (name: string, purge: boolean) =>
+      unwrap(
+        api.projects[":name"].$delete({
+          param: { name },
+          query: { purge: purge ? "true" : "false" },
+        }),
+      ),
+    doctor: (body: DoctorBody) => unwrap(api.doctor.$post({ json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
     addTrigger: (body: AddTriggerBody) => unwrap(api.triggers.$post({ json: body })),

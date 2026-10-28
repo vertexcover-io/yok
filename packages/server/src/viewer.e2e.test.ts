@@ -8,7 +8,7 @@ import { noopLogger } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
-import { startViewer, type Viewer } from "./viewer.ts";
+import { viewerRoutes } from "./viewer.ts";
 
 const ORCHESTRATE = [
   join(import.meta.dir, "..", "..", "cli", "src", "index.ts"),
@@ -121,6 +121,12 @@ const MOCKUP = `<!doctype html><html><body>
 <script>document.getElementById("go").textContent = "Continue";</script>
 </body></html>`;
 
+const MODULE_PAGE = `<!doctype html><html><body>
+<p id="mod">waiting</p><p id="data">waiting</p>
+<script type="module" src="./module.js"></script>
+<script>fetch("./module.json").then((r) => r.json()).then((d) => { document.getElementById("data").textContent = d.word; });</script>
+</body></html>`;
+
 // Async on purpose: the viewer runs in this process, and a sync spawn would freeze it while the
 // browser waits for its page.
 const browser = async (...args: string[]): Promise<string> => {
@@ -192,6 +198,9 @@ const ensureCommentMode = async (): Promise<void> => {
 const ARTIFACTS: Readonly<Record<string, string>> = {
   "design.md": DESIGN,
   "mock.html": MOCKUP,
+  "module.html": MODULE_PAGE,
+  "module.js": 'document.getElementById("mod").textContent = "module ran";',
+  "module.json": '{ "word": "fetched" }',
   "code.md": CODE,
   "outline.md": OUTLINE,
   "steps.md": STEPS,
@@ -220,7 +229,7 @@ describe("viewer in a browser", () => {
   let home: string;
   let cwd: string;
   let runDir: string;
-  let viewer: Viewer;
+  let viewer: Readonly<{ origin: string; stop: () => Promise<void> }>;
   let url: string;
   const opened: { file: string; line: number | null }[] = [];
   let typed: readonly string[] = [];
@@ -250,17 +259,23 @@ describe("viewer in a browser", () => {
     await registry.addRun(run);
     const { host, calls } = fakeHost(EMPTY_BOX);
     typed = calls;
-    viewer = await startViewer({
-      home,
-      registry,
-      providerFor: () => claudeOver(host),
-      host,
-      log: noopLogger,
-      openInEditor: (target) => {
-        opened.push(target);
-        return { ok: true, value: null };
-      },
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: viewerRoutes({
+        registry,
+        providerFor: () => claudeOver(host),
+        host,
+        log: noopLogger,
+        now: () => new Date(),
+        openInEditor: (target) => {
+          opened.push(target);
+          return { ok: true, value: null };
+        },
+      }).fetch,
     });
+    viewer = { origin: `http://localhost:${server.port}`, stop: () => server.stop(true) };
     url = `${viewer.origin}/runs/r1`;
   });
 
@@ -408,6 +423,27 @@ describe("viewer in a browser", () => {
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('div.mk-card > h2.mk-title'))",
     );
+  }, 30000);
+
+  test("an HTML artifact loads a sibling module script and fetches a sibling file, and the fetched text takes a comment", async () => {
+    await browser("open", `${url}#artifacts/module.html`);
+    const text = (id: string): string =>
+      `document.querySelector('#htmlFrame')?.contentDocument?.getElementById('${id}')?.textContent`;
+    await until(`${text("mod")} === 'module ran' && ${text("data")} === 'fetched'`);
+    await ensureCommentMode();
+    await selectText(true, "fetched");
+    await until(barShown);
+    await browser("click", "#selbar button[data-kind=comment]");
+    await browser("fill", "#composerText", "Say where this came from");
+    await browser("click", "#sendNowBtn");
+    await until(
+      "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('module.html · p:nth-of-type(2)'))",
+    );
+    expect(
+      await evaluate(
+        "[...document.querySelectorAll('#threads .group-label')].some((l) => l.textContent === 'Text no longer in the file')",
+      ),
+    ).toBe(false);
   }, 30000);
 
   test("a code block is one wrapped box with diff colors, not a stack of inline chips", async () => {

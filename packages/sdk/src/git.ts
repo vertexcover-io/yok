@@ -23,6 +23,9 @@ export interface IGit {
   ): Promise<Result<void>>;
   listWorktrees(cwd: string): Promise<Result<readonly WorktreeEntry[]>>;
   removeWorktree(cwd: string, path: string, options?: { force?: boolean }): Promise<Result<void>>;
+  clone(cwd: string, url: string, dest: string): Promise<Result<void>>;
+  // Fast-forwards the checked-out branch from its upstream; fails rather than merge.
+  pullFastForward(cwd: string): Promise<Result<null, string>>;
 }
 
 const parseWorktreeBlock = (block: string): WorktreeEntry => {
@@ -39,11 +42,14 @@ const parseWorktreeBlock = (block: string): WorktreeEntry => {
 };
 
 const GIT_TIMEOUT_MS = 10_000;
+// A clone or pull that wants a password fails at once instead of asking on a terminal nobody reads.
 
 // Every helper runs one git command and parses its output; a rejected exec (a timeout) never
 // throws out of a helper, it just looks like a failed command. Callers leave `exec` out; tests
 // pass a fake one.
-export const createGit = (exec: Exec = execWithTimeout(GIT_TIMEOUT_MS)): IGit => {
+export const createGit = (
+  exec: Exec = execWithTimeout(GIT_TIMEOUT_MS, { GIT_TERMINAL_PROMPT: "0" }),
+): IGit => {
   const run = async (cwd: string, args: readonly string[]): Promise<ExecResult> => {
     try {
       return await exec("git", args, cwd);
@@ -140,6 +146,17 @@ export const createGit = (exec: Exec = execWithTimeout(GIT_TIMEOUT_MS)): IGit =>
       const force = options?.force === true ? ["--force"] : [];
       const { code, stderr } = await run(cwd, ["worktree", "remove", ...force, path]);
       return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
+    },
+
+    // "--" stops a URL that starts with "-" from being read as an option.
+    clone: async (cwd, url, dest) => {
+      const { code, stderr } = await run(cwd, ["clone", "--quiet", "--", url, dest]);
+      return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
+    },
+
+    pullFastForward: async (cwd) => {
+      const { code, stderr } = await run(cwd, ["pull", "--ff-only", "--quiet"]);
+      return code === 0 ? { ok: true, value: null } : { ok: false, error: stderr.trim() };
     },
   };
 };

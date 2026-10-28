@@ -3,6 +3,7 @@ import {
   builtInChecks,
   type DoctorJson,
   type DoctorReport,
+  DoctorReportSchema,
   type DoctorRow,
   findWorkflowPath,
   loadStartEnv,
@@ -10,9 +11,18 @@ import {
   verdict,
   workflowChecks,
 } from "@yok/core";
-import { stopRunningOnSignal } from "@yok/sdk";
+import { stopRunningOnSignal, yokHome } from "@yok/sdk";
 import { runtimeChecks } from "@yok/server";
-import { cliLog, commandLog, compileOrFail } from "./client.ts";
+import {
+  apiErrorText,
+  cliLog,
+  commandLog,
+  compileOrFail,
+  connect,
+  fail,
+  isRemote,
+} from "./client.ts";
+import { PROJECT_REQUIRED } from "./project.ts";
 
 const HEADERS = ["CHECK", "REQUIRED", "STATUS", "DETAIL", "FIX"] as const;
 // A version banner (curl prints its whole TLS stack) would push the FIX column off-screen.
@@ -94,7 +104,24 @@ export const doctorCommand = () =>
     .description("Check the tools, repository and config a yok run needs")
     .option("--json", "print the report as JSON")
     .option("--workflow <name|path>", "also run the checks this workflow declares")
-    .action(async ({ json, workflow }) => {
+    .option("--project <name>", "with --remote: the server's project to check")
+    .action(async ({ json, workflow, project }, command) => {
+      if (isRemote(command)) {
+        if (project === undefined) return fail(PROJECT_REQUIRED);
+        const { client } = await connect(process.env, yokHome());
+        const checked = await client.doctor({
+          project,
+          ...(workflow === undefined ? {} : { workflow }),
+        });
+        if (!checked.ok) return fail(apiErrorText(checked.error));
+        const report = DoctorReportSchema.parse(checked.value.report);
+        console.log(json === true ? renderJson(report) : renderText(report));
+        process.exitCode = exitCodeFor(report);
+        return;
+      }
+      if (project !== undefined) {
+        return fail("--project needs --remote: yok doctor checks this checkout");
+      }
       stopRunningOnSignal();
       const declared = await declaredChecks(workflow);
       if (declared === null) return;

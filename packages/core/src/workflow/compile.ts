@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { type CheckoutConfig, type JsonValue, runDirOf } from "@yok/sdk";
+import { type CheckoutConfig, type JsonValue, type Result, runDirOf } from "@yok/sdk";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 import { loadProjectConfig, loadSkill, noProjectConfig, own } from "../stage.ts";
@@ -615,4 +615,24 @@ export const runStageDirs = async (
   return Object.fromEntries(
     planStages(plan.nodes).map((stage) => [stage.name, dirname(stage.skill)]),
   );
+};
+
+// A broken checkout config is the doctor's to report, so compile goes on without it; a config
+// file the caller named must load.
+export const compilePlan = async (
+  path: string,
+  cwd: string,
+  configFile: string | null,
+): Promise<Result<WorkflowPlan>> => {
+  const config = await loadProjectConfig(configFile, cwd);
+  if (!config.ok && configFile !== null) return config;
+  const options = config.ok ? { cwd, config: config.value } : { cwd };
+  try {
+    return { ok: true, value: await compileWorkflow(path, options) };
+  } catch (error) {
+    if (error instanceof WorkflowError) {
+      return { ok: false, error: `${error.code}: ${error.message}` };
+    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 };

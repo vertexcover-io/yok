@@ -9,28 +9,47 @@ import { type ILogger, noopLogger } from "./logger.ts";
 export const triggersPath = (home: string): string => join(home, "triggers.json");
 export const triggerFiresPath = (home: string): string => join(home, "trigger-fires.jsonl");
 
-// Only the schedule is stored; the workflow file is read again at every firing.
-export const TriggerSchema = z.strictObject({
+const scheduleFields = {
   id: SlugSchema,
-  // the workflow's name, unique per repo
+  // the workflow's name, unique per project
   name: SlugSchema,
-  workflowPath: AbsolutePathSchema,
-  // the repo root the run starts in
-  cwd: AbsolutePathSchema,
   config: AbsolutePathSchema.nullable(),
   cron: NonEmptyStringSchema,
   timezone: NonEmptyStringSchema,
   nextFireAt: z.iso.datetime(),
   createdAt: z.iso.datetime(),
+};
+
+// Only the schedule is stored; the workflow file is read again at every firing.
+export const TriggerSchema = z.strictObject({
+  ...scheduleFields,
+  project: SlugSchema,
+  // a shipped workflow's name, or the absolute path of a workflow file
+  workflow: NonEmptyStringSchema,
 });
 export type Trigger = z.infer<typeof TriggerSchema>;
 export type TriggerDraft = Omit<Trigger, "id" | "createdAt">;
 
+// Saved before triggers named a project. The server rewrites each one on start; until then
+// the store's reads and the tick pass over it.
+export const LegacyTriggerSchema = z.strictObject({
+  ...scheduleFields,
+  workflowPath: AbsolutePathSchema,
+  cwd: AbsolutePathSchema,
+});
+export type LegacyTrigger = z.infer<typeof LegacyTriggerSchema>;
+
 export const TriggersFileSchema = z.strictObject({
   version: z.literal(1),
-  triggers: z.record(z.string(), TriggerSchema),
+  triggers: z.record(z.string(), z.union([TriggerSchema, LegacyTriggerSchema])),
 });
 type TriggersFile = z.infer<typeof TriggersFileSchema>;
+type StoredTrigger = TriggersFile["triggers"][string];
+
+const isLegacy = (trigger: StoredTrigger): trigger is LegacyTrigger => "cwd" in trigger;
+
+const listCurrent = (file: TriggersFile): readonly Trigger[] =>
+  Object.values(file.triggers).filter((t): t is Trigger => !isLegacy(t));
 
 export const FireSchema = z.strictObject({
   triggerId: SlugSchema,
@@ -46,16 +65,19 @@ export type Fire = z.infer<typeof FireSchema>;
 
 export type TriggerStore = Readonly<{
   list: () => Promise<readonly Trigger[]>;
-  find: (cwd: string, name: string) => Promise<Trigger | undefined>;
-  // Adds the trigger, or updates the one with the same repo, name and file (keeping its id).
-  // Refused when, in the same repo, the name belongs to another file or the file to another
-  // name; the error is the trigger it clashes with.
+  find: (project: string, name: string) => Promise<Trigger | undefined>;
+  // Adds the trigger, or updates the one with the same project, name and workflow (keeping its
+  // id). Refused when, in the same project, the name belongs to another workflow or the workflow
+  // to another name; the error is the trigger it clashes with.
   save: (draft: TriggerDraft) => Promise<Result<Trigger, Trigger>>;
   remove: (id: string) => Promise<boolean>;
   // False, and nothing written, if the trigger was removed or its schedule changed since read.
   setNextFireAt: (trigger: Trigger, nextFireAt: string) => Promise<boolean>;
   appendFire: (fire: Fire) => Promise<void>;
   readFires: (triggerId: string, limit: number) => Promise<readonly Fire[]>;
+  listLegacy: () => Promise<readonly LegacyTrigger[]>;
+  // Rewrites the legacy trigger to name PROJECT; its id, schedule and fire log stay.
+  adopt: (id: string, project: string) => Promise<void>;
 }>;
 
 const readTriggers = async (path: string): Promise<TriggersFile> => {
@@ -63,19 +85,19 @@ const readTriggers = async (path: string): Promise<TriggersFile> => {
   return text === null ? { version: 1, triggers: {} } : TriggersFileSchema.parse(JSON.parse(text));
 };
 
-const findIn = (file: TriggersFile, cwd: string, name: string): Trigger | undefined =>
-  Object.values(file.triggers).find((t) => t.cwd === cwd && t.name === name);
+const findIn = (file: TriggersFile, project: string, name: string): Trigger | undefined =>
+  listCurrent(file).find((t) => t.project === project && t.name === name);
 
 const clashIn = (file: TriggersFile, draft: TriggerDraft): Trigger | undefined =>
-  Object.values(file.triggers).find((t) => {
+  listCurrent(file).find((t) => {
     const sameName = t.name === draft.name;
-    const sameFile = t.workflowPath === draft.workflowPath;
-    return t.cwd === draft.cwd && sameName !== sameFile;
+    const sameFile = t.workflow === draft.workflow;
+    return t.project === draft.project && sameName !== sameFile;
   });
 
 const saveDraft = (file: TriggersFile, draft: TriggerDraft): TriggersFile => {
   if (clashIn(file, draft) !== undefined) return file;
-  const existing = findIn(file, draft.cwd, draft.name);
+  const existing = findIn(file, draft.project, draft.name);
   const trigger: Trigger = {
     ...draft,
     id: existing?.id ?? `t-${randomBytes(4).toString("hex")}`,
@@ -123,15 +145,15 @@ export const createTriggerStore = (home: string, parentLog: ILogger = noopLogger
   const firesPath = triggerFiresPath(home);
   const log = parentLog.child({ component: "triggers", path: firesPath });
   return {
-    list: async () => Object.values((await readTriggers(path)).triggers),
-    find: async (cwd, name) => findIn(await readTriggers(path), cwd, name),
+    list: async () => listCurrent(await readTriggers(path)),
+    find: async (project, name) => findIn(await readTriggers(path), project, name),
     save: async (draft) => {
       const { before, after } = await updateJsonFile(path, readTriggers, (current) =>
         saveDraft(current, draft),
       );
       const clash = clashIn(before, draft);
       if (clash !== undefined) return { ok: false, error: clash };
-      const saved = findIn(after, draft.cwd, draft.name);
+      const saved = findIn(after, draft.project, draft.name);
       if (saved === undefined) throw new Error(`trigger ${draft.name} was not saved`);
       return { ok: true, value: saved };
     },
@@ -157,5 +179,15 @@ export const createTriggerStore = (home: string, parentLog: ILogger = noopLogger
     },
     readFires: async (triggerId, limit) =>
       (await readFireLines(firesPath, log)).filter((f) => f.triggerId === triggerId).slice(-limit),
+    listLegacy: async () => Object.values((await readTriggers(path)).triggers).filter(isLegacy),
+    adopt: async (id, project) => {
+      await updateJsonFile(path, readTriggers, (current) => {
+        const stored = current.triggers[id];
+        if (stored === undefined || !isLegacy(stored)) return current;
+        const { cwd: _cwd, workflowPath, ...schedule } = stored;
+        const adopted: Trigger = { ...schedule, project, workflow: workflowPath };
+        return { ...current, triggers: { ...current.triggers, [id]: adopted } };
+      });
+    },
   };
 };

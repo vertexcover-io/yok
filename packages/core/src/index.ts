@@ -1,5 +1,6 @@
 export { type ClaudeProviderOptions, claudeArgs, claudeProvider } from "./agents/claude.ts";
 export { type CodexProviderOptions, codexProvider } from "./agents/codex.ts";
+export { unwrap } from "./agents/common.ts";
 export { type AgentProviderOptions, agentBinary, agentProvider } from "./agents/index.ts";
 export { yokTerminalHost } from "./agents/tmux.ts";
 export {
@@ -63,6 +64,7 @@ export * as samskaraHooks from "./samskara.ts";
 export {
   findPluginSkills,
   findWorkflowPath,
+  isWorkflowFile,
   loadProjectConfig,
   orchestrateArgv,
   type Stage,
