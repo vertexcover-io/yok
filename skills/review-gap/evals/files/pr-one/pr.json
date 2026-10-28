@@ -1,0 +1,17 @@
+{
+  "number": 7,
+  "title": "feat: publish widgets to npm",
+  "body": "## What\n\nPublishes four platform packages.",
+  "state": "closed",
+  "merged_at": "2026-10-01T10:00:00Z",
+  "base": {
+    "sha": "000base",
+    "ref": "main"
+  },
+  "head": {
+    "sha": "ccc333"
+  },
+  "user": {
+    "login": "kgritesh"
+  }
+}

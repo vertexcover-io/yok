@@ -1,0 +1,20 @@
+[
+  {
+    "id": 9001,
+    "user": {
+      "login": "xhawk-ai[bot]"
+    },
+    "state": "COMMENTED",
+    "commit_id": "aaa111",
+    "body": "## Review Summary — Changes needed\n\nOne high finding."
+  },
+  {
+    "id": 9002,
+    "user": {
+      "login": "kgritesh"
+    },
+    "state": "APPROVED",
+    "commit_id": "ccc333",
+    "body": ""
+  }
+]

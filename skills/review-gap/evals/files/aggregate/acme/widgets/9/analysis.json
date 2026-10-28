@@ -1,0 +1,32 @@
+{
+  "repo": "acme/widgets",
+  "number": 9,
+  "sha": "sha9",
+  "mergeBase": "base000",
+  "plan": "none",
+  "findings": [
+    {
+      "id": "acme/widgets#9:901",
+      "verdict": "real",
+      "evidence": "src/move.ts:5 catch-all before unlink at :7",
+      "fixedAfterReview": true,
+      "lens": "A",
+      "mechanism": "catch-all turns every failure into one expected case before an irreversible step",
+      "personas": [
+        {
+          "name": "defects",
+          "promptCoverage": "explicit",
+          "quote": "a caught error ... name the others and follow each through the next step",
+          "why": "the caught error is an input"
+        }
+      ],
+      "matchHint": "must say the copy failure is swallowed and the delete still runs"
+    },
+    {
+      "id": "acme/widgets#9:902",
+      "verdict": "false-positive",
+      "evidence": "q is a GET parameter; Node caps headers at 16 KB",
+      "fixedAfterReview": false
+    }
+  ]
+}

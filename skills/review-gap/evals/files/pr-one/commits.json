@@ -1,0 +1,20 @@
+[
+  {
+    "sha": "aaa111",
+    "commit": {
+      "message": "feat(release): publish platform packages"
+    }
+  },
+  {
+    "sha": "bbb222",
+    "commit": {
+      "message": "fix(release): skip published versions"
+    }
+  },
+  {
+    "sha": "ccc333",
+    "commit": {
+      "message": "docs: npm install"
+    }
+  }
+]
