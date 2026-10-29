@@ -5,7 +5,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   clearDeadSwitchLocks,
   compilePlan,
-  findWorkflowPath,
+  locateWorkflow,
   orchestrateArgv,
   resolveWorkflowInputs,
   verdict,
@@ -245,7 +245,9 @@ export const compileWorkflow = async (
   cwd: string,
   config: string | null,
 ): Promise<Result<Readonly<{ plan: WorkflowPlan; workflowPath: string }>>> => {
-  const workflowPath = findWorkflowPath(workflow, cwd);
+  const located = await locateWorkflow(workflow, cwd, config);
+  if (!located.ok) return located;
+  const workflowPath = located.value;
   if (!existsSync(workflowPath)) return { ok: false, error: `no workflow at ${workflowPath}` };
   const compiled = await compilePlan(workflowPath, cwd, config);
   return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;

@@ -1,7 +1,7 @@
-# Cover an existing product flow with regression tests: find what changes its behavior, keep the
-# factors that matter, write scenarios for them, write the tests, then review and fix them in a
-# loop.
 name: regression
+description: >-
+  Cover a product flow that already works with regression tests: find what changes its behavior,
+  write scenarios for the factors that matter, write the tests, then review and fix them in a loop.
 inputs:
   prompt:
     type: string

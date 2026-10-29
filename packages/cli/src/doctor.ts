@@ -5,8 +5,8 @@ import {
   type DoctorReport,
   DoctorReportSchema,
   type DoctorRow,
-  findWorkflowPath,
   loadStartEnv,
+  locateWorkflow,
   runDoctor,
   verdict,
   workflowChecks,
@@ -93,7 +93,12 @@ const declaredChecks = async (workflow: string | undefined) => {
     const env = await loadStartEnv(null, cwd, { env: {}, agent: "claude" });
     return builtInChecks(undefined, env);
   }
-  const plan = await compileOrFail(findWorkflowPath(workflow, cwd), cwd);
+  const located = await locateWorkflow(workflow, cwd);
+  if (!located.ok) {
+    fail(located.error);
+    return null;
+  }
+  const plan = await compileOrFail(located.value, cwd);
   if (plan === null) return null;
   const env = await loadStartEnv(null, cwd, plan);
   return [...workflowChecks(plan.doctor, env), ...builtInChecks(plan, env)];
