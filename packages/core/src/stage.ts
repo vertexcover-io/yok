@@ -147,15 +147,17 @@ export const yokWorkflowsDir = (env: NodeJS.ProcessEnv = process.env): string =>
 // source.
 export const orchestrateArgv = (): readonly [string, ...string[]] => [...selfArgv(), "orchestrate"];
 
-// Detached, because the hook that starts the helper must return before the agent goes idle.
+// Detached, because the hook or command that starts the helper must return before the agent goes
+// idle.
 export const spawnOrchestrateHelper = ({
   command,
   id,
   run,
   sessionId,
-}: Readonly<{ command: string; id: string; run: RunRef; sessionId: string }>): void => {
+}: Readonly<{ command: string; id: string; run: RunRef; sessionId?: string }>): void => {
   const [program, ...self] = orchestrateArgv();
-  const args = [...self, command, id, "--run-id", run.id, "--session-id", sessionId];
+  const session = sessionId === undefined ? [] : ["--session-id", sessionId];
+  const args = [...self, command, id, "--run-id", run.id, ...session];
   spawnDetached(program, args, { cwd: run.cwd, output: "ignore" });
 };
 

@@ -26,7 +26,7 @@ import {
   type ModelSwitch,
 } from "@yok/sdk/internal";
 import * as z from "zod";
-import { startCloseStep, startContextStep, startModelStep } from "../context-step.ts";
+import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
 import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
 
@@ -37,17 +37,14 @@ const startedSession = (event: Event): string | undefined =>
     ? SessionStartCalledEvent.safeParse(event).data?.payload.sessionId
     : undefined;
 
-// The seq of the run's finish event when this session finished the run: it started before the
-// finish, or before init and so logged no start. A session resumed after the finish logs its start
-// later and gets undefined. Compared by seq, since two events can share a timestamp.
-export const finishedBySession = (
-  events: readonly Event[],
-  sessionId: string,
-): number | undefined => {
+// Whether this session finished the run: it started before the finish, or before init and so
+// logged no start. A session resumed after the finish logs its start later. Compared by seq, since
+// two events can share a timestamp.
+export const finishedBySession = (events: readonly Event[], sessionId: string): boolean => {
   const finish = events.findLast((event) => RUN_ENDED.has(event.type));
-  if (finish === undefined) return undefined;
+  if (finish === undefined) return false;
   const started = events.findLast((event) => startedSession(event) === sessionId);
-  return started === undefined || started.seq < finish.seq ? finish.seq : undefined;
+  return started === undefined || started.seq < finish.seq;
 };
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
@@ -395,9 +392,6 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
     if (decision.reason === "model-switch") {
       await startModelStep(run, input.sessionId, decision.seq);
     }
-    const finishSeq =
-      decision.reason === "run-finished" ? finishedBySession(events, input.sessionId) : undefined;
-    if (finishSeq !== undefined) await startCloseStep(run, input.sessionId, finishSeq);
     if (decision.reason === "unanswered-stop") {
       await failUnansweredNode(run, decision.nodeRunId, input.lastMessage, deps);
     }
@@ -468,9 +462,8 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
       jsonlEventStore(runDir).read(),
       input.readTranscript(),
     ]);
-    // The session closes once the run ends in it, so an offer there would be cut off. This check
-    // repeats runStopHook's because the two handlers run at the same stop without seeing each other.
-    if (!isRunLive(state.status) && finishedBySession(events, input.sessionId) !== undefined) {
+    // The session that ended the run is closed once it goes idle, so an offer there would be cut off.
+    if (!isRunLive(state.status) && finishedBySession(events, input.sessionId)) {
       return ALLOW;
     }
     const offer = decideLearnOffer(events, entries);

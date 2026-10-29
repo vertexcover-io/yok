@@ -125,6 +125,9 @@ export interface IAgentProvider {
     text: string,
     options?: Readonly<{ whileBusy?: boolean }>,
   ): Promise<Result<"sent" | "not-ready">>;
+  // true while the agent works on a turn; an open question or permission prompt waits on a
+  // person, not the agent, so it is not busy
+  isBusy(terminal: ITerminal): Promise<Result<boolean>>;
   stop(terminal: ITerminal): Promise<Result<void>>;
   // headless: waits for the answer
   run<T = string>(request: RunRequest<T>): Promise<AgentResult<T>>;

@@ -51,6 +51,7 @@ import {
   createState,
   type DoneStatus,
   foldModelSwitch,
+  isRunLive,
   jsonlEventStore,
   nodePath,
   type Registry,
@@ -614,9 +615,14 @@ export type AgentAbilities = Readonly<
   Record<WorkflowAgent, Pick<AgentAdapter, "contextSteps" | "subagents" | "parallelSteps">>
 >;
 
+// Called by the `next` that ends the run, with the run's agent; a later `next` finds the run
+// already ended and never calls it.
+export type OnRunEnded = (agent: WorkflowAgent) => void;
+
 const walkToNextStep = async (
   run: RunRef,
   abilities: AgentAbilities,
+  onRunEnded: OnRunEnded | undefined,
 ): Promise<Result<StepReply>> => {
   const runDir = runDirOf(run.cwd, run.name);
   const [state, events] = await Promise.all([readRunState(runDir), jsonlEventStore(runDir).read()]);
@@ -634,12 +640,17 @@ const walkToNextStep = async (
   const switching = foldModelSwitch(events, state.tiers);
   const models = { tiers, switching, subagents, parallel: parallelSteps };
   const { decision } = await decideNext(plan, state, emit, models);
+  if (isRunLive(state.status) && decision.kind === "finished") onRunEnded?.(plan.agent);
   const policies = readPolicies(state.policies);
   return { ok: true, value: buildReply(decision, run, config.value, policies) };
 };
 
-export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
-  logCall(run, { command: "next", input: {} }, walkToNextStep(run, abilities));
+export const nextStep = (
+  run: RunRef,
+  abilities: AgentAbilities,
+  onRunEnded?: OnRunEnded,
+): Promise<Result<StepReply>> =>
+  logCall(run, { command: "next", input: {} }, walkToNextStep(run, abilities, onRunEnded));
 
 export type ResumeReport = Readonly<{
   interrupted: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];

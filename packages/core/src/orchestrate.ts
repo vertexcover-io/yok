@@ -13,6 +13,7 @@ import {
   type ILogger,
   type JsonValue,
   loadRunConfig,
+  noopLogger,
   type PickRunInput,
   pickRun,
   type Result,
@@ -42,7 +43,7 @@ import {
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
 import { currentTerminal, isRunPane, yokTerminalHost } from "./agents/tmux.ts";
 import { commentRepliedEvent, isOpen, readComments, replyToComment } from "./comments.ts";
-import { runCloseStep, runContextStep, runModelStep } from "./context-step.ts";
+import { runCloseStep, runContextStep, runModelStep, startCloseStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
 import { postToolUseHandlers } from "./hooks/post-tool-use.ts";
 import { preToolUseHandlers } from "./hooks/pre-tool-use.ts";
@@ -75,7 +76,12 @@ import {
 } from "./stage.ts";
 import { renderStatusline } from "./statusline.ts";
 import { runStageDirs } from "./workflow/compile.ts";
-import { WorkflowCompileErrorSchema, WorkflowError } from "./workflow/types.ts";
+import {
+  type WorkflowAgent,
+  WorkflowAgentSchema,
+  WorkflowCompileErrorSchema,
+  WorkflowError,
+} from "./workflow/types.ts";
 
 const RUN_HELP = "spec name of the run, as given to init (default: $YOK_RUN_ID)";
 const RUN_ID_HELP = "id of the run, instead of its name (default: $YOK_RUN_ID)";
@@ -224,7 +230,8 @@ const nextCommand = () =>
       runWorkflowCommand(async () => {
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        printResult(await nextStep(run.value, agentAdapters));
+        const closeSession = (agent: WorkflowAgent): void => startCloseStep(run.value, agent);
+        printResult(await nextStep(run.value, agentAdapters, closeSession));
       }),
     );
 
@@ -740,24 +747,24 @@ const modelCommand = () =>
 const closeCommand = () =>
   new Command("close")
     .description(
-      "Exit the agent and close its terminal once the run it finished has ended (started by the Stop hook)",
+      "Close the agent's terminal once it is idle after the run ended (started by the `next` that ended it)",
     )
-    .argument("<finishSeq>", "seq of the run's workflow.completed or workflow.failed event")
+    .argument("<agent>", "the run's agent")
     .option("--run <name>", RUN_HELP)
     .option("--run-id <id>", RUN_ID_HELP)
-    .requiredOption("--session-id <id>", "the agent session whose turn just ended")
-    .action(async (finishSeq, opts) => {
-      const helper = await loadHelperRun(opts, "yok-close", "close.log");
-      if (helper === undefined) return;
-      const { run, log, provider, terminalName } = helper;
+    .action(async (agent, opts) => {
+      const parsed = WorkflowAgentSchema.safeParse(agent);
+      if (!parsed.success) return fail(`unknown agent ${agent}`);
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      // Whether the close went through is not recorded.
+      const linked = await registry().findRun(run.value.id);
+      const host = yokTerminalHost(process.env, noopLogger);
       await runCloseStep({
-        run,
-        finishSeq: Number(finishSeq),
-        terminal: currentTerminal(process.env, log),
-        ownsPane: await isRunPane(terminalName),
-        provider,
-        log,
-      }).catch((error: unknown) => log.error({ err: error }, "close threw"));
+        terminal: currentTerminal(process.env, noopLogger),
+        ownsPane: await isRunPane(linked?.terminal ?? null),
+        provider: agentProvider({ agent: parsed.data, host, env: process.env, log: noopLogger }),
+      });
     });
 
 // stderr is detached, so a helper logs to a file in the run's folder.
