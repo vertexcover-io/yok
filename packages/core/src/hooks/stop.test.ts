@@ -301,10 +301,10 @@ describe("finishedBySession", () => {
     ["workflow.failed", "no start event", []],
     ["workflow.failed", "a start before the finish", [started(1, "s1", "startup")]],
   ] as const)(
-    "SC801: a log ending in %s, for a session with %s, answers the finish event's seq",
+    "SC801: a log ending in %s, for a session with %s, has that session as the finishing one",
     (finish, _, before) => {
       const events = [...before, logged(2, "workflow.node.started"), logged(3, finish)];
-      expect(finishedBySession(events, "s1")).toBe(3);
+      expect(finishedBySession(events, "s1")).toBe(true);
     },
   );
 
@@ -314,13 +314,13 @@ describe("finishedBySession", () => {
       logged(2, "workflow.completed"),
       started(3, "s1", "resume"),
     ];
-    expect(finishedBySession(events, "s1")).toBeUndefined();
+    expect(finishedBySession(events, "s1")).toBe(false);
   });
 
   test("SC803: a log with no workflow.completed or workflow.failed has no finishing session", () => {
     const events = [started(1, "s1", "startup"), logged(2, "workflow.node.started")];
-    expect(finishedBySession(events, "s1")).toBeUndefined();
-    expect(finishedBySession(events, "s2")).toBeUndefined();
+    expect(finishedBySession(events, "s1")).toBe(false);
+    expect(finishedBySession(events, "s2")).toBe(false);
   });
 });
 
@@ -764,33 +764,12 @@ describe("a run that has ended", () => {
     if (!stored.ok) throw new Error(stored.error);
   };
 
-  test("SC808: the finishing session's stop starts the close for the finish seq; a session resumed after the finish starts none", async () => {
-    const finishing = await setUp({}, "claude", { status: "completed" });
-    const finishingRun = { id: "r-1", cwd: finishing.cwd, name: "feat-x" };
-    await emit(finishingRun, "workflow.completed");
+  test("SC808: the stop of the session that finished the run starts no close, since the next that ended the run starts it", async () => {
+    const { deps, cwd } = await setUp({}, "claude", { status: "completed" });
+    await emit({ id: "r-1", cwd, name: "feat-x" }, "workflow.completed");
 
-    expect(await runStopHook(input(undefined), finishing.deps)).toEqual({ kind: "allow" });
+    expect(await runStopHook(input(undefined), deps)).toEqual({ kind: "allow" });
 
-    const [program, ...self] = orchestrateArgv();
-    expect(spawn.mock.calls).toEqual([
-      [
-        program,
-        [...self, "close", "1", "--run-id", "r-1", "--session-id", "s1"],
-        { cwd: finishing.cwd, output: "ignore" },
-      ],
-    ]);
-
-    spawn.mockClear();
-    const resumed = await setUp({}, "claude", { status: "completed" });
-    const resumedRun = { id: "r-1", cwd: resumed.cwd, name: "feat-x" };
-    await emit(resumedRun, "workflow.completed");
-    await emit(resumedRun, "hooks.session-start.called", {
-      agent: "claude",
-      sessionId: "s1",
-      source: "resume",
-    });
-
-    expect(await runStopHook(input(undefined), resumed.deps)).toEqual({ kind: "allow" });
     expect(spawn).not.toHaveBeenCalled();
   });
 

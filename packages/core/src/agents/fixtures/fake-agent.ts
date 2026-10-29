@@ -1,8 +1,7 @@
 #!/usr/bin/env -S bun --env-file=/dev/null
 // Test double for the claude binary: records its own launch, then echoes every line it reads
-// back to $FAKE_AGENT_OUT as JSON, so a test can assert on what a real terminal sent it, and exits
-// on /exit as Claude and Codex do. Like Claude, it shows an input box, which yok waits for before
-// it types.
+// back to $FAKE_AGENT_OUT as JSON, so a test can assert on what a real terminal sent it. Like
+// Claude, it shows an input box, which yok waits for before it types.
 // --env-file=/dev/null: Bun would load the repo's .env itself, hiding what the yok passed.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -36,6 +35,5 @@ const drawInputBox = (): void => {
 drawInputBox();
 createInterface({ input: process.stdin }).on("line", (line) => {
   record({ line });
-  if (line === "/exit") process.exit(0);
   drawInputBox();
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -46,14 +46,13 @@ import {
 import { typeLine, unwrap } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
 import { spawnOrchestrateHelper } from "./stage.ts";
+import type { WorkflowAgent } from "./workflow/types.ts";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const IDLE_POLL_MS = 100;
 const DONE_POLL_MS = 250;
 // how long a new session may take to start, and a compact to finish, before the step fails
 const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
-// how long a finished agent may take to exit after /exit before its pane is killed
-const CLOSE_EXIT_TIMEOUT_MS = 10_000;
 // How long a typed resume line may take to show as the run's `orchestrate resume`, counted over
 // continuous time Claude is free, and how long at most in all; and how many times it is typed.
 const RESUME_TIMEOUT_MS = 30_000;
@@ -68,12 +67,8 @@ const COMPACT_GRACE_MS = 30_000;
 export const startModelStep = async (run: RunRef, sessionId: string, seq: number): Promise<void> =>
   spawnOrchestrateHelper({ command: "model", id: String(seq), run, sessionId });
 
-export const startCloseStep = async (
-  run: RunRef,
-  sessionId: string,
-  finishSeq: number,
-): Promise<void> =>
-  spawnOrchestrateHelper({ command: "close", id: String(finishSeq), run, sessionId });
+export const startCloseStep = (run: RunRef, agent: WorkflowAgent): void =>
+  spawnOrchestrateHelper({ command: "close", id: agent, run });
 
 export const startContextStep = async (
   run: RunRef,
@@ -652,74 +647,42 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
 };
 
 export type CloseStepOptions = Readonly<{
-  run: RunRef;
-  // seq of the workflow.completed or workflow.failed event the session closes for
-  finishSeq: number;
   terminal: ITerminal | undefined;
   // true when the pane is the run's registered terminal on yok's tmux, which the close may kill
   ownsPane: boolean;
   provider: IAgentProvider;
-  log: ILogger;
 }>;
 
-// Types /exit only at an empty input box, so a half-typed message or an open prompt is never
-// answered; a session still held after the idle wait is in use and stays open.
-const exitAgent = async (
-  terminal: ITerminal,
-  provider: IAgentProvider,
-  ownsPane: boolean,
-): Promise<void> => {
+// Two not-busy readings in a row, so the moment between two tool calls of one turn is not taken
+// for the end of the turn.
+const IDLE_READINGS = 2;
+
+const waitUntilIdle = async (terminal: ITerminal, provider: IAgentProvider): Promise<void> => {
+  let readings = 0;
   await pollUntil(
-    {
-      everyMs: DONE_POLL_MS,
-      timeoutMs: IDLE_TIMEOUT_MS,
-      timeoutError: "the agent never showed an empty input box",
+    { everyMs: DONE_POLL_MS, timeoutMs: IDLE_TIMEOUT_MS, timeoutError: "the agent stayed busy" },
+    async () => {
+      readings = unwrap(await provider.isBusy(terminal)) ? 0 : readings + 1;
+      return readings >= IDLE_READINGS ? true : undefined;
     },
-    async () =>
-      unwrap(await provider.promptWhenReady(terminal, "/exit")) === "sent" ? true : undefined,
   );
-  // A pane yok did not start belongs to the person, whose shell outlives the agent.
-  if (!ownsPane) return;
-  const exited = await pollUntil(
-    { everyMs: DONE_POLL_MS, timeoutMs: CLOSE_EXIT_TIMEOUT_MS, timeoutError: "still running" },
-    async () => ((await terminal.isAlive()) ? undefined : true),
-  ).catch(() => false);
-  if (exited) return;
+};
+
+const killWhenIdle = async (terminal: ITerminal, provider: IAgentProvider): Promise<void> => {
+  await waitUntilIdle(terminal, provider);
   const stopped = await provider.stop(terminal);
   if (!stopped.ok && (await terminal.isAlive())) throw new Error(stopped.error);
 };
 
-// written over a close lock's pid once its helper has tried, whatever came of it
-const CLOSE_TRIED = "tried";
-
-// A close lock is taken over only when its helper died mid-close. An empty one is being claimed.
-const claimCloseLock = async (run: RunRef, name: string): Promise<boolean> => {
-  if (await claimLock(run, name)) return true;
-  const path = runLockPath(runDirOf(run.cwd, run.name), name);
-  const text = (await readFile(path, "utf8").catch(() => CLOSE_TRIED)).trim();
-  if (text === CLOSE_TRIED || text === "" || (await hasLiveOwner(path))) return false;
-  await rm(path, { force: true });
-  return claimLock(run, name);
-};
-
-const closeSession = async (options: CloseStepOptions): Promise<void> => {
-  const { finishSeq, terminal, ownsPane, provider, log } = options;
-  if (terminal === undefined) return log.warn({ finishSeq }, "session not closed: not in tmux");
-  const failure = await failureOf(exitAgent(terminal, provider, ownsPane));
-  if (failure === undefined) return log.info({ finishSeq }, "session closed");
-  log.error({ err: failure, finishSeq }, "session not closed");
-};
-
-// Runs after the Stop hook of the session that finished the run: exits the agent, and removes its
-// pane if the agent left it behind. The finish closes its session once: a close that fails marks
-// its lock tried, so a person chatting on in the session after the finish is never cut off by a
-// later stop. The close- prefix keeps clearDeadSwitchLocks away from it.
-export const runCloseStep = async (options: CloseStepOptions): Promise<void> => {
-  const { run, finishSeq, log } = options;
-  const lock = `close-${finishSeq}`;
-  if (!(await claimCloseLock(run, lock))) {
-    return log.info({ finishSeq }, "another helper is closing or has tried");
-  }
-  await closeSession(options);
-  await writeFile(runLockPath(runDirOf(run.cwd, run.name), lock), CLOSE_TRIED).catch(() => {});
+// Started by the `next` that ended the run, so it runs once per run and is never retried; a later
+// `next` in a resumed session finds the run already ended and starts none. It kills the pane once
+// the agent is no longer working, an open question included; an agent still busy after the idle
+// wait is in use and stays open. A pane yok did not start belongs to the person.
+export const runCloseStep = async ({
+  terminal,
+  ownsPane,
+  provider,
+}: CloseStepOptions): Promise<void> => {
+  if (terminal === undefined || !ownsPane) return;
+  await failureOf(killWhenIdle(terminal, provider));
 };

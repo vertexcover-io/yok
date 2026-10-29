@@ -69,6 +69,7 @@ export const fakeProvider = (
   run: () => Promise.resolve({ ok: false, error: new Error("not implemented") }),
   limitResetWait: () => Promise.resolve(null),
   promptWhenReady: () => Promise.resolve({ ok: true, value: "not-ready" }),
+  isBusy: () => Promise.resolve({ ok: true, value: false }),
 });
 
 // The real Claude provider over a fake pane, so delivery runs the same screen checks as in a run.

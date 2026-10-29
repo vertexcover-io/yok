@@ -31,7 +31,14 @@ import corePackage from "../package.json";
 import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
-import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
+import {
+  finishStep,
+  type InitOptions,
+  initializeRun,
+  linkRunSession,
+  nextStep,
+  terminalName,
+} from "./runs.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
@@ -878,6 +885,37 @@ describe("initializeRun with tiers", () => {
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.tiers).toEqual(tiers);
+  });
+});
+
+describe("nextStep ending the run", () => {
+  test("SC827: only the next that ends the run reports it, with the run's agent; a later next on the ended run reports nothing", async () => {
+    const { ref } = await stagedRun(stageNode("make", "quick"), {
+      tiers: { default: "deep", models: { deep: { model: "gpt-x" }, fast: { model: "gpt-x" } } },
+      header: "agent: codex\n",
+    });
+    const ended: string[] = [];
+    const onRunEnded = (agent: string): void => {
+      ended.push(agent);
+    };
+
+    const first = await nextStep(ref, agentAdapters, onRunEnded);
+    if (!first.ok || first.value.kind !== "steps") throw new Error("expected a step");
+    const nodeRunId = first.value.steps[0]?.nodeRunId ?? "";
+    const done = await finishStep(ref, nodeRunId, { output: "{}", summary: "Made." }, []);
+    expect(done.ok).toBe(true);
+    expect(ended).toEqual([]);
+
+    expect(await nextStep(ref, agentAdapters, onRunEnded)).toEqual({
+      ok: true,
+      value: { kind: "finished", status: "completed" },
+    });
+    expect(ended).toEqual(["codex"]);
+
+    expect(await nextStep(ref, agentAdapters, onRunEnded)).toMatchObject({
+      value: { kind: "finished" },
+    });
+    expect(ended).toEqual(["codex"]);
   });
 });
 

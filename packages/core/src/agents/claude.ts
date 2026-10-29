@@ -109,6 +109,11 @@ const answerLimitMenu = async (
   return terminal.capture();
 };
 
+const isBusy = async (terminal: ITerminal): Promise<Result<boolean>> => {
+  const screen = await terminal.capture();
+  return screen.ok ? { ok: true, value: isClaudeBusy(screen.value) } : screen;
+};
+
 const limitResetWait = async (terminal: ITerminal, message: string, now: Date) => {
   const screen = await terminal.capture();
   return readResetWait({ message, screen: screen.ok ? screen.value : "", now });
@@ -338,6 +343,7 @@ export const claudeProvider = ({
     stop,
     limitResetWait,
     promptWhenReady,
+    isBusy,
     run,
   };
 };

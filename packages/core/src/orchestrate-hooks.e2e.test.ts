@@ -776,29 +776,51 @@ nodes:
   }, 30_000);
 });
 
-describe("SC26: orchestrate close through a real tmux pane", () => {
-  test("SC811: orchestrate close run from a finished run's pane types /exit, the tmux session is gone within 15 s, and close.log records session closed", async () => {
+describe("SC26: the next that ends a run closes its tmux pane", () => {
+  const sessionGone = (socket: string) =>
+    spawnSync("tmux", ["-L", socket, "has-session", "-t", "agent"]).status !== 0;
+
+  test("SC811: the next that ends a run, run from the run's idle pane, closes it within 15 s with nothing typed and no close.log", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
     try {
-      const flow = await runInPane(ONE_AGENT, socket);
+      // The registry names the pane's session, so the closer treats it as the run's own.
+      const flow = await runInPane(ONE_AGENT, socket, { terminal: "agent" });
+      const plan = flow.next();
+      const done = ["done", plan.nodeRunId, "--run", "feat-x", "--summary", "Planned."];
+      expect(flow.step([...done, "--output", "{}"]).code).toBe(0);
+
+      const ended = flow.step(["next", "--run", "feat-x"], {
+        ...flow.inPane,
+        YOK_TMUX_SOCKET: socket,
+      });
+
+      expect(parseStep(ended.stdout)).toMatchObject({ kind: "finished", status: "completed" });
+      await waitFor(() => sessionGone(socket), 15_000);
+      expect(sessionGone(socket)).toBe(true);
+      expect(flow.typed()).toEqual([]);
+      expect(existsSync(join(runDirOf(flow.run.repo, "feat-x"), "close.log"))).toBe(false);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+
+  test("SC828: a next on a run that has already ended, run from the run's idle pane, leaves it open", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await runInPane(ONE_AGENT, socket, { terminal: "agent" });
       const plan = flow.next();
       const done = ["done", plan.nodeRunId, "--run", "feat-x", "--summary", "Planned."];
       expect(flow.step([...done, "--output", "{}"]).code).toBe(0);
       expect(flow.next()).toMatchObject({ kind: "finished" });
-      const finish = (await eventsOf(flow.run.repo)).find(
-        (event) => event.type === "workflow.completed",
-      );
-      const close = ["close", String(finish?.seq), "--run-id", "r-1", "--session-id", "A"];
 
-      expect(flow.step(close, flow.inPane).code).toBe(0);
+      const again = flow.step(["next", "--run", "feat-x"], {
+        ...flow.inPane,
+        YOK_TMUX_SOCKET: socket,
+      });
 
-      expect(flow.typed()).toEqual(["/exit"]);
-      const sessionGone = () =>
-        spawnSync("tmux", ["-L", socket, "has-session", "-t", "agent"]).status !== 0;
-      await waitFor(sessionGone, 15_000);
-      expect(sessionGone()).toBe(true);
-      const log = readFileSync(join(runDirOf(flow.run.repo, "feat-x"), "close.log"), "utf8");
-      expect(log).toContain("session closed");
+      expect(parseStep(again.stdout)).toMatchObject({ kind: "finished", status: "completed" });
+      await Bun.sleep(3_000);
+      expect(sessionGone(socket)).toBe(false);
     } finally {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
     }
