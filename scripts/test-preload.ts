@@ -22,3 +22,8 @@ process.env.YOK_SELF ??= JSON.stringify([
 // whatever pane $TMUX_PANE names, and `skill run` loads whatever run $YOK_RUN_ID names. A test
 // that needs either passes its own.
 for (const name of ["TMUX", "TMUX_PANE", "YOK_RUN_ID"]) delete process.env[name];
+
+// The stop that ends a run's finishing turn kills the run's registered terminal on yok's tmux
+// server, so tests get a server of their own and never reach the person's real sessions; a test
+// that drives tmux passes its own.
+process.env.YOK_TMUX_SOCKET ??= `yok-test-${process.pid}`;
