@@ -50,6 +50,7 @@ export {
   resolveRepoPath,
 } from "./markdown.ts";
 export * as notifierHooks from "./notifier.ts";
+export { pickNotifier } from "./notifier-subscriber.ts";
 export { orchestrateCommand } from "./orchestrate.ts";
 export { buildPlanPage, PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 export {

@@ -40,6 +40,38 @@ describe("SC26: orchestrate init", () => {
     expect(readRegistry(home).runs["r-1"]?.name).toBe("fix-login");
   });
 
+  const threadOf = (repo: string) =>
+    JSON.parse(readFileSync(join(repo, ".yok", "fix-login", "state.json"), "utf8")).notification
+      ?.threadId;
+
+  test("init of the session's own run, with YOK_SLACK_THREAD 100.1, records thread 100.1", () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    writeRegistry(home, [savedRun(repo)]);
+
+    const init = orchestrate(repo, home, ["init", "fix-login"], {
+      YOK_RUN_ID: "r-1",
+      YOK_SLACK_THREAD: "100.1",
+    });
+
+    expect(init.code).toBe(0);
+    expect(threadOf(repo)).toBe("100.1");
+  });
+
+  test("init of a run other than the session's own ignores YOK_SLACK_THREAD", () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    writeRegistry(home, [savedRun(repo)]);
+
+    const init = orchestrate(repo, home, ["init", "fix-login", "--run-id", "r-1"], {
+      YOK_RUN_ID: "r-parent",
+      YOK_SLACK_THREAD: "100.1",
+    });
+
+    expect(init.code).toBe(0);
+    expect(threadOf(repo)).toBeUndefined();
+  });
+
   test("SC24: init with no --run-id and no YOK_RUN_ID exits 1 with the no-run message", () => {
     const init = orchestrate(tempRepo(), tempDir(), ["init", "fix-login"]);
 

@@ -113,6 +113,8 @@ export type InitOptions = Readonly<{
   provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
+  // the Slack thread the run's updates reply in, from YOK_SLACK_THREAD when a chat command started it
+  notifyThread?: string | undefined;
 }>;
 
 export const terminalName = (agent: string, runName: string, runId: string): string =>
@@ -236,6 +238,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
   const { run, eventHandlers, subscribers, config } = checked;
   const { name } = options;
   const dir = runDirOf(run.cwd, name);
+  const ref = { id: run.id, cwd: run.cwd, name };
   await copyFile(run.workflowPath, join(dir, "workflow.yaml"));
   await createState({
     runId: run.id,
@@ -247,15 +250,21 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     tiers: run.tiers,
     ...(run.policies === undefined ? {} : { policies: run.policies }),
   });
-  const appended = await appendRunEvent(
-    { id: run.id, cwd: run.cwd, name },
-    {
-      id: "workflow-started",
-      type: "workflow.started",
+  // Before workflow.started, whose notice is the notifier's first post: it finds the thread set.
+  if (options.notifyThread !== undefined) {
+    const seeded = await appendRunEvent(ref, {
+      type: "notification.thread.started",
       source: "orchestrate",
-      payload: { workflow: run.workflow, inputs: run.inputs, activeSessions: run.sessions },
-    },
-  );
+      payload: { provider: "slack", threadId: options.notifyThread },
+    });
+    if (!seeded.ok) throw new Error(seeded.error);
+  }
+  const appended = await appendRunEvent(ref, {
+    id: "workflow-started",
+    type: "workflow.started",
+    source: "orchestrate",
+    payload: { workflow: run.workflow, inputs: run.inputs, activeSessions: run.sessions },
+  });
   if (!appended.ok) throw new Error(appended.error);
   const state = await syncState(dir);
   if (state === null) throw new Error(`${dir}/state.json disappeared during init`);

@@ -292,7 +292,7 @@ export const describeEvent = (event: Event, state: State): Notice | undefined =>
 
 // Slack reads <…> as a mention or a link, so text from a prompt or an agent could ping the
 // channel or disguise a link.
-const escapeSlack = (text: string): string =>
+export const escapeSlack = (text: string): string =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 // Outside the bold marker: Slack renders <@ID> as a name, and bold-wrapping it reads as shouting.
@@ -304,8 +304,8 @@ export const formatSlackText = (notice: Notice, memberId: string | undefined): s
 
 const SLACK_API = "https://slack.com/api";
 
-type Fetch = (url: string, init: RequestInit) => Promise<Response>;
-type SlackConfig = Readonly<{
+export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+export type SlackConfig = Readonly<{
   token: string;
   channel: string;
   memberId: string | undefined;
@@ -314,7 +314,7 @@ type SlackConfig = Readonly<{
 
 const SlackReplySchema = z.looseObject({ ok: z.boolean(), error: z.string().optional() });
 
-const callSlack = async (
+export const callSlack = async (
   config: SlackConfig,
   method: string,
   form: Readonly<Record<string, string>>,
