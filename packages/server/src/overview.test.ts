@@ -268,7 +268,7 @@ describe("summarizeRun with a dead terminal", () => {
 
 describe("summarizeRun policies", () => {
   const unattended: SavedPolicies = {
-    values: { interaction: false },
+    values: { interaction: false, learning: true },
     sources: { interaction: "cli" },
   };
 
@@ -281,7 +281,10 @@ describe("summarizeRun policies", () => {
     {
       given: "a state and a registry entry with no policies",
       state: stateOf(),
-      policies: { values: { interaction: true }, sources: { interaction: "default" } },
+      policies: {
+        values: { interaction: true, learning: true },
+        sources: { interaction: "default", learning: "default" },
+      },
     },
   ])("SC529: $given gives those policies with their sources", ({ state, policies }) => {
     const summary = summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true);

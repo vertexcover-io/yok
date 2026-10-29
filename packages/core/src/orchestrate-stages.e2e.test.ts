@@ -201,7 +201,7 @@ describe("SC26: orchestrate next and done with stages", () => {
       extension: join(repo, "docs/producer-ext.md"),
       input: { request: "hi" },
       variables: {},
-      policies: { interaction: true },
+      policies: { interaction: true, learning: true },
       done: `yok orchestrate done ${reply.nodeRunId} --run feat-x`,
     });
   });
@@ -215,7 +215,7 @@ nodes:
   - { id: plan, type: agent, prompt: plan it, dependsOn: [make], input: {} }
 `;
     const policies: SavedPolicies = {
-      values: { interaction: false },
+      values: { interaction: false, learning: true },
       sources: { interaction: "workflow" },
     };
     const run = startedRun(POLICED, undefined, { policies });
@@ -477,7 +477,7 @@ nodes:
 
   test("SC516: with interaction off, done --error fails an allowFailure stage as needs-input and next ends the run failed", () => {
     const policies: SavedPolicies = {
-      values: { interaction: false },
+      values: { interaction: false, learning: true },
       sources: { interaction: "cli" },
     };
     const { repo, step, question } = failMake({ policies });

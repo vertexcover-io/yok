@@ -75,7 +75,10 @@ const nodeRun = (
 });
 
 const planOpen = { plan: nodeRun("plan", "running") };
-const UNATTENDED = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
+const UNATTENDED = {
+  values: { interaction: false, learning: true },
+  sources: { interaction: "cli" },
+} as const;
 
 const decide = (overrides: Partial<State>, check: Partial<Omit<StopCheck, "run" | "state">> = {}) =>
   decideStop({
@@ -833,6 +836,45 @@ describe("offerLearn", () => {
     offerLearn.run(input(entries), deps);
   const eventTypes = async (runDir: string) =>
     (await jsonlEventStore(runDir).read()).map((event) => event.type);
+
+  // setUpPrDone's run, saved with these policies.
+  const setUpPrDoneWith = async (values: { interaction: boolean; learning: boolean }) => {
+    const run = await setUpPrDone();
+    const statePath = join(run.runDir, "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    const sources = { interaction: "cli", learning: "cli" };
+    await writeFile(statePath, JSON.stringify({ ...state, policies: { values, sources } }));
+    return run;
+  };
+
+  test("SC4: with learning off, a push after the PR gets no offer", async () => {
+    const { deps, runDir } = await setUpPrDoneWith({ interaction: true, learning: false });
+    expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
+    expect(await eventTypes(runDir)).toEqual([]);
+  });
+
+  test("SC5 (regression): with learning on, the same push still gets the offer", async () => {
+    const { deps, runDir } = await setUpPrDoneWith({ interaction: true, learning: true });
+    expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
+    expect(await eventTypes(runDir)).toEqual(["learning.offered"]);
+  });
+
+  const messageOf = (reply: Awaited<ReturnType<typeof offer>>) =>
+    reply.kind === "continue" ? reply.message : "";
+
+  test("SC11: with interaction off, the offer tells the agent to ask learn's questions in plain text", async () => {
+    const { deps } = await setUpPrDoneWith({ interaction: false, learning: true });
+    expect(messageOf(await offer(reviewPush, deps))).toContain(
+      "Ask the learn skill's questions in plain text",
+    );
+  });
+
+  test("SC12 (regression): with interaction on, the offer message is unchanged", async () => {
+    const { deps } = await setUpPrDoneWith({ interaction: true, learning: true });
+    const message = messageOf(await offer(reviewPush, deps));
+    expect(message).toContain("/yok:learn");
+    expect(message).not.toContain("plain text");
+  });
 
   test("before the PR stage completes it never offers, even after a push", async () => {
     const { deps, runDir } = await setUp({ pr: nodeRun("pr", "running") });

@@ -229,7 +229,7 @@ nodes:
 
     test("SC518: with interaction off, await-approval approves at once, records policy.applied, and done then completes the node", async () => {
       const policies: SavedPolicies = {
-        values: { interaction: false },
+        values: { interaction: false, learning: true },
         sources: { interaction: "cli" },
       };
       const run = startedRun(ONE_AGENT, undefined, { policies });
@@ -310,7 +310,7 @@ nodes:
 
     test("SC714: with interaction off, await-approval still builds artifacts/plan.html before auto-approving it", async () => {
       const policies: SavedPolicies = {
-        values: { interaction: false },
+        values: { interaction: false, learning: true },
         sources: { interaction: "cli" },
       };
       const run = startedRun(ONE_AGENT, undefined, { policies });

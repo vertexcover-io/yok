@@ -708,8 +708,8 @@ describe("yok run", () => {
       const runId = run.stdout.trim().split("\n")[0] ?? "";
       const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8"));
       expect(registry.runs[runId].policies).toEqual({
-        values: { interaction: false },
-        sources: { interaction: source },
+        values: { interaction: false, learning: true },
+        sources: { interaction: source, learning: "default" },
       });
 
       stopServer(repo, env);
@@ -1794,8 +1794,8 @@ describe("yok --remote beside a local server", () => {
       expect(view).toStartWith("view: http://localhost:");
       const registry = JSON.parse(readFileSync(join(server.home, "registry.json"), "utf8"));
       expect(registry.runs[runId].policies).toEqual({
-        values: { interaction: false },
-        sources: { interaction: "cli" },
+        values: { interaction: false, learning: true },
+        sources: { interaction: "cli", learning: "default" },
       });
       expect(hasNoServer(remote.home)).toBe(true);
 

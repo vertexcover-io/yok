@@ -11,6 +11,11 @@ there is nothing to do. Stage skills never mention policies; this file is the on
 No one will answer in this run.
 
 - Never ask. The question tool is refused, and so is ending the turn to ask in plain text.
+- After the `pr` stage completes, a person is reviewing. The learn offer that follows a push may
+  ask its one question with the question tool, and the learn session it starts asks in plain
+  text and waits for the answer.
+- The learn stage after planning finishes without writing, logging or marking anything: its
+  corrections wait for a learn session after the PR.
 - Sort each open question:
   - An assumption has a sensible answer from the task or the code. Use it, and write it down
     where the stage's document lists assumptions. A stage with no document says it in its
@@ -20,3 +25,10 @@ No one will answer in this run.
     answer, in under 500 characters. This fails the run.
 - When `await-approval` prints `autoApproved: true`, the file is approved. Finish the stage at
   once; do not end the turn to wait.
+
+## learning: false
+
+The run keeps no learnings.
+
+- The learn stage finishes at once with an empty output: it lists no candidates, asks nothing,
+  and writes, logs and marks nothing.
