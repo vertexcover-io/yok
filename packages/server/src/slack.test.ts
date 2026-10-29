@@ -6,8 +6,9 @@ import { summarize } from "@yok/core";
 import { createGit, type LaunchOptions, noopLogger } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
-import { dispatchCommand, splitWords, startError } from "./dispatch.ts";
+import { dispatchCommand, splitWords } from "./dispatch.ts";
 import { fakeHost, fakeProvider } from "./fake-host.ts";
+import { startError } from "./render.ts";
 import { isSlackSigned } from "./slack.ts";
 
 // None of these commands reaches the server, so the client points nowhere; launched records

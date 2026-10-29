@@ -11,7 +11,7 @@ import {
   workflowChecks,
 } from "@yok/core";
 import { stopRunningOnSignal, yokHome } from "@yok/sdk";
-import { renderText, runtimeChecks } from "@yok/server";
+import { renderDoctorReport, runtimeChecks } from "@yok/server";
 import {
   apiErrorText,
   cliLog,
@@ -59,7 +59,7 @@ export const doctorCommand = () =>
         });
         if (!checked.ok) return fail(apiErrorText(checked.error));
         const report = DoctorReportSchema.parse(checked.value.report);
-        console.log(json === true ? renderJson(report) : renderText(report));
+        console.log(json === true ? renderJson(report) : renderDoctorReport(report));
         process.exitCode = exitCodeFor(report);
         return;
       }
@@ -78,6 +78,6 @@ export const doctorCommand = () =>
         { verdict: verdict(report), failed: report.failed.length, warned: report.warned.length },
         "doctor finished",
       );
-      console.log(json === true ? renderJson(report) : renderText(report));
+      console.log(json === true ? renderJson(report) : renderDoctorReport(report));
       process.exitCode = exitCodeFor(report);
     });

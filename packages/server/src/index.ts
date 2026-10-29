@@ -1,16 +1,6 @@
 export { type ApiDeps, type ApiType, createApi } from "./app.ts";
 export { createYokClient, type YokClient, type YokClientOptions } from "./client.ts";
 export {
-  blockedText,
-  describeFire,
-  describeSchedule,
-  describeTrigger,
-  renderProjects,
-  renderTable,
-  renderText,
-  startError,
-} from "./dispatch.ts";
-export {
   AddProjectBodySchema,
   type AddProjectRequest,
   type ApiError,
@@ -32,6 +22,16 @@ export {
   StartRunBodySchema,
   updateHomeEnv,
 } from "./protocol.ts";
+export {
+  blockedText,
+  describeFire,
+  describeSchedule,
+  describeTrigger,
+  renderDoctorReport,
+  renderDoctorTable,
+  renderProjects,
+  startError,
+} from "./render.ts";
 export {
   defaultRuntime,
   type Runtime,
