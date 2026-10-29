@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { isWorkflowFile, unwrap } from "@yok/core";
 import { createGit } from "@yok/sdk";
-import type { Fire, Trigger } from "@yok/sdk/internal";
+import { describeFire, describeSchedule, describeTrigger } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
 import { PROJECT_REQUIRED } from "./project.ts";
@@ -20,29 +20,6 @@ const resolveTriggerProject = async (
   const known = unwrap(await projectAt(client, root));
   if (known === null) throw new Error(`${root} is not a project; pass --project NAME`);
   return known;
-};
-
-export const describeFire = (fire: Fire): string =>
-  [
-    fire.at,
-    fire.status,
-    `slot ${fire.slot}`,
-    ...(fire.runId === undefined ? [] : [`run ${fire.runId} (${fire.runName ?? "unnamed"})`]),
-    ...(fire.reason === undefined ? [] : [fire.reason]),
-  ].join("  ");
-
-type Schedule = Pick<Trigger, "name" | "project" | "cron" | "timezone" | "nextFireAt">;
-
-export const describeSchedule = (trigger: Schedule): string => {
-  const { name, project, cron, timezone, nextFireAt } = trigger;
-  return `${name} in ${project}: ${cron} (${timezone}), next fire ${nextFireAt}`;
-};
-
-type ListedTrigger = Schedule & Readonly<{ lastFire: Pick<Fire, "status" | "at"> | null }>;
-
-export const describeTrigger = (t: ListedTrigger): string => {
-  const last = t.lastFire === null ? "never fired" : `last ${t.lastFire.status} ${t.lastFire.at}`;
-  return `${t.name}  ${t.project}  ${t.cron} (${t.timezone})  next ${t.nextFireAt}  ${last}`;
 };
 
 export const triggerCommand = () => {

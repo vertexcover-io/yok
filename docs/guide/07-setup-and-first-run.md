@@ -176,10 +176,16 @@ On the server, as the user who will own the runs:
 
    ```caddyfile
    yok.example.com {
-       basic_auth {
-           ritesh HASH_FROM_CADDY_HASH_PASSWORD
+       # Slack cannot send the password; the server checks Slack's signature on this path instead.
+       handle /api/hooks/slack {
+           reverse_proxy 127.0.0.1:7777
        }
-       reverse_proxy 127.0.0.1:7777
+       handle {
+           basic_auth {
+               ritesh HASH_FROM_CADDY_HASH_PASSWORD
+           }
+           reverse_proxy 127.0.0.1:7777
+       }
    }
    ```
 
@@ -207,6 +213,22 @@ Every `--remote` command checks the server first. If the versions differ, it pri
 A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, SSH into the server and attach to the run there.
 
 You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
+
+### Drive yok from Slack
+
+1. Create a Slack app in your workspace. Under Event Subscriptions, turn events on, set the request URL to `https://yok.example.com/api/hooks/slack`, and subscribe to the `app_mentions:read` bot event (`app_mention`). Add the `chat:write` bot scope and install the app.
+2. Create a private channel, invite the people allowed to drive yok and the app, and copy the channel's id (channel details, at the bottom).
+3. Add three lines to the server's `~/.yok/.env`; the server reads them on every request, so no restart is needed:
+
+   ```sh
+   SLACK_SIGNING_SECRET=…   # the app's Basic Information page
+   SLACK_BOT_TOKEN=xoxb-…   # the app's OAuth & Permissions page
+   SLACK_COMMAND_CHANNEL=C0123456789
+   ```
+
+4. Type `@yok help` in the channel. Only messages in that channel are answered, so the channel's member list is who can use yok.
+
+A run started from Slack posts its updates in the thread under the message only when its project's notifier posts to that same channel (`SLACK_CHANNEL_ID` in the project's `.env`).
 
 ## Useful commands
 

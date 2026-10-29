@@ -7,6 +7,7 @@ import {
   compilePlan,
   findWorkflowPath,
   orchestrateArgv,
+  pickNotifier,
   resolveWorkflowInputs,
   verdict,
   type WorkflowAgent,
@@ -23,6 +24,7 @@ import {
   type JsonObject,
   type JsonValue,
   loadStartConfig,
+  type Notifier,
   type PermissionMode,
   type PolicyLayer,
   type ResolvedTiers,
@@ -50,6 +52,8 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
+// A type import only: dispatch.ts imports this file.
+import type { ChatThread } from "./dispatch.ts";
 import { addRunIfProjectKept, pickProject, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
@@ -94,7 +98,15 @@ const resolveRunSettings = async (
   cwd: string,
   plan: WorkflowPlan,
   cli: PolicyLayer,
-): Promise<Result<Readonly<{ tiers: ResolvedTiers | null; policies: SavedPolicies }>>> => {
+): Promise<
+  Result<
+    Readonly<{
+      tiers: ResolvedTiers | null;
+      policies: SavedPolicies;
+      notifier: Notifier | undefined;
+    }>
+  >
+> => {
   const loaded = await loadStartConfig(config, cwd);
   if (!loaded.ok) return loaded;
   const tiers = resolveTiers(loaded.value.config, plan.agent, plan.tiers);
@@ -104,13 +116,32 @@ const resolveRunSettings = async (
     workflow: plan.policies,
     cli,
   });
-  return { ok: true, value: { tiers: tiers.value, policies } };
+  const notifier = pickNotifier(plan.notifier, loaded.value.config.notifier);
+  return { ok: true, value: { tiers: tiers.value, policies, notifier } };
+};
+
+// A run started from a chat thread replies in it only when its notifier posts to that channel:
+// the thread's id means nothing anywhere else. True when the session gets the thread.
+const checkThread = (
+  thread: ChatThread | undefined,
+  notifier: Notifier | undefined,
+  env: Readonly<Record<string, string>>,
+): Result<boolean> => {
+  if (thread === undefined || notifier?.enabled !== true) return { ok: true, value: false };
+  const channel = env.SLACK_CHANNEL_ID ?? process.env.SLACK_CHANNEL_ID;
+  if (channel === thread.channel) return { ok: true, value: true };
+  return {
+    ok: false,
+    error: `run not started: this project's updates go to Slack channel ${channel ?? "(none set)"}, not this one; start the run from that channel, or set its SLACK_CHANNEL_ID to this one`,
+  };
 };
 
 export type LaunchReply = Readonly<{
   run: WorkflowRun;
   attach: readonly string[];
   view: string;
+  // set only for a start from a chat thread: whether the run's updates reply in it
+  threaded?: boolean;
 }>;
 export type LaunchError = Readonly<{
   status: 400 | 409 | 422 | 502;
@@ -128,6 +159,8 @@ export type LaunchRequest = Readonly<{
   name?: string;
   policies: PolicyLayer;
   permissionMode?: PermissionMode;
+  // the chat message a Slack command started this run from
+  thread?: ChatThread;
   // Adds the run to the registry unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
 }>;
@@ -141,6 +174,22 @@ const refused = (
   ok: false,
   error: { status, code, message, ...(details === undefined ? {} : { details }) },
 });
+
+// A load error quotes host paths and file contents. A chat thread is open to the whole channel,
+// so it gets a fixed line and the server log the detail; the API's caller still sees it all.
+const loadRefused = (
+  error: string,
+  thread: ChatThread | undefined,
+  log: ILogger,
+): Result<never, LaunchError> => {
+  if (thread === undefined) return refused(400, "bad-request", error);
+  log.info({ err: error }, "run not started: the workflow or its config did not load");
+  return refused(
+    400,
+    "bad-request",
+    "run not started: the workflow or its config did not load; see the server log",
+  );
+};
 
 // Checks a compiled workflow and starts its agent session; the /runs route and the trigger
 // scheduler both call it. Every refusal comes before register, so a refused start records no run.
@@ -161,7 +210,7 @@ export const launchRun = async (
     log.info({ workflow, verdict: line }, "run not started: the doctor blocked it");
     return refused(400, "bad-request", line, checked.report);
   }
-  if (!checked.env.ok) return refused(400, "bad-request", checked.env.error);
+  if (!checked.env.ok) return loadRefused(checked.env.error, request.thread, log);
 
   const resolved = await resolveRunSettings(config, cwd, plan, request.policies);
   if (!resolved.ok) {
@@ -169,9 +218,11 @@ export const launchRun = async (
       { err: resolved.error, workflow, agent },
       "run not started: its tiers do not resolve",
     );
-    return refused(400, "bad-request", resolved.error);
+    return loadRefused(resolved.error, request.thread, log);
   }
-  const { tiers, policies } = resolved.value;
+  const { tiers, policies, notifier } = resolved.value;
+  const threaded = checkThread(request.thread, notifier, checked.env.value);
+  if (!threaded.ok) return refused(400, "bad-request", threaded.error);
 
   const provider = deps.providerFor(agent);
   const id = `r-${randomBytes(4).toString("hex")}`;
@@ -204,7 +255,10 @@ export const launchRun = async (
     .launch({
       cwd,
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
-      env: sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+      env: {
+        ...sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+        ...(threaded.value && request.thread ? { YOK_SLACK_THREAD: request.thread.ts } : {}),
+      },
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
       ...tierLaunch(tiers === null ? null : (tiers.models[tiers.default] ?? null)),
@@ -229,12 +283,19 @@ export const launchRun = async (
   runLog.info({ workflow, cwd, agent, terminalName }, "run started");
   return {
     ok: true,
-    value: { run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) },
+    value: {
+      run,
+      attach: [...terminal.attachCommand()],
+      view: viewUrl(deps, id),
+      ...(request.thread === undefined ? {} : { threaded: threaded.value }),
+    },
   };
 };
 
 export type StartExtra = Readonly<{
   permissionMode?: PermissionMode;
+  // the chat message the run is started from; only the Slack hook passes one
+  thread?: ChatThread;
   // Asked just before the run is registered; false refuses the start with a conflict.
   stillWanted?: () => Promise<boolean>;
 }>;
@@ -252,7 +313,7 @@ export const compileWorkflow = async (
   return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;
 };
 
-// The one start-up path: POST /runs and trigger firings both start here. A project yok cloned
+// The one start-up path: POST /runs, trigger firings and the Slack run command all start here. A project yok cloned
 // is pulled first, and every refusal comes before the run is registered.
 export const startProjectRun = async (
   body: StartRunBody,
@@ -275,8 +336,8 @@ export const startProjectRun = async (
   }
   const config = body.config === undefined ? null : resolve(cwd, body.config);
   const compiled = await compileWorkflow(body.workflow, cwd, config);
-  if (!compiled.ok) return refused(400, "bad-request", compiled.error);
-  const { permissionMode, stillWanted } = extra;
+  const { permissionMode, stillWanted, thread } = extra;
+  if (!compiled.ok) return loadRefused(compiled.error, thread, log);
   return launchRun(
     {
       ...compiled.value,
@@ -286,6 +347,7 @@ export const startProjectRun = async (
       ...(body.name === undefined ? {} : { name: body.name }),
       policies: body.policies ?? {},
       ...(permissionMode === undefined ? {} : { permissionMode }),
+      ...(thread === undefined ? {} : { thread }),
       register: async (add) => {
         if (stillWanted !== undefined && !(await stillWanted())) {
           return { ok: false, error: "withdrawn while the run was being checked" };

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DoctorJsonSchema, type DoctorReport, type DoctorRow, summarize } from "@yok/core";
-import { exitCodeFor, renderJson, renderTable, renderText } from "./doctor.ts";
+import { renderTable, renderText } from "@yok/server";
+import { exitCodeFor, renderJson } from "./doctor.ts";
 
 const row = (overrides: Partial<DoctorRow>): DoctorRow => ({
   name: "git",

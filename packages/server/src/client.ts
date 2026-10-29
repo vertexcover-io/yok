@@ -18,6 +18,8 @@ export type YokClientOptions = Readonly<{
   url: string;
   login?: Readonly<{ user: string; password: string }>;
   log?: ILogger;
+  // what sends each request; the network's fetch unless the caller answers it in memory
+  send?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }>;
 
 // The body a response carries on its 2xx statuses, as the server's routes declare it.
@@ -43,6 +45,8 @@ const replyError = (status: number, text: string, json: unknown): ApiError => {
   return { code: "internal", message: `${status} ${text.trim().slice(0, 200)}`.trim() };
 };
 
+export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;
+
 const unwrap = async <R extends ClientResponse<unknown, number, "json">>(
   pending: Promise<R>,
 ): Promise<Result<SuccessBody<R>, ApiError>> => {
@@ -56,12 +60,15 @@ const unwrap = async <R extends ClientResponse<unknown, number, "json">>(
     : { ok: false, error: replyError(res.status, text, json) };
 };
 
-const loggedFetch = (log: ILogger) =>
+const loggedFetch = (
+  log: ILogger,
+  send: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+) =>
   (async (input: string | URL | Request, init?: RequestInit) => {
     const start = Date.now();
     const url = input instanceof Request ? input.url : input.toString();
     const fields = { method: init?.method ?? "GET", path: new URL(url).pathname };
-    const res = await fetch(input, init).catch((error: unknown) => {
+    const res = await send(input, init).catch((error: unknown) => {
       log.debug({ ...fields, err: error }, "server not reachable");
       throw error;
     });
@@ -77,11 +84,16 @@ const loggedFetch = (log: ILogger) =>
 // One method per API call, named like the CLI command that makes it. Inputs and outputs are
 // typed from the server's routes, so neither side restates the other's schemas. url is the
 // server's origin; login is for the reverse proxy in front of a remote server.
-export const createYokClient = ({ url, login, log = noopLogger }: YokClientOptions) => {
-  const fetch = loggedFetch(log.child({ component: "client" }));
+export const createYokClient = ({
+  url,
+  login,
+  log = noopLogger,
+  send = (input, init) => fetch(input, init),
+}: YokClientOptions) => {
+  const logged = loggedFetch(log.child({ component: "client" }), send);
   const basic = login && Buffer.from(`${login.user}:${login.password}`).toString("base64");
   const headers = basic === undefined ? {} : { authorization: `Basic ${basic}` };
-  const api = hc<ApiType>(`${url.replace(/\/+$/, "")}/api`, { fetch, headers });
+  const api = hc<ApiType>(`${url.replace(/\/+$/, "")}/api`, { fetch: logged, headers });
   return {
     health: () => unwrap(api.health.$get()),
     run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),

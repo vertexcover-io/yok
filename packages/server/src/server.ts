@@ -5,6 +5,7 @@ import {
   createLogger,
   type DoctorReport,
   loadStartEnv,
+  type notifierHooks,
   resolveLevel,
   runDoctor,
   type WorkflowAgent,
@@ -18,9 +19,11 @@ import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import prettyFactory from "pino-pretty";
 import { type ApiDeps, createApi } from "./app.ts";
+import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
+import { slackHookRoutes } from "./slack.ts";
 import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts";
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
 
@@ -68,15 +71,29 @@ export const checkCheckoutWith = async (
 const checkCheckout: CheckCheckout = (input) =>
   checkCheckoutWith(runtimeChecks(input.plan?.agent ?? "claude"), input);
 
-export type RootDeps = ApiDeps & ViewerDeps & Readonly<{ port: number; domain: string }>;
+export type RootDeps = ApiDeps &
+  ViewerDeps &
+  Readonly<{ port: number; domain: string; slackFetch?: notifierHooks.Fetch }>;
 
 // The API sits under /api so its routes never shadow a dashboard page: the API's GET /runs/view
-// once also matched the dashboard's GET /runs/:id.
-export const createRoot = (deps: RootDeps) =>
-  new Hono()
+// once also matched the dashboard's GET /runs/:id. The Slack hook is added before the API, whose
+// 404 for an unknown path would otherwise answer first.
+export const createRoot = (deps: RootDeps) => {
+  const api = createApi(deps);
+  // A chat command runs through the API's own routes, so it is checked and answered as one
+  // from yok --remote is.
+  const self = new Hono().route("/api", api);
+  const client = createYokClient({
+    url: "http://yok.internal",
+    send: async (input, init) => self.request(input, init),
+  });
+  const slackFetch = deps.slackFetch ?? ((url, init) => fetch(url, init));
+  return new Hono()
     .use("*", hostGuard(deps.port, deps.domain))
-    .route("/api", createApi(deps))
+    .route("/api/hooks/slack", slackHookRoutes({ ...deps, client, slackFetch }))
+    .route("/api", api)
     .route("/", viewerRoutes({ ...deps, log: deps.log.child({ component: "viewer" }) }));
+};
 
 // A port the caller names must be free: a service manager or a TLS proxy points at it. The saved
 // port falls back to any free one. It answers 503 until startServer loads the app, which needs

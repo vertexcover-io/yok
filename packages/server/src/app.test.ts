@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import {
   accessSync,
   appendFileSync,
@@ -36,6 +37,7 @@ import { Hono } from "hono";
 import * as z from "zod";
 import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
+import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { AddProjectBodySchema } from "./protocol.ts";
 import { startProjectRun } from "./run.ts";
@@ -1130,6 +1132,617 @@ describe("createRoot guard", () => {
     expect(
       await status({ host: "localhost:4000", origin: "https://yok.example.com" }, "/api/health"),
     ).toBe(403);
+  });
+});
+
+const SLACK_NOW = new Date("2026-10-29T12:00:00.000Z");
+const SLACK_ENV =
+  "SLACK_SIGNING_SECRET=s3cret\nSLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n";
+
+type SlackPost = Readonly<{ url: string; form: Readonly<Record<string, string>> }>;
+
+// The root on localhost:4000 with HOME/.env holding ENV; posts records every Slack Web API call.
+const slackRoot = async (
+  env = SLACK_ENV,
+  launch: Parameters<typeof buildDeps>[0] = launchesOk,
+  checkCheckout: CheckCheckout = readyCheckout,
+) => {
+  const deps = { ...(await buildDeps(launch)), checkCheckout };
+  writeFileSync(join(deps.home, ".env"), env);
+  const posts: SlackPost[] = [];
+  const app = createRoot({
+    ...deps,
+    port: 4000,
+    domain: "localhost:4000",
+    now: () => SLACK_NOW,
+    openInEditor: () => ({ ok: true, value: null }),
+    slackFetch: async (url, init) => {
+      posts.push({ url, form: Object.fromEntries(new URLSearchParams(String(init.body))) });
+      return Response.json({ ok: true });
+    },
+  });
+  return { app, deps, posts };
+};
+
+const signedHook = async (
+  app: ReturnType<typeof createRoot>,
+  payload: unknown,
+  secret = "s3cret",
+): Promise<Response> => {
+  const body = JSON.stringify(payload);
+  const ts = String(SLACK_NOW.getTime() / 1000);
+  const signature = `v0=${createHmac("sha256", secret).update(`v0:${ts}:${body}`).digest("hex")}`;
+  return app.request("/api/hooks/slack", {
+    method: "POST",
+    headers: {
+      host: "localhost:4000",
+      "content-type": "application/json",
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": signature,
+    },
+    body,
+  });
+};
+
+const mention = (text: string, extra: object = {}, eventId = "Ev1") => ({
+  type: "event_callback",
+  event_id: eventId,
+  event: { type: "app_mention", channel: "C1", ts: "100.1", text, ...extra },
+});
+
+// The hook acks before it posts, so a test waits on the fake's recorded calls.
+const until = async (check: () => boolean): Promise<void> => {
+  for (let i = 0; i < 50 && !check(); i++) await Bun.sleep(20);
+};
+
+describe("Slack hook", () => {
+  test("SC8: @yok help from the command channel gets one code-block reply in its thread", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+    await until(() => posts.length > 0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1" });
+    expect(posts[0]?.form.text).toStartWith("```\nType @yok and one of:\n  runs");
+    expect(posts[0]?.form.text).toEndWith("\n  help\n```");
+  });
+
+  test("SC9: @yok status replies with the server's own version and pid", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> status"));
+
+    await until(() => posts.length > 0);
+    expect(posts[0]?.form.text).toContain("version  0.0.0-test");
+    expect(posts[0]?.form.text).toContain("pid      4242");
+  });
+
+  test("SC10: a mention typed inside thread 90.0 replies in that thread, not under its own ts", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> help", { thread_ts: "90.0" }));
+
+    await until(() => posts.length > 0);
+    expect(posts[0]?.form.thread_ts).toBe("90.0");
+  });
+
+  test("SC11: a request signed with another secret gets 401 and Slack is never called", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help"), "other");
+
+    expect(res.status).toBe(401);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC12: a mention from channel C2 gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help", { channel: "C2" }));
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC13: the same event delivered twice gets one reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const first = await signedHook(app, mention("<@UBOT> help"));
+    const second = await signedHook(app, mention("<@UBOT> help"));
+
+    expect([first.status, second.status]).toEqual([200, 200]);
+    await until(() => posts.length > 0);
+    await Bun.sleep(100);
+    expect(posts).toHaveLength(1);
+  });
+
+  test("SC14: Slack's URL check gets its challenge back", async () => {
+    const { app } = await slackRoot();
+
+    const res = await signedHook(app, { type: "url_verification", challenge: "abc" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ challenge: "abc" });
+  });
+
+  test("SC15: without SLACK_SIGNING_SECRET the hook answers 503 and Slack is never called", async () => {
+    const { app, posts } = await slackRoot("SLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n");
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(503);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("a command that throws gets the fixed internal reply, without the error's text", async () => {
+    const { app, deps, posts } = await slackRoot();
+    Object.assign(deps.registry, {
+      listRuns: async () => {
+        throw new Error("EACCES: /srv/secret/registry.json");
+      },
+    });
+
+    await signedHook(app, mention("<@UBOT> runs"));
+
+    await until(() => posts.length > 0);
+    expect(replies(posts)).toEqual(["internal: the command failed; see the server log"]);
+  });
+
+  test("a reply echoing <!channel> and ``` posts them escaped inside one code block", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> &lt;!channel&gt; ```"));
+
+    await until(() => posts.length > 0);
+    const text = String(posts[0]?.form.text);
+    expect(text).toStartWith("```\nunknown command: &lt;!channel&gt; `​``\n");
+    expect(text).not.toContain("<!channel>");
+    expect(text.match(/```/g)).toHaveLength(2);
+  });
+
+  test("after 1001 distinct events the first id counts as new again, and the newest is still dropped", async () => {
+    const { app, posts } = await slackRoot();
+    for (let i = 0; i <= 1000; i++) await signedHook(app, mention("<@UBOT> help", {}, `Ev${i}`));
+    await until(() => posts.length >= 1001);
+
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev0"));
+    await until(() => posts.length >= 1002);
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev1000"));
+    await Bun.sleep(100);
+
+    expect(posts).toHaveLength(1002);
+  });
+
+  test("without SLACK_COMMAND_CHANNEL a mention gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot(
+      "SLACK_SIGNING_SECRET=s3cret\nSLACK_BOT_TOKEN=xoxb-test\n",
+    );
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("an event other than app_mention gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+    const message = mention("<@UBOT> help");
+
+    const res = await signedHook(app, { ...message, event: { ...message.event, type: "message" } });
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("a signed payload of no known shape gets an empty 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, { type: "event_callback", event: { type: "app_mention" } });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC16: /api/health and /api/projects answer through the root as the bare API does, and /api/hooks/other is 404", async () => {
+    const { app, deps } = await slackRoot();
+    tempWorkspace(deps.home);
+    const bare = new Hono().route("/api", createApi(deps));
+    const get = (target: { request: typeof app.request }, path: string) =>
+      target.request(path, { headers: { host: "localhost:4000" } });
+
+    for (const path of ["/api/health", "/api/projects"]) {
+      const viaRoot = await get(app, path);
+      expect(viaRoot.status).toBe(200);
+      expect(await viaRoot.json()).toEqual(await (await get(bare, path)).json());
+    }
+    expect((await get(app, "/api/hooks/other")).status).toBe(404);
+  });
+});
+
+type SlackRunSetup = Readonly<{
+  // the project's .env value for SLACK_CHANNEL_ID
+  channel?: string;
+  // the project config's notifier block
+  notifier?: string;
+  checkCheckout?: CheckCheckout;
+}>;
+
+// slackRoot with project demo holding ok.yaml, a config turning the notifier on and a .env that
+// sends its updates to C1; launches records every agent launch.
+const slackRunRoot = async (setup: SlackRunSetup = {}) => {
+  const { channel = "C1", notifier = "{ type: slack }", checkCheckout = readyCheckout } = setup;
+  const launches: LaunchOptions[] = [];
+  const recordLaunch = (options: LaunchOptions) => {
+    launches.push(options);
+    return launchesOk();
+  };
+  const root = await slackRoot(SLACK_ENV, recordLaunch, checkCheckout);
+  const { cwd } = tempWorkspace(root.deps.home);
+  writeFileSync(join(cwd, "orchestrate.config.yaml"), `version: 2\nnotifier: ${notifier}\n`);
+  writeFileSync(join(cwd, ".env"), `SLACK_CHANNEL_ID=${channel}\nSLACK_BOT_TOKEN=xoxb-test\n`);
+  return { ...root, launches, cwd };
+};
+
+// The reply's text without the code block it is posted in.
+const replies = (posts: readonly SlackPost[]): readonly string[] =>
+  posts.map((post) =>
+    String(post.form.text)
+      .replace(/^```\n/, "")
+      .replace(/\n```$/, ""),
+  );
+
+describe("Slack run command", () => {
+  test("SC20: @yok run ok.yaml --project demo fix login launches once with YOK_SLACK_THREAD=100.1, prompt input and interaction off, and replies starting then the run id and view", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot();
+
+    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt: "fix login" });
+    expect(run?.policies?.values.interaction).toBe(false);
+    const [starting, started] = replies(posts);
+    expect(starting).toBe("starting ok.yaml on demo…");
+    expect(started).toContain(`${run?.id} started`);
+    expect(started).toContain(`view: http://localhost:1/runs/${run?.id}`);
+    expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
+  });
+
+  test("SC21: --interaction true saves the run with interaction on", async () => {
+    const { app, deps, posts } = await slackRunRoot();
+
+    await signedHook(
+      app,
+      mention("<@UBOT> run ok.yaml --project demo fix login --interaction true"),
+    );
+
+    await until(() => posts.length >= 2);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.policies?.values.interaction).toBe(true);
+  });
+
+  test("SC22: a project whose updates go to C9 is refused naming C9, launches nothing and registers no run", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+
+    await until(() => posts.length >= 2);
+    const reply = replies(posts)[1];
+    expect(reply).toContain("C9");
+    expect(reply).toContain("run not started");
+    expect(launches).toEqual([]);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
+    const { app, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
+
+    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
+    expect(replies(posts)[1]?.split("\n").at(-1)).toContain("no updates will follow here");
+  });
+
+  test("SC24: a run mention delivered twice launches once and registers one run", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot();
+    const payload = mention("<@UBOT> run ok.yaml --project demo fix login");
+
+    await signedHook(app, payload);
+    await signedHook(app, payload);
+
+    await until(() => posts.length >= 2);
+    await Bun.sleep(100);
+    expect(launches).toHaveLength(1);
+    expect(await deps.registry.listRuns()).toHaveLength(1);
+  });
+
+  test("SC25: a start the doctor blocks on git replies with the check and its fix and registers no run", async () => {
+    const blocked: CheckCheckout = async (input) => ({
+      ...(await readyCheckout(input)),
+      report: summarize([
+        { name: "git", status: "fail", optional: false, detail: "not found", fix: ["install git"] },
+      ]),
+    });
+    const { app, deps, posts } = await slackRunRoot({ checkCheckout: blocked });
+
+    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+
+    await until(() => posts.length >= 2);
+    const reply = replies(posts)[1];
+    expect(reply).toContain("git: not found");
+    expect(reply).toContain("  fix: install git");
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC27: a run named Bad_Name is refused as bad-request naming name, and no run is registered", async () => {
+    const { app, deps, posts } = await slackRunRoot();
+
+    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo --name Bad_Name go"));
+
+    await until(() => posts.length > 0);
+    const [reply] = replies(posts);
+    expect(reply).toStartWith("bad-request:");
+    expect(reply).toContain("name");
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test.each([
+    ["a workflow that does not exist", "nosuch", ""],
+    ["a project config that does not parse", "ok.yaml", "version: [2\n"],
+  ])("%s gets a start-failure reply naming no host path", async (_label, workflow, config) => {
+    const { app, deps, posts, cwd } = await slackRunRoot();
+    if (config !== "") writeFileSync(join(cwd, "orchestrate.config.yaml"), config);
+
+    await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo fix login`));
+
+    await until(() => posts.length >= 2);
+    expect(replies(posts)[1]).toBe(
+      "bad-request: run not started: the workflow or its config did not load; see the server log",
+    );
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC28 (regression): POST /api/runs replies with no threaded key and launches with no YOK_SLACK_THREAD", async () => {
+    const launches: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      launches.push(options);
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
+
+    const res = await postRun(createApi(deps));
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).not.toHaveProperty("threaded");
+    expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
+  });
+});
+
+// buildDeps whose client answers through createApi in memory, as createRoot wires it; launches
+// records every agent launch.
+const chatDeps = async () => {
+  const launches: LaunchOptions[] = [];
+  const deps = await buildDeps((options) => {
+    launches.push(options);
+    return launchesOk();
+  });
+  const api = new Hono().route("/api", createApi(deps));
+  const client = createYokClient({
+    url: "http://yok.internal",
+    send: async (input, init) => api.request(input, init),
+  });
+  return { deps: { ...deps, client }, launches };
+};
+
+const chat = (deps: DispatchDeps, text: string): Promise<string> =>
+  dispatchCommand(text, { channel: "C1", ts: "100.1" }, deps, async () => undefined);
+
+// Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
+const addRunAt = (
+  registry: Registry,
+  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name">>,
+) =>
+  registry.addRun({
+    workflow: "ok",
+    workflowPath: join(run.cwd, "ok.yaml"),
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    ...run,
+  });
+
+const DAILY = [
+  "name: daily",
+  "trigger:",
+  '  cron: "0 9 * * *"',
+  "  timezone: UTC",
+  "nodes:",
+  "  - id: a",
+  "    type: exec",
+  "    runtime: sh",
+  '    script: "true"',
+  "    input: null",
+  "",
+].join("\n");
+
+describe("Slack commands", () => {
+  test("SC32: run status fix-login shows run r-1 and launches nothing, not a workflow named status", async () => {
+    const { deps, launches } = await chatDeps();
+    await addRunAt(deps.registry, {
+      id: "r-1",
+      name: "fix-login",
+      cwd: gitRepo(),
+      createdAt: "2026-10-29T10:00:00.000Z",
+    });
+
+    const reply = await chat(deps, "run status fix-login");
+
+    expect(reply.split("\n")[0]).toBe("id        r-1");
+    expect(reply).toContain("view      http://localhost:1/runs/r-1");
+    expect(launches).toEqual([]);
+  });
+
+  test("SC34: runs --project demo lists demo's two runs newest first and not other's; runs lists all three", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    await addRunAt(deps.registry, { id: "r-10", cwd: demo, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.registry, { id: "r-11", cwd: demo, createdAt: "2026-10-29T11:00:00.000Z" });
+    await addRunAt(deps.registry, {
+      id: "r-12",
+      cwd: other,
+      createdAt: "2026-10-29T12:00:00.000Z",
+    });
+
+    const ids = async (text: string) =>
+      (await chat(deps, text)).split("\n").map((line) => line.split("  ")[0]);
+
+    expect(await ids("runs --project demo")).toEqual(["r-11", "r-10"]);
+    expect(await ids("runs")).toEqual(["r-12", "r-11", "r-10"]);
+  });
+
+  test("run status of a name two projects share is ambiguous; --project or the id picks one", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    const at = "2026-10-29T10:00:00.000Z";
+    await addRunAt(deps.registry, { id: "r-1", name: "fix-login", cwd: demo, createdAt: at });
+    await addRunAt(deps.registry, { id: "r-2", name: "fix-login", cwd: other, createdAt: at });
+    const firstLine = async (text: string) => (await chat(deps, text)).split("\n")[0];
+
+    expect(await chat(deps, "run status fix-login")).toBe(
+      "ambiguous: runs r-1, r-2 are named fix-login; pass --project NAME or the run id",
+    );
+    expect(await firstLine("run status fix-login --project other")).toBe("id        r-2");
+    expect(await firstLine("run status r-2")).toBe("id        r-2");
+  });
+
+  test.each([
+    [
+      "after the last flag, as typed",
+      "--project demo fix --verbose\nthen  login",
+      "fix --verbose\nthen  login",
+    ],
+    ["after --, flags included", "--project demo -- keep --name x", "keep --name x"],
+    ["before a flag", "fix login --project demo", "fix login"],
+  ])("a run prompt %s is the run's prompt input", async (_label, rest, prompt) => {
+    const { deps, launches } = await chatDeps();
+    tempWorkspace(deps.home);
+
+    const reply = await chat(deps, `run ok.yaml ${rest}`);
+
+    expect(reply).toContain("started");
+    expect(launches).toHaveLength(1);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt });
+    expect(run?.name).toBeNull();
+  });
+
+  test("runs shows the newest 20 of 21 runs", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    for (let i = 0; i < 21; i++) {
+      const minute = String(i).padStart(2, "0");
+      await addRunAt(deps.registry, {
+        id: `r-${i}`,
+        cwd,
+        createdAt: `2026-10-29T10:${minute}:00.000Z`,
+      });
+    }
+
+    const ids = (await chat(deps, "runs")).split("\n").map((line) => line.split("  ")[0]);
+
+    expect(ids).toHaveLength(20);
+    expect(ids[0]).toBe("r-20");
+    expect(ids).not.toContain("r-0");
+  });
+
+  test("SC35: project add demo2 --path DIR replies added demo2  DIR, and project list shows it added by slack", async () => {
+    const { deps } = await chatDeps();
+    const dir = gitRepo();
+
+    expect(await chat(deps, `project add demo2 --path ${dir}`)).toBe(`added demo2  ${dir}`);
+
+    const row = (await chat(deps, "project list"))
+      .split("\n")
+      .find((line) => line.startsWith("demo2 "));
+    expect(row?.split(/\s+/)).toEqual(["demo2", "ready", dir, "slack"]);
+  });
+
+  test("SC36: project remove demo2 --purge on a folder yok did not clone keeps it and says so", async () => {
+    const { deps } = await chatDeps();
+    const dir = gitRepo();
+    await chat(deps, `project add demo2 --path ${dir}`);
+
+    expect(await chat(deps, "project remove demo2 --purge")).toBe(
+      `removed demo2\nkept ${dir}: yok deletes only the folders it cloned`,
+    );
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test("SC37: project remove nope replies with the API's refusal as the CLI prints it", async () => {
+    const { deps } = await chatDeps();
+    expect(await chat(deps, "project remove nope")).toBe("not-found: no project named nope");
+  });
+
+  test("SC38: doctor --project demo replies with the ENVIRONMENT table and the VERDICT", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home);
+
+    const reply = await chat(deps, "doctor --project demo");
+
+    expect(reply).toContain("ENVIRONMENT");
+    expect(reply).toContain("CHECK  REQUIRED  STATUS");
+    expect(reply).toContain("VERDICT");
+  });
+
+  test("SC40: a trigger added from Slack is listed, fires, and its fire shows in its log", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home, DAILY);
+
+    expect(await chat(deps, "trigger add ok.yaml --project demo")).toMatch(
+      /^daily in demo: 0 9 \* \* \* \(UTC\), next fire \S+$/,
+    );
+    const listed = (await chat(deps, "trigger list --project demo")).split("\n");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toStartWith("daily  demo  0 9 * * * (UTC)");
+
+    const fired = await chat(deps, "trigger fire daily --project demo");
+    const [, status, slot] = fired.split("  ");
+    expect(slot).toStartWith("slot ");
+    const logged = await chat(deps, "trigger log daily --project demo");
+    expect(logged).toContain(`  ${status}  ${slot}`);
+  });
+
+  test("SC41: trigger rm removes the trigger, and the list then says no triggers", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home, DAILY);
+    await chat(deps, "trigger add ok.yaml --project demo");
+
+    expect(await chat(deps, "trigger rm daily --project demo")).toBe("removed daily from demo");
+    expect(await chat(deps, "trigger list --project demo")).toBe("no triggers");
   });
 });
 
