@@ -284,29 +284,6 @@ const screenPane = (screen: string) => {
 const HINT_BOX = "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m";
 const WORKING = "• Working (3s • esc to interrupt)";
 
-describe("codexProvider.isBusy", () => {
-  const cases: readonly (readonly [string, string, boolean])[] = [
-    ["Codex working on a turn", `${WORKING}\n${HINT_BOX}`, true],
-    ["an empty input box", HINT_BOX, false],
-    [
-      "an approval prompt waiting on a person",
-      "Would you like to run the following command?\n› 1. Yes, proceed (y)\n  Press enter to confirm or esc to cancel",
-      false,
-    ],
-  ];
-  for (const [name, screen, busy] of cases) {
-    test(`${name} is ${busy ? "busy" : "not busy"}`, async () => {
-      const { pane, calls } = screenPane(screen);
-
-      expect(await codexProvider({ host: fakeHost({}) }).isBusy(pane)).toEqual({
-        ok: true,
-        value: busy,
-      });
-      expect(calls).toEqual([]);
-    });
-  }
-});
-
 describe("codexProvider.promptWhenReady", () => {
   const cases: readonly (readonly [string, string, boolean, "sent" | "not-ready"])[] = [
     ["an empty input marker", "header\n›\nfooter", false, "sent"],

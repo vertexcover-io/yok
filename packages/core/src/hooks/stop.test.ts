@@ -8,6 +8,7 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -746,6 +747,69 @@ describe("an open context node", () => {
     });
 
     expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toEqual({ kind: "allow" });
+  });
+});
+
+describe("the stop that ends the run's finishing turn", () => {
+  const sockets: string[] = [];
+  afterAll(() => {
+    for (const socket of sockets) spawnSync("tmux", ["-L", socket, "kill-server"]);
+  });
+
+  // A run with STATUS whose registered terminal is a real tmux session on a server of its own.
+  const runWithTerminal = async (status: State["status"], agent: "claude" | "codex" = "claude") => {
+    const socket = `yok-stop-${crypto.randomUUID()}`;
+    sockets.push(socket);
+    const tmux = (...args: string[]) =>
+      spawnSync("tmux", ["-L", socket, "-f", "/dev/null", ...args]);
+    tmux("new-session", "-d", "-s", "agent", "sleep", "60");
+    const set = await setUp({}, agent, { status });
+    await set.deps.registry.setTerminal("r-1", "agent");
+    const deps = { ...set.deps, env: { ...set.deps.env, YOK_TMUX_SOCKET: socket } };
+    const alive = () => tmux("has-session", "-t", "=agent").status === 0;
+    return { ...set, deps, run: { id: "r-1", cwd: set.cwd, name: "feat-x" }, alive };
+  };
+
+  test.each([
+    ["claude", "completed", "workflow.completed"],
+    ["codex", "completed", "workflow.completed"],
+    ["claude", "failed", "workflow.failed"],
+  ] as const)(
+    "SC830: a %s session's stop after the run %s kills the run's terminal, after recording the stop",
+    async (agent, status, finish) => {
+      const { deps, run, runDir, alive } = await runWithTerminal(status, agent);
+      await appendRunEvent(run, { type: finish, source: "t", payload: {} });
+      expect(alive()).toBe(true);
+
+      await runStopHook(input(undefined, agent), deps);
+
+      expect(alive()).toBe(false);
+      const events = await jsonlEventStore(runDir).read();
+      expect(events.map((event) => event.type)).toEqual([finish, "hooks.stop.called"]);
+    },
+  );
+
+  test("SC831: a session resumed after the finish keeps its terminal through its stops", async () => {
+    const { deps, run, alive } = await runWithTerminal("completed");
+    await appendRunEvent(run, { type: "workflow.completed", source: "t", payload: {} });
+    await appendRunEvent(run, {
+      type: "hooks.session-start.called",
+      source: "hooks",
+      payload: { agent: "claude", sessionId: "s1", source: "resume" },
+    });
+
+    await runStopHook(input(undefined), deps);
+    await runStopHook(input(undefined), deps);
+
+    expect(alive()).toBe(true);
+  });
+
+  test("SC832: a stop on a live run keeps the terminal", async () => {
+    const { deps, alive } = await runWithTerminal("running");
+
+    await runStopHook(input(orchestrateAfterPrompt), deps);
+
+    expect(alive()).toBe(true);
   });
 });
 

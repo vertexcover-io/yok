@@ -1,4 +1,5 @@
 import {
+  type AgentType,
   type EmitInput,
   type Event,
   type HookDeps,
@@ -26,6 +27,8 @@ import {
   type ModelSwitch,
 } from "@yok/sdk/internal";
 import * as z from "zod";
+import { stopTerminal } from "../agents/common.ts";
+import { yokTerminalHost } from "../agents/tmux.ts";
 import { startContextStep, startModelStep } from "../context-step.ts";
 import { completeContextStep, findContextPlanNode, finishStep, orchestrateLine } from "../runs.ts";
 import { findSessionRun, noAnswerMessage, recordRunEvent } from "./common.ts";
@@ -45,6 +48,16 @@ export const finishedBySession = (events: readonly Event[], sessionId: string): 
   if (finish === undefined) return false;
   const started = events.findLast((event) => startedSession(event) === sessionId);
   return started === undefined || started.seq < finish.seq;
+};
+
+// The last step of the stop that ends the run's finishing turn: it kills the run's terminal, and
+// with it the agent and this hook, so nothing may come after it. Nothing waits for the agent: the
+// turn is over, and whatever is on screen after it, a dialog included, goes with the terminal. The
+// kill is the one every agent provider's stop does.
+const closeRunTerminal = async (run: RunRef, agent: AgentType, deps: HookDeps): Promise<void> => {
+  const terminalName = (await deps.registry.findRun(run.id))?.terminal ?? null;
+  if (terminalName === null) return;
+  await stopTerminal(agent, yokTerminalHost(deps.env, deps.log).find(terminalName), deps.log);
 };
 
 export const DEFAULT_STOP_MAX_BLOCKS = 1;
@@ -399,6 +412,9 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       const payload = { agent: input.agent, sessionId: input.sessionId };
       await recordRunEvent(run, { type: "agent.stuck", payload }, deps);
     }
+    if (decision.reason === "run-finished" && finishedBySession(events, input.sessionId)) {
+      await closeRunTerminal(run, input.agent, deps);
+    }
     return replyOf(decision);
   } catch (error) {
     deps.log.error({ err: error }, "stop allowed: the stop hook failed");
@@ -462,7 +478,8 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
       jsonlEventStore(runDir).read(),
       input.readTranscript(),
     ]);
-    // The session that ended the run is closed once it goes idle, so an offer there would be cut off.
+    // The stop that ends the run's finishing turn closes its session, so an offer there would be
+    // cut off.
     if (!isRunLive(state.status) && finishedBySession(events, input.sessionId)) {
       return ALLOW;
     }

@@ -506,28 +506,6 @@ describe("claudeProvider.limitResetWait", () => {
   });
 });
 
-describe("claudeProvider.isBusy", () => {
-  const busyOn = (screen: string) => {
-    const calls: Call[] = [];
-    const pane = fakePane("p", calls, true, [screen]);
-    return claudeProvider({ host: fakeHost() })
-      .isBusy(pane)
-      .then((busy) => ({ busy, calls }));
-  };
-
-  test("Claude's spinner line is busy, and nothing is typed", async () => {
-    const { busy, calls } = await busyOn(`✻ Thinking…\n${RULE}\n❯ \n${RULE}`);
-
-    expect(busy).toEqual({ ok: true, value: true });
-    expect(calls).toEqual([]);
-  });
-
-  test("an empty input box, and an open question with no spinner, are not busy", async () => {
-    expect((await busyOn(`${RULE}\n❯ \n${RULE}`)).busy).toEqual({ ok: true, value: false });
-    expect((await busyOn(QUESTION)).busy).toEqual({ ok: true, value: false });
-  });
-});
-
 describe("claudeProvider.promptWhenReady", () => {
   const typedInto = async (...screens: readonly string[]) => {
     const calls: Call[] = [];

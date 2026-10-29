@@ -46,7 +46,6 @@ import {
 import { typeLine, unwrap } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
 import { spawnOrchestrateHelper } from "./stage.ts";
-import type { WorkflowAgent } from "./workflow/types.ts";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const IDLE_POLL_MS = 100;
@@ -66,9 +65,6 @@ const COMPACT_GRACE_MS = 30_000;
 
 export const startModelStep = async (run: RunRef, sessionId: string, seq: number): Promise<void> =>
   spawnOrchestrateHelper({ command: "model", id: String(seq), run, sessionId });
-
-export const startCloseStep = (run: RunRef, agent: WorkflowAgent): void =>
-  spawnOrchestrateHelper({ command: "close", id: agent, run });
 
 export const startContextStep = async (
   run: RunRef,
@@ -644,40 +640,4 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
   if (terminal !== undefined) {
     await resumeRun({ run, sessionId: options.sessionId, step: pending.node, terminal, log });
   }
-};
-
-export type CloseStepOptions = Readonly<{
-  // the run's registered terminal on yok's tmux server; undefined when the run has none
-  terminal: ITerminal | undefined;
-  provider: IAgentProvider;
-}>;
-
-// Two not-busy readings in a row, so the moment between two tool calls of one turn is not taken
-// for the end of the turn.
-const IDLE_READINGS = 2;
-
-const waitUntilIdle = async (terminal: ITerminal, provider: IAgentProvider): Promise<void> => {
-  let readings = 0;
-  await pollUntil(
-    { everyMs: DONE_POLL_MS, timeoutMs: IDLE_TIMEOUT_MS, timeoutError: "the agent stayed busy" },
-    async () => {
-      readings = unwrap(await provider.isBusy(terminal)) ? 0 : readings + 1;
-      return readings >= IDLE_READINGS ? true : undefined;
-    },
-  );
-};
-
-const killWhenIdle = async (terminal: ITerminal, provider: IAgentProvider): Promise<void> => {
-  await waitUntilIdle(terminal, provider);
-  const stopped = await provider.stop(terminal);
-  if (!stopped.ok && (await terminal.isAlive())) throw new Error(stopped.error);
-};
-
-// Started by the `next` that ended the run, wherever it ran, so it runs once per run and is never
-// retried; a later `next` in a resumed session finds the run already ended and starts none. It
-// kills the run's terminal once the agent is no longer working, an open question included; an
-// agent still busy after the idle wait is in use and stays open.
-export const runCloseStep = async ({ terminal, provider }: CloseStepOptions): Promise<void> => {
-  if (terminal === undefined) return;
-  await failureOf(killWhenIdle(terminal, provider));
 };
