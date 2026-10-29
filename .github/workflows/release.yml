@@ -47,7 +47,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
 
       - run: npm run test:scripts
 
@@ -94,7 +94,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
 
       - name: Bump the version, pin the marketplaces, commit and tag
         id: version
@@ -128,7 +128,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
 
       - run: bun install --frozen-lockfile
 
@@ -182,7 +182,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
 
       # binary.e2e drives yok run, whose doctor needs these tools.
       - run: sudo apt-get update && sudo apt-get install -y tmux ffmpeg ripgrep
