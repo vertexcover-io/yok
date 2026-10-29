@@ -28,12 +28,13 @@ import {
   summarize,
   typeLine,
 } from "./common.ts";
-import { trustLaunchFolder } from "./trust.ts";
+import { realpathOr } from "./trust.ts";
 
 type CodexArgOptions = Pick<
   LaunchOptions,
   "model" | "effort" | "systemPrompt" | "prompt" | "orchestrateArgv"
->;
+> &
+  Readonly<{ trustedFolder?: string }>;
 
 const configFlags = (overrides: readonly string[]): string[] =>
   overrides.flatMap((override) => ["-c", override]);
@@ -52,6 +53,15 @@ const settingFlags = ({
   ]),
 ];
 
+// Codex asks whether to trust a folder it has never opened, and nobody answers that in a
+// server-started run. Trust given as a -c override lasts for this session and leaves
+// ~/.codex/config.toml alone; the whole key goes in one TOML value, since a path's dots would
+// split a dotted key.
+const trustFlags = (folder: string | undefined): string[] =>
+  folder === undefined
+    ? []
+    : configFlags([`projects={${JSON.stringify(folder)}={trust_level="trusted"}}`]);
+
 // Codex skips untrusted hooks, and the yok hooks arrive as -c overrides. The flag also covers
 // hooks in the repo's own .codex/ config.
 export const codexArgs = (options: CodexArgOptions): string[] => [
@@ -60,6 +70,7 @@ export const codexArgs = (options: CodexArgOptions): string[] => [
     ? configFlags(codexHookOverrides(options.orchestrateArgv))
     : []),
   ...settingFlags(options),
+  ...trustFlags(options.trustedFolder),
   ...(options.prompt !== undefined ? [options.prompt] : []),
 ];
 
@@ -201,11 +212,11 @@ export const codexProvider = ({
     const session = continueSession === undefined ? [] : ["resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const statusLine = statusLineOf(options);
-    await trustLaunchFolder("codex", options, sessionLog);
+    const trustedFolder = await realpathOr(options.cwd);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...session, ...codexArgs(options)],
+      argv: [binary, ...session, ...codexArgs({ ...options, trustedFolder })],
       env: options.env ?? {},
       ...(statusLine === undefined ? {} : { statusLine }),
     });
@@ -225,12 +236,12 @@ export const codexProvider = ({
     if (options.resume === true) {
       return { ok: false, error: "codex cannot resume a session in its pane" };
     }
+    const trustedFolder = await realpathOr(options.cwd);
     const spec = {
       cwd: options.cwd,
-      argv: [binary, ...codexArgs(options)],
+      argv: [binary, ...codexArgs({ ...options, trustedFolder })],
       env: options.env ?? {},
     };
-    await trustLaunchFolder("codex", options, log.child({ sessionId }));
     return respawnAgent("codex", terminal, spec, log.child({ sessionId }));
   };
 

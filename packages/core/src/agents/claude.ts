@@ -262,7 +262,7 @@ export const claudeProvider = ({
       model: options.model,
       permissionMode: options.permissionMode,
     };
-    await trustLaunchFolder("claude", options, sessionLog);
+    await trustLaunchFolder(options, sessionLog);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
@@ -288,7 +288,7 @@ export const claudeProvider = ({
       argv: [binary, ...session, ...claudeArgs(options)],
       env: options.env ?? {},
     };
-    await trustLaunchFolder("claude", options, log.child({ sessionId }));
+    await trustLaunchFolder(options, log.child({ sessionId }));
     return respawnAgent("claude", terminal, spec, log.child({ sessionId }));
   };
 
