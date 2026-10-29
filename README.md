@@ -181,7 +181,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
 
 ### task: the full pipeline
 
@@ -303,7 +303,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 
 | Command | What it does |
 |---|---|
-| `yok run WORKFLOW --prompt TEXT` | Start a run. `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
+| `yok run WORKFLOW` | Start a run. `--prompt TEXT` (when the workflow takes one), `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
 | `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
 | `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
@@ -343,6 +343,7 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [baseline](./skills/baseline/README.md) | Records the project's checks before any code changes |
 | [writing-style](./skills/writing-style/README.md) | How every document a person reads is written: reports, PR bodies, READMEs |
 | [orchestrate](./skills/orchestrate/README.md) | Drives a run from inside the agent session. The server starts it; you never type it |
+| [run](./skills/run/README.md) | Starts a yok run from inside your session: picks the workflow, builds the inputs, launches `yok run` |
 
 ## Uninstall
 

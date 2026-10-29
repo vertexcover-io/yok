@@ -7,7 +7,13 @@ import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./test-stages.ts";
-import { NodeFailure, WorkflowError, type WorkflowErrorCode } from "./types.ts";
+import {
+  type InputDeclarations,
+  NodeFailure,
+  resolveWorkflowInputs,
+  WorkflowError,
+  type WorkflowErrorCode,
+} from "./types.ts";
 
 let workflowCount = 0;
 const workflowDir = mkdtempSync(join(tmpdir(), "wf-yaml-"));
@@ -1485,5 +1491,27 @@ describe("the shipped regression workflow", () => {
         },
       ],
     });
+  });
+});
+
+// `yok run --input KEY=VALUE` hands every value over as text, so a typed input reads its text the
+// way a YAML file would.
+describe("resolveWorkflowInputs", () => {
+  const declarations: InputDeclarations = {
+    prompt: { type: "string", required: true },
+    yok: { type: "boolean", required: false, default: false },
+    count: { type: "number", required: false, default: 0 },
+  };
+
+  test("reads a typed input's text as YAML and keeps a string input as it is", () => {
+    expect(
+      resolveWorkflowInputs(declarations, { prompt: "true", yok: "true", count: "3" }),
+    ).toEqual({ prompt: "true", yok: true, count: 3 });
+  });
+
+  test("text that is not the declared type is an input error naming the input", () => {
+    expect(() => resolveWorkflowInputs(declarations, { prompt: "x", yok: "nope" })).toThrow(
+      /^inputs\.yok:/,
+    );
   });
 });
