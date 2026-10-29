@@ -33,12 +33,10 @@ import {
   type State,
 } from "@yok/sdk";
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
-import { isClaudeBusy } from "./agents/claude.ts";
 import {
   clearDeadSwitchLocks,
   completeContextOnSessionStart,
   findOpenContextRun,
-  runCloseStep,
   runContextStep,
   runModelStep,
 } from "./context-step.ts";
@@ -170,10 +168,6 @@ const fakeProvider = (relaunchOk = true) => {
     run: async () => ({ ok: false, error: new Error("unused") }),
     limitResetWait: async () => null,
     promptWhenReady: async () => ({ ok: true, value: "not-ready" }),
-    isBusy: async (terminal) => {
-      const screen = await terminal.capture();
-      return screen.ok ? { ok: true, value: isClaudeBusy(screen.value) } : screen;
-    },
   };
   return { provider, relaunches };
 };
@@ -1480,89 +1474,5 @@ describe("clearDeadSwitchLocks", () => {
 
     expect(await clearDeadSwitchLocks(runDir, seed(runDir), [])).toEqual({ removed: [], held: [] });
     expect(readdirSync(runDir)).toEqual([]);
-  });
-});
-
-describe("runCloseStep", () => {
-  type StopResult = Awaited<ReturnType<IAgentProvider["stop"]>>;
-
-  // Counts the kills and the captures seen by the time of each kill.
-  const closingProvider = (stop: () => StopResult = () => ({ ok: true, value: undefined })) => {
-    const stops: number[] = [];
-    let captures = () => 0;
-    const provider: IAgentProvider = {
-      ...fakeProvider().provider,
-      stop: async () => {
-        stops.push(captures());
-        return stop();
-      },
-    };
-    const watch = (count: () => number) => {
-      captures = count;
-    };
-    return { provider, stops: () => stops, watch };
-  };
-
-  const close = (terminal: ITerminal | undefined, provider: IAgentProvider) =>
-    runCloseStep({ terminal, provider });
-
-  test("SC804: an idle agent at an empty input box has its pane killed once, with nothing typed", async () => {
-    const pane = fakeTerminal(() => IDLE);
-    const { provider, stops } = closingProvider();
-
-    await close(pane.terminal, provider);
-
-    expect(stops()).toHaveLength(1);
-    expect(pane.typed).toEqual([]);
-  });
-
-  test("SC805: an agent waiting on an open question is idle, so its pane is killed with the question still open", async () => {
-    const pane = fakeTerminal(() => QUESTION);
-    const { provider, stops } = closingProvider();
-
-    await close(pane.terminal, provider);
-
-    expect(stops()).toHaveLength(1);
-    expect(pane.typed).toEqual([]);
-  });
-
-  test("SC806: an agent that stays busy through the idle wait is never killed", async () => {
-    const pane = fakeTerminal(() => BUSY);
-    const { provider, stops } = closingProvider();
-
-    await close(pane.terminal, provider);
-
-    expect(stops()).toEqual([]);
-    expect(pane.typed).toEqual([]);
-  });
-
-  test("SC807: one idle reading between busy ones is not the end of the turn; the kill waits for two in a row", async () => {
-    // idle, busy, idle, busy, idle, idle: only the last pair counts
-    const screens = [IDLE, BUSY, IDLE, BUSY, IDLE, IDLE];
-    const pane = fakeTerminal((capture) => screens[capture] ?? IDLE);
-    const { provider, stops, watch } = closingProvider();
-    watch(pane.captureCount);
-
-    await close(pane.terminal, provider);
-
-    expect(stops()).toEqual([6]);
-  });
-
-  test("SC822: a kill that fails on a pane still alive is tried once and does not throw", async () => {
-    const pane = fakeTerminal(() => IDLE);
-    const { provider, stops } = closingProvider(() => ({ ok: false, error: "kill-pane failed" }));
-
-    await close(pane.terminal, provider);
-
-    expect(stops()).toHaveLength(1);
-    expect(await pane.terminal.isAlive()).toBe(true);
-  });
-
-  test("SC824: a run with no registered terminal kills nothing", async () => {
-    const { provider, stops } = closingProvider();
-
-    await close(undefined, provider);
-
-    expect(stops()).toEqual([]);
   });
 });

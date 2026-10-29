@@ -248,11 +248,6 @@ export const codexProvider = ({
     return typed.ok ? { ok: true, value: "sent" } : typed;
   };
 
-  const isBusy = async (terminal: ITerminal): Promise<Result<boolean>> => {
-    const screen = await terminal.capture();
-    return screen.ok ? { ok: true, value: BUSY.test(screen.value) } : screen;
-  };
-
   const stop = (terminal: ITerminal): Promise<Result<void>> => stopTerminal("codex", terminal, log);
 
   const run = async <T = string>(request: RunRequest<T>): Promise<AgentResult<T>> => {
@@ -297,7 +292,6 @@ export const codexProvider = ({
     stop,
     limitResetWait: () => Promise.resolve(null),
     promptWhenReady,
-    isBusy,
     run,
   };
 };

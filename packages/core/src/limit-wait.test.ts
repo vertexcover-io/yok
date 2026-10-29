@@ -75,7 +75,6 @@ const fakeAgent = (
     relaunch: unused,
     prompt: unused,
     stop: unused,
-    isBusy: unused,
     run: unused,
     limitResetWait: async (terminal, message) => {
       seen.waits.push({ terminal, message });
