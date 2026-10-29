@@ -28,6 +28,7 @@ import {
   summarize,
   typeLine,
 } from "./common.ts";
+import { trustLaunchFolder } from "./trust.ts";
 
 type CodexArgOptions = Pick<
   LaunchOptions,
@@ -200,6 +201,7 @@ export const codexProvider = ({
     const session = continueSession === undefined ? [] : ["resume", continueSession.id];
     const sessionLog = log.child({ terminalName });
     const statusLine = statusLineOf(options);
+    await trustLaunchFolder("codex", options, sessionLog);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
@@ -228,6 +230,7 @@ export const codexProvider = ({
       argv: [binary, ...codexArgs(options)],
       env: options.env ?? {},
     };
+    await trustLaunchFolder("codex", options, log.child({ sessionId }));
     return respawnAgent("codex", terminal, spec, log.child({ sessionId }));
   };
 

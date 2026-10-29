@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ITerminal, ITerminalHost, TerminalSpec } from "@yok/sdk";
@@ -183,6 +190,18 @@ describe("codexProvider.run", () => {
 });
 
 describe("codexProvider.launch", () => {
+  test("puts the folder in the session's codex config as trusted before the pane starts", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-codex-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-codex-cwd-")));
+    const provider = codexProvider({ host: fakeHost({}), newId: () => "u1" });
+
+    await provider.launch({ cwd, env: { CODEX_HOME: home } });
+
+    expect(Bun.TOML.parse(readFileSync(join(home, "config.toml"), "utf8"))).toEqual({
+      projects: { [cwd]: { trust_level: "trusted" } },
+    });
+  });
+
   test("names the tmux session by a fresh id and runs the codex binary with the launch argv", async () => {
     const created: Created = {};
     const provider = codexProvider({
@@ -323,6 +342,16 @@ describe("codexProvider pane control", () => {
         { cwd: "/repo", argv: ["codex-x", "--dangerously-bypass-hook-trust", "go"], env: {} },
       ],
     ]);
+  });
+
+  test("trusts the folder it respawns in", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-codex-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-codex-cwd-")));
+    const provider = codexProvider({ host: fakeHost({}) });
+
+    await provider.relaunch(screenPane("").pane, "s1", { cwd, env: { CODEX_HOME: home } });
+
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(JSON.stringify(cwd));
   });
 
   test("SC29: a relaunch with resume is refused and respawns nothing", async () => {

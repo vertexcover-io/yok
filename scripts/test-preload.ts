@@ -11,6 +11,11 @@ const testTmp = realpathSync(mkdtempSync(join(tmpdir(), "yok-test-")));
 process.env.TMPDIR = testTmp;
 afterAll(() => rmSync(testTmp, { recursive: true, force: true }));
 
+// Launching an agent adds its folder to the agent's trusted list, so tests get configs of their
+// own and never write the person's ~/.claude.json or ~/.codex/config.toml.
+process.env.CLAUDE_CONFIG_DIR = join(testTmp, "claude-config");
+process.env.CODEX_HOME = join(testTmp, "codex-home");
+
 // Tests run outside the yok CLI, so they set what its entry sets when run from source.
 process.env.YOK_SELF ??= JSON.stringify([
   process.execPath,
