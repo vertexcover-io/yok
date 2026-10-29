@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type ConfigInput, ConfigSchema } from "@yok/sdk";
+import { type CheckoutConfig, type ConfigInput, ConfigSchema } from "@yok/sdk";
 import { devPluginDir, VERSION } from "@yok/sdk/internal";
 import { claudeSettings } from "./agents/claude-hooks.ts";
 import {
@@ -12,6 +12,7 @@ import {
   findSkill,
   findWorkflowPath,
   loadSkill,
+  locateWorkflow,
   orchestrateArgv,
   type SkillScope,
   StageSchema,
@@ -424,18 +425,58 @@ describe("loadSkill with the project's extensions", () => {
 });
 
 describe("findWorkflowPath", () => {
+  const checkout = (workflowPath?: string): CheckoutConfig => ({
+    config: ConfigSchema.parse({
+      version: 2,
+      ...(workflowPath === undefined ? {} : { workflowPath }),
+    }),
+    path: null,
+    root: dir,
+  });
+
   test.each([
-    ["task", "/shipped/task.yaml"],
     ["task.yaml", "/project/task.yaml"],
     ["flows/task.yml", "/project/flows/task.yml"],
     ["./task", "/project/task"],
     ["/abs/task.yaml", "/abs/task.yaml"],
-  ])("%s resolves to %s", (workflow, expected) => {
-    expect(findWorkflowPath(workflow, "/project", "/shipped")).toBe(expected);
+  ])("%s is a file at cwd: %s", (workflow, expected) => {
+    expect(findWorkflowPath(workflow, "/project", checkout(), "/shipped")).toEqual({
+      ok: true,
+      value: expected,
+    });
+  });
+
+  test("a bare name is a shipped workflow before one of the project's with the same name", async () => {
+    await writeFiles(dir, {
+      "shipped/task.yaml": "name: task\n",
+      "flows/task.yaml": "name: task\n",
+    });
+    expect(findWorkflowPath("task", dir, checkout("flows"), join(dir, "shipped"))).toEqual({
+      ok: true,
+      value: join(dir, "shipped", "task.yaml"),
+    });
+  });
+
+  test("a bare name yok does not ship is one in the config's workflowPath, .yaml or .yml", async () => {
+    await writeFiles(dir, { "flows/nightly.yml": "name: nightly\n" });
+    expect(findWorkflowPath("nightly", dir, checkout("flows"), join(dir, "shipped"))).toEqual({
+      ok: true,
+      value: join(dir, "flows", "nightly.yml"),
+    });
+  });
+
+  test("a bare name found nowhere names every file it looked for", () => {
+    expect(findWorkflowPath("ghost", dir, checkout("flows"), join(dir, "shipped"))).toEqual({
+      ok: false,
+      error: `no workflow ghost; looked for ${join(dir, "shipped", "ghost.yaml")}, ${join(dir, "flows", "ghost.yaml")}, ${join(dir, "flows", "ghost.yml")}`,
+    });
   });
 
   test("the default workflows directory ships task.yaml", () => {
-    expect(existsSync(findWorkflowPath("task", "/project"))).toBe(true);
+    expect(findWorkflowPath("task", "/project", checkout())).toEqual({
+      ok: true,
+      value: expect.stringMatching(/workflows\/task\.yaml$/),
+    });
   });
 });
 
@@ -534,5 +575,15 @@ describe("the shipped skills", () => {
     const missing = Object.keys(StageSchema.shape).filter((key) => !guide.includes(`\`${key}\``));
 
     expect(missing).toEqual([]);
+  });
+});
+
+describe("locateWorkflow", () => {
+  test("a config that does not load leaves the lookup to run without project workflows", async () => {
+    await writeFiles(dir, { "orchestrate.config.yaml": "version: 2\nnope: 1\n" });
+    expect(await locateWorkflow("flows/x.yaml", dir)).toEqual({
+      ok: true,
+      value: join(dir, "flows", "x.yaml"),
+    });
   });
 });

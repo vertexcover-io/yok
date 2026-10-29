@@ -233,6 +233,9 @@ export const ConfigSchema = z.strictObject({
   packages: recordOf(NameSchema, PackageSchema).default({}),
   environments: EnvironmentsSchema.optional(),
   extensions: recordOf(SkillNameSchema, ExtensionSchema).default({}),
+  // the folder of the project's own workflows, relative to this file's root; `yok orchestrate
+  // workflows` lists them beside yok's, and each runs by its path from the root
+  workflowPath: NonEmptyStringSchema.optional(),
   ...EnvLayerSchema.shape,
   workspace: WorkspaceConfigSchema.prefault({}),
   eventHandlers: recordOf(EventTypeSchema, z.array(EventHandlerSchema)).default({}),

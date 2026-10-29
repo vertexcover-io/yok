@@ -145,6 +145,7 @@ extensions:
 | `workspace` | `layout: mono\|multi`, `path` template, `baseBranch`, `setup`, `teardown` |
 | `agents.claude.tiers`, `agents.codex.tiers` | model per tier, and the default tier |
 | `extensions` | see above |
+| `workflowPath` | the folder of your own workflows; `yok run NAME` finds `NAME.yaml` there after yok's own, and `yok orchestrate workflows` lists both |
 | `subscribers` | see below |
 | `eventHandlers` | project functions that fold an event into `state.custom` |
 | `env`, `envFile` | variables every session starts with |

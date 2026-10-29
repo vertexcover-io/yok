@@ -167,10 +167,42 @@ export const extensionPath = (config: Config, skill: string): string | undefined
 export const isWorkflowFile = (workflow: string): boolean =>
   workflow.includes("/") || /\.ya?ml$/.test(workflow);
 
-// A project file never needs the plugin, so the shipped folder is looked up only for a bare name.
-export const findWorkflowPath = (workflow: string, cwd: string, workflowsDir?: string): string => {
-  if (isWorkflowFile(workflow)) return resolve(cwd, workflow);
-  return join(workflowsDir ?? yokWorkflowsDir(), `${workflow}.yaml`);
+// The folder the config's workflowPath names, holding the project's own workflows.
+export const projectWorkflowsDir = (checkout: CheckoutConfig): string | null =>
+  checkout.config.workflowPath === undefined
+    ? null
+    : resolve(checkout.root, checkout.config.workflowPath);
+
+// A name with a "/" or a .yaml/.yml extension is a file at `cwd`. A bare name is one of yok's
+// own workflows, else one in the project's workflowPath folder.
+export const findWorkflowPath = (
+  workflow: string,
+  cwd: string,
+  checkout: CheckoutConfig,
+  workflowsDir?: string,
+): Result<string> => {
+  if (isWorkflowFile(workflow)) return { ok: true, value: resolve(cwd, workflow) };
+  const project = projectWorkflowsDir(checkout);
+  const candidates = [
+    join(workflowsDir ?? yokWorkflowsDir(), `${workflow}.yaml`),
+    ...(project === null
+      ? []
+      : [join(project, `${workflow}.yaml`), join(project, `${workflow}.yml`)]),
+  ];
+  const found = candidates.find((path) => existsSync(path));
+  if (found !== undefined) return { ok: true, value: found };
+  return { ok: false, error: `no workflow ${workflow}; looked for ${candidates.join(", ")}` };
+};
+
+// The checkout's config, or the file `--config` names, then findWorkflowPath. A config that does
+// not load is the doctor's to report; here it only means no project workflows.
+export const locateWorkflow = async (
+  workflow: string,
+  cwd: string,
+  configFile: string | null = null,
+): Promise<Result<string>> => {
+  const checkout = await loadProjectConfig(configFile, cwd);
+  return findWorkflowPath(workflow, cwd, checkout.ok ? checkout.value : noProjectConfig(cwd));
 };
 
 export const noProjectConfig = (root: string): CheckoutConfig => ({
