@@ -1,0 +1,111 @@
+{
+  "skill_name": "handoff",
+  "evals": [
+    {
+      "id": 1,
+      "name": "four-sections-no-copied-messages",
+      "prompt": "/yok:handoff .yok/add-rate-limit/handoff.md\n\n(The session so far: the user asked for a rate limiter on the public API, ruled out Redis in their second message, and the implement stage just finished with src/api/limit.ts:1-80 and its tests green; a review stage comes next.)",
+      "expected_output": "One file at .yok/add-rate-limit/handoff.md starting at '# Handoff' with the four headings Progress and decisions, Context and constraints, Next steps, References, each filled; the Redis decision is stated as a pointer to the user's message; the reply is one line naming the path.",
+      "files": [],
+      "expectations": [
+        "The note starts with '# Handoff' and holds exactly the four section headings from the skill",
+        "The Redis ruling appears as a reference to the user's message, not as the message copied in",
+        "Code is named as path:line, with no block longer than five lines",
+        "The only tool call is the one that writes the note",
+        "The reply is a single line naming the note's path"
+      ],
+      "anti_expectations": [
+        "Pastes the user's messages into the note",
+        "Opens with a greeting or lead-in for the next session before '# Handoff'",
+        "Lists files for the next session to read first",
+        "Runs any yok command or reads a file to check the state"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "instructions-add-depth-keep-sections",
+      "prompt": "/yok:handoff .yok/task-42/handoff.md Keep the approved plan, the workspace path, and the run name.\n\n(The session so far: a planning stage produced a three-phase plan the user approved after one revision, the workspace is .yok/workspaces/task-42, and the run is named task-42.)",
+      "expected_output": "A note with all four sections where the plan's three phases, the workspace path .yok/workspaces/task-42 and the run name task-42 are each stated, the plan in more detail than it would get without the instructions; nothing from the four sections is dropped.",
+      "files": [],
+      "expectations": [
+        "All four section headings are present and filled",
+        "The three phases of the approved plan are each named",
+        "The workspace path and the run name appear verbatim under References",
+        "The revision the user asked for is noted as a decision"
+      ],
+      "anti_expectations": [
+        "Drops Next steps or Context and constraints because the instructions did not mention them",
+        "Treats the instructions as the whole note and writes only the plan"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "overwrites-earlier-note",
+      "prompt": "/yok:handoff .yok/task-42/handoff.md\n\n(.yok/task-42/handoff.md already exists from an earlier context step and describes the planning stage. Since then the implement stage finished.)",
+      "expected_output": "The file is replaced by a note about the state after implement; the old planning-era content is gone rather than appended to.",
+      "files": [],
+      "expectations": [
+        "Writes the whole file, so the earlier note is replaced",
+        "The note describes the work after implement, not the planning stage alone"
+      ],
+      "anti_expectations": [
+        "Appends the new note below the old one",
+        "Reads the old note first to merge it",
+        "Refuses because the file exists"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "no-path-writes-default-note",
+      "prompt": "/yok:handoff Keep the failing test names.\n\n(The session so far: the user asked to fix flaky tests in src/queue/; two of five are fixed, three still fail: 'retries after timeout', 'drops duplicate jobs', 'keeps order under load'.)",
+      "expected_output": "A note written to handoff.md in the working directory, with the three failing test names kept verbatim under References or Next steps; the whole argument line is read as instructions since no token ends in .md.",
+      "files": [],
+      "expectations": [
+        "Writes the note to handoff.md in the working directory",
+        "Treats 'Keep the failing test names.' as instructions, not as a path",
+        "The three failing test names appear verbatim in the note"
+      ],
+      "anti_expectations": [
+        "Asks for a path or replies that one is missing",
+        "Writes to a file named after the first word of the instructions",
+        "Writes the note into the reply instead of a file"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "next-steps-ordered-with-done-checks",
+      "prompt": "/yok:handoff .yok/fix-login/handoff.md\n\n(The session so far: two of three failing login tests are fixed; the third, 'remembers the session across reloads', still fails because the cookie's path is wrong in src/auth/cookie.ts:34; the user said to leave the cookie name alone.)",
+      "expected_output": "Next steps lists fixing the cookie path at src/auth/cookie.ts:34 first, with the third test passing as its check, then running the suite; the cookie-name constraint sits under Context and constraints as the user's instruction.",
+      "files": [],
+      "expectations": [
+        "Next steps is an ordered list whose first item is the cookie path fix",
+        "Each step says what tells it is done",
+        "The cookie-name constraint is under Context and constraints and points at the user's words",
+        "src/auth/cookie.ts:34 is named as path:line"
+      ],
+      "anti_expectations": [
+        "Describes the remaining work as prose with no order",
+        "Puts the constraint only in Next steps or leaves it out"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "long-session-stays-under-cap",
+      "prompt": "/yok:handoff .yok/billing-rewrite/handoff.md\n\n(The session so far spans five stages over several hours: design with three approaches weighed, a four-phase plan revised twice by the user, implement touching fourteen files under src/billing/, a review pass with nine findings of which seven were fixed, and a QA round that found one regression in invoice rounding. Dozens of tool results, long diffs and three user messages are in the conversation.)",
+      "expected_output": "One note under 2,000 words with all four sections filled: the chosen approach and the options it beat, both plan revisions, the two review findings still open and the rounding regression under Next steps, and the files named as path:line rather than quoted.",
+      "files": [],
+      "expectations": [
+        "The note is under 2,000 words",
+        "All four section headings are present and filled",
+        "Every decision from design, planning and review has a line, including the two review findings left open",
+        "The rounding regression is the first item under Next steps",
+        "Code is named as path:line with no quoted block longer than five lines"
+      ],
+      "anti_expectations": [
+        "Reaches or passes the cap by pasting diffs, tool output or the user's three messages",
+        "Drops decisions or open findings to fit the cap instead of shortening the prose",
+        "Describes only the last stage and loses the design and plan decisions"
+      ]
+    }
+  ]
+}
