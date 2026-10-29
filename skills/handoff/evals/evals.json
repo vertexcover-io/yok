@@ -56,16 +56,18 @@
     },
     {
       "id": 4,
-      "name": "missing-path-writes-nothing",
-      "prompt": "/yok:handoff",
-      "expected_output": "One line saying the note needs a path; no file written.",
+      "name": "no-path-writes-default-note",
+      "prompt": "/yok:handoff Keep the failing test names.\n\n(The session so far: the user asked to fix flaky tests in src/queue/; two of five are fixed, three still fail: 'retries after timeout', 'drops duplicate jobs', 'keeps order under load'.)",
+      "expected_output": "A note written to handoff.md in the working directory, with the three failing test names kept verbatim under References or Next steps; the whole argument line is read as instructions since no token ends in .md.",
       "files": [],
       "expectations": [
-        "Replies with one line asking for the path",
-        "Writes no file"
+        "Writes the note to handoff.md in the working directory",
+        "Treats 'Keep the failing test names.' as instructions, not as a path",
+        "The three failing test names appear verbatim in the note"
       ],
       "anti_expectations": [
-        "Guesses a path such as handoff.md or .yok/handoff.md and writes there",
+        "Asks for a path or replies that one is missing",
+        "Writes to a file named after the first word of the instructions",
         "Writes the note into the reply instead of a file"
       ]
     },

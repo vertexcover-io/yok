@@ -20,14 +20,14 @@ yok command. The conversation is the only source.
 
 ## Input
 
-The arguments are one line: the note path, then the custom instructions.
+The arguments are one line, and both parts are optional: the note path, then the custom
+instructions. The first token is the path when it ends in `.md`; otherwise the whole line is
+instructions.
 
 | Part | Meaning |
 |---|---|
-| path | first token, required. The note, `.yok/RUN_NAME/handoff.md` in a run. Overwrite whatever is there. |
-| instructions | everything after the path, optional. What to keep in more detail, the way `/compact INSTRUCTIONS` is used. |
-
-No path: reply with one line saying the note needs a path, write nothing, and stop.
+| path | the note, `.yok/RUN_NAME/handoff.md` when yok passes one. Without it, `handoff.md` in the working directory. Overwrite whatever is there. |
+| instructions | everything after the path. What to keep in more detail, the way `/compact INSTRUCTIONS` is used. |
 
 ## 1. Write the note
 
