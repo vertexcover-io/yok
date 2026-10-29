@@ -647,9 +647,8 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
 };
 
 export type CloseStepOptions = Readonly<{
+  // the run's registered terminal on yok's tmux server; undefined when the run has none
   terminal: ITerminal | undefined;
-  // true when the pane is the run's registered terminal on yok's tmux, which the close may kill
-  ownsPane: boolean;
   provider: IAgentProvider;
 }>;
 
@@ -674,15 +673,11 @@ const killWhenIdle = async (terminal: ITerminal, provider: IAgentProvider): Prom
   if (!stopped.ok && (await terminal.isAlive())) throw new Error(stopped.error);
 };
 
-// Started by the `next` that ended the run, so it runs once per run and is never retried; a later
-// `next` in a resumed session finds the run already ended and starts none. It kills the pane once
-// the agent is no longer working, an open question included; an agent still busy after the idle
-// wait is in use and stays open. A pane yok did not start belongs to the person.
-export const runCloseStep = async ({
-  terminal,
-  ownsPane,
-  provider,
-}: CloseStepOptions): Promise<void> => {
-  if (terminal === undefined || !ownsPane) return;
+// Started by the `next` that ended the run, wherever it ran, so it runs once per run and is never
+// retried; a later `next` in a resumed session finds the run already ended and starts none. It
+// kills the run's terminal once the agent is no longer working, an open question included; an
+// agent still busy after the idle wait is in use and stays open.
+export const runCloseStep = async ({ terminal, provider }: CloseStepOptions): Promise<void> => {
+  if (terminal === undefined) return;
   await failureOf(killWhenIdle(terminal, provider));
 };

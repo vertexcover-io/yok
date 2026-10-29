@@ -19,7 +19,7 @@ A run that ended left its Claude or Codex process and tmux session open forever,
 
 ## Decision Outcome
 
-Chosen: `next` starts the helper, because `next` is the only place a run ends, so the call that writes the finish event closes the session exactly once, with no lock or close record: a later `next`, in a session resumed after the finish, finds the run already ended and starts nothing. The helper is detached because `next` runs inside the pane, where killing it at once would cut off its own `finished` reply. It kills the pane after two not-busy screen readings in a row, an open question or popup included, rather than typing `/exit`, which a popup would swallow; an agent still busy after 30 seconds is in use and stays open. It kills only the run's own pane on yok's tmux server.
+Chosen: `next` starts the helper, because `next` is the only place a run ends, so the call that writes the finish event closes the session exactly once, with no lock or close record: a later `next`, in a session resumed after the finish, finds the run already ended and starts nothing. The helper is detached because `next` usually runs inside the pane, where killing it at once would cut off its own `finished` reply. It closes the run's registered terminal on yok's tmux server, wherever that `next` ran, so a run ended by hand from another shell still closes its agent. It kills the terminal after two not-busy screen readings in a row, an open question or popup included, rather than typing `/exit`, which a popup would swallow; an agent still busy after 30 seconds is in use and stays open.
 
 ## Consequences
 

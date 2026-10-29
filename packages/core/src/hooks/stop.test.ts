@@ -749,51 +749,6 @@ describe("an open context node", () => {
   });
 });
 
-describe("a run that has ended", () => {
-  // The close helper is a detached orchestrate process, so the spawn is the boundary.
-  let spawn: ReturnType<typeof spyOn<typeof sdk, "spawnDetached">>;
-  beforeAll(() => {
-    spawn = spyOn(sdk, "spawnDetached");
-  });
-  beforeEach(() => spawn.mockImplementation(() => 0));
-  afterEach(() => spawn.mockReset());
-  afterAll(() => spawn.mockRestore());
-
-  const emit = async (run: RunRef, type: sdk.Event["type"], payload: sdk.JsonValue = {}) => {
-    const stored = await appendRunEvent(run, { type, source: "t", payload });
-    if (!stored.ok) throw new Error(stored.error);
-  };
-
-  test("SC808: the stop of the session that finished the run starts no close, since the next that ended the run starts it", async () => {
-    const { deps, cwd } = await setUp({}, "claude", { status: "completed" });
-    await emit({ id: "r-1", cwd, name: "feat-x" }, "workflow.completed");
-
-    expect(await runStopHook(input(undefined), deps)).toEqual({ kind: "allow" });
-
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  test("SC810: a blocked run whose log holds an earlier workflow.failed is not run-finished and starts no close", async () => {
-    const blocker = { reason: "stuck", since: "2026-09-26T10:05:00Z", details: { message: null } };
-    const { deps, cwd, runDir } = await setUp({});
-    await emit({ id: "r-1", cwd, name: "feat-x" }, "workflow.failed");
-    const failed = await readState(runDir);
-    await writeFile(
-      join(runDir, "state.json"),
-      JSON.stringify({ ...failed, status: "blocked", blocker }),
-    );
-
-    await runStopHook(input(orchestrateAfterPrompt), deps);
-
-    const stops = (await jsonlEventStore(runDir).read()).filter(
-      (event) => event.type === "hooks.stop.called",
-    );
-    expect(stops).toHaveLength(1);
-    expect(stops[0]?.payload).not.toMatchObject({ reason: "run-finished" });
-    expect(spawn).not.toHaveBeenCalled();
-  });
-});
-
 describe("offerLearn", () => {
   // A run whose PR stage has finished while retro still runs: the user now reviews the code and
   // asks for changes.

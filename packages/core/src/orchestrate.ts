@@ -41,7 +41,7 @@ import {
   type StepOutcome,
 } from "@yok/sdk/internal";
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
-import { currentTerminal, isRunPane, yokTerminalHost } from "./agents/tmux.ts";
+import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
 import { commentRepliedEvent, isOpen, readComments, replyToComment } from "./comments.ts";
 import { runCloseStep, runContextStep, runModelStep, startCloseStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
@@ -671,8 +671,7 @@ const loadHelperRun = async (
     return undefined;
   }
   const permissionMode = linked?.permissionMode;
-  const modeLaunch = permissionMode === undefined ? {} : { permissionMode };
-  return { run, log, provider, modeLaunch, terminalName: linked?.terminal ?? null };
+  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
 };
 
 const contextCommand = () =>
@@ -758,11 +757,10 @@ const closeCommand = () =>
       const run = await requireRun(runInputFromFlags(opts));
       if (!run.ok) return fail(run.error);
       // Whether the close went through is not recorded.
-      const linked = await registry().findRun(run.value.id);
+      const terminalName = (await registry().findRun(run.value.id))?.terminal ?? null;
       const host = yokTerminalHost(process.env, noopLogger);
       await runCloseStep({
-        terminal: currentTerminal(process.env, noopLogger),
-        ownsPane: await isRunPane(linked?.terminal ?? null),
+        terminal: terminalName === null ? undefined : host.find(terminalName),
         provider: agentProvider({ agent: parsed.data, host, env: process.env, log: noopLogger }),
       });
     });

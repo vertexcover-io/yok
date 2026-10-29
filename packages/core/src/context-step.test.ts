@@ -1380,13 +1380,13 @@ describe("findOpenContextRun", () => {
   });
 });
 
-const deadPid = async (): Promise<number> => {
-  const child = Bun.spawn(["true"]);
-  await child.exited;
-  return child.pid;
-};
-
 describe("clearDeadSwitchLocks", () => {
+  const deadPid = async (): Promise<number> => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    return child.pid;
+  };
+
   test("SC630: model-3.lock and context-nr-2.lock with a dead pid and an empty model-4.lock are removed; context-nr-1.lock held by this process and the state and subscriber lock folders stay", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "switch-locks-"));
     const locks = join(runDir, "locks");
@@ -1484,17 +1484,6 @@ describe("clearDeadSwitchLocks", () => {
 });
 
 describe("runCloseStep", () => {
-  // A pane showing `screen(captureIndex)`, alive until its provider kills it.
-  const closingPane = (screen: (capture: number) => string) => {
-    let alive = true;
-    const fake = fakeTerminal(screen);
-    const terminal: ITerminal = { ...fake.terminal, isAlive: async () => alive };
-    const end = () => {
-      alive = false;
-    };
-    return { terminal, typed: fake.typed, captureCount: fake.captureCount, end };
-  };
-
   type StopResult = Awaited<ReturnType<IAgentProvider["stop"]>>;
 
   // Counts the kills and the captures seen by the time of each kill.
@@ -1514,11 +1503,11 @@ describe("runCloseStep", () => {
     return { provider, stops: () => stops, watch };
   };
 
-  const close = (terminal: ITerminal | undefined, provider: IAgentProvider, ownsPane = true) =>
-    runCloseStep({ terminal, ownsPane, provider });
+  const close = (terminal: ITerminal | undefined, provider: IAgentProvider) =>
+    runCloseStep({ terminal, provider });
 
   test("SC804: an idle agent at an empty input box has its pane killed once, with nothing typed", async () => {
-    const pane = closingPane(() => IDLE);
+    const pane = fakeTerminal(() => IDLE);
     const { provider, stops } = closingProvider();
 
     await close(pane.terminal, provider);
@@ -1528,7 +1517,7 @@ describe("runCloseStep", () => {
   });
 
   test("SC805: an agent waiting on an open question is idle, so its pane is killed with the question still open", async () => {
-    const pane = closingPane(() => QUESTION);
+    const pane = fakeTerminal(() => QUESTION);
     const { provider, stops } = closingProvider();
 
     await close(pane.terminal, provider);
@@ -1538,7 +1527,7 @@ describe("runCloseStep", () => {
   });
 
   test("SC806: an agent that stays busy through the idle wait is never killed", async () => {
-    const pane = closingPane(() => BUSY);
+    const pane = fakeTerminal(() => BUSY);
     const { provider, stops } = closingProvider();
 
     await close(pane.terminal, provider);
@@ -1550,7 +1539,7 @@ describe("runCloseStep", () => {
   test("SC807: one idle reading between busy ones is not the end of the turn; the kill waits for two in a row", async () => {
     // idle, busy, idle, busy, idle, idle: only the last pair counts
     const screens = [IDLE, BUSY, IDLE, BUSY, IDLE, IDLE];
-    const pane = closingPane((capture) => screens[capture] ?? IDLE);
+    const pane = fakeTerminal((capture) => screens[capture] ?? IDLE);
     const { provider, stops, watch } = closingProvider();
     watch(pane.captureCount);
 
@@ -1559,18 +1548,8 @@ describe("runCloseStep", () => {
     expect(stops()).toEqual([6]);
   });
 
-  test("SC820: a pane that is not the run's own yok terminal is never killed nor typed into", async () => {
-    const pane = closingPane(() => IDLE);
-    const { provider, stops } = closingProvider();
-
-    await close(pane.terminal, provider, false);
-
-    expect(stops()).toEqual([]);
-    expect(pane.typed).toEqual([]);
-  });
-
   test("SC822: a kill that fails on a pane still alive is tried once and does not throw", async () => {
-    const pane = closingPane(() => IDLE);
+    const pane = fakeTerminal(() => IDLE);
     const { provider, stops } = closingProvider(() => ({ ok: false, error: "kill-pane failed" }));
 
     await close(pane.terminal, provider);
@@ -1579,7 +1558,7 @@ describe("runCloseStep", () => {
     expect(await pane.terminal.isAlive()).toBe(true);
   });
 
-  test("SC824: a helper outside tmux kills nothing", async () => {
+  test("SC824: a run with no registered terminal kills nothing", async () => {
     const { provider, stops } = closingProvider();
 
     await close(undefined, provider);
