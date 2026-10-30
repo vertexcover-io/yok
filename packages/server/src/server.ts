@@ -87,10 +87,9 @@ export const createRoot = (deps: RootDeps) => {
     url: "http://yok.internal",
     send: async (input, init) => self.request(input, init),
   });
-  const slackFetch = deps.slackFetch ?? ((url, init) => fetch(url, init));
   return new Hono()
     .use("*", hostGuard(deps.port, deps.domain))
-    .route("/api/hooks/slack", slackHookRoutes({ ...deps, client, slackFetch }))
+    .route("/api/hooks/slack", slackHookRoutes({ ...deps, client }))
     .route("/api", api)
     .route("/", viewerRoutes({ ...deps, log: deps.log.child({ component: "viewer" }) }));
 };

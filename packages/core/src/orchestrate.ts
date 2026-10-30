@@ -160,11 +160,7 @@ const initCommand = () =>
           terminal: currentTerminal(),
           provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
-          // the thread belongs to the run this session was launched for, not to one it inits
-          notifyThread:
-            runId === process.env.YOK_RUN_ID
-              ? process.env.YOK_SLACK_THREAD || undefined
-              : undefined,
+          notifyThread: process.env.YOK_SLACK_THREAD || undefined,
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
       });

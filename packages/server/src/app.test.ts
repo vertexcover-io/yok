@@ -1281,7 +1281,7 @@ describe("Slack hook", () => {
     expect(posts).toEqual([]);
   });
 
-  test("a command that throws gets the fixed internal reply, without the error's text", async () => {
+  test("a command that throws replies with internal: and the error's message", async () => {
     const { app, deps, posts } = await slackRoot();
     Object.assign(deps.registry, {
       listRuns: async () => {
@@ -1292,19 +1292,18 @@ describe("Slack hook", () => {
     await signedHook(app, mention("<@UBOT> runs"));
 
     await until(() => posts.length > 0);
-    expect(replies(posts)).toEqual(["internal: the command failed; see the server log"]);
+    expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/registry.json"]);
   });
 
-  test("a reply echoing <!channel> and ``` posts them escaped inside one code block", async () => {
+  test("a reply echoing <!channel> posts it escaped inside a code block", async () => {
     const { app, posts } = await slackRoot();
 
-    await signedHook(app, mention("<@UBOT> &lt;!channel&gt; ```"));
+    await signedHook(app, mention("<@UBOT> &lt;!channel&gt;"));
 
     await until(() => posts.length > 0);
     const text = String(posts[0]?.form.text);
-    expect(text).toStartWith("```\nunknown command: &lt;!channel&gt; `​``\n");
+    expect(text).toStartWith("```\nunknown command: &lt;!channel&gt;\n");
     expect(text).not.toContain("<!channel>");
-    expect(text.match(/```/g)).toHaveLength(2);
   });
 
   test("after 1001 distinct events the first id counts as new again, and the newest is still dropped", async () => {
@@ -1508,20 +1507,22 @@ describe("Slack run command", () => {
   });
 
   test.each([
-    ["a workflow that does not exist", "nosuch", ""],
-    ["a project config that does not parse", "ok.yaml", "version: [2\n"],
-  ])("%s gets a start-failure reply naming no host path", async (_label, workflow, config) => {
-    const { app, deps, posts, cwd } = await slackRunRoot();
-    if (config !== "") writeFileSync(join(cwd, "orchestrate.config.yaml"), config);
+    ["a workflow that does not exist", "nosuch", "", "no workflow at "],
+    ["a project config that does not parse", "ok.yaml", "version: [2\n", "invalid YAML"],
+  ])(
+    "%s gets a bad-request reply naming the problem",
+    async (_label, workflow, config, problem) => {
+      const { app, deps, posts, cwd } = await slackRunRoot();
+      if (config !== "") writeFileSync(join(cwd, "orchestrate.config.yaml"), config);
 
-    await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo --prompt "fix login"`));
+      await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo --prompt "fix login"`));
 
-    await until(() => posts.length >= 2);
-    expect(replies(posts)[1]).toBe(
-      "bad-request: run not started: the workflow or its config did not load; see the server log",
-    );
-    expect(await deps.registry.listRuns()).toEqual([]);
-  });
+      await until(() => posts.length >= 2);
+      expect(replies(posts)[1]).toStartWith("bad-request: ");
+      expect(replies(posts)[1]).toContain(problem);
+      expect(await deps.registry.listRuns()).toEqual([]);
+    },
+  );
 
   test("SC28 (regression): POST /api/runs replies with no threaded key and launches with no YOK_SLACK_THREAD", async () => {
     const launches: LaunchOptions[] = [];

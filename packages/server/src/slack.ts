@@ -3,8 +3,9 @@ import { notifierHooks } from "@yok/core";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import * as z from "zod";
-import { type ChatThread, type DispatchDeps, dispatchCommand } from "./dispatch.ts";
+import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { readHomeEnv } from "./protocol.ts";
+import type { ChatThread } from "./run.ts";
 
 // Slack's own replay window for a signed request.
 const MAX_AGE_S = 5 * 60;
@@ -14,8 +15,8 @@ const SEEN_LIMIT = 1000;
 export type SlackHookDeps = DispatchDeps &
   Readonly<{
     home: string;
-    // what calls Slack's Web API; the network's fetch outside tests
-    slackFetch: notifierHooks.Fetch;
+    // what calls Slack's Web API; the network's fetch unless a test records the calls
+    slackFetch?: notifierHooks.Fetch | undefined;
     now: () => Date;
   }>;
 
@@ -71,15 +72,11 @@ const PayloadSchema = z.discriminatedUnion("type", [
   z.looseObject({ type: z.literal("event_callback"), event_id: z.string(), event: MentionSchema }),
 ]);
 
-// A code block shows the reply as typed; a run of three backticks inside it would close it early.
-const codeBlock = (text: string): string =>
-  `\`\`\`\n${notifierHooks.escapeSlack(text).replaceAll("```", "`\u200b``")}\n\`\`\``;
-
 const postReply = async (config: notifierHooks.SlackConfig, ts: string, text: string) => {
   await notifierHooks.callSlack(config, "chat.postMessage", {
     channel: config.channel,
     thread_ts: ts,
-    text: codeBlock(text),
+    text: `\`\`\`\n${notifierHooks.escapeSlack(text)}\n\`\`\``,
   });
 };
 
@@ -94,14 +91,19 @@ const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<voi
     log.error({}, "SLACK_BOT_TOKEN is not set, so the mention gets no reply");
     return;
   }
-  const config = { token, channel: thread.channel, memberId: undefined, fetch: deps.slackFetch };
+  const config = {
+    token,
+    channel: thread.channel,
+    memberId: undefined,
+    fetch: deps.slackFetch ?? fetch,
+  };
   const say = (text: string) => postReply(config, thread.ts, text);
   try {
     await say(await dispatchCommand(commandText(mention.text), thread, deps, say));
   } catch (error) {
     log.error({ err: error }, "the Slack command failed");
-    // the error can name host paths; the channel gets a fixed line and the log the detail
-    await say("internal: the command failed; see the server log").catch(() => undefined);
+    const message = error instanceof Error ? error.message : String(error);
+    await say(`internal: ${message}`).catch(() => undefined);
   }
 };
 

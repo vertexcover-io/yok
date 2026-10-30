@@ -113,7 +113,7 @@ export type InitOptions = Readonly<{
   provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
-  // the Slack thread the run's updates reply in, from YOK_SLACK_THREAD when a chat command started it
+  // the Slack thread the run's updates reply in
   notifyThread?: string | undefined;
 }>;
 

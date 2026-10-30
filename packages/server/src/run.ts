@@ -52,8 +52,6 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-// A type import only: dispatch.ts imports this file.
-import type { ChatThread } from "./dispatch.ts";
 import { addRunIfProjectKept, pickProject, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
@@ -120,6 +118,9 @@ const resolveRunSettings = async (
   return { ok: true, value: { tiers: tiers.value, policies, notifier } };
 };
 
+// The channel a Slack command was typed in, and the ts of its thread's first message.
+export type ChatThread = Readonly<{ channel: string; ts: string }>;
+
 // A run started from a chat thread replies in it only when its notifier posts to that channel:
 // the thread's id means nothing anywhere else. True when the session gets the thread.
 const checkThread = (
@@ -159,7 +160,6 @@ export type LaunchRequest = Readonly<{
   name?: string;
   policies: PolicyLayer;
   permissionMode?: PermissionMode;
-  // the chat message a Slack command started this run from
   thread?: ChatThread;
   // Adds the run to the registry unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
@@ -174,22 +174,6 @@ const refused = (
   ok: false,
   error: { status, code, message, ...(details === undefined ? {} : { details }) },
 });
-
-// A load error quotes host paths and file contents. A chat thread is open to the whole channel,
-// so it gets a fixed line and the server log the detail; the API's caller still sees it all.
-const loadRefused = (
-  error: string,
-  thread: ChatThread | undefined,
-  log: ILogger,
-): Result<never, LaunchError> => {
-  if (thread === undefined) return refused(400, "bad-request", error);
-  log.info({ err: error }, "run not started: the workflow or its config did not load");
-  return refused(
-    400,
-    "bad-request",
-    "run not started: the workflow or its config did not load; see the server log",
-  );
-};
 
 // Checks a compiled workflow and starts its agent session; the /runs route and the trigger
 // scheduler both call it. Every refusal comes before register, so a refused start records no run.
@@ -210,7 +194,7 @@ export const launchRun = async (
     log.info({ workflow, verdict: line }, "run not started: the doctor blocked it");
     return refused(400, "bad-request", line, checked.report);
   }
-  if (!checked.env.ok) return loadRefused(checked.env.error, request.thread, log);
+  if (!checked.env.ok) return refused(400, "bad-request", checked.env.error);
 
   const resolved = await resolveRunSettings(config, cwd, plan, request.policies);
   if (!resolved.ok) {
@@ -218,7 +202,7 @@ export const launchRun = async (
       { err: resolved.error, workflow, agent },
       "run not started: its tiers do not resolve",
     );
-    return loadRefused(resolved.error, request.thread, log);
+    return refused(400, "bad-request", resolved.error);
   }
   const { tiers, policies, notifier } = resolved.value;
   const threaded = checkThread(request.thread, notifier, checked.env.value);
@@ -294,7 +278,6 @@ export const launchRun = async (
 
 export type StartExtra = Readonly<{
   permissionMode?: PermissionMode;
-  // the chat message the run is started from; only the Slack hook passes one
   thread?: ChatThread;
   // Asked just before the run is registered; false refuses the start with a conflict.
   stillWanted?: () => Promise<boolean>;
@@ -313,8 +296,8 @@ export const compileWorkflow = async (
   return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;
 };
 
-// The one start-up path: POST /runs, trigger firings and the Slack run command all start here. A project yok cloned
-// is pulled first, and every refusal comes before the run is registered.
+// The one start-up path: POST /runs, trigger firings and the Slack run command all start here.
+// A project yok cloned is pulled first, and every refusal comes before the run is registered.
 export const startProjectRun = async (
   body: StartRunBody,
   deps: RunDeps & GitDeps,
@@ -336,8 +319,8 @@ export const startProjectRun = async (
   }
   const config = body.config === undefined ? null : resolve(cwd, body.config);
   const compiled = await compileWorkflow(body.workflow, cwd, config);
+  if (!compiled.ok) return refused(400, "bad-request", compiled.error);
   const { permissionMode, stillWanted, thread } = extra;
-  if (!compiled.ok) return loadRefused(compiled.error, thread, log);
   return launchRun(
     {
       ...compiled.value,

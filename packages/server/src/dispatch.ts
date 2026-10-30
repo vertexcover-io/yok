@@ -14,10 +14,7 @@ import {
   renderProjects,
   startError,
 } from "./render.ts";
-import { type GitDeps, type RunDeps, startProjectRun } from "./run.ts";
-
-// The message a command answers under: the channel it was typed in and the thread's first message.
-export type ChatThread = Readonly<{ channel: string; ts: string }>;
+import { type ChatThread, type GitDeps, type RunDeps, startProjectRun } from "./run.ts";
 
 // Posts one message in the thread before the command's final reply.
 export type Say = (text: string) => Promise<void>;
@@ -66,7 +63,6 @@ const stringFlag = (args: Args, flag: string): string | undefined => {
   return typeof value === "string" ? value : undefined;
 };
 
-// A repeatable flag's values; none when it was not given.
 const stringsFlag = (args: Args, flag: string): readonly string[] => {
   const value = args.values[flag];
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
@@ -207,7 +203,6 @@ const addTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =
   return describeSchedule(trigger);
 };
 
-// fire, log and rm each name one trigger by its name and project.
 const triggerRef = (args: Args): Readonly<{ project: string; name: string }> => {
   const [name] = args.positionals;
   const project = requireProject(args);
@@ -231,8 +226,7 @@ const removeTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps
 
 const RUNS_SHOWN = 20;
 
-// Every project's runs, newest first, or only --project's: a project's runs are the ones whose
-// checkout is its folder.
+// A project's runs are the ones whose checkout is its folder.
 const projectRuns = async (args: Args, deps: DispatchDeps): Promise<readonly RunSummary[]> => {
   const name = stringFlag(args, "project");
   const runs = await listRunSummaries(deps.registry, deps.host);
@@ -453,8 +447,6 @@ const parseWords = (args: readonly string[], options: ParseArgsOptionsConfig): A
   }
 };
 
-// The words after the mention in, the final reply text out. `say` posts anything the command
-// reports before it finishes.
 export const dispatchCommand = async (
   text: string,
   thread: ChatThread,

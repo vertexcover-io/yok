@@ -58,20 +58,6 @@ describe("SC26: orchestrate init", () => {
     expect(threadOf(repo)).toBe("100.1");
   });
 
-  test("init of a run other than the session's own ignores YOK_SLACK_THREAD", () => {
-    const repo = tempRepo();
-    const home = tempDir();
-    writeRegistry(home, [savedRun(repo)]);
-
-    const init = orchestrate(repo, home, ["init", "fix-login", "--run-id", "r-1"], {
-      YOK_RUN_ID: "r-parent",
-      YOK_SLACK_THREAD: "100.1",
-    });
-
-    expect(init.code).toBe(0);
-    expect(threadOf(repo)).toBeUndefined();
-  });
-
   test("SC24: init with no --run-id and no YOK_RUN_ID exits 1 with the no-run message", () => {
     const init = orchestrate(tempRepo(), tempDir(), ["init", "fix-login"]);
 

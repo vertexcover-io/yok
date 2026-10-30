@@ -13,7 +13,6 @@ const columnWidths = (
     Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),
   );
 
-// Two spaces between columns; trimEnd drops the last column's padding.
 const alignRow = (values: readonly string[], widths: readonly number[]): string =>
   values
     .map((value, column) => value.padEnd(widths[column] ?? 0))
