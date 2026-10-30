@@ -48,6 +48,7 @@ const IDLE = `${RULE}\n❯ \n${RULE}`;
 const BUSY = `· Vibing… (3s)\n${IDLE}`;
 const REFUSED = `⎿  Not enough messages to compact.\n${IDLE}`;
 const COMPACTING = `✻ Compacting conversation… (42s)\n${IDLE}`;
+const DRAFT = `${RULE} feat-x ─\n❯ line one\n  line two\n  line three\n${RULE}`;
 
 const seed = (runDir: string): State => ({
   schemaVersion: 1,
@@ -816,6 +817,36 @@ describe("runContextStep: compact", () => {
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
+  });
+
+  test("a three-line draft in the box is cleared line by line before /compact is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => (typed.some((entry) => entry.includes("BSpace")) ? IDLE : DRAFT),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed.slice(0, 3)).toEqual([
+      ["C-u", "BSpace", "C-u", "BSpace", "C-u"],
+      "/compact",
+      ["Enter"],
+    ]);
+  });
+
+  test("a draft the clearing keys do not empty gets no line typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => DRAFT,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed.filter((entry) => typeof entry === "string")).toEqual([]);
   });
 
   test("SC7: Claude saying there is nothing to compact ends the step at once with that reason, not after the 180-second wait, and the resume line is typed", async () => {

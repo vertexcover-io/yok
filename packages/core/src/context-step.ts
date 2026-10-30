@@ -138,6 +138,29 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
+// C-u empties only the cursor's line, and Backspace at a line's start joins it to the one above, so
+// a draft of n lines takes n C-u and n-1 Backspaces. That assumes the cursor ends the draft, so a
+// draft still holding a line break afterwards gets no line: the leftover would be sent with it.
+const clearAndType = async (
+  terminal: ITerminal,
+  line: string,
+  draft: string,
+  log: ILogger,
+): Promise<boolean> => {
+  const breaks = draft.split("\n").length - 1;
+  const keys = Array.from({ length: breaks }, () => [CLAUDE_CLEAR_INPUT_KEY, "BSpace"]).flat();
+  unwrap(await terminal.sendKeys([...keys, CLAUDE_CLEAR_INPUT_KEY]));
+  if (breaks > 0) {
+    const after = readClaudeBox(unwrap(await terminal.capture()));
+    if (after.kind !== "ready" || after.text.includes("\n")) {
+      log.warn({ line, kind: after.kind }, "line not typed: a draft in Claude's box did not clear");
+      return false;
+    }
+  }
+  unwrap(await typeLine(terminal, line));
+  return true;
+};
+
 // Types as soon as the box shows, even mid-turn, since Claude queues the line. Escape goes only to
 // a popup: at the box it opens Rewind, and while Claude is held it could cancel a compaction or
 // reject a permission. false: nothing was typed.
@@ -150,7 +173,8 @@ const typeAtInputBox = async (
   let escapesLeft = CLAUDE_MAX_ESCAPES;
   for (;;) {
     const screen = unwrap(await terminal.capture());
-    if (readClaudeBox(screen).kind === "ready") break;
+    const box = readClaudeBox(screen);
+    if (box.kind === "ready") return clearAndType(terminal, line, box.text, log);
     const { kind } = readClaudeScreen(screen);
     if ((kind === "busy" || kind === "menu") && Date.now() < heldUntil) {
       await Bun.sleep(IDLE_POLL_MS);
@@ -166,9 +190,6 @@ const typeAtInputBox = async (
     log.warn({ line, kind, screen: tail }, "line not typed: Claude's input box did not show");
     return false;
   }
-  unwrap(await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]));
-  unwrap(await typeLine(terminal, line));
-  return true;
 };
 
 const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>

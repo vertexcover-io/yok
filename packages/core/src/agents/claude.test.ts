@@ -635,6 +635,16 @@ describe("readClaudeScreen", () => {
     ],
     ["a box with text typed", box("❯ half a sentence"), { kind: "ready", text: "half a sentence" }],
     [
+      "a named session's box holding a three-line draft",
+      `● Done.\n${NAMED_RULE}\n❯ line one\n  line two\n  line three\n${RULE}\n  Model: Opus`,
+      { kind: "ready", text: "line one\nline two\nline three" },
+    ],
+    [
+      "a question under a titled top rule, with no plain rule above",
+      `● Done.\n──── Pick one ─\n Which colour?\n❯ Red\n  Blue\n${RULE}\n  Chat about this`,
+      { kind: "menu" },
+    ],
+    [
       "a box holding a cancelled /compact",
       box("❯ /compact keep the plan"),
       { kind: "ready", text: "/compact keep the plan" },

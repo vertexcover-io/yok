@@ -75,19 +75,23 @@ const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
 
 // The transcript above the lowest rule holds the user's old messages, which also start with ❯, so
 // only a ❯ under it counts. The question dialog draws a rule above its last option, so its cursor
-// sits between the two lowest rules; that counts only with a rule above, or it is transcript.
+// sits between the two lowest rules; that counts only with a rule above, or it is transcript. A
+// plain rule is preferred there, since an option's text can end in " ─".
 export const readClaudeBox = (screen: string): ClaudeScreen => {
   if (screen.trim() === "") return { kind: "unknown" };
   const lines = screen.split("\n");
   const rule = lines.findLastIndex(isPlainRule);
   if (lines.slice(rule + 1).some(isCursorLine)) return { kind: "menu" };
-  const input = lines[rule - 1] ?? "";
-  if (isCursorLine(input) && isRule(lines[rule - 2] ?? "")) {
+  const top = lines.slice(0, rule).findLastIndex(isRule);
+  const [input = "", ...rest] = lines.slice(top + 1, rule);
+  if (top >= 0 && isCursorLine(input) && !rest.some(isCursorLine)) {
+    const text = [input.trim().slice(1), ...rest].map((line) => line.trim()).join("\n");
     return lines.length - rule - 1 <= MAX_STATUS_LINES
-      ? { kind: "ready", text: input.trim().slice(1).trim() }
+      ? { kind: "ready", text }
       : { kind: "unknown" };
   }
-  const ruleAbove = lines.slice(0, rule).findLastIndex(isPlainRule);
+  const plainAbove = lines.slice(0, rule).findLastIndex(isPlainRule);
+  const ruleAbove = plainAbove >= 0 ? plainAbove : top;
   return ruleAbove >= 0 && lines.slice(ruleAbove + 1, rule).some(isCursorLine)
     ? { kind: "menu" }
     : { kind: "popup" };
