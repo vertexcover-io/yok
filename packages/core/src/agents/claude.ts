@@ -67,30 +67,31 @@ const isRule = (line: string): boolean => {
   return RULE.test(trimmed) && !BOX_EDGE.test(trimmed);
 };
 
-// Claude's status lines under the box; more lines than this mean a panel drawn under an old box.
+// Claude's status lines under the box; more lines than this mean a panel drawn under an old box,
+// or a status area too tall to tell apart from one.
 const MAX_STATUS_LINES = 4;
 
 const isCursorLine = (line: string): boolean => line.trim().startsWith("❯");
-const isOptionCursor = (line: string): boolean => /^❯\s*\d+\./.test(line.trim());
+// The box's bottom edge and a dialog's edges never carry a title, and a line of text can end in " ─".
+const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
 
 // Only lines under the lowest rule count: the transcript above it holds the user's old messages,
 // which also start with ❯. A ❯ under the box too means a dialog drawn below it, where Enter picks.
 // The question dialog draws a divider above its last option, so its cursor sits between the two
-// lowest rules; only a numbered cursor counts there, since an old message may sit there too.
+// lowest rules; that counts only with a rule above, since without one the lines are transcript.
 const readClaudeBox = (screen: string): ClaudeScreen => {
   if (screen.trim() === "") return { kind: "unknown" };
   const lines = screen.split("\n");
-  // The box's bottom edge never carries a title, and a line of text can end in " ─".
-  const rule = lines.findLastIndex((line) => /^─+$/.test(line.trim()));
+  const rule = lines.findLastIndex(isPlainRule);
   if (lines.slice(rule + 1).some(isCursorLine)) return { kind: "menu" };
   const input = lines[rule - 1] ?? "";
   if (isCursorLine(input) && isRule(lines[rule - 2] ?? "")) {
     return lines.length - rule - 1 <= MAX_STATUS_LINES
       ? { kind: "ready", text: input.trim().slice(1).trim() }
-      : { kind: "popup" };
+      : { kind: "unknown" };
   }
-  const ruleAbove = lines.slice(0, rule).findLastIndex(isRule);
-  return lines.slice(ruleAbove + 1, rule).some(isOptionCursor)
+  const ruleAbove = lines.slice(0, rule).findLastIndex(isPlainRule);
+  return ruleAbove >= 0 && lines.slice(ruleAbove + 1, rule).some(isCursorLine)
     ? { kind: "menu" }
     : { kind: "popup" };
 };

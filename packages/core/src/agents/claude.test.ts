@@ -661,7 +661,12 @@ describe("readClaudeScreen", () => {
     [
       "an empty box left in history above a /config panel with no ❯",
       `${PROMPT}\n▔▔▔▔▔▔\n Settings  Status  Config  Usage\n\n Version 2.1.314\n Esc to close`,
-      { kind: "popup" },
+      { kind: "unknown" },
+    ],
+    [
+      "an empty box with four status lines under it",
+      `${box("❯")}\n  Model: Opus\n  Ctx: 8%\n  ⏵⏵ auto mode on\n  1 shell`,
+      { kind: "ready", text: "" },
     ],
     [
       "a popup on a screen with no rule and no ❯",
@@ -715,6 +720,21 @@ describe("readClaudeScreen", () => {
       "a question whose cursor sits between two lines that end in a dash",
       `${RULE}\n Pick one ─\n❯ 1. Red\n Or this ─\n  2. Blue`,
       { kind: "menu" },
+    ],
+    [
+      "a question with unnumbered options above its divider",
+      `${RULE}\n Which colour?\n❯ Red\n  Blue\n${RULE}\n  Chat about this\n Esc to cancel`,
+      { kind: "menu" },
+    ],
+    [
+      "a question whose option text has a line ending in a dash",
+      `${RULE}\n Which colour?\n❯ 1. Red\n     the warm one ─\n  2. Blue\n${RULE}\n  3. Chat about this`,
+      { kind: "menu" },
+    ],
+    [
+      "an old numbered message above a popup, with no rule above them",
+      `❯ 1. go with the first option\n⏺ Done.\n${RULE}\n Status\n Version 2.1.312\n Esc to close`,
+      { kind: "popup" },
     ],
     ["a blank pane", "", { kind: "unknown" }],
   ])("%s", (_name, screen, expected) => {
