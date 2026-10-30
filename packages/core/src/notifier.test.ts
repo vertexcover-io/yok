@@ -400,6 +400,26 @@ describe("describeEvent", () => {
       }),
       openDesign,
     ],
+    [
+      "SC14: an API error that may pass",
+      event("agent.error.reached", { agent: "claude", sessionId: "s-1", error: "server_error" }),
+      state,
+    ],
+    [
+      "SC14: an API-error wait",
+      event("agent.error.waiting", {
+        sessionId: "s-1",
+        errorEventId: "e-1",
+        error: "server_error",
+        resumeAt: "2026-09-26T14:00:00Z",
+      }),
+      state,
+    ],
+    [
+      "SC14: an API-error retry",
+      event("agent.error.resumed", { sessionId: "s-1", errorEventId: "e-1" }),
+      state,
+    ],
   ])("%s posts nothing", (_label, stored, at) => {
     expect(describeEvent(stored, at)).toBeUndefined();
   });

@@ -59,7 +59,7 @@ The biggest package, and the one you will edit most.
 | `agents/` | Claude and Codex providers, the tmux host, and the hook settings each agent needs |
 | `hooks/` | the handlers behind each agent hook: link-session, continue-workflow, record-guard, and friends |
 | `context-step.ts` | new-session and compact steps, and the model switch |
-| `limit-wait.ts` | pausing a run until a usage limit resets |
+| `auto-resume.ts` | pausing a run until a usage limit resets, or retrying after an API error that may pass |
 | `comments.ts` | `comments.json` and replies |
 | `doctor.ts` | the machine, repo, and config checks |
 | `notifier.ts` | the built-in Slack subscriber |
@@ -94,7 +94,7 @@ flowchart LR
             HK[yok orchestrate hook …<br/>per hook call, under a second]
             OR[yok orchestrate next / done<br/>per step, under a second]
         end
-        HLP[helpers<br/>yok orchestrate context / model / limit-wait<br/>detached, minutes]
+        HLP[helpers<br/>yok orchestrate context / model / auto-resume<br/>detached, minutes]
     end
     CLI -->|POST /runs| SRV
     SRV -->|tmux new-session| CC

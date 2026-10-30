@@ -236,6 +236,26 @@ export const LimitResumedEvent = z.object({
   payload: z.strictObject({ sessionId: NonEmptyStringSchema, limitEventId: NonEmptyStringSchema }),
 });
 
+// The agent's turn ended on an API error that may pass, such as a dropped connection.
+// progressed: the agent called a tool after the last message it was sent, read from its transcript;
+// absent where the hook could not tell.
+export const ApiErrorReachedEvent = z.object({
+  payload: LimitReachedEvent.shape.payload.extend({ progressed: z.boolean().optional() }),
+});
+
+export const ApiErrorWaitingEvent = z.object({
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+    errorEventId: NonEmptyStringSchema,
+    error: NonEmptyStringSchema,
+    resumeAt: z.iso.datetime(),
+  }),
+});
+
+export const ApiErrorResumedEvent = z.object({
+  payload: z.strictObject({ sessionId: NonEmptyStringSchema, errorEventId: NonEmptyStringSchema }),
+});
+
 // One call of one subscriber for one stored event.
 export const SubscriberCalledEvent = z.object({
   payload: z.strictObject({
@@ -275,7 +295,8 @@ export const QuestionAnsweredEvent = z.object({
   payload: z.strictObject({ ...questionCall, answers: z.array(AnsweredQuestionSchema).min(1) }),
 });
 
-// A turn an API error ended that waiting will not clear, such as authentication or billing.
+// A turn an API error ended that waiting will not clear, such as authentication or billing, or
+// one the wait helper gave up on.
 export const AgentStoppedEvent = z.object({ payload: LimitReachedEvent.shape.payload });
 
 // The Stop hook let the agent's turn end after sending it back too many times in a row.
@@ -551,6 +572,9 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "agent.limit.reached": LimitReachedEvent,
   "agent.limit.waiting": LimitWaitingEvent,
   "agent.limit.resumed": LimitResumedEvent,
+  "agent.error.reached": ApiErrorReachedEvent,
+  "agent.error.waiting": ApiErrorWaitingEvent,
+  "agent.error.resumed": ApiErrorResumedEvent,
   "agent.question.asked": QuestionAskedEvent,
   "agent.question.answered": QuestionAnsweredEvent,
   "agent.stopped": AgentStoppedEvent,
@@ -995,6 +1019,17 @@ const onLimitWaiting: EventHandler = (state, event) => {
   });
 };
 
+const onErrorWaiting: EventHandler = (state, event) => {
+  const parsed = ApiErrorWaitingEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { error, resumeAt } = parsed.data.payload;
+  return block(state, {
+    ...blockerBase(state, event),
+    reason: "api-error",
+    details: { error, resumeAt },
+  });
+};
+
 const onAgentStuck: EventHandler = (state, event) => {
   const parsed = AgentStuckEvent.safeParse(event);
   if (!parsed.success) return state;
@@ -1030,6 +1065,8 @@ export const builtInHandlers: EventHandlers = {
   "agent.question.answered": (state) => unblock(state, "question"),
   "agent.limit.waiting": onLimitWaiting,
   "agent.limit.resumed": (state) => unblock(state, "usage-limit"),
+  "agent.error.waiting": onErrorWaiting,
+  "agent.error.resumed": (state) => unblock(state, "api-error"),
   "agent.stuck": onAgentStuck,
   "agent.stopped": onAgentStopped,
   "agent.resumed": onAgentResumed,

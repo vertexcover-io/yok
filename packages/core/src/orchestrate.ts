@@ -42,6 +42,7 @@ import {
 } from "@yok/sdk/internal";
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
 import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
+import { runAutoResume } from "./auto-resume.ts";
 import { commentRepliedEvent, isOpen, readComments, replyToComment } from "./comments.ts";
 import { runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
@@ -50,7 +51,6 @@ import { preToolUseHandlers } from "./hooks/pre-tool-use.ts";
 import { sessionStartHandlers } from "./hooks/session-start.ts";
 import { stopHandlers } from "./hooks/stop.ts";
 import { stopFailureHandlers } from "./hooks/stop-failure.ts";
-import { runLimitWait } from "./limit-wait.ts";
 import { createLogger, resolveLevel } from "./logging.ts";
 import {
   type DoneError,
@@ -749,31 +749,31 @@ const helperLogger = (run: RunRef, service: string, file: string) => {
   );
 };
 
-const limitWaitCommand = () =>
-  new Command("limit-wait")
+const autoResumeCommand = () =>
+  new Command("auto-resume")
     .description(
-      "Wait out a usage limit, then have the agent continue in its terminal (started by the StopFailure hook)",
+      "Wait out a usage limit or an API error that may pass, then have the agent continue in its terminal (started by the StopFailure hook)",
     )
-    .argument("<eventId>", "id of the agent.limit.reached event")
+    .argument("<eventId>", "id of the agent.limit.reached or agent.error.reached event")
     .option("--run <name>", RUN_HELP)
     .option("--run-id <id>", RUN_ID_HELP)
-    .requiredOption("--session-id <id>", "the agent session the limit stopped")
-    .action(async (limitEventId, opts) => {
+    .requiredOption("--session-id <id>", "the agent session the limit or API error stopped")
+    .action(async (eventId, opts) => {
       const picked = await requireRun(runInputFromFlags(opts));
       if (!picked.ok) return fail(picked.error);
       const run = picked.value;
-      const log = helperLogger(run, "yok-limit-wait", "limit-wait.log");
+      const log = helperLogger(run, "yok-auto-resume", "auto-resume.log");
       const linked = await registry().findRun(run.id);
       const provider = sessionProvider(linked, opts.sessionId, log);
-      await runLimitWait({
+      await runAutoResume({
         run,
         sessionId: opts.sessionId,
-        limitEventId,
+        eventId,
         agents: provider === undefined ? {} : { [provider.type]: provider },
         // the hook that started this helper ran in the agent's terminal and left it in env
         terminal: currentTerminal(process.env, log),
         log,
-      }).catch((error: unknown) => log.error({ err: error }, "limit wait threw"));
+      }).catch((error: unknown) => log.error({ err: error }, "auto-resume threw"));
     });
 
 const commentsCommand = () => {
@@ -924,7 +924,7 @@ export const orchestrateCommand = () =>
     .addCommand(statuslineCommand())
     .addCommand(contextCommand())
     .addCommand(modelCommand())
-    .addCommand(limitWaitCommand())
+    .addCommand(autoResumeCommand())
     .addCommand(commentsCommand())
     .addCommand(workflowsCommand())
     .addCommand(runSubscriberCommand(), { hidden: true });

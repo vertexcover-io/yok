@@ -113,6 +113,11 @@ export const BlockerSchema = z.discriminatedUnion("reason", [
     reason: z.literal("agent-error"),
     details: z.strictObject({ error: NonEmptyStringSchema, message: z.string().nullable() }),
   }),
+  z.strictObject({
+    ...blockerFields,
+    reason: z.literal("api-error"),
+    details: z.strictObject({ error: NonEmptyStringSchema, resumeAt: z.iso.datetime() }),
+  }),
 ]);
 export type Blocker = z.infer<typeof BlockerSchema>;
 
