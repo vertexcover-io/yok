@@ -740,8 +740,7 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      (_, typed) =>
-        typed.includes("/compact") && Date.now() - startedAt < 300_000 ? COMPACTING : IDLE,
+      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
     );
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -767,8 +766,7 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      (_, typed) =>
-        typed.includes("/compact") && Date.now() - startedAt < 300_000 ? COMPACTING : IDLE,
+      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
     );
 
     await helper(context, fake.terminal);
@@ -784,18 +782,17 @@ describe("runContextStep: compact", () => {
     });
   }, 30_000);
 
-  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line, held back by the busy sign, ends agent.input.unreachable", async () => {
+  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line is typed into the box under the busy sign", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      (_, typed) => (typed.includes("/compact") ? COMPACTING : IDLE),
+      () => COMPACTING,
     );
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual(typedLine("/compact"));
-    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: {
         action: "compact",
@@ -805,12 +802,12 @@ describe("runContextStep: compact", () => {
     });
   }, 60_000);
 
-  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact once its busy sign goes, and the compaction completes applied", async () => {
+  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact at once, and the compaction completes applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
       () => true,
-      (captures) => (captures < 3 ? BUSY : IDLE),
+      () => BUSY,
     );
 
     await helper(context, fake.terminal);
@@ -853,12 +850,12 @@ describe("runContextStep: compact", () => {
     ]);
   });
 
-  test("a resume line Claude works on for 100 seconds is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
+  test("a resume line typed while Claude finishes a turn is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
     const context = await setUp("type: context, action: compact");
     let typedAt: number | undefined;
     const busyFor = 100_000;
     const fake = fakeTerminal(
-      () => (typedAt !== undefined && Date.now() < typedAt + busyFor ? BUSY : IDLE),
+      () => (typedAt === undefined || Date.now() < typedAt + busyFor ? BUSY : IDLE),
       async (text) => {
         if (text === RESUME) typedAt = Date.now();
         else await completeContextOnSessionStart(context.run, "A", "compact");

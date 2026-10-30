@@ -79,7 +79,7 @@ const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
 // which also start with ❯. A ❯ under the box too means a dialog drawn below it, where Enter picks.
 // The question dialog draws a divider above its last option, so its cursor sits between the two
 // lowest rules; that counts only with a rule above, since without one the lines are transcript.
-const readClaudeBox = (screen: string): ClaudeScreen => {
+export const readClaudeBox = (screen: string): ClaudeScreen => {
   if (screen.trim() === "") return { kind: "unknown" };
   const lines = screen.split("\n");
   const rule = lines.findLastIndex(isPlainRule);

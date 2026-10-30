@@ -39,6 +39,7 @@ import {
   CLAUDE_ESCAPE_PAUSE_MS,
   CLAUDE_MAX_ESCAPES,
   CLAUDE_NOTHING_TO_COMPACT,
+  readClaudeBox,
   readClaudeScreen,
 } from "./agents/claude.ts";
 import { typeLine, unwrap } from "./agents/common.ts";
@@ -138,9 +139,10 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-// Types only at the input box with Claude free. Escape only at a popup: at the box it could open
-// the Rewind menu; while Claude is held it could cancel a compaction, reject a permission or
-// decline a question. false: the box never showed, nothing was typed.
+// Types at the input box as soon as it shows, even while Claude works: Claude queues the line and
+// runs it once its turn ends. Escape only at a popup: at the box it could open the Rewind menu;
+// while Claude is held it could cancel a compaction, reject a permission or decline a question.
+// false: the box never showed, nothing was typed.
 const typeAtInputBox = async (
   terminal: ITerminal,
   line: string,
@@ -150,8 +152,8 @@ const typeAtInputBox = async (
   let escapesLeft = CLAUDE_MAX_ESCAPES;
   for (;;) {
     const screen = unwrap(await terminal.capture());
+    if (readClaudeBox(screen).kind === "ready") break;
     const { kind } = readClaudeScreen(screen);
-    if (kind === "ready") break;
     if ((kind === "busy" || kind === "menu") && Date.now() < heldUntil) {
       await Bun.sleep(IDLE_POLL_MS);
       continue;
