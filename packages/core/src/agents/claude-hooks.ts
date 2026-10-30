@@ -194,7 +194,11 @@ const ClaudeStopFailureInputSchema = z.looseObject({
   session_id: NonEmptyStringSchema,
   error: NonEmptyStringSchema.default("unknown"),
   last_assistant_message: z.string().optional(),
+  transcript_path: z.string().optional(),
 });
+
+// A dropped connection ends the turn with server_error; unknown is any error Claude does not name.
+const RETRYABLE_ERRORS: ReadonlySet<string> = new Set(["server_error", "unknown"]);
 
 const claudeStopFailure = (
   stdin: string,
@@ -207,13 +211,20 @@ const claudeStopFailure = (
     handler,
     event: "stop-failure",
     schema: ClaudeStopFailureInputSchema,
-    toHandlerInput: ({ session_id: sessionId, error, last_assistant_message: message }) => ({
+    toHandlerInput: ({
+      session_id: sessionId,
+      error,
+      last_assistant_message: message,
+      transcript_path: transcriptPath,
+    }) => ({
       agent: "claude" as const,
       sessionId,
       error,
       // Claude reports a plan's session or weekly limit as rate_limit.
       usageLimit: error === "rate_limit",
+      retryable: RETRYABLE_ERRORS.has(error),
       message,
+      readTranscript: () => readClaudeTranscript(transcriptPath),
     }),
   });
 

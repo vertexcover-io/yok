@@ -122,7 +122,7 @@ describe("yok as one program", () => {
         "hook",
         "statusline",
         "context",
-        "limit-wait",
+        "auto-resume",
         "comments",
       ]),
     );

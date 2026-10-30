@@ -426,11 +426,17 @@ describe("claudeAdapter.postToolUse", () => {
 describe("claudeAdapter.stopFailure", () => {
   const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
   test.each([
-    ["rate_limit", true],
-    ["overloaded", false],
+    ["server_error", false, true],
+    ["unknown", false, true],
+    [undefined, false, true],
+    ["rate_limit", true, false],
+    ["authentication_failed", false, false],
+    ["billing_error", false, false],
+    ["invalid_request", false, false],
+    ["max_output_tokens", false, false],
   ])(
-    "Claude's error %s and its last_assistant_message reach the handler with usageLimit %p, and the hook prints nothing",
-    async (error, usageLimit) => {
+    "SC1: Claude's error %p reaches the handler with usageLimit %p and retryable %p, and the hook prints nothing",
+    async (error, usageLimit, retryable) => {
       const seen: StopFailureInput[] = [];
       const handler = {
         name: "spy",
@@ -439,7 +445,7 @@ describe("claudeAdapter.stopFailure", () => {
       const stdin = line({
         session_id: "s1",
         hook_event_name: "StopFailure",
-        error,
+        ...(error === undefined ? {} : { error }),
         error_details: "429",
         last_assistant_message: "You've hit your limit · resets 3pm (UTC)",
       });
@@ -449,13 +455,29 @@ describe("claudeAdapter.stopFailure", () => {
         {
           agent: "claude",
           sessionId: "s1",
-          error,
+          error: error ?? "unknown",
           usageLimit,
+          retryable,
           message: "You've hit your limit · resets 3pm (UTC)",
+          readTranscript: expect.any(Function),
         },
       ]);
     },
   );
+
+  test("the handler reads the session's transcript from transcript_path", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "claude-transcript-")), "s1.jsonl");
+    const bash = { type: "tool_use", id: "t1", name: "Bash", input: { command: "bun test" } };
+    await writeFile(path, [user("continue"), assistant([bash])].join("\n"));
+    const seen: StopFailureInput[] = [];
+    const handler = { name: "spy", run: async (input: StopFailureInput) => void seen.push(input) };
+    const stdin = line({ session_id: "s1", transcript_path: path, error: "server_error" });
+    await claudeAdapter.stopFailure?.(stdin, deps, handler);
+    expect(await seen[0]?.readTranscript()).toEqual([
+      { kind: "prompt", text: "continue" },
+      { kind: "command", command: "bun test" },
+    ]);
+  });
 });
 
 describe("claudeSettings handlers", () => {
