@@ -128,6 +128,31 @@ describe("initializeRun", () => {
     expect((await registry.findRun(run.id))?.name).toBe("fix-login");
   });
 
+  test("SC18: init given notifyThread 100.1 stores notification.thread.started before workflow.started, so state.notification.threadId is 100.1", async () => {
+    const { cwd, init } = await savedRun();
+
+    const result = await init("fix-login", undefined, { notifyThread: "100.1" });
+
+    if (!result.ok) throw new Error(result.error);
+    const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
+    expect(events.map((event) => event.type)).toEqual([
+      "notification.thread.started",
+      "workflow.started",
+    ]);
+    expect(result.value.state.notification).toEqual({ provider: "slack", threadId: "100.1" });
+  });
+
+  test("SC19 (regression): init without notifyThread stores no thread event and leaves state.notification unset", async () => {
+    const { cwd, init } = await savedRun();
+
+    const result = await init("fix-login");
+
+    if (!result.ok) throw new Error(result.error);
+    const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
+    expect(events.map((event) => event.type)).not.toContain("notification.thread.started");
+    expect(result.value.state.notification).toBeUndefined();
+  });
+
   test("SC8: seeds activeSessions with the session yok run launched", async () => {
     const session = { agent: "claude", sessionId: "s1" } as const;
     const { init } = await savedRun({ sessions: [session] });

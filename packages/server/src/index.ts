@@ -23,6 +23,16 @@ export {
   updateHomeEnv,
 } from "./protocol.ts";
 export {
+  blockedText,
+  describeFire,
+  describeSchedule,
+  describeTrigger,
+  renderDoctorReport,
+  renderDoctorTable,
+  renderProjects,
+  startError,
+} from "./render.ts";
+export {
   defaultRuntime,
   type Runtime,
   runtimeChecks,

@@ -13,9 +13,10 @@ import { join } from "node:path";
 import { addComments, agentBinary, readComments, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { noopLogger, registryPath, runDirOf } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { createRegistry, VERSION } from "@yok/sdk/internal";
+import { createYokClient } from "./client.ts";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { publicOrigin, serverDomain, updateHomeEnv } from "./protocol.ts";
+import { publicOrigin, readPort, serverDomain, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
 const readyCheckout: CheckCheckout = () =>
@@ -299,3 +300,19 @@ test("SC1011: a dashboard /stream connection stays open through 11 idle seconds 
     await server.stop();
   }
 }, 30_000);
+
+test("SC17: a client with no send reaches a real server over the network and reads its version", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
+  const { host } = fakeHost(EMPTY_BOX);
+  const server = await startServer({
+    home,
+    runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+  });
+  try {
+    const health = await createYokClient({ url: `http://127.0.0.1:${readPort(home)}` }).health();
+    expect(health.ok && health.value.pid).toBe(process.pid);
+    expect(health.ok && health.value.version).toBe(VERSION);
+  } finally {
+    await server.stop();
+  }
+});
