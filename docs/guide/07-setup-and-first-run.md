@@ -134,6 +134,8 @@ This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it e
 
 To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1` and has no login of its own. Caddy does https and the login, then forwards each request to yok. On the server itself, nothing asks for a login.
 
+The `Deploy` workflow does all of this from the repository secrets: see [deploy/README.md](../../deploy/README.md). The steps below are what it does, for a server you set up by hand.
+
 On the server, as the user who will own the runs:
 
 1. Install yok, tmux, git, claude (or codex) and Caddy. Log in to claude once: every run uses that login.

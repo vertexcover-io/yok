@@ -1,0 +1,15 @@
+# The yok server as a systemd user unit, installed by deploy.sh at ~/.config/systemd/user/.
+# PATH is spelled out because a service loads no shell profile; without it yok finds neither
+# the agents nor tmux. secrets.env carries the agent tokens into every run's session.
+[Unit]
+Description=yok server
+After=network-online.target
+
+[Service]
+ExecStart=%h/.yok/bin/yok server start --port 7777
+Restart=on-failure
+Environment=PATH=%h/.yok/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.yok/secrets.env
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+# Caddy in front of the yok server: https and the login, then every request to yok on loopback.
+# The three values come from /etc/caddy/.env, which deploy.sh writes from the GitHub secrets.
+# SERVER_DOMAIN must equal the value in ~/.yok/.env, or yok's Host guard answers 403.
+{$SERVER_DOMAIN} {
+	basic_auth {
+		{$YOK_USER} {$YOK_PASSWORD_HASH}
+	}
+	reverse_proxy 127.0.0.1:7777
+}
