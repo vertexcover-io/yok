@@ -7,17 +7,20 @@ import { apiErrorText, type YokClient } from "./client.ts";
 import { listRunSummaries, type RunSummary } from "./overview.ts";
 import { type ApiError, StartRunBodySchema } from "./protocol.ts";
 import {
-  describeFire,
-  describeSchedule,
-  describeTrigger,
-  renderDoctorReport,
-  renderProjects,
-  startError,
+  doctorReply,
+  fireLine,
+  fireTable,
+  projectTable,
+  type Reply,
+  scheduleLine,
+  shortTime,
+  startErrorReply,
+  triggerTable,
 } from "./render.ts";
 import { type ChatThread, type GitDeps, type RunDeps, startProjectRun } from "./run.ts";
 
 // Posts one message in the thread before the command's final reply.
-export type Say = (text: string) => Promise<void>;
+export type Say = (reply: Reply) => Promise<void>;
 
 export type DispatchDeps = RunDeps &
   GitDeps &
@@ -38,7 +41,7 @@ type ChatCommand = {
   readonly words: readonly string[];
   readonly usage: string;
   readonly options: ParseArgsOptionsConfig;
-  readonly run: (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => Promise<string>;
+  readonly run: (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => Promise<Reply>;
 };
 
 // A reply the person reads as is. With `usage`, dispatchCommand adds the command's usage line.
@@ -77,11 +80,8 @@ const requireProject = (args: Args): string => {
 
 const showStatus = async (_args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const { version, pid, startedAt } = unwrapApi(await deps.client.health());
-  return [
-    `version  ${version}`,
-    `pid      ${pid}`,
-    `started  ${new Date(startedAt).toISOString()}`,
-  ].join("\n");
+  const started = shortTime(new Date(startedAt).toISOString());
+  return { text: `*Version* \`${version}\` · *PID* \`${pid}\` · *Started* ${started} UTC` };
 };
 
 const SILENT_NOTIFIER =
@@ -126,25 +126,25 @@ const startRun = async (args: Args, thread: ChatThread, deps: DispatchDeps, say:
     ...(config === undefined ? {} : { config }),
     policies: { ...policies.value, interaction: false },
   });
-  if (!body.success) return `bad-request: ${z.prettifyError(body.error)}`;
-  await say(`starting ${workflow} on ${project}…`);
+  if (!body.success) return { text: `bad-request: ${z.prettifyError(body.error)}` };
+  await say({ text: `Starting \`${workflow}\` on *${project}*…` });
   const log = deps.log.child({ component: "slack" });
   const started = await startProjectRun(body.data, deps, log, { thread });
-  if (!started.ok) return startError(started.error);
+  if (!started.ok) return startErrorReply(started.error);
   const { run, view, threaded } = started.value;
-  return [
-    `${run.id} started`,
-    `view: ${view}`,
+  const notes = [
     ...(threaded === true ? [] : [SILENT_NOTIFIER]),
     ...(policies.value.interaction === true ? [QUESTIONS_OFF] : []),
-  ].join("\n");
+  ];
+  return {
+    text: [`*\`${run.id}\` started* · ${view}`, ...notes.map((note) => `_${note}_`)].join("\n"),
+  };
 };
 
 const listProjects = async (_args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const { projects } = unwrapApi(await deps.client.projects());
-  return projects.length === 0
-    ? "no projects; add one with @yok project add"
-    : renderProjects(projects);
+  if (projects.length === 0) return { text: "No projects yet; add one with `@yok project add`." };
+  return { text: plural(projects.length, "project"), table: projectTable(projects) };
 };
 
 const addProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
@@ -160,7 +160,7 @@ const addProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =
       addedBy: { channel: "slack" },
     }),
   );
-  return `added ${project.name}  ${project.path}`;
+  return { text: `Added *${project.name}* at \`${project.path}\`` };
 };
 
 const removeProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
@@ -169,7 +169,7 @@ const removeProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps
   const { removed, note } = unwrapApi(
     await deps.client.removeProject(name, args.values.purge === true),
   );
-  return [`removed ${removed}`, ...(note === null ? [] : [note])].join("\n");
+  return { text: [`Removed *${removed}*`, ...(note === null ? [] : [note])].join("\n") };
 };
 
 const runDoctor = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
@@ -178,14 +178,15 @@ const runDoctor = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =>
   const { report } = unwrapApi(
     await deps.client.doctor({ project, ...(workflow === undefined ? {} : { workflow }) }),
   );
-  return renderDoctorReport(DoctorReportSchema.parse(report));
+  return doctorReply(DoctorReportSchema.parse(report));
 };
 
 const listTriggers = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const { triggers } = unwrapApi(await deps.client.listTriggers());
   const project = stringFlag(args, "project");
   const shown = triggers.filter((t) => project === undefined || t.project === project);
-  return shown.length === 0 ? "no triggers" : shown.map(describeTrigger).join("\n");
+  if (shown.length === 0) return { text: "No triggers." };
+  return { text: plural(shown.length, "trigger"), table: triggerTable(shown) };
 };
 
 const addTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
@@ -200,7 +201,7 @@ const addTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =
       ...(config === undefined ? {} : { config }),
     }),
   );
-  return describeSchedule(trigger);
+  return { text: scheduleLine(trigger) };
 };
 
 const triggerRef = (args: Args): Readonly<{ project: string; name: string }> => {
@@ -210,18 +211,27 @@ const triggerRef = (args: Args): Readonly<{ project: string; name: string }> => 
   return { project, name };
 };
 
-const fireTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =>
-  describeFire(unwrapApi(await deps.client.fireTrigger(triggerRef(args))).fire);
+const fireTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => ({
+  text: fireLine(unwrapApi(await deps.client.fireTrigger(triggerRef(args))).fire),
+});
+
+const FIRES_SHOWN = 50;
 
 const triggerLog = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const { fires } = unwrapApi(await deps.client.triggerLog(triggerRef(args)));
-  return fires.length === 0 ? "never fired" : fires.map(describeFire).join("\n");
+  if (fires.length === 0) return { text: "Never fired." };
+  const shown = fires.slice(-FIRES_SHOWN);
+  const heading =
+    shown.length === fires.length
+      ? plural(fires.length, "fire")
+      : `The newest ${shown.length} of ${fires.length} fires`;
+  return { text: heading, table: fireTable(shown) };
 };
 
 const removeTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const ref = triggerRef(args);
   unwrapApi(await deps.client.removeTrigger(ref));
-  return `removed ${ref.name} from ${ref.project}`;
+  return { text: `Removed *${ref.name}* from *${ref.project}*` };
 };
 
 const RUNS_SHOWN = 20;
@@ -239,20 +249,25 @@ const projectRuns = async (args: Args, deps: DispatchDeps): Promise<readonly Run
 
 // Filter before slicing: the list spans every project.
 const listRuns = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
-  const shown = (await projectRuns(args, deps)).slice(0, RUNS_SHOWN);
-  if (shown.length === 0) return "no runs";
-  return shown
-    .map((run) =>
-      [
-        run.id,
-        run.name ?? "-",
-        run.workflow,
-        run.status,
-        `${run.steps.done}/${run.steps.total ?? "?"}`,
-        run.startedAt,
-      ].join("  "),
-    )
-    .join("\n");
+  const runs = await projectRuns(args, deps);
+  if (runs.length === 0) return { text: "No runs." };
+  const shown = runs.slice(0, RUNS_SHOWN);
+  const heading =
+    shown.length === runs.length
+      ? plural(runs.length, "run")
+      : `The newest ${shown.length} of ${runs.length} runs`;
+  const rows = shown.map((run) => [
+    run.id,
+    run.name ?? "-",
+    run.workflow,
+    run.status,
+    `${run.steps.done}/${run.steps.total ?? "?"}`,
+    shortTime(run.startedAt),
+  ]);
+  return {
+    text: heading,
+    table: { headers: ["ID", "NAME", "WORKFLOW", "STATUS", "STEPS", "STARTED (UTC)"], rows },
+  };
 };
 
 // An id names one run; a name can recur across projects, so a shared one is refused.
@@ -269,23 +284,21 @@ const showRun = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const [key] = args.positionals;
   if (key === undefined) throw needsUsage();
   const run = findRun(await projectRuns(args, deps), key);
-  if (run === undefined) return `not-found: no run ${key}`;
+  if (run === undefined) return { text: `not-found: no run ${key}` };
   const { current, blocker, steps } = run;
   const step = current === null ? "-" : `${current} (${steps.done}/${steps.total ?? "?"})`;
   const blocked =
     blocker === null
       ? "-"
       : `${blocker.reason}${blocker.node === undefined ? "" : ` at ${blocker.node}`}`;
-  return [
-    `id        ${run.id}`,
-    `name      ${run.name ?? "-"}`,
-    `workflow  ${run.workflow}`,
-    `status    ${run.status}`,
-    `step      ${step}`,
-    `blocked   ${blocked}`,
-    `pr        ${run.pr ?? "-"}`,
-    `view      ${deps.publicOrigin}/runs/${run.id}`,
-  ].join("\n");
+  return {
+    text: [
+      `*\`${run.id}\`* · ${run.name ?? "unnamed"} · \`${run.workflow}\``,
+      `*Status* ${run.status} · *Step* ${step}`,
+      `*Blocked* ${blocked} · *PR* ${run.pr ?? "-"}`,
+      `${deps.publicOrigin}/runs/${run.id}`,
+    ].join("\n"),
+  };
 };
 
 const PROJECT_FLAG = { project: { type: "string" } } as const;
@@ -363,14 +376,16 @@ const COMMANDS: readonly ChatCommand[] = [
     options: PROJECT_FLAG,
     run: removeTrigger,
   },
-  { words: ["help"], usage: "help", options: {}, run: async () => helpText() },
+  { words: ["help"], usage: "help", options: {}, run: async () => ({ text: helpText() }) },
 ];
 
 // The longest match wins, so `run status r-1` is never read as running a workflow named status.
 const LONGEST_FIRST = [...COMMANDS].sort((a, b) => b.words.length - a.words.length);
 
 const helpText = (): string =>
-  ["Type @yok and one of:", ...COMMANDS.map((command) => `  ${command.usage}`)].join("\n");
+  ["*Type `@yok` and one of:*", ...COMMANDS.map((command) => `• \`${command.usage}\``)].join("\n");
+
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 // Slack sends a link as <url> or <url|label>, and &, < and > as entities.
 const plainWord = (token: string): string =>
@@ -452,21 +467,21 @@ export const dispatchCommand = async (
   thread: ChatThread,
   deps: DispatchDeps,
   say: Say,
-): Promise<string> => {
+): Promise<Reply> => {
   const split = splitWords(text);
-  if (!split.ok) return split.error;
+  if (!split.ok) return { text: split.error };
   const words = split.value;
-  if (words.length === 0) return helpText();
+  if (words.length === 0) return { text: helpText() };
   const command = LONGEST_FIRST.find((c) => c.words.every((word, index) => words[index] === word));
   if (command === undefined) {
-    return [`unknown command: ${words.join(" ")}`, "", helpText()].join("\n");
+    return { text: [`unknown command: ${words.join(" ")}`, "", helpText()].join("\n") };
   }
   try {
     const args = parseWords(words.slice(command.words.length), command.options);
     return await command.run(args, thread, deps, say);
   } catch (error) {
     if (!(error instanceof ChatError)) throw error;
-    const usage = error.usage ? [`usage: ${command.usage}`] : [];
-    return [error.message, ...usage].filter((line) => line !== "").join("\n");
+    const usage = error.usage ? [`usage: \`${command.usage}\``] : [];
+    return { text: [error.message, ...usage].filter((line) => line !== "").join("\n") };
   }
 };

@@ -40,6 +40,7 @@ import { createYokClient } from "./client.ts";
 import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
 import { AddProjectBodySchema } from "./protocol.ts";
+import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
 
@@ -1196,7 +1197,7 @@ const until = async (check: () => boolean): Promise<void> => {
 };
 
 describe("Slack hook", () => {
-  test("SC8: @yok help from the command channel gets one code-block reply in its thread", async () => {
+  test("SC8: @yok help from the command channel gets one reply in its thread, as blocks with a text fallback", async () => {
     const { app, posts } = await slackRoot();
 
     const res = await signedHook(app, mention("<@UBOT> help"));
@@ -1207,8 +1208,9 @@ describe("Slack hook", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]?.url).toBe("https://slack.com/api/chat.postMessage");
     expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1" });
-    expect(posts[0]?.form.text).toStartWith("```\nType @yok and one of:\n  runs");
-    expect(posts[0]?.form.text).toEndWith("\n  help\n```");
+    expect(posts[0]?.form.text).toBe("*Type `@yok` and one of:*");
+    expect(replies(posts)[0]).toStartWith("*Type `@yok` and one of:*\n• `runs");
+    expect(replies(posts)[0]).toEndWith("\n• `help`");
   });
 
   test("SC9: @yok status replies with the server's own version and pid", async () => {
@@ -1217,8 +1219,8 @@ describe("Slack hook", () => {
     await signedHook(app, mention("<@UBOT> status"));
 
     await until(() => posts.length > 0);
-    expect(posts[0]?.form.text).toContain("version  0.0.0-test");
-    expect(posts[0]?.form.text).toContain("pid      4242");
+    expect(replies(posts)[0]).toContain("*Version* `0.0.0-test`");
+    expect(replies(posts)[0]).toContain("*PID* `4242`");
   });
 
   test("SC10: a mention typed inside thread 90.0 replies in that thread, not under its own ts", async () => {
@@ -1295,15 +1297,15 @@ describe("Slack hook", () => {
     expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/registry.json"]);
   });
 
-  test("a reply echoing <!channel> posts it escaped inside a code block", async () => {
+  test("a reply echoing <!channel> posts it escaped, so it never pings the channel", async () => {
     const { app, posts } = await slackRoot();
 
     await signedHook(app, mention("<@UBOT> &lt;!channel&gt;"));
 
     await until(() => posts.length > 0);
-    const text = String(posts[0]?.form.text);
-    expect(text).toStartWith("```\nunknown command: &lt;!channel&gt;\n");
-    expect(text).not.toContain("<!channel>");
+    expect(posts[0]?.form.text).toBe("unknown command: &lt;!channel&gt;");
+    expect(replies(posts)[0]).toStartWith("unknown command: &lt;!channel&gt;\n");
+    expect(JSON.stringify(posts[0]?.form)).not.toContain("<!channel>");
   });
 
   test("after 1001 distinct events the first id counts as new again, and the newest is still dropped", async () => {
@@ -1393,13 +1395,20 @@ const slackRunRoot = async (setup: SlackRunSetup = {}) => {
   return { ...root, launches, cwd };
 };
 
-// The reply's text without the code block it is posted in.
+type Cell = { text?: string; elements?: { elements: { text: string }[] }[] };
+type Block = { type: string; text?: { text: string }; rows?: Cell[][] };
+
+const cellText = (cell: Cell): string => cell.text ?? cell.elements?.[0]?.elements[0]?.text ?? "";
+
+// A section reads as its text, a table as one line per row, its cells two spaces apart.
+const blockText = (block: Block): string =>
+  block.type === "table"
+    ? (block.rows ?? []).map((row) => row.map(cellText).join("  ")).join("\n")
+    : (block.text?.text ?? "");
+
+// Each post's blocks as text.
 const replies = (posts: readonly SlackPost[]): readonly string[] =>
-  posts.map((post) =>
-    String(post.form.text)
-      .replace(/^```\n/, "")
-      .replace(/\n```$/, ""),
-  );
+  posts.map((post) => (JSON.parse(String(post.form.blocks)) as Block[]).map(blockText).join("\n"));
 
 describe("Slack run command", () => {
   test("SC20: @yok run ok.yaml --project demo --prompt 'fix login' launches once with YOK_SLACK_THREAD=100.1, prompt input and interaction off, and replies starting then the run id and view", async () => {
@@ -1414,9 +1423,8 @@ describe("Slack run command", () => {
     expect(run?.inputs).toEqual({ prompt: "fix login" });
     expect(run?.policies?.values.interaction).toBe(false);
     const [starting, started] = replies(posts);
-    expect(starting).toBe("starting ok.yaml on demo…");
-    expect(started).toContain(`${run?.id} started`);
-    expect(started).toContain(`view: http://localhost:1/runs/${run?.id}`);
+    expect(starting).toBe("Starting `ok.yaml` on *demo*…");
+    expect(started).toBe(`*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`);
     expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
   });
 
@@ -1486,8 +1494,7 @@ describe("Slack run command", () => {
 
     await until(() => posts.length >= 2);
     const reply = replies(posts)[1];
-    expect(reply).toContain("git: not found");
-    expect(reply).toContain("  fix: install git");
+    expect(reply).toContain("CHECK  DETAIL  FIX\ngit  not found  install git");
     expect(await deps.registry.listRuns()).toEqual([]);
   });
 
@@ -1507,7 +1514,7 @@ describe("Slack run command", () => {
   });
 
   test.each([
-    ["a workflow that does not exist", "nosuch", "", "no workflow at "],
+    ["a workflow that does not exist", "nosuch", "", "no workflow nosuch"],
     ["a project config that does not parse", "ok.yaml", "version: [2\n", "invalid YAML"],
   ])(
     "%s gets a bad-request reply naming the problem",
@@ -1556,8 +1563,15 @@ const chatDeps = async () => {
   return { deps: { ...deps, client }, launches };
 };
 
-const chat = (deps: DispatchDeps, text: string): Promise<string> =>
+const chatReply = (deps: DispatchDeps, text: string): Promise<Reply> =>
   dispatchCommand(text, { channel: "C1", ts: "100.1" }, deps, async () => undefined);
+
+const chat = async (deps: DispatchDeps, text: string): Promise<string> =>
+  replyText(await chatReply(deps, text));
+
+// The first cell of each table row.
+const firstCells = async (deps: DispatchDeps, text: string): Promise<readonly string[]> =>
+  ((await chatReply(deps, text)).table?.rows ?? []).map((row) => row[0] ?? "");
 
 // Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
 const addRunAt = (
@@ -1602,8 +1616,8 @@ describe("Slack commands", () => {
 
     const reply = await chat(deps, "run status fix-login");
 
-    expect(reply.split("\n")[0]).toBe("id        r-1");
-    expect(reply).toContain("view      http://localhost:1/runs/r-1");
+    expect(reply.split("\n")[0]).toBe("*`r-1`* · fix-login · `ok`");
+    expect(reply).toContain("http://localhost:1/runs/r-1");
     expect(launches).toEqual([]);
   });
 
@@ -1621,11 +1635,8 @@ describe("Slack commands", () => {
       createdAt: "2026-10-29T12:00:00.000Z",
     });
 
-    const ids = async (text: string) =>
-      (await chat(deps, text)).split("\n").map((line) => line.split("  ")[0]);
-
-    expect(await ids("runs --project demo")).toEqual(["r-11", "r-10"]);
-    expect(await ids("runs")).toEqual(["r-12", "r-11", "r-10"]);
+    expect(await firstCells(deps, "runs --project demo")).toEqual(["r-11", "r-10"]);
+    expect(await firstCells(deps, "runs")).toEqual(["r-12", "r-11", "r-10"]);
   });
 
   test("run status of a name two projects share is ambiguous; --project or the id picks one", async () => {
@@ -1642,8 +1653,8 @@ describe("Slack commands", () => {
     expect(await chat(deps, "run status fix-login")).toBe(
       "ambiguous: runs r-1, r-2 are named fix-login; pass --project NAME or the run id",
     );
-    expect(await firstLine("run status fix-login --project other")).toBe("id        r-2");
-    expect(await firstLine("run status r-2")).toBe("id        r-2");
+    expect(await firstLine("run status fix-login --project other")).toStartWith("*`r-2`*");
+    expect(await firstLine("run status r-2")).toStartWith("*`r-2`*");
   });
 
   test.each([
@@ -1701,23 +1712,24 @@ describe("Slack commands", () => {
       });
     }
 
-    const ids = (await chat(deps, "runs")).split("\n").map((line) => line.split("  ")[0]);
+    const reply = await chatReply(deps, "runs");
+    const ids = await firstCells(deps, "runs");
 
+    expect(reply.text).toBe("The newest 20 of 21 runs");
     expect(ids).toHaveLength(20);
     expect(ids[0]).toBe("r-20");
     expect(ids).not.toContain("r-0");
   });
 
-  test("SC35: project add demo2 --path DIR replies added demo2  DIR, and project list shows it added by slack", async () => {
+  test("SC35: project add demo2 --path DIR replies that it added demo2 at DIR, and project list shows it added by slack", async () => {
     const { deps } = await chatDeps();
     const dir = gitRepo();
 
-    expect(await chat(deps, `project add demo2 --path ${dir}`)).toBe(`added demo2  ${dir}`);
+    expect(await chat(deps, `project add demo2 --path ${dir}`)).toBe(`Added *demo2* at \`${dir}\``);
 
-    const row = (await chat(deps, "project list"))
-      .split("\n")
-      .find((line) => line.startsWith("demo2 "));
-    expect(row?.split(/\s+/)).toEqual(["demo2", "ready", dir, "slack"]);
+    const { table } = await chatReply(deps, "project list");
+    expect(table?.headers).toEqual(["NAME", "STATUS", "PATH", "ADDED BY"]);
+    expect(table?.rows.find((row) => row[0] === "demo2")).toEqual(["demo2", "ready", dir, "slack"]);
   });
 
   test("SC36: project remove demo2 --purge on a folder yok did not clone keeps it and says so", async () => {
@@ -1726,7 +1738,7 @@ describe("Slack commands", () => {
     await chat(deps, `project add demo2 --path ${dir}`);
 
     expect(await chat(deps, "project remove demo2 --purge")).toBe(
-      `removed demo2\nkept ${dir}: yok deletes only the folders it cloned`,
+      `Removed *demo2*\nkept ${dir}: yok deletes only the folders it cloned`,
     );
     expect(existsSync(dir)).toBe(true);
   });
@@ -1736,15 +1748,14 @@ describe("Slack commands", () => {
     expect(await chat(deps, "project remove nope")).toBe("not-found: no project named nope");
   });
 
-  test("SC38: doctor --project demo replies with the ENVIRONMENT table and the VERDICT", async () => {
+  test("SC38: doctor --project demo replies with the verdict, then a table of every check", async () => {
     const { deps } = await chatDeps();
     tempWorkspace(deps.home);
 
-    const reply = await chat(deps, "doctor --project demo");
+    const reply = await chatReply(deps, "doctor --project demo");
 
-    expect(reply).toContain("ENVIRONMENT");
-    expect(reply).toContain("CHECK  REQUIRED  STATUS");
-    expect(reply).toContain("VERDICT");
+    expect(reply.text).toStartWith("*Verdict:* ");
+    expect(reply.table?.headers).toEqual(["CHECK", "REQUIRED", "STATUS", "DETAIL", "FIX"]);
   });
 
   test("SC40: a trigger added from Slack is listed, fires, and its fire shows in its log", async () => {
@@ -1752,17 +1763,17 @@ describe("Slack commands", () => {
     tempWorkspace(deps.home, DAILY);
 
     expect(await chat(deps, "trigger add ok.yaml --project demo")).toMatch(
-      /^daily in demo: 0 9 \* \* \* \(UTC\), next fire \S+$/,
+      /^\*daily\* in \*demo\*: `0 9 \* \* \*` \(UTC\), next fire \d\d-\d\d \d\d:\d\d UTC$/,
     );
-    const listed = (await chat(deps, "trigger list --project demo")).split("\n");
+    const listed = (await chatReply(deps, "trigger list --project demo")).table?.rows ?? [];
     expect(listed).toHaveLength(1);
-    expect(listed[0]).toStartWith("daily  demo  0 9 * * * (UTC)");
+    expect(listed[0]?.slice(0, 3)).toEqual(["daily", "demo", "0 9 * * * (UTC)"]);
 
     const fired = await chat(deps, "trigger fire daily --project demo");
-    const [, status, slot] = fired.split("  ");
-    expect(slot).toStartWith("slot ");
-    const logged = await chat(deps, "trigger log daily --project demo");
-    expect(logged).toContain(`  ${status}  ${slot}`);
+    const status = fired.match(/^\*(\w+)\* at /)?.[1];
+    expect(status).toBeDefined();
+    const logged = (await chatReply(deps, "trigger log daily --project demo")).table?.rows ?? [];
+    expect(logged.map((row) => row[1])).toContain(status);
   });
 
   test("SC41: trigger rm removes the trigger, and the list then says no triggers", async () => {
@@ -1770,8 +1781,8 @@ describe("Slack commands", () => {
     tempWorkspace(deps.home, DAILY);
     await chat(deps, "trigger add ok.yaml --project demo");
 
-    expect(await chat(deps, "trigger rm daily --project demo")).toBe("removed daily from demo");
-    expect(await chat(deps, "trigger list --project demo")).toBe("no triggers");
+    expect(await chat(deps, "trigger rm daily --project demo")).toBe("Removed *daily* from *demo*");
+    expect(await chat(deps, "trigger list --project demo")).toBe("No triggers.");
   });
 });
 

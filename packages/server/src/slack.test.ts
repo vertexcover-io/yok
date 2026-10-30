@@ -8,46 +8,48 @@ import { createRegistry } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
 import { dispatchCommand, splitWords } from "./dispatch.ts";
 import { fakeHost, fakeProvider } from "./fake-host.ts";
-import { startError } from "./render.ts";
-import { isSlackSigned } from "./slack.ts";
+import { replyText, startError } from "./render.ts";
+import { isSlackSigned, toBlocks } from "./slack.ts";
 
 // None of these commands reaches the server, so the client points nowhere; launched records
 // every agent launch.
 const launched: LaunchOptions[] = [];
-const dispatch = (text: string) =>
-  dispatchCommand(
-    text,
-    { channel: "C1", ts: "100.1" },
-    {
-      client: createYokClient({ url: "http://127.0.0.1:1" }),
-      log: noopLogger,
-      registry: createRegistry(join(tmpdir(), "yok-unused", "registry.json")),
-      providerFor: (agent) =>
-        fakeProvider(agent, async (options) => {
-          launched.push(options);
-          return { ok: false, error: "unused" };
-        }),
-      host: fakeHost("").host,
-      home: join(tmpdir(), "yok-unused"),
-      publicOrigin: "http://localhost:1",
-      checkCheckout: async () => ({ env: { ok: true, value: {} }, report: summarize([]) }),
-      git: createGit(),
-    },
-    async () => undefined,
+const dispatch = async (text: string) =>
+  replyText(
+    await dispatchCommand(
+      text,
+      { channel: "C1", ts: "100.1" },
+      {
+        client: createYokClient({ url: "http://127.0.0.1:1" }),
+        log: noopLogger,
+        registry: createRegistry(join(tmpdir(), "yok-unused", "registry.json")),
+        providerFor: (agent) =>
+          fakeProvider(agent, async (options) => {
+            launched.push(options);
+            return { ok: false, error: "unused" };
+          }),
+        host: fakeHost("").host,
+        home: join(tmpdir(), "yok-unused"),
+        publicOrigin: "http://localhost:1",
+        checkCheckout: async () => ({ env: { ok: true, value: {} }, report: summarize([]) }),
+        git: createGit(),
+      },
+      async () => undefined,
+    ),
   );
 
 describe("dispatchCommand", () => {
   test("SC26: run with no --project replies that WORKFLOW and --project NAME are required, with the usage, and launches nothing", async () => {
     const reply = await dispatch('run task --prompt "fix login"');
     expect(reply).toContain("a WORKFLOW and --project NAME are required");
-    expect(reply).toContain('usage: run WORKFLOW --project NAME --prompt "TEXT" [--name NAME]');
+    expect(reply).toContain('usage: `run WORKFLOW --project NAME --prompt "TEXT" [--name NAME]');
     expect(launched).toEqual([]);
   });
 
   test("a prompt typed without --prompt is refused, as yok run refuses it, and launches nothing", async () => {
     const reply = await dispatch("run task --project web fix login");
     expect(reply).toContain('unexpected words: fix login; put the prompt in --prompt "TEXT"');
-    expect(reply).toContain("usage: run WORKFLOW");
+    expect(reply).toContain("usage: `run WORKFLOW");
     expect(launched).toEqual([]);
   });
 
@@ -91,26 +93,26 @@ describe("dispatchCommand", () => {
   test("SC5: an unknown command replies with its words, then the help listing status and help", async () => {
     const reply = await dispatch("frobnicate now");
     expect(reply.split("\n")[0]).toBe("unknown command: frobnicate now");
-    expect(reply).toContain("  status");
-    expect(reply).toContain("  help");
+    expect(reply).toContain("• `status`");
+    expect(reply).toContain("• `help`");
   });
 
   test("SC6: an unknown flag replies with the parse error naming it and the command's usage", async () => {
     const reply = await dispatch("status --verbose");
     expect(reply).toContain("--verbose");
-    expect(reply.split("\n").at(-1)).toBe("usage: status");
+    expect(reply.split("\n").at(-1)).toBe("usage: `status`");
   });
 
   test("SC7: a mention with no words replies with the help", async () => {
     expect(await dispatch("")).toBe(await dispatch("help"));
-    expect(await dispatch("")).toStartWith("Type @yok and one of:");
+    expect(await dispatch("")).toStartWith("*Type `@yok` and one of:*");
   });
 
   test("SC31: help has one usage line for each of the fourteen commands", async () => {
     const commands = (await dispatch("help"))
       .split("\n")
       .slice(1)
-      .map((line) => line.trim().split(/ [A-Z[-]/)[0]);
+      .map((line) => line.replace(/^• `|`$/g, "").split(/ [A-Z[-]/)[0]);
     expect(commands).toEqual([
       "runs",
       "run status",
@@ -136,7 +138,7 @@ describe("dispatchCommand", () => {
   test("SC39: doctor with no --project says --project NAME is required, with the doctor usage", async () => {
     const reply = await dispatch("doctor");
     expect(reply).toContain("--project NAME is required");
-    expect(reply).toContain("usage: doctor --project NAME [--workflow WF]");
+    expect(reply).toContain("usage: `doctor --project NAME [--workflow WF]`");
   });
 });
 
@@ -173,5 +175,71 @@ describe("isSlackSigned", () => {
     const at = (age: number) => String(nowS - age);
     expect(isSlackSigned("s3cret", at(301), body, sign("s3cret", at(301), body), now)).toBe(false);
     expect(isSlackSigned("s3cret", at(299), body, sign("s3cret", at(299), body), now)).toBe(true);
+  });
+});
+
+describe("toBlocks", () => {
+  const headerCell = (text: string) => ({
+    type: "rich_text",
+    elements: [
+      { type: "rich_text_section", elements: [{ type: "text", text, style: { bold: true } }] },
+    ],
+  });
+
+  test("text alone is one mrkdwn section, with & < > escaped so <!channel> never pings", () => {
+    expect(toBlocks({ text: "*Removed* <!channel> & co" })).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: "*Removed* &lt;!channel&gt; &amp; co" } },
+    ]);
+  });
+
+  test("a table follows the text: bold headers, cells as typed, an empty cell as -, every column wrapping", () => {
+    const blocks = toBlocks({
+      text: "1 project",
+      table: { headers: ["NAME", "PATH"], rows: [["<web>", ""]] },
+    });
+    expect(blocks).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: "1 project" } },
+      {
+        type: "table",
+        column_settings: [{ is_wrapped: true }, { is_wrapped: true }],
+        rows: [
+          [headerCell("NAME"), headerCell("PATH")],
+          [
+            { type: "raw_text", text: "<web>" },
+            { type: "raw_text", text: "-" },
+          ],
+        ],
+      },
+    ]);
+  });
+
+  test("a table with no rows adds no table block", () => {
+    expect(toBlocks({ text: "0 checks", table: { headers: ["CHECK"], rows: [] } })).toHaveLength(1);
+  });
+
+  test("a table past 100 rows keeps the first 99 under its header and says how many it left out", () => {
+    const rows = Array.from({ length: 120 }, (_, i) => [`r-${i}`]);
+    const [, table, note] = toBlocks({ text: "120 runs", table: { headers: ["ID"], rows } });
+    expect((table as { rows: unknown[] }).rows).toHaveLength(100);
+    expect(note).toEqual({
+      type: "section",
+      text: { type: "mrkdwn", text: "_21 more rows did not fit in this message_" },
+    });
+  });
+
+  test("a table past 10,000 characters keeps the rows that fit", () => {
+    const rows = Array.from({ length: 30 }, () => ["x".repeat(500)]);
+    const [, table, note] = toBlocks({ text: "big", table: { headers: ["X"], rows } });
+    expect((table as { rows: unknown[] }).rows).toHaveLength(20);
+    expect(note).toMatchObject({ text: { text: "_11 more rows did not fit in this message_" } });
+  });
+
+  test("text past one section's 3000 characters is split across sections at line ends", () => {
+    const line = "y".repeat(1000);
+    const blocks = toBlocks({ text: [line, line, line, line].join("\n") }) as {
+      text: { text: string };
+    }[];
+    expect(blocks).toHaveLength(2);
+    expect(blocks.every((block) => block.text.text.length <= 3000)).toBe(true);
   });
 });

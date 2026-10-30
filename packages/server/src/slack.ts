@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import * as z from "zod";
 import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { readHomeEnv } from "./protocol.ts";
+import type { Reply, Table } from "./render.ts";
 import type { ChatThread } from "./run.ts";
 
 // Slack's own replay window for a signed request.
@@ -72,11 +73,79 @@ const PayloadSchema = z.discriminatedUnion("type", [
   z.looseObject({ type: z.literal("event_callback"), event_id: z.string(), event: MentionSchema }),
 ]);
 
-const postReply = async (config: notifierHooks.SlackConfig, ts: string, text: string) => {
+// Slack's limits: 3000 characters in a section's text, and 100 rows and 10,000 characters of
+// cells in a table.
+const SECTION_LIMIT = 3000;
+const TABLE_ROWS = 100;
+const TABLE_CHARS = 10_000;
+
+const section = (text: string) => ({ type: "section", text: { type: "mrkdwn", text } });
+
+// Lines packed into as few sections as fit; one line is never longer than a section.
+const sections = (text: string) =>
+  text
+    .split("\n")
+    .reduce<readonly string[]>((packs, line) => {
+      const last = packs.at(-1);
+      if (last === undefined || last.length + line.length + 1 > SECTION_LIMIT) {
+        return [...packs, line.slice(0, SECTION_LIMIT)];
+      }
+      return [...packs.slice(0, -1), `${last}\n${line}`];
+    }, [])
+    .filter((pack) => pack.trim() !== "")
+    .map(section);
+
+// raw_text shows a cell as typed, so cells need no escaping; Slack refuses an empty cell.
+const cell = (text: string) => ({ type: "raw_text", text: text === "" ? "-" : text });
+
+const headerCell = (text: string) => ({
+  type: "rich_text",
+  elements: [
+    { type: "rich_text_section", elements: [{ type: "text", text, style: { bold: true } }] },
+  ],
+});
+
+const length = (row: readonly string[]): number =>
+  row.reduce((total, text) => total + text.length, 0);
+
+// The leading rows that fit under the header within Slack's limits.
+const rowsThatFit = ({ headers, rows }: Table): number => {
+  const sizes = rows.slice(0, TABLE_ROWS - 1).map(length);
+  const fit = sizes.findIndex(
+    (_, index) =>
+      length(headers) + sizes.slice(0, index + 1).reduce((a, b) => a + b, 0) > TABLE_CHARS,
+  );
+  return fit === -1 ? sizes.length : fit;
+};
+
+// Every column wraps, so a long path or fix shows whole rather than cut off.
+const tableBlock = ({ headers, rows }: Table) => ({
+  type: "table",
+  column_settings: headers.map(() => ({ is_wrapped: true })),
+  rows: [headers.map(headerCell), ...rows.map((row) => row.map(cell))],
+});
+
+// A table past Slack's limits shows its leading rows and says how many it left out.
+export const toBlocks = (reply: Reply): readonly object[] => {
+  const text = sections(notifierHooks.escapeSlack(reply.text));
+  const { table } = reply;
+  if (table === undefined || table.rows.length === 0) return text;
+  const fit = rowsThatFit(table);
+  const cut = table.rows.length - fit;
+  return [
+    ...text,
+    tableBlock({ headers: table.headers, rows: table.rows.slice(0, fit) }),
+    ...(cut === 0 ? [] : [section(`_${cut} more rows did not fit in this message_`)]),
+  ];
+};
+
+// The text notifications show; the blocks carry the reply itself.
+const postReply = async (config: notifierHooks.SlackConfig, ts: string, reply: Reply) => {
   await notifierHooks.callSlack(config, "chat.postMessage", {
     channel: config.channel,
     thread_ts: ts,
-    text: `\`\`\`\n${notifierHooks.escapeSlack(text)}\n\`\`\``,
+    text: notifierHooks.escapeSlack(reply.text.split("\n")[0] ?? ""),
+    blocks: JSON.stringify(toBlocks(reply)),
   });
 };
 
@@ -97,13 +166,13 @@ const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<voi
     memberId: undefined,
     fetch: deps.slackFetch ?? fetch,
   };
-  const say = (text: string) => postReply(config, thread.ts, text);
+  const say = (reply: Reply) => postReply(config, thread.ts, reply);
   try {
     await say(await dispatchCommand(commandText(mention.text), thread, deps, say));
   } catch (error) {
     log.error({ err: error }, "the Slack command failed");
     const message = error instanceof Error ? error.message : String(error);
-    await say(`internal: ${message}`).catch(() => undefined);
+    await say({ text: `internal: ${message}` }).catch(() => undefined);
   }
 };
 
