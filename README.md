@@ -306,6 +306,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok run WORKFLOW` | Start a run. `--prompt TEXT` (when the workflow takes one), `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
 | `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
 | `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
+| `yok ls` | List runs, newest 20 first, across every project. `--limit N`, `--all`, `--project NAME`, `--status S1,S2`, `--json`; works with `--remote` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |

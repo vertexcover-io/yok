@@ -194,7 +194,15 @@ export const resolveClient = async (remote: boolean): Promise<YokClient> => {
 export const commandPath = (command: CommandUnknownOpts): string =>
   command.parent === null ? "" : `${commandPath(command.parent)} ${command.name()}`.trim();
 
-const REMOTE_COMMANDS = new Set(["run", "project", "trigger", "doctor", "login", "server status"]);
+const REMOTE_COMMANDS = new Set([
+  "run",
+  "project",
+  "trigger",
+  "doctor",
+  "login",
+  "ls",
+  "server status",
+]);
 const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop"]);
 
 // Refuses --remote on a command that acts on this machine, and login without it, before the

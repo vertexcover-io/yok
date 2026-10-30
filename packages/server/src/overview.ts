@@ -10,12 +10,19 @@ import type {
   State,
   WorkflowRun,
 } from "@yok/sdk";
-import { runDirOf, SkipOutputSchema } from "@yok/sdk";
+import { runDirOf, SkipOutputSchema, StateSchema } from "@yok/sdk";
 import { findRunningLeaf, isRunLive, type Registry, resolvePolicies } from "@yok/sdk/internal";
 import * as z from "zod";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
 
-export type RunStatus = State["status"] | "starting" | "gone" | "missing" | "unreadable";
+export const RunStatusSchema = z.enum([
+  ...StateSchema.shape.status.options,
+  "starting",
+  "gone",
+  "missing",
+  "unreadable",
+]);
+export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 export type RunSummary = Readonly<{
   id: string;
@@ -37,6 +44,9 @@ export type RunSummary = Readonly<{
   // each policy's value and where it came from
   policies: SavedPolicies;
 }>;
+
+// A summary as GET /runs lists it: the registered project whose path is the run's folder.
+export type ListedRun = RunSummary & Readonly<{ project: string | null }>;
 
 export type RunFiles = Readonly<{
   state: State | null;

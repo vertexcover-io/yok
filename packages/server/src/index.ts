@@ -30,6 +30,7 @@ export {
   renderDoctorReport,
   renderDoctorTable,
   renderProjects,
+  renderRuns,
   startError,
 } from "./render.ts";
 export {

@@ -39,7 +39,7 @@ import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
-import { AddProjectBodySchema } from "./protocol.ts";
+import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
 import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
@@ -1209,7 +1209,7 @@ describe("Slack hook", () => {
     expect(posts[0]?.url).toBe("https://slack.com/api/chat.postMessage");
     expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1" });
     expect(posts[0]?.form.text).toBe("*Type `@yok` and one of:*");
-    expect(replies(posts)[0]).toStartWith("*Type `@yok` and one of:*\n• `runs");
+    expect(replies(posts)[0]).toStartWith("*Type `@yok` and one of:*\n• `ls ");
     expect(replies(posts)[0]).toEndWith("\n• `help`");
   });
 
@@ -1291,7 +1291,7 @@ describe("Slack hook", () => {
       },
     });
 
-    await signedHook(app, mention("<@UBOT> runs"));
+    await signedHook(app, mention("<@UBOT> ls"));
 
     await until(() => posts.length > 0);
     expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/registry.json"]);
@@ -1590,6 +1590,110 @@ const addRunAt = (
     ...run,
   });
 
+// The shown runs' ids and the matched total from GET /runs.
+const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
+  const listed = await deps.client.runs(query);
+  if (!listed.ok) throw new Error(listed.error.message);
+  return { ids: listed.value.runs.map((run) => run.id), total: listed.value.total };
+};
+
+describe("GET /runs", () => {
+  const minute = (n: number): string => new Date(Date.UTC(2026, 9, 29, 10, n)).toISOString();
+
+  test("SC5006: 21 runs list the newest 20 by default, limit=5 shows 5, all=true shows 21, limit=0 is bad-request", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    for (let n = 0; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    const byDefault = await listIds(deps, {});
+    expect(byDefault.ids).toHaveLength(20);
+    expect(byDefault.ids[0]).toBe("r-20");
+    expect(byDefault.ids).not.toContain("r-0");
+    expect(byDefault.total).toBe(21);
+    expect(await listIds(deps, { limit: "5" })).toMatchObject({ total: 21 });
+    expect((await listIds(deps, { limit: "5" })).ids).toHaveLength(5);
+    expect((await listIds(deps, { all: "true" })).ids).toHaveLength(21);
+    const refused = await deps.client.runs({ limit: "0" });
+    expect(!refused.ok && refused.error.code).toBe("bad-request");
+    const both = await deps.client.runs({ all: "true", limit: "5" });
+    expect(!both.ok && both.error.code).toBe("bad-request");
+    expect(!both.ok && both.error.message).toContain("--all");
+    expect((await listIds(deps, { all: "false", limit: "5" })).ids).toHaveLength(5);
+  });
+
+  test("SC5007: a run in demo's folder carries project demo, and one in an unregistered folder carries null", async () => {
+    const { deps } = await chatDeps();
+    const registered = gitRepo();
+    addProjectEntry(deps.home, "demo", registered);
+    await addRunAt(deps.registry, { id: "r-a", cwd: registered, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-b", cwd: gitRepo(), createdAt: minute(2) });
+
+    const listed = await deps.client.runs({});
+
+    expect(listed.ok && listed.value.runs.map((run) => [run.id, run.project])).toEqual([
+      ["r-b", null],
+      ["r-a", "demo"],
+    ]);
+  });
+
+  test("SC5008: project=demo keeps demo's two runs, and project=nope is a 404 not-found naming it", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    await addRunAt(deps.registry, { id: "r-1", cwd: demo, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-2", cwd: demo, createdAt: minute(2) });
+    await addRunAt(deps.registry, { id: "r-3", cwd: other, createdAt: minute(3) });
+
+    expect(await listIds(deps, { project: "demo" })).toEqual({ ids: ["r-2", "r-1"], total: 2 });
+    const unknown = await deps.client.runs({ project: "nope" });
+    expect(!unknown.ok && unknown.error).toMatchObject({
+      code: "not-found",
+      message: "no project named nope",
+    });
+  });
+
+  test("SC5009: status filters before the cut, takes a comma list, and bogus is bad-request naming the valid statuses", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: minute(0) });
+    for (let n = 1; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    expect(await listIds(deps, { status: "starting", limit: "5" })).toEqual({
+      ids: ["r-0"],
+      total: 1,
+    });
+    const runDir = runDirOf(cwd, "done-run");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), status: "completed" }),
+    );
+    await addRunAt(deps.registry, {
+      id: "r-done",
+      name: "done-run",
+      cwd,
+      createdAt: minute(30),
+    });
+
+    const both = await listIds(deps, { status: "starting,missing", limit: "30" });
+    expect(both.ids).toHaveLength(21);
+    expect(both.ids).not.toContain("r-done");
+    expect(both.total).toBe(21);
+    expect(await listIds(deps, { status: "completed" })).toEqual({ ids: ["r-done"], total: 1 });
+    const bogus = await deps.client.runs({ status: "bogus" });
+    expect(!bogus.ok && bogus.error.code).toBe("bad-request");
+    for (const valid of ["running", "blocked", "unreadable"]) {
+      expect(!bogus.ok && bogus.error.message).toContain(valid);
+    }
+  });
+});
+
 const DAILY = [
   "name: daily",
   "trigger:",
@@ -1621,7 +1725,13 @@ describe("Slack commands", () => {
     expect(launches).toEqual([]);
   });
 
-  test("SC34: runs --project demo lists demo's two runs newest first and not other's; runs lists all three", async () => {
+  test("SC33: run status of a run the registry does not hold replies not-found naming it", async () => {
+    const { deps } = await chatDeps();
+
+    expect(await chat(deps, "run status r-404")).toBe("not-found: no run r-404");
+  });
+
+  test("SC34: ls --project demo lists demo's two runs newest first and not other's; ls lists all three", async () => {
     const { deps } = await chatDeps();
     const demo = gitRepo();
     const other = gitRepo();
@@ -1635,11 +1745,11 @@ describe("Slack commands", () => {
       createdAt: "2026-10-29T12:00:00.000Z",
     });
 
-    expect(await firstCells(deps, "runs --project demo")).toEqual(["r-11", "r-10"]);
-    expect(await firstCells(deps, "runs")).toEqual(["r-12", "r-11", "r-10"]);
+    expect(await firstCells(deps, "ls --project demo")).toEqual(["r-11", "r-10"]);
+    expect(await firstCells(deps, "ls")).toEqual(["r-12", "r-11", "r-10"]);
   });
 
-  test("run status of a name two projects share is ambiguous; --project or the id picks one", async () => {
+  test("SC5015 (regression): run status of a name two projects share is ambiguous; --project or the id picks one", async () => {
     const { deps } = await chatDeps();
     const demo = gitRepo();
     const other = gitRepo();
@@ -1700,9 +1810,10 @@ describe("Slack commands", () => {
     expect(launches).toHaveLength(0);
   });
 
-  test("runs shows the newest 20 of 21 runs", async () => {
+  test("SC5012: ls replies 'Showing 20 of 21 runs' with the shared table, r-20 first, r-0 absent, PROJECT demo", async () => {
     const { deps } = await chatDeps();
     const cwd = gitRepo();
+    addProjectEntry(deps.home, "demo", cwd);
     for (let i = 0; i < 21; i++) {
       const minute = String(i).padStart(2, "0");
       await addRunAt(deps.registry, {
@@ -1712,13 +1823,60 @@ describe("Slack commands", () => {
       });
     }
 
-    const reply = await chatReply(deps, "runs");
-    const ids = await firstCells(deps, "runs");
+    const { text, table } = await chatReply(deps, "ls");
 
-    expect(reply.text).toBe("The newest 20 of 21 runs");
-    expect(ids).toHaveLength(20);
-    expect(ids[0]).toBe("r-20");
-    expect(ids).not.toContain("r-0");
+    expect(text).toBe("Showing 20 of 21 runs\nUse --limit N or --all to see more");
+    expect(table?.headers).toEqual([
+      "ID",
+      "NAME",
+      "PROJECT",
+      "WORKFLOW",
+      "STATUS",
+      "STEPS",
+      "STARTED (UTC)",
+    ]);
+    expect(table?.rows).toHaveLength(20);
+    expect(table?.rows[0]?.[0]).toBe("r-20");
+    expect(table?.rows.map((row) => row[0])).not.toContain("r-0");
+    expect(table?.rows[0]?.[2]).toBe("demo");
+  });
+
+  test("SC5013: ls passes --status, --limit and --all to the route, and a bogus status is a bad-request naming the valid ones", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.registry, {
+      id: "r-1",
+      name: "one",
+      cwd,
+      createdAt: "2026-10-29T10:01:00.000Z",
+    });
+    await addRunAt(deps.registry, {
+      id: "r-2",
+      name: "two",
+      cwd,
+      createdAt: "2026-10-29T10:02:00.000Z",
+    });
+
+    expect(await firstCells(deps, "ls --status starting")).toEqual(["r-0"]);
+    expect((await chatReply(deps, "ls --limit 1")).text).toBe(
+      "Showing 1 of 3 runs\nUse --limit N or --all to see more",
+    );
+    expect((await chatReply(deps, "ls --all")).text).toBe("3 runs");
+    const bogus = await chat(deps, "ls --status bogus");
+    expect(bogus).toStartWith("bad-request:");
+    for (const valid of ["running", "blocked", "unreadable"]) expect(bogus).toContain(valid);
+  });
+
+  test("SC5014: runs is an unknown command followed by the help, and ls --json is refused naming --json and the ls usage", async () => {
+    const { deps } = await chatDeps();
+
+    const unknown = await chat(deps, "runs");
+    expect(unknown.split("\n")[0]).toBe("unknown command: runs");
+    expect(unknown).toContain("*Type `@yok` and one of:*");
+    const json = await chat(deps, "ls --json");
+    expect(json).toContain("--json");
+    expect(json.split("\n").at(-1)).toStartWith("usage: `ls ");
   });
 
   test("SC35: project add demo2 --path DIR replies that it added demo2 at DIR, and project list shows it added by slack", async () => {

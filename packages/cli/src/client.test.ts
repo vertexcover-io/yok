@@ -66,6 +66,10 @@ describe("checkServerUrl", () => {
 });
 
 describe("checkRemoteFlag", () => {
+  test("SC5005: ls with remote=true passes, needing no --project", () => {
+    expect(() => checkRemoteFlag(true, "ls")).not.toThrow();
+  });
+
   test.each([
     ["run", true],
     ["project add", true],
