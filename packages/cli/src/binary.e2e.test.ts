@@ -71,6 +71,7 @@ export const runBinary = (
     cwd: opts.cwd,
     encoding: "utf8",
     input: opts.input ?? "",
+    timeout: 60000,
     env: {
       ...baseEnv(),
       FORCE_COLOR: "0",
@@ -80,6 +81,7 @@ export const runBinary = (
       ...opts.env,
     },
   });
+  if (result.error) throw result.error;
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
 };
 
