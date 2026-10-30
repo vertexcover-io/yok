@@ -31,7 +31,8 @@ const setup = async () => {
     tiers: null,
     createdAt: new Date().toISOString(),
   };
-  await createRegistry(registryPath(home)).addRun(record);
+  const registry = createRegistry(registryPath(home));
+  await registry.addRun(record);
   // This pipeline exports YOK_RUN_ID; left in, it would leak this run's session into the CLI.
   const { YOK_RUN_ID: _session, ...parentEnv } = process.env;
   const env = { ...parentEnv, YOK_HOME: home };
@@ -43,12 +44,14 @@ const setup = async () => {
     spawnSync("bun", [CLI, "server", "stop"], { cwd, env });
     rmSync(home, { recursive: true, force: true });
   });
-  return { ls };
+  const addOlderRun = (id: string) =>
+    registry.addRun({ ...record, id, name: id, createdAt: "2020-01-01T00:00:00.000Z" });
+  return { ls, addOlderRun };
 };
 
 describe("yok ls", () => {
   test("SC5010: piped, prints the table alone with the run's PROJECT as -, and --json prints total 1 with one run", async () => {
-    const { ls } = await setup();
+    const { ls, addOlderRun } = await setup();
 
     const table = ls();
     expect(table.code).toBe(0);
@@ -64,5 +67,19 @@ describe("yok ls", () => {
     const parsed: { total: number; runs: unknown[] } = JSON.parse(json.stdout);
     expect(parsed.total).toBe(1);
     expect(parsed.runs).toHaveLength(1);
+
+    await addOlderRun("r-older");
+    const idsOf = (...args: string[]) =>
+      ls(...args)
+        .stdout.split("\n")
+        .slice(1)
+        .map((line) => line.split(/\s{2,}/)[0]);
+    expect(idsOf()).toEqual(["r-1a2b3c4d", "r-older"]);
+    expect(idsOf("--limit", "1")).toEqual(["r-1a2b3c4d"]);
+    expect(idsOf("--all")).toEqual(["r-1a2b3c4d", "r-older"]);
+    expect(idsOf("--status", "missing")).toEqual(["r-1a2b3c4d", "r-older"]);
+    expect(idsOf("--status", "completed")).toEqual([]);
+    expect(ls("--status", "bogus").code).not.toBe(0);
+    expect(ls("--all", "--limit", "1").code).not.toBe(0);
   }, 40_000);
 });
