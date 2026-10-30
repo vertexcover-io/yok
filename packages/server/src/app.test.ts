@@ -1668,9 +1668,24 @@ describe("GET /runs", () => {
       ids: ["r-0"],
       total: 1,
     });
-    const both = await listIds(deps, { status: "starting,missing" });
-    expect(both.ids).toHaveLength(20);
+    const runDir = runDirOf(cwd, "done-run");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), status: "completed" }),
+    );
+    await addRunAt(deps.registry, {
+      id: "r-done",
+      name: "done-run",
+      cwd,
+      createdAt: minute(30),
+    });
+
+    const both = await listIds(deps, { status: "starting,missing", limit: "30" });
+    expect(both.ids).toHaveLength(21);
+    expect(both.ids).not.toContain("r-done");
     expect(both.total).toBe(21);
+    expect(await listIds(deps, { status: "completed" })).toEqual({ ids: ["r-done"], total: 1 });
     const bogus = await deps.client.runs({ status: "bogus" });
     expect(!bogus.ok && bogus.error.code).toBe("bad-request");
     for (const valid of ["running", "blocked", "unreadable"]) {
