@@ -464,6 +464,62 @@ describe("a question in a run", () => {
     ]);
   });
 
+  describe("after the PR, with interaction off", () => {
+    const pr: NodeRun = { ...design, nodeRunId: "pr-1", status: "completed" };
+    // A run with interaction off whose pr node is in the given status, its log holding these events.
+    const runAfterPr = async (prStatus: NodeRun["status"], events: readonly string[]) => {
+      const setup = await runWithOpen({ pr: { ...pr, status: prStatus } }, false);
+      const run = { id: "r-1", cwd: setup.cwd, name: "feat-x" };
+      for (const type of events) {
+        await appendRunEvent(run, { type, source: "hooks", payload: { prompts: 2 } });
+      }
+      return setup;
+    };
+    const asked = (cwd: string, subagent = false) =>
+      use(cwd, ask, { toolName: "AskUserQuestion", subagent });
+    const effects = async (runDir: string) =>
+      (await jsonlEventStore(runDir).read())
+        .filter((event) => event.type === "policy.applied")
+        .map((event) => event.payload);
+
+    test("SC6: the learn offer's question goes through after the PR, and the guard records it", async () => {
+      const { cwd, runDir, deps } = await runAfterPr("completed", ["learning.offered"]);
+      expect(await runPreToolUse(asked(cwd), questionGuard, deps)).toEqual({ kind: "allow" });
+      expect(await effects(runDir)).toEqual([
+        { policy: "interaction", effect: "learn-offer-asked" },
+      ]);
+    });
+
+    test("SC7: only one question passes per offer", async () => {
+      const { cwd, runDir, deps } = await runAfterPr("completed", ["learning.offered"]);
+      await runPreToolUse(asked(cwd), questionGuard, deps);
+      const second = await runPreToolUse(asked(cwd), questionGuard, deps);
+      expect(second.kind === "deny" ? second.message : "").toStartWith(
+        "No one will answer in this run.",
+      );
+      expect(await effects(runDir)).toEqual([
+        { policy: "interaction", effect: "learn-offer-asked" },
+        { policy: "interaction", effect: "question-refused" },
+      ]);
+    });
+
+    test("SC8: before the PR stage completes, an offer does not open the guard", async () => {
+      const { cwd, deps } = await runAfterPr("running", ["learning.offered"]);
+      expect((await runPreToolUse(asked(cwd), questionGuard, deps)).kind).toBe("deny");
+    });
+
+    test("SC9: after the PR with no offer pending, a question is refused", async () => {
+      const { cwd, deps } = await runAfterPr("completed", []);
+      expect((await runPreToolUse(asked(cwd), questionGuard, deps)).kind).toBe("deny");
+    });
+
+    test("SC10: a subagent's question never uses the exception", async () => {
+      const { cwd, deps } = await runAfterPr("completed", ["learning.offered"]);
+      const verdict = await runPreToolUse(asked(cwd, true), questionGuard, deps);
+      expect(verdict.kind === "deny" ? verdict.message : "").not.toContain("orchestrate");
+    });
+  });
+
   test("SC521 (regression): with no saved policies, or from a session no run knows, questionGuard allows and records nothing, and questionNotice still records the question", async () => {
     const { cwd, runDir, deps } = await runWithDesignOpen();
     const call = use(cwd, ask, { toolName: "AskUserQuestion" });

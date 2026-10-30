@@ -591,7 +591,10 @@ describe("POST /runs", () => {
 
       expect(res.status).toBe(201);
       const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
-      const policies = { values: { interaction: value }, sources: { interaction: source } };
+      const policies = {
+        values: { interaction: value, learning: true },
+        sources: { interaction: source, learning: "default" as const },
+      };
       expect(run.policies).toEqual(policies);
       expect((await deps.registry.findRun(run.id))?.policies).toEqual(policies);
     },

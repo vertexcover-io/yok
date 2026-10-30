@@ -63,8 +63,8 @@ describe("StateSchema", () => {
       tiers: null,
       createdAt: "2026-09-26T10:00:00Z",
     });
-    expect(readPolicies(state.policies)).toEqual({ interaction: true });
-    expect(readPolicies(run.policies)).toEqual({ interaction: true });
+    expect(readPolicies(state.policies)).toEqual({ interaction: true, learning: true });
+    expect(readPolicies(run.policies)).toEqual({ interaction: true, learning: true });
   });
 
   test("EH3 — a state.json with no custom or eventHandlers parses with no custom and no handlers", () => {

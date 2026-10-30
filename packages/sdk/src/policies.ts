@@ -11,6 +11,12 @@ export const PoliciesSchema = z.strictObject({
     .describe(
       "false: no stage asks the person anything; a question with no sensible default fails the run",
     ),
+  learning: z
+    .boolean({ error: "must be true or false" })
+    .default(true)
+    .describe(
+      "false: the learn stage does nothing and no learning session is offered after the PR",
+    ),
 });
 export type Policies = z.output<typeof PoliciesSchema>;
 export type PolicyName = keyof Policies;

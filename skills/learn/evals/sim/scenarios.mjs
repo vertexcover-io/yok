@@ -432,4 +432,66 @@ Use \`npm install\` to add or install dependencies; the repo's lockfile is packa
         ? { outcome: "occurrence", status: "existing", learningFile: "docs/learnings/put-cross-app-lists-in-shared-config.md" }
         : { none: true, why: "the agent followed the existing learning, so there was nothing to correct" },
   },
+
+  "learning-off-stage": {
+    source: "the run's learning policy is off: the learn stage does nothing, even after a correction",
+    auto: true,
+    policies: { learning: false },
+    task: INVOICE_TASK,
+    knowledge: SHARED_CONFIG_KNOWLEDGE,
+    behaviour: [
+      "Your first message asks the agent to do the task, in your own words.",
+      "If the agent writes the list of activation types that need an invoice inside an app, correct it once: tell it shared-config already has a place for this.",
+      "Answer any question the agent asks, briefly and in character.",
+      NEVER_LEARN,
+      "When the task is done, say thanks in one short line. After that, if the agent has nothing more to ask you, reply DONE.",
+    ],
+    mistake: listInApps,
+    expect: () => ({ none: true, why: "learning is off for the run" }),
+  },
+
+  "learning-off-offer": {
+    source: "after the PR with the run's learning policy off: a review push gets no offer",
+    afterRun: true,
+    policies: { learning: false },
+    task:
+      INVOICE_TASK +
+      " The yok run for it has already finished in this session; you are now reviewing the code it wrote. Have every change committed and pushed (git push).",
+    knowledge: SHARED_CONFIG_KNOWLEDGE,
+    behaviour: [
+      "Your first message asks the agent to do the task, then commit and push it, in your own words.",
+      "Once it has pushed, review it. If the agent wrote the list of activation types that need an invoice inside an app, correct it once: shared-config already has a place for this; fix it, commit and push. Otherwise ask it to label the new field 'Invoice number', commit and push.",
+      "If the agent says it can't add the flag from this repo, say you'll add and publish it yourself, and ask it to leave a TODO pointing at shared-config next to each hardcoded list, then commit and push that now.",
+      "Answer any question the agent asks, briefly and in character.",
+      NEVER_LEARN,
+      "After the second push, reply DONE.",
+    ],
+    mistake: listInApps,
+    expect: () => ({ none: true, why: "learning is off for the run" }),
+  },
+
+  "unattended-offer": {
+    source: "after the PR in a run with interaction off: the offer's question passes the guard and learn asks in plain text",
+    afterRun: true,
+    policies: { interaction: false },
+    task:
+      INVOICE_TASK +
+      " The yok run for it has already finished in this session; you are now reviewing the code it wrote. Have every change committed and pushed (git push).",
+    knowledge: SHARED_CONFIG_KNOWLEDGE,
+    behaviour: [
+      "Your first message asks the agent to do the task, then commit and push it, in your own words.",
+      "Once it has pushed, review it. If the agent wrote the list of activation types that need an invoice inside an app, correct it once: shared-config already has a place for this; fix it, commit and push. Otherwise ask it to label the new field 'Invoice number', commit and push.",
+      "If the agent says it can't add the flag from this repo, say you'll add and publish it yourself, and ask it to leave a TODO pointing at shared-config next to each hardcoded list, then commit and push that now.",
+      "Answer any question the agent asks, briefly and in character.",
+      NEVER_LEARN,
+      "If the agent asks whether to start a learning session, say yes.",
+      "If it asks how a learning should read, pick the option closest to keeping cross-app lists in shared-config. If it says there is nothing worth keeping, accept that.",
+      "After it reports a learning file it wrote, ask it to commit and push that file, nothing else. After that push, reply DONE.",
+    ],
+    mistake: listInApps,
+    expect: (mistakeMade) =>
+      mistakeMade
+        ? { outcome: "new", status: ["accepted", "edited"], lesson: SHARED_CONFIG_LESSON }
+        : { none: true, why: "the agent used shared-config on its own; the label rename is a one-off" },
+  },
 };

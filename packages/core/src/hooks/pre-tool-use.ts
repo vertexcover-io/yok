@@ -1,17 +1,21 @@
 /// <reference path="./vendor-sh.d.ts" />
 import { homedir } from "node:os";
 import {
+  type Event,
   type HookDeps,
   type PreToolUseHandler,
   readPolicies,
   registryPath,
+  runDirOf,
+  type State,
   spawn,
   type ToolCall,
   type ToolUse,
   type ToolVerdict,
   yokHome,
 } from "@yok/sdk";
-import { findRunningLeaf } from "@yok/sdk/internal";
+import { findRunningLeaf, jsonlEventStore } from "@yok/sdk/internal";
+import * as z from "zod";
 import BASH_ANTIPATTERNS from "../../vendor/bash-antipatterns.sh" with { type: "text" };
 import { orchestrateLine } from "../runs.ts";
 import {
@@ -155,14 +159,37 @@ export const questionNotice: PreToolUseHandler = {
   },
 };
 
+const LEARN_OFFER_ASKED = "learn-offer-asked";
+const OfferAskedEvent = z.object({
+  type: z.literal("policy.applied"),
+  payload: z.object({ effect: z.literal(LEARN_OFFER_ASKED) }),
+});
+
+// Once the PR exists a person is reviewing, so with interaction off the one question that follows
+// the offer hook's latest learning.offered is the offer, and it may be asked.
+export const isLearnOfferQuestion = (state: State, events: readonly Event[]): boolean => {
+  if (state.nodeRuns.pr?.status !== "completed") return false;
+  const last = events.findLast(
+    (event) => event.type === "learning.offered" || OfferAskedEvent.safeParse(event).success,
+  );
+  return last?.type === "learning.offered";
+};
+
 // With interaction off no one will answer, so the question is refused before it is shown and the
-// agent is told what to do instead. Outside a yok run it allows, as before.
+// agent is told what to do instead; the learn offer after the PR is the one exception. Outside a
+// yok run it allows, as before.
 export const questionGuard: PreToolUseHandler = {
   name: "question-guard",
   run: async (use, deps) => {
     if (use.call.kind !== "question") return ALLOW;
     const found = await findSessionState(use, deps);
     if (found === undefined || readPolicies(found.state.policies).interaction) return ALLOW;
+    const events = await jsonlEventStore(runDirOf(found.run.cwd, found.run.name)).read();
+    if (!use.subagent && isLearnOfferQuestion(found.state, events)) {
+      const payload = { policy: "interaction", effect: LEARN_OFFER_ASKED };
+      await recordRunEvent(found.run, { type: "policy.applied", payload }, deps);
+      return ALLOW;
+    }
     // done finishes only an agent node; a loop waiting between its children is not one. The
     // running leaf is the session's, so a subagent's question names none.
     const leaf = use.subagent ? undefined : findRunningLeaf(found.state.nodeRuns);

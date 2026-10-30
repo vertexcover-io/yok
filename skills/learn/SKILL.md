@@ -33,6 +33,10 @@ they want; with none, look at everything since the last pass.
 last pass stopped. When `$YOK_RUN_ID` is not set, say in one line that learn works only in a yok
 run, and stop.
 
+**When the run's `learning` policy is off,** the learn stage finishes at once with an empty
+output, as the run's policies file says. A learn the user started with `/yok:learn` runs as
+usual.
+
 **Running the scripts.** Run a script with `yok orchestrate skill run learn.NAME ARGS` and read a
 reference with `yok orchestrate skill ref learn.NAME`. Always run them from the project's folder:
 the event goes in the repo you run from.
@@ -44,7 +48,8 @@ When the user gave the rule, skip the script: that rule is the only candidate.
 Otherwise run `candidates` with no arguments. It lists the run's sessions, starting after the last
 pass's mark. It reads Claude Code transcripts only:
 in another agent, or when it prints no session, work from this conversation, and ask the user what
-they corrected if it isn't clear.
+they corrected if it isn't clear. Run as a subagent, you cannot see that conversation: ask the user
+what they corrected.
 It prints, per session, each message the user typed (`TYPED`, or `QUEUED` when typed while you
 worked) and each answer to a question (`ANSWER`, such as a plan `Revise` with notes) since the last
 learn pass, under the end of the agent's reply before it. Plan comments from the viewer arrive as

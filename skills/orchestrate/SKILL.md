@@ -129,7 +129,8 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
        and wait, instead of asking the user or running `await-approval`;
      - end with a `YOK-RESULT` line and a JSON object of `output`, `summary` and `artifacts`, or
        a `YOK-ERROR` line and the reason, instead of running `done`;
-     - run no `yok orchestrate` command but `skill ref`, `skill run` and `comments reply`.
+     - run no `yok orchestrate` command but `skill ref`, `skill run`, `comments reply`, and
+       `emit` for the skill's own events.
 
      Tell it the node runs with `mode: subagent`.
 

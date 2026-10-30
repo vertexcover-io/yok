@@ -436,7 +436,7 @@ describe("comment routes", () => {
     put(runDir, "artifacts/design.md", "# d");
     const state: State = {
       ...seedState(runDir, {}),
-      policies: { values: { interaction: false }, sources: { interaction: "cli" } },
+      policies: { values: { interaction: false, learning: true }, sources: { interaction: "cli" } },
     };
     put(runDir, "state.json", JSON.stringify(state));
 
@@ -448,7 +448,10 @@ describe("comment routes", () => {
     expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
   });
 
-  const offPolicies = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
+  const offPolicies = {
+    values: { interaction: false, learning: true },
+    sources: { interaction: "cli" },
+  } as const;
 
   test("SC530: a run the registry saved with interaction off refuses comments though its state.json is missing", async () => {
     const { post, registry, cwd } = await setup();

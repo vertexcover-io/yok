@@ -83,6 +83,11 @@ const startRun = (id) => {
 // An afterRun scenario starts once the run's PR is up while retro still runs: state.json has the
 // `pr` stage completed and the run still running, the repo
 // has a remote to push to, and the session gets yok's offer-learn Stop hook, as `yok run` installs it.
+// A scenario's run policies, saved on the run as `yok run --NAME VALUE` saves them.
+const POLICIES = scenario.policies && {
+  values: { interaction: true, learning: true, ...scenario.policies },
+  sources: Object.fromEntries(Object.keys(scenario.policies).map((name) => [name, "cli"])),
+};
 const finishRun = () => {
   const at = new Date().toISOString();
   const state = {
@@ -94,6 +99,7 @@ const finishRun = () => {
       retro: { nodeRunId: "retro", nodeType: "agent", status: "running", startedAt: at, completedAt: null, artifacts: [] },
     },
     activeSessions: [], tiers: null, eventHandlers: {}, subscribers: {}, config: { path: null, root: repo },
+    ...(POLICIES ? { policies: POLICIES } : {}),
   };
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
   const remote = join(simCwd, "origin.git");
@@ -111,8 +117,14 @@ if (!previous) {
   writeRegistry([]);
   if (scenario.afterRun) finishRun();
 }
+// With interaction off the session also gets yok's question guard, as `yok run` installs it.
+const hook = (event, handler) => ({ type: "command", command: `${join(yokBin, "yok")} orchestrate hook ${event} --agent claude --handler ${handler}`, timeout: 30 });
+const guarded = scenario.policies?.interaction === false;
 const hookSettings = scenario.afterRun
-  ? ["--settings", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `${join(yokBin, "yok")} orchestrate hook stop --agent claude --handler offer-learn`, timeout: 30 }] }] } })]
+  ? ["--settings", JSON.stringify({ hooks: {
+      Stop: [{ hooks: [hook("stop", "offer-learn")] }],
+      ...(guarded ? { PreToolUse: [{ matcher: "AskUserQuestion", hooks: [hook("pre-tool-use", "question-guard")] }] } : {}),
+    } })]
   : [];
 // What the viewer does with a comment: store it in the run's comments.json and type the same
 // [review] message the server delivers (deliveryMessage in packages/core/src/comments.ts).
@@ -226,7 +238,11 @@ const agentTurn = (message, sessionId, firstId) =>
 
 // An auto or stage scenario has the learn stage: once the user is done, the pipeline starts it in
 // the same session, and the user answers its questions.
-const STAGE_PROMPT = `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). This session is inside the yok run $YOK_RUN_ID; there is no done command to call.`;
+// orchestrate hands a stage the run's policies with each reply and points it at its policies file.
+const STAGE_POLICIES = scenario.policies
+  ? ` The reply's policies are ${JSON.stringify(POLICIES.values)}: open ${join(PLUGIN_ROOT, "skills", "orchestrate", "references", "policies.md")}, find each policy by its heading, ## NAME: VALUE, and do what those entries say.`
+  : "";
+const STAGE_PROMPT = `Run the ${pluginName}:learn skill now as the pipeline's learn stage (trigger auto). This session is inside the yok run $YOK_RUN_ID; there is no done command to call.${STAGE_POLICIES}`;
 
 const conversation = previous?.conversation ?? [];
 let sessionId = previous?.sessionId ?? null;
@@ -322,7 +338,14 @@ const skillStart = transcript.findIndex((record) =>
     record.message.content.some((block) => block.type === "tool_use" && block.name === "Skill" && /(^|:)learn$/.test(block.input?.skill ?? ""))),
 );
 const typedLearn = userMessages.some((text) => text.startsWith(`/${pluginName}:learn`));
-if (scenario.afterRun) {
+const learningOff = scenario.policies?.learning === false;
+if (scenario.afterRun && learningOff) {
+  // With learning off, a push after the PR gets no offer, and learn never runs.
+  const offered = transcript.some((record) => record.type === "user" && recordText(record).includes("You pushed changes after the run's PR was created"));
+  check("no learn offer came after any push", !offered);
+  check("no learning.offered in the run's log", !readRunEvents().some((event) => event.type === "learning.offered"));
+  check("learn never ran", skillStart === -1);
+} else if (scenario.afterRun) {
   check("user never typed /learn", !typedLearn);
   // Each offer comes back as hook feedback; its learn pass may start only after the user's answer.
   const isOffer = (record) => record.type === "user" && recordText(record).includes("You pushed changes after the run's PR was created");
@@ -366,6 +389,15 @@ if (scenario.afterRun) {
     check("did not ask again after the learning session", asked.every((ask, i) => !ask || offers[i] < lastLearn), `offers at records ${offers.join(", ")}, learn at ${lastLearn}`);
   } else {
     check("never asked: nothing typed was a correction", !asked.includes(true), `asked per offer: ${asked.join(", ")}`);
+  }
+  if (guarded) {
+    // The guard lets the offer's one question through and records it; it never refuses the offer.
+    const effects = readRunEvents().filter((event) => event.type === "policy.applied").map((event) => event.payload.effect);
+    const usedTool = transcript.some((record) => (Array.isArray(record.message?.content) ? record.message.content : [])
+      .some((block) => block.type === "tool_use" && block.name === "AskUserQuestion"));
+    check("with interaction off, the offer's question was let through, not refused",
+      !usedTool || (effects.includes("learn-offer-asked") && effects.indexOf("learn-offer-asked") <= Math.max(0, effects.indexOf("question-refused"))),
+      `question tool used: ${usedTool}; policy effects: ${effects.join(", ") || "none"}`);
   }
 } else if (scenario.auto) {
   check("user never typed /learn", !typedLearn);
@@ -458,14 +490,15 @@ if (typedLearn || skillStart !== -1) {
   const runEvents = readRunEvents();
   // After the run, each offer the user takes is a pass, and they may decline some.
   const offers = runEvents.filter((event) => event.type === "learning.offered").length;
-  const passes = scenario.afterRun ? 1 : (scenario.passes ?? 1);
+  const passes = learningOff ? 0 : scenario.afterRun ? 1 : (scenario.passes ?? 1);
   // With $YOK_RUN_ID set the script lists the run (from the last mark) whatever the arguments.
   const listCalls = commands.filter((command) => /learn\.candidates|scripts\/candidates\.ts/.test(command));
   // A rule the user stated with /learn is the only candidate, so nothing is listed.
-  if (!scenario.ruleInLearn) check("candidates listed for each pass", listCalls.length >= passes, listCalls.join(" | ").slice(0, 300));
+  if (learningOff) check("with learning off, no candidates were listed", listCalls.length === 0, listCalls.join(" | ").slice(0, 300));
+  else if (!scenario.ruleInLearn) check("candidates listed for each pass", listCalls.length >= passes, listCalls.join(" | ").slice(0, 300));
   const marks = runEvents.filter((event) => event.type === "learning.reviewed").length;
-  const marksOk = scenario.afterRun ? marks >= 1 && marks <= offers : marks === passes;
-  check(scenario.afterRun ? `each pass left a learning.reviewed mark (1 to ${offers})` : `each pass left a learning.reviewed mark (${passes})`, marksOk, `${marks} mark(s)`);
+  const marksOk = scenario.afterRun && !learningOff ? marks >= 1 && marks <= offers : marks === passes;
+  check(scenario.afterRun && !learningOff ? `each pass left a learning.reviewed mark (1 to ${offers})` : `each pass left a learning.reviewed mark (${passes})`, marksOk, `${marks} mark(s)`);
   const triggers = [...new Set(events.map((event) => event.trigger))];
   if (passes > 1 && events.length > 1) check("the stage logged auto and /learn logged manual", triggers.includes("auto") && triggers.includes("manual"), triggers.join(", "));
 }

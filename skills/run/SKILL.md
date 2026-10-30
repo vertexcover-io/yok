@@ -49,7 +49,8 @@ Each key under the workflow's `inputs:` is a flag:
 A workflow that declares no `prompt` gets no `--prompt`.
 
 Policies are flags too: `--interaction false` when the user wants the run unattended (no stage
-asks them anything). Add `--name NAME` when the user named the run.
+asks them anything), and `--learning false` when they want no learnings kept (no learn stage and
+no learning session offered after the PR). Add `--name NAME` when the user named the run.
 
 The step is done when every value the user gave has its flag and the prompt, when there is
 one, holds every constraint they named.

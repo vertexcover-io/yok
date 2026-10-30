@@ -434,6 +434,10 @@ const LEARN_OFFER =
   "learning session corrected you, reply only with: No new learnings from your messages. Otherwise ask the user one question: " +
   "start a learning session now, from their corrections since the last one? If they say yes, run " +
   `the learn skill (/yok:learn) with trigger auto. If they say no, end your turn. ${ASK_RULE}`;
+// With interaction off, the question guard lets only the offer's question through.
+const LEARN_OFFER_UNATTENDED =
+  " This run's interaction policy is off: only this one question may use the question tool. Ask " +
+  "the learn skill's questions in plain text, numbered, and wait for the user's reply.";
 const OfferedEvent = z.object({
   type: z.literal("learning.offered"),
   payload: z.object({ prompts: z.int() }),
@@ -474,6 +478,7 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
     const runDir = runDirOf(run.cwd, run.name);
     const state = await readState(runDir);
     if (state?.nodeRuns.pr?.status !== "completed") return ALLOW;
+    if (!readPolicies(state.policies).learning) return ALLOW;
     const [events, entries] = await Promise.all([
       jsonlEventStore(runDir).read(),
       input.readTranscript(),
@@ -495,7 +500,8 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
       deps.log.warn({ error: stored.error }, "learn not offered: the offer was not recorded");
       return ALLOW;
     }
-    return { kind: "continue", message: LEARN_OFFER };
+    const unattended = readPolicies(state.policies).interaction ? "" : LEARN_OFFER_UNATTENDED;
+    return { kind: "continue", message: LEARN_OFFER + unattended };
   } catch (error) {
     deps.log.error({ err: error }, "learn not offered: the offer check failed");
     return ALLOW;

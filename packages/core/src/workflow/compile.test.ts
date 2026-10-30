@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Notifier, runDirOf, type Samskara } from "@yok/sdk";
 import { noProjectConfig } from "../stage.ts";
-import { compileWorkflow, runStageDirs } from "./compile.ts";
+import { compileWorkflow, readWorkflowFile, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./test-stages.ts";
 import {
@@ -1513,5 +1513,15 @@ describe("resolveWorkflowInputs", () => {
     expect(() => resolveWorkflowInputs(declarations, { prompt: "x", yok: "nope" })).toThrow(
       /^inputs\.yok:/,
     );
+  });
+});
+
+describe("the shipped task workflow", () => {
+  test("SC13: the task workflow runs learn as a subagent", async () => {
+    const task = await readWorkflowFile(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+    const learn = task.nodes.find((node) => node.id === "learn");
+    expect(learn).toMatchObject({ stage: "learn", mode: "subagent" });
   });
 });

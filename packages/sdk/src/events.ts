@@ -506,11 +506,12 @@ const ApprovalRequestedEvent = nodeEvent(
 );
 
 // A run policy changed what would have happened: a question refused, an approval given without a
-// person, or a node failed because its agent stopped with no one to answer.
+// person, a node failed because its agent stopped with no one to answer, or the learn offer's
+// question let through after the PR.
 export const PolicyAppliedEvent = z.object({
   payload: z.strictObject({
     policy: PoliciesSchema.keyof(),
-    effect: z.enum(["question-refused", "auto-approved", "unanswered-stop"]),
+    effect: z.enum(["question-refused", "auto-approved", "unanswered-stop", "learn-offer-asked"]),
     nodeId: NonEmptyStringSchema.optional(),
     path: FileArtifactSchema.shape.path.optional(),
   }),
