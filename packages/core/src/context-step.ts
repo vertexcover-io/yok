@@ -106,7 +106,6 @@ const pollUntil = async <T>(
   }
 };
 
-// Claude is at work, or waits on a person's answer to a permission prompt or question.
 const isClaudeHeld = (screen: string): boolean => {
   const { kind } = readClaudeScreen(screen);
   return kind === "busy" || kind === "menu";
@@ -139,10 +138,9 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-// Types at the input box as soon as it shows, even while Claude works: Claude queues the line and
-// runs it once its turn ends. Escape only at a popup: at the box it could open the Rewind menu;
-// while Claude is held it could cancel a compaction, reject a permission or decline a question.
-// false: the box never showed, nothing was typed.
+// Types as soon as the box shows, even mid-turn, since Claude queues the line. Escape goes only to
+// a popup: at the box it opens Rewind, and while Claude is held it could cancel a compaction or
+// reject a permission. false: nothing was typed.
 const typeAtInputBox = async (
   terminal: ITerminal,
   line: string,

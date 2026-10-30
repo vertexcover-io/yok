@@ -602,8 +602,7 @@ const QUESTION = [
   " Enter to select · ↑/↓ to navigate · Esc to cancel",
 ].join("\n");
 
-// Captures of Claude Code 2.1.312's pane, and ask of 2.1.314's question dialog, whose ─ divider
-// above its last option is the lowest rule; trust is rebuilt by hand from the dialog's text.
+// Real captures of Claude Code 2.1.312 and 2.1.314, except trust, rebuilt by hand from its text.
 const FIXTURE_KINDS = [
   ["w50", "ready"],
   ["w80", "ready"],

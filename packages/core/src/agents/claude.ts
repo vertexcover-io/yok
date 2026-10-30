@@ -43,9 +43,7 @@ export const CLAUDE_ESCAPE_PAUSE_MS = 300;
 // sent only while the input box stays hidden, up to this many in all.
 export const CLAUDE_MAX_ESCAPES = 3;
 
-// The state of Claude's pane, judged from a plain capture.
 const ClaudeScreenSchema = z.discriminatedUnion("kind", [
-  // the input box shows with only status lines below it; text is what is typed in it
   z.object({ kind: z.literal("ready"), text: z.string() }),
   z.object({ kind: z.literal("busy") }),
   // a choice or list waits on a person: no key may be sent
@@ -67,18 +65,17 @@ const isRule = (line: string): boolean => {
   return RULE.test(trimmed) && !BOX_EDGE.test(trimmed);
 };
 
-// Claude's status lines under the box; more lines than this mean a panel drawn under an old box,
-// or a status area too tall to tell apart from one.
+// More lines under the box than this mean a panel drawn under an old box, or a status area too
+// tall to tell apart from one.
 const MAX_STATUS_LINES = 4;
 
 const isCursorLine = (line: string): boolean => line.trim().startsWith("❯");
 // The box's bottom edge and a dialog's edges never carry a title, and a line of text can end in " ─".
 const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
 
-// Only lines under the lowest rule count: the transcript above it holds the user's old messages,
-// which also start with ❯. A ❯ under the box too means a dialog drawn below it, where Enter picks.
-// The question dialog draws a divider above its last option, so its cursor sits between the two
-// lowest rules; that counts only with a rule above, since without one the lines are transcript.
+// The transcript above the lowest rule holds the user's old messages, which also start with ❯, so
+// only a ❯ under it counts. The question dialog draws a rule above its last option, so its cursor
+// sits between the two lowest rules; that counts only with a rule above, or it is transcript.
 export const readClaudeBox = (screen: string): ClaudeScreen => {
   if (screen.trim() === "") return { kind: "unknown" };
   const lines = screen.split("\n");
@@ -125,10 +122,8 @@ const limitResetWait = async (terminal: ITerminal, message: string, now: Date) =
   return readResetWait({ message, screen: screen.ok ? screen.value : "", now });
 };
 
-// Claude queues a message submitted while it works, so whileBusy ignores the busy sign; waiting for
-// idle would hold a comment for the length of the agent's task. While busy, the box must already
-// be empty to count as ready, so there is nothing to clear and a user's half-typed text is never
-// overwritten.
+// Claude queues a message submitted while it works, so whileBusy ignores the busy sign. The box
+// must already be empty, so a person's half-typed text is never cleared mid-turn.
 const promptWhenReady = async (
   terminal: ITerminal,
   text: string,

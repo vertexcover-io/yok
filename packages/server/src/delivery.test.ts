@@ -9,7 +9,6 @@ import { createRegistry } from "@yok/sdk/internal";
 import { deliverComments, lastDelivery, scheduleDelivery, stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 
-// What Claude shows for a question: its own rule, then a ❯ cursor on the options.
 const MENU = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · Esc to cancel`;
 const NOW = new Date("2026-01-01T00:00:00.000Z");
 
