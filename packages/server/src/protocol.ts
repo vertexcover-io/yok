@@ -138,22 +138,24 @@ export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.
 export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
 
 // GET /runs. Query values arrive as text; status is one comma list.
-export const ListRunsQuerySchema = z.strictObject({
-  project: NonEmptyStringSchema.optional(),
-  status: z
-    .string()
-    .transform((text) => text.split(","))
-    .pipe(z.array(RunStatusSchema))
-    .optional(),
-  limit: z
-    .string()
-    .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
-    .transform(Number)
-    .optional(),
-  all: z.enum(["true", "false"]).optional(),
-}).refine((query) => query.all !== "true" || query.limit === undefined, {
-  message: "--all and --limit cannot be used together",
-});
+export const ListRunsQuerySchema = z
+  .strictObject({
+    project: NonEmptyStringSchema.optional(),
+    status: z
+      .string()
+      .transform((text) => text.split(","))
+      .pipe(z.array(RunStatusSchema))
+      .optional(),
+    limit: z
+      .string()
+      .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
+      .transform(Number)
+      .optional(),
+    all: z.enum(["true", "false"]).optional(),
+  })
+  .refine((query) => query.all !== "true" || query.limit === undefined, {
+    message: "--all and --limit cannot be used together",
+  });
 export type ListRunsQuery = z.input<typeof ListRunsQuerySchema>;
 export type RunsFilter = z.output<typeof ListRunsQuerySchema>;
 
