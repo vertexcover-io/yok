@@ -1,6 +1,7 @@
 import { type DoctorReport, DoctorReportSchema, type DoctorRow, verdict } from "@yok/core";
 import type { Fire, Trigger } from "@yok/sdk/internal";
 import { apiErrorText } from "./client.ts";
+import type { ListedRun } from "./overview.ts";
 import type { ApiError, ProjectView } from "./protocol.ts";
 
 // The text the CLI prints and the rows a chat command replies with, so both read the same.
@@ -38,6 +39,59 @@ export const replyText = ({ text, table }: Reply): string =>
 
 // 2026-10-30T05:52:11.000Z → 10-30 05:52, short enough for a table column; the time is UTC.
 export const shortTime = (iso: string): string => iso.slice(5, 16).replace("T", " ");
+
+// Only the columns the table shows: a run read back from the API is JSON, whose type is looser
+// than ListedRun's.
+export type RunRow = Pick<
+  ListedRun,
+  "id" | "name" | "project" | "workflow" | "status" | "steps" | "startedAt"
+>;
+export type RunList = Readonly<{ runs: readonly RunRow[]; total: number }>;
+// The flags a run list was asked with, as typed.
+export type RunFlags = Readonly<{ project: string | undefined; status: string | undefined }>;
+
+const NO_RUNS = "No runs yet. Start one with yok run";
+const NO_MATCH = "No runs match";
+const MORE_HINT = "Use --limit N or --all to see more";
+
+export const runTable = (runs: readonly RunRow[]): Table => ({
+  headers: ["ID", "NAME", "PROJECT", "WORKFLOW", "STATUS", "STEPS", "STARTED (UTC)"],
+  rows: runs.map((run) => [
+    run.id,
+    run.name ?? "-",
+    run.project ?? "-",
+    run.workflow,
+    run.status,
+    `${run.steps.done}/${run.steps.total ?? "?"}`,
+    shortTime(run.startedAt),
+  ]),
+});
+
+// "Showing 20 of 200 runs" when cut, "12 runs" when whole; "12 demo runs" with --project demo.
+const countLine = ({ runs, total }: RunList, { project }: RunFlags): string => {
+  const noun = `${project === undefined ? "" : `${project} `}run${total === 1 ? "" : "s"}`;
+  return runs.length === total ? `${total} ${noun}` : `Showing ${runs.length} of ${total} ${noun}`;
+};
+
+const emptyText = ({ project, status }: RunFlags): string =>
+  project === undefined && status === undefined ? NO_RUNS : NO_MATCH;
+
+// Slack cuts a long table itself and says so, so the reply carries no hint.
+export const runsReply = (list: RunList, flags: RunFlags): Reply =>
+  list.total === 0
+    ? { text: emptyText(flags) }
+    : { text: countLine(list, flags), table: runTable(list.runs) };
+
+export const renderRuns = (list: RunList, flags: RunFlags, terminal: boolean): string => {
+  if (!terminal) return renderTable(runTable(list.runs));
+  if (list.total === 0) return emptyText(flags);
+  const cut = list.runs.length < list.total;
+  return [
+    countLine(list, flags),
+    renderTable(runTable(list.runs)),
+    ...(cut ? [MORE_HINT] : []),
+  ].join("\n");
+};
 
 export const projectTable = (projects: readonly ProjectView[]): Table => ({
   headers: ["NAME", "STATUS", "PATH", "ADDED BY"],

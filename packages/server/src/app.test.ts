@@ -39,7 +39,7 @@ import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
-import { AddProjectBodySchema } from "./protocol.ts";
+import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
 import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
@@ -1589,6 +1589,91 @@ const addRunAt = (
     tiers: null,
     ...run,
   });
+
+// The shown runs' ids and the matched total from GET /runs.
+const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
+  const listed = await deps.client.runs(query);
+  if (!listed.ok) throw new Error(listed.error.message);
+  return { ids: listed.value.runs.map((run) => run.id), total: listed.value.total };
+};
+
+describe("GET /runs", () => {
+  const minute = (n: number): string => new Date(Date.UTC(2026, 9, 29, 10, n)).toISOString();
+
+  test("SC5006: 21 runs list the newest 20 by default, limit=5 shows 5, all=true shows 21, limit=0 is bad-request", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    for (let n = 0; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    const byDefault = await listIds(deps, {});
+    expect(byDefault.ids).toHaveLength(20);
+    expect(byDefault.ids[0]).toBe("r-20");
+    expect(byDefault.ids).not.toContain("r-0");
+    expect(byDefault.total).toBe(21);
+    expect(await listIds(deps, { limit: "5" })).toMatchObject({ total: 21 });
+    expect((await listIds(deps, { limit: "5" })).ids).toHaveLength(5);
+    expect((await listIds(deps, { all: "true" })).ids).toHaveLength(21);
+    const refused = await deps.client.runs({ limit: "0" });
+    expect(!refused.ok && refused.error.code).toBe("bad-request");
+  });
+
+  test("SC5007: a run in demo's folder carries project demo, and one in an unregistered folder carries null", async () => {
+    const { deps } = await chatDeps();
+    const registered = gitRepo();
+    addProjectEntry(deps.home, "demo", registered);
+    await addRunAt(deps.registry, { id: "r-a", cwd: registered, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-b", cwd: gitRepo(), createdAt: minute(2) });
+
+    const listed = await deps.client.runs({});
+
+    expect(listed.ok && listed.value.runs.map((run) => [run.id, run.project])).toEqual([
+      ["r-b", null],
+      ["r-a", "demo"],
+    ]);
+  });
+
+  test("SC5008: project=demo keeps demo's two runs, and project=nope is a 404 not-found naming it", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    await addRunAt(deps.registry, { id: "r-1", cwd: demo, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-2", cwd: demo, createdAt: minute(2) });
+    await addRunAt(deps.registry, { id: "r-3", cwd: other, createdAt: minute(3) });
+
+    expect(await listIds(deps, { project: "demo" })).toEqual({ ids: ["r-2", "r-1"], total: 2 });
+    const unknown = await deps.client.runs({ project: "nope" });
+    expect(!unknown.ok && unknown.error).toMatchObject({
+      code: "not-found",
+      message: "no project named nope",
+    });
+  });
+
+  test("SC5009: status filters before the cut, takes a comma list, and bogus is bad-request naming the valid statuses", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: minute(0) });
+    for (let n = 1; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    expect(await listIds(deps, { status: "starting", limit: "5" })).toEqual({
+      ids: ["r-0"],
+      total: 1,
+    });
+    const both = await listIds(deps, { status: "starting,missing" });
+    expect(both.ids).toHaveLength(20);
+    expect(both.total).toBe(21);
+    const bogus = await deps.client.runs({ status: "bogus" });
+    expect(!bogus.ok && bogus.error.code).toBe("bad-request");
+    for (const valid of ["running", "blocked", "unreadable"]) {
+      expect(!bogus.ok && bogus.error.message).toContain(valid);
+    }
+  });
+});
 
 const DAILY = [
   "name: daily",

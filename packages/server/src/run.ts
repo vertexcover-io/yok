@@ -49,14 +49,17 @@ import {
 } from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { errorResponse, jsonBody, type Vars } from "./api.ts";
+import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-import { addRunIfProjectKept, pickProject, refuseBody } from "./projects.ts";
+import { type ListedRun, listRunSummaries } from "./overview.ts";
+import { addRunIfProjectKept, pickProject, readProjects, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
   DoctorBodySchema,
+  ListRunsQuerySchema,
   type ResumeRunBody,
   ResumeRunBodySchema,
+  type RunsFilter,
   type StartRunBody,
   StartRunBodySchema,
 } from "./protocol.ts";
@@ -471,6 +474,28 @@ const resumeRun = async (
   );
 };
 
+const RUNS_SHOWN = 20;
+
+// Filters run before the cut, so total counts only the runs that match.
+const listRuns = async (c: Context<{ Variables: Vars }>, deps: RunDeps, query: RunsFilter) => {
+  const projects = Object.entries(await readProjects(deps.home));
+  if (query.project !== undefined && !projects.some(([name]) => name === query.project)) {
+    return errorResponse(c, 404, "not-found", `no project named ${query.project}`);
+  }
+  const projectAt = (cwd: string): string | null =>
+    projects.find(([, project]) => project.path === cwd)?.[0] ?? null;
+  const listed: readonly ListedRun[] = (await listRunSummaries(deps.registry, deps.host)).map(
+    (run) => ({ ...run, project: projectAt(run.cwd) }),
+  );
+  const matched = listed.filter(
+    (run) =>
+      (query.project === undefined || run.project === query.project) &&
+      (query.status === undefined || query.status.includes(run.status)),
+  );
+  const runs = query.all === "true" ? matched : matched.slice(0, query.limit ?? RUNS_SHOWN);
+  return c.json({ runs, total: matched.length }, 200);
+};
+
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach ApiType.
 export const runRoutes = (deps: RunDeps & GitDeps) =>
   new Hono<{ Variables: Vars }>()
@@ -484,6 +509,7 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
     .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
       resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
     )
+    .get("/", queryParams(ListRunsQuerySchema), (c) => listRuns(c, deps, c.req.valid("query")))
     .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");
