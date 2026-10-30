@@ -6,3 +6,4 @@
 - [Inline single-use helpers, unless they hold complex logic](single-use-helpers.md) — Use when extracting a function that has one caller
 - [Don't pass a Result up unchanged; unwrap it and catch once where the error is handled](unwrap-forwarded-results.md) — Use when a function calls several Result-returning functions and only passes their errors up
 - [Build a new feature for every agent yok runs, not just Claude](build-for-all-agents.md) — Use when building a new feature that works with the agent, such as Claude Code or Codex
+- [Rename a function, file or command in the same change that widens what it does](rename-when-widened.md) — Use when a change makes an existing function, file or command do more than its name says
