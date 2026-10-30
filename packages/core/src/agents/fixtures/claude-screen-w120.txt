@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 with high effort · Claude Max
+ ▝▝   ▝▝   ~/Projects/yok · /rc            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                      ● high · /effort
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── ref-26119 ─
+❯ Try "how does app.test.ts work?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5.5 | Ctx Used: 0.0% | yok | Thinking: high | wt main | branch fe...
+  ⏵⏵ auto mode on (shift+tab to cycle) · PR #47 · ← 4 agents

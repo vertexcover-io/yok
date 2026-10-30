@@ -44,56 +44,68 @@ export const CLAUDE_ESCAPE_PAUSE_MS = 300;
 // sent only while the input box stays hidden, up to this many in all.
 export const CLAUDE_MAX_ESCAPES = 3;
 
-export const isClaudeBusy = (screen: string): boolean =>
-  screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
+const ClaudeScreenSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ready"), text: z.string() }),
+  z.object({ kind: z.literal("busy") }),
+  // a choice or list waits on a person: no key may be sent
+  z.object({ kind: z.literal("menu") }),
+  // something with no cursor covers the box; Escape closes it
+  z.object({ kind: z.literal("popup") }),
+  z.object({ kind: z.literal("unknown") }),
+]);
+export type ClaudeScreen = z.infer<typeof ClaudeScreenSchema>;
 
-// A named session draws its name into the rule, `──── fix-login ─`, with fewer dashes before it
-// in a narrow pane, or none.
-const RULE = /^\s*(?:─{10,}|─*\s.*\S\s─+)\s*$/;
-const INPUT_LINE = /^❯(?:\s|$)/;
-const MENU_OPTION = /^❯\s*\d+\.\s/;
-const DIALOG_FOOTER = /enter to (?:confirm|select)|esc to (?:cancel|close|clear)/i;
+// The rule over and under the input box, with a named session's name in the top one:
+// `──── fix-login ─`, with fewer dashes before the name in a narrow pane, or none. Box corners and
+// bars mark a panel's edge, such as /config's search box, never a rule.
+const RULE = /^(?:─*\s*[^─\s][^─]*\s)?─+$/;
+const BOX_EDGE = /[╭╮╰╯┌┐└┘│]/;
 
-// The lowest line shaped like Claude's input box: a ❯ line between two rules. A menu option's
-// ❯ cursor (`❯ 1. Yes`) can sit between rules too, where Enter would pick it.
-const findInputBoxLine = (lines: readonly string[]): number =>
-  lines.findLastIndex(
-    (line, i) =>
-      INPUT_LINE.test(line.trim()) &&
-      !MENU_OPTION.test(line.trim()) &&
-      RULE.test(lines[i - 1] ?? "") &&
-      RULE.test(lines[i + 1] ?? ""),
-  );
-
-// The text in Claude's input box, or undefined when no box shows. A popup or dialog replaces the
-// box, so seeing it is the sign that Enter submits a message. A dialog, or a popup such as /config
-// under a box left in scrollback, shows its footer below that line, which then means no box. Only
-// below: the capture holds scrollback, where the transcript can quote a footer above a real box.
-const readInputBox = (screen: string): string | undefined => {
-  const lines = screen.split("\n");
-  const at = findInputBoxLine(lines);
-  if (at === -1 || DIALOG_FOOTER.test(lines.slice(at + 1).join("\n"))) return undefined;
-  return lines[at]?.trim().slice(1).trim();
+const isRule = (line: string): boolean => {
+  const trimmed = line.trim();
+  return RULE.test(trimmed) && !BOX_EDGE.test(trimmed);
 };
 
-// A permission prompt or a question waits on a person's pick and draws no spinner; an Escape would
-// reject or decline it. Only an option below the lowest box-shaped line counts: an answered prompt
-// can linger in the capture's scrollback above the box that replaced it.
-export const isClaudeChoicePending = (screen: string): boolean => {
+// More lines under the box than this mean a panel drawn under an old box, or a status area too
+// tall to tell apart from one.
+const MAX_STATUS_LINES = 4;
+
+const isCursorLine = (line: string): boolean => line.trim().startsWith("❯");
+// The box's bottom edge and a dialog's edges never carry a title, and a line of text can end in " ─".
+const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
+
+// The transcript above the lowest rule holds the user's old messages, which also start with ❯, so
+// only a ❯ under it counts. The question dialog draws a rule above its last option, so its cursor
+// sits between the two lowest rules; that counts only with a rule above, or it is transcript. A
+// plain rule is preferred there, since an option's text can end in " ─".
+export const readClaudeBox = (screen: string): ClaudeScreen => {
+  if (screen.trim() === "") return { kind: "unknown" };
   const lines = screen.split("\n");
-  return lines.slice(findInputBoxLine(lines) + 1).some((line) => MENU_OPTION.test(line.trim()));
+  const rule = lines.findLastIndex(isPlainRule);
+  if (lines.slice(rule + 1).some(isCursorLine)) return { kind: "menu" };
+  const top = lines.slice(0, rule).findLastIndex(isRule);
+  const [input = "", ...rest] = lines.slice(top + 1, rule);
+  if (top >= 0 && isCursorLine(input) && !rest.some(isCursorLine)) {
+    const text = [input.trim().slice(1), ...rest].map((line) => line.trim()).join("\n");
+    return lines.length - rule - 1 <= MAX_STATUS_LINES
+      ? { kind: "ready", text }
+      : { kind: "unknown" };
+  }
+  const plainAbove = lines.slice(0, rule).findLastIndex(isPlainRule);
+  const ruleAbove = plainAbove >= 0 ? plainAbove : top;
+  return ruleAbove >= 0 && lines.slice(ruleAbove + 1, rule).some(isCursorLine)
+    ? { kind: "menu" }
+    : { kind: "popup" };
 };
 
-export const hasClaudeInputBox = (screen: string): boolean => readInputBox(screen) !== undefined;
-
-const hasEmptyInputBox = (screen: string): boolean => readInputBox(screen) === "";
-
-const isAwaitingInput = (screen: string): boolean =>
-  hasEmptyInputBox(screen) && !isClaudeBusy(screen);
-
-// Claude queues a message submitted while it works, so a comment only needs the empty box and no
-// menu; waiting for idle would hold it for the length of the agent's task.
-export const canTypeComment = (screen: string): boolean => hasEmptyInputBox(screen);
+// Claude shows the queued-messages hint in its input box; the transcript may quote it too.
+export const readClaudeScreen = (screen: string): ClaudeScreen => {
+  const box = readClaudeBox(screen);
+  const busy =
+    screen.split("\n").some((line) => SPINNER.test(line)) ||
+    (box.kind === "ready" && box.text.includes("Press up to edit queued messages"));
+  return busy ? { kind: "busy" } : box;
+};
 
 // Some Claude versions preselect "Upgrade your plan" in the limit menu, so a bare Enter would buy
 // an upgrade; this picks "Stop and wait". Returns the screen to judge next, or null for a menu it
@@ -115,8 +127,8 @@ const limitResetWait = async (terminal: ITerminal, message: string, now: Date) =
   return readResetWait({ message, screen: screen.ok ? screen.value : "", now });
 };
 
-// While busy, the box must already be empty to count as ready, so there is nothing to clear and
-// a user's half-typed text is never overwritten.
+// Claude queues a message submitted while it works, so whileBusy ignores the busy sign. The box
+// must already be empty, so a person's half-typed text is never cleared mid-turn.
 const promptWhenReady = async (
   terminal: ITerminal,
   text: string,
@@ -127,8 +139,9 @@ const promptWhenReady = async (
   if (!captured.ok) return captured;
   const screen = await answerLimitMenu(terminal, captured.value);
   if (!screen.ok) return screen;
-  const ready = whileBusy ? canTypeComment : isAwaitingInput;
-  if (screen.value === null || !ready(screen.value)) return { ok: true, value: "not-ready" };
+  if (screen.value === null) return { ok: true, value: "not-ready" };
+  const box = whileBusy ? readClaudeBox(screen.value) : readClaudeScreen(screen.value);
+  if (box.kind !== "ready" || box.text !== "") return { ok: true, value: "not-ready" };
   if (!whileBusy) {
     const cleared = await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]);
     if (!cleared.ok) return cleared;
