@@ -48,6 +48,7 @@ const IDLE = `${RULE}\n❯ \n${RULE}`;
 const BUSY = `· Vibing… (3s)\n${IDLE}`;
 const REFUSED = `⎿  Not enough messages to compact.\n${IDLE}`;
 const COMPACTING = `✻ Compacting conversation… (42s)\n${IDLE}`;
+const DRAFT = `${RULE} feat-x ─\n❯ line one\n  line two\n  line three\n${RULE}`;
 
 const seed = (runDir: string): State => ({
   schemaVersion: 1,
@@ -247,14 +248,12 @@ const typedLine = (line: string) => ["C-u", line, "Enter"];
 // leaving it; the popup hides the input box.
 const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear";
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
-// A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
-const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
 // The shape of what Claude 2.1.309 shows for a permission asked mid-turn and for a question: no
 // spinner and no input box. An Escape rejects the permission or declines the question.
 const PERMISSION_PROMPT = `${RULE}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
 const QUESTION = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · ↑/↓ to navigate · Esc to cancel`;
 // An Escape here would reject the permission Claude asked for mid-turn.
-const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION}`;
+const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION_PROMPT}`;
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
@@ -515,26 +514,13 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test.each([CONFIG_SEARCH_FOOTER, CONFIG_LIST_FOOTER])(
-    "an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed",
-    async (footer) => {
-      const context = await setUp("type: context, action: compact");
-      const fake = losingTerminal(
-        context,
-        () => true,
-        () => `${IDLE}\n  Theme  Dark\n${footer}`,
-      );
-
-      await helper(context, fake.terminal);
-
-      expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
-    },
-  );
-
   test.each([
     ["a permission prompt", PERMISSION_PROMPT],
     ["a question", QUESTION],
-    ["a permission dialog whose ❯ 1. Yes sits between rules", PERMISSION],
+    [
+      "the /config page, a list with its ❯ cursor,",
+      readFileSync(join(import.meta.dir, "agents/fixtures/claude-screen-cfg.txt"), "utf8"),
+    ],
   ])(
     "%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable",
     async (_, screen) => {
@@ -797,7 +783,7 @@ describe("runContextStep: compact", () => {
     });
   }, 30_000);
 
-  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line is typed", async () => {
+  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line is typed into the box under the busy sign", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
@@ -831,6 +817,36 @@ describe("runContextStep: compact", () => {
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
+  });
+
+  test("a three-line draft in the box is cleared line by line before /compact is typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      (_, typed) => (typed.some((entry) => entry.includes("BSpace")) ? IDLE : DRAFT),
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed.slice(0, 3)).toEqual([
+      ["C-u", "BSpace", "C-u", "BSpace", "C-u"],
+      "/compact",
+      ["Enter"],
+    ]);
+  });
+
+  test("a draft the clearing keys do not empty gets no line typed", async () => {
+    const context = await setUp("type: context, action: compact");
+    const fake = losingTerminal(
+      context,
+      () => true,
+      () => DRAFT,
+    );
+
+    await helper(context, fake.terminal);
+
+    expect(fake.typed.filter((entry) => typeof entry === "string")).toEqual([]);
   });
 
   test("SC7: Claude saying there is nothing to compact ends the step at once with that reason, not after the 180-second wait, and the resume line is typed", async () => {
