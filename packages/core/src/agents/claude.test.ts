@@ -489,6 +489,8 @@ describe("isClaudeBusy", () => {
     ["· Vibing… (3s · ↓ 136 tokens)", true],
     ["✢ Compacting conversation… (15s · ↓ 637 tokens)", true],
     ["  Press up to edit queued messages\n❯ ", true],
+    [box("❯ Press up to edit queued messages"), true],
+    ["❯ keep only the user's typed or queued messages, newest first\n❯ ", false],
     ["✻ Churned for 8s · done 4:40 PM\n❯ ", false],
     ["❯ ", false],
   ])("SC22: %j is busy: %p", (screen, busy) => {

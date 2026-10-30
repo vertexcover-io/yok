@@ -33,6 +33,8 @@ import { trustLaunchFolder } from "./trust.ts";
 // What Claude Code 2.1.285 shows in its pane. While it works, a spinner line (`✻ Compacting…`)
 // or the hint under a queued prompt is on screen.
 const SPINNER = /^[·✢✳✶✻✽*] \S.*…/;
+// The whole line: a prompt on screen may quote the words "queued messages".
+const QUEUED_HINT = /^(?:❯\s*)?Press up to edit queued messages$/;
 export const CLAUDE_NOTHING_TO_COMPACT = "Not enough messages to compact.";
 // Empties the input line; C-c would exit Claude when the box is already empty.
 export const CLAUDE_CLEAR_INPUT_KEY = "C-u";
@@ -45,7 +47,7 @@ export const CLAUDE_ESCAPE_PAUSE_MS = 300;
 export const CLAUDE_MAX_ESCAPES = 3;
 
 export const isClaudeBusy = (screen: string): boolean =>
-  screen.includes("queued messages") || screen.split("\n").some((line) => SPINNER.test(line));
+  screen.split("\n").some((line) => SPINNER.test(line) || QUEUED_HINT.test(line.trim()));
 
 // A named session draws its name into the rule, `──── fix-login ─`, with fewer dashes before it
 // in a narrow pane, or none.
