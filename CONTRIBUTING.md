@@ -25,7 +25,7 @@ Before writing code, read [CLAUDE.md](./CLAUDE.md). It has the style rules every
 
 ## Set up a dev build
 
-You need Bun 1.3.3+, Node 22.12+, tmux 3.3+, git, jq, curl, the GitHub CLI logged in, and Claude Code or Codex. The README's requirements table has install commands for macOS and Linux.
+You need Bun 1.4.3+, Node 22.12+, tmux 3.3+, git, jq, curl, the GitHub CLI logged in, and Claude Code or Codex. The README's requirements table has install commands for macOS and Linux.
 
 ```bash
 git clone https://github.com/vertexcover-io/yok.git
