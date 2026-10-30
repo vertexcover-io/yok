@@ -28,6 +28,7 @@ import {
   summarize,
   typeLine,
 } from "./common.ts";
+import { trustLaunchFolder } from "./trust.ts";
 
 // What Claude Code 2.1.285 shows in its pane. While it works, a spinner line (`✻ Compacting…`)
 // or the hint under a queued prompt is on screen.
@@ -261,6 +262,7 @@ export const claudeProvider = ({
       model: options.model,
       permissionMode: options.permissionMode,
     };
+    await trustLaunchFolder(options, sessionLog);
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
@@ -286,6 +288,7 @@ export const claudeProvider = ({
       argv: [binary, ...session, ...claudeArgs(options)],
       env: options.env ?? {},
     };
+    await trustLaunchFolder(options, log.child({ sessionId }));
     return respawnAgent("claude", terminal, spec, log.child({ sessionId }));
   };
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -245,6 +245,17 @@ describe("claudeProvider.launch", () => {
     expect(spec?.argv.at(-1)).toBe("/yok:orchestrate --resume demo");
     expect(minted).toEqual([]);
   });
+  test("puts the folder in the session's Claude config as trusted before the pane starts", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
+    const provider = claudeProvider({ host: fakeHost(), newId: () => "s1" });
+
+    await provider.launch({ cwd, env: { CLAUDE_CONFIG_DIR: home } });
+
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual({
+      projects: { [cwd]: { hasTrustDialogAccepted: true } },
+    });
+  });
 });
 
 describe("claudeProvider.relaunch", () => {
@@ -291,6 +302,16 @@ describe("claudeProvider.relaunch", () => {
       "opus-x",
     ]);
     expect((await argvOf()).slice(0, 3)).toEqual(["claude", "--session-id", "s-1"]);
+  });
+  test("trusts the folder it respawns in", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
+    const host = fakeHost();
+    const provider = claudeProvider({ host, newId: () => "unused" });
+
+    await provider.relaunch(host.find("%3"), "s-1", { cwd, env: { CLAUDE_CONFIG_DIR: home } });
+
+    expect(readFileSync(join(home, ".claude.json"), "utf8")).toContain(JSON.stringify(cwd));
   });
 });
 
