@@ -24,3 +24,6 @@ dist/
 *.bun-build
 
 skill-review.json
+
+# npm packages laid out for a release (scripts/npm-packages.ts)
+npm/

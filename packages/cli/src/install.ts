@@ -1,15 +1,21 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "@commander-js/extra-typings";
 import { agentBinary, uninstallPlugin, type WorkflowAgent, YOK_REPO } from "@yok/core";
 import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
-import { fail, restartServer, stopServer, yokClient } from "./client.ts";
-import { agentOption, agentsOnPath, updateAgents } from "./plugin.ts";
+import { fail, restartServer, runningServer, stopServer } from "./client.ts";
+import {
+  agentOption,
+  agentsOnPath,
+  installedBy,
+  type PackageManager,
+  updateAgents,
+} from "./plugin.ts";
 
 const PLATFORMS: Readonly<Record<string, string>> = { darwin: "darwin", linux: "linux" };
 const ARCHES: Readonly<Record<string, string>> = { arm64: "arm64", x64: "x64" };
@@ -51,15 +57,6 @@ export const checksumFor = (checksums: string, asset: string): string | null =>
     .find(([, name]) => name === asset)?.[0] ?? null;
 
 const DEV_UPDATE = "yok-dev is this checkout: run git pull";
-
-type PackageManager = "homebrew" | "npm";
-
-// A binary Homebrew or npm put in place is theirs to replace and remove.
-export const installedBy = (execPath: string): PackageManager | null => {
-  if (execPath.includes("/Cellar/yok/")) return "homebrew";
-  if (execPath.includes("/node_modules/@vertexcover/yok-")) return "npm";
-  return null;
-};
 
 export type ManagedUpdate = Readonly<{ upgrade: readonly [string, ...string[]]; binary: string }>;
 
@@ -327,13 +324,18 @@ const removePathLine = async (rc: string): Promise<boolean> => {
   return true;
 };
 
-// Returns what it removed, one line each. A null execPath keeps the binary.
+// Returns what it removed, one line each. A null execPath keeps the binary. The yok-remote
+// install.sh writes beside the binary goes with it.
 export const removeInstall = async ({
   execPath,
   installDir,
   rcFiles,
 }: InstallPaths): Promise<readonly string[]> => {
-  const binary = execPath === null || isInside(execPath, installDir) ? [] : [execPath];
+  const outside = execPath === null || isInside(execPath, installDir) ? [] : [execPath];
+  const shortcut = outside
+    .map((path) => join(dirname(path), "yok-remote"))
+    .filter((path) => existsSync(path));
+  const binary = [...outside, ...shortcut];
   for (const path of [...binary, installDir]) await rm(path, { recursive: true, force: true });
   const cleaned: string[] = [];
   for (const rc of rcFiles) if (await removePathLine(rc)) cleaned.push(rc);
@@ -367,12 +369,10 @@ const removePlugins = async (): Promise<boolean> => {
 
 const uninstall = async (plugin: boolean | undefined): Promise<void> => {
   const home = yokHome();
-  const running = await yokClient(home).health();
-  if (running.ok) {
-    await stopServer(home, running.value.pid);
-    console.log(
-      `stopped the yok server (pid ${running.value.pid}); its tmux sessions keep running`,
-    );
+  const running = await runningServer(home);
+  if (running !== null) {
+    await stopServer(running.pid);
+    console.log(`stopped the yok server (pid ${running.pid}); its tmux sessions keep running`);
   }
   const withPlugin =
     plugin ?? (await askYes("Also remove the yok plugin from claude and codex? [y/N] "));

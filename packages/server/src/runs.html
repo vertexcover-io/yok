@@ -169,8 +169,11 @@ const matches = (run, query) =>
   [run.name, run.id, run.workflow, run.folder, run.prompt]
     .some((field) => typeof field === "string" && field.toLowerCase().includes(query));
 
+// A finished run's session is usually closed, so it is brought back with resume, not attach.
+const ENDED = new Set(["completed", "failed", "cancelled"]);
+
 const copyButton = (run) => {
-  const command = `yok attach --run-id ${run.id}`;
+  const command = ENDED.has(run.status) ? `yok resume --run-id ${run.id}` : `yok attach --run-id ${run.id}`;
   const button = el("button", { type: "button", className: "copy", textContent: "copy", title: command });
   button.addEventListener("click", async (event) => {
     event.preventDefault();

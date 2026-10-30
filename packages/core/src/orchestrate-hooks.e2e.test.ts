@@ -265,6 +265,74 @@ nodes:
       expect(orchestrate(run.repo, run.home, done).code).toBe(0);
       expect(stateOf(run.repo).nodeRuns.plan.status).toBe("completed");
     });
+
+    const writePlan = (repo: string, title: string) => {
+      const artifacts = join(runDirOf(repo, "feat-x"), "artifacts");
+      mkdirSync(join(artifacts, "phases"), { recursive: true });
+      writeFileSync(join(artifacts, "plan.md"), `# ${title}\n`);
+      writeFileSync(join(artifacts, "phases", "phase-1.md"), "# Phase 1: Export\n");
+    };
+    const planPage = (repo: string) => join(runDirOf(repo, "feat-x"), "artifacts", "plan.html");
+    const pageTitle = (repo: string) =>
+      readFileSync(planPage(repo), "utf8").match(/<title>(.*)<\/title>/)?.[1];
+
+    test("SC712: await-approval on artifacts/plan.html builds the page from the current plan.md each time it is asked", async () => {
+      const run = awaitingRun();
+      writePlan(run.repo, "Plan: Export");
+
+      const first = awaitApproval(run, run.nodeRunId, "artifacts/plan.html");
+
+      expect(first.code).toBe(0);
+      expect(JSON.parse(first.stdout)).toEqual({
+        nodeRunId: run.nodeRunId,
+        path: "artifacts/plan.html",
+      });
+      expect(pageTitle(run.repo)).toBe("Plan: Export");
+      expect(await approvalRequests(run.repo)).toEqual([
+        expect.objectContaining({ payload: { path: "artifacts/plan.html" } }),
+      ]);
+
+      writePlan(run.repo, "Plan: Export v2");
+      expect(awaitApproval(run, run.nodeRunId, "artifacts/plan.html").code).toBe(0);
+      expect(pageTitle(run.repo)).toBe("Plan: Export v2");
+    });
+
+    test("SC713: await-approval on artifacts/plan.html with no plan.md fails naming plan.md and records no request", async () => {
+      const run = awaitingRun();
+
+      const reply = awaitApproval(run, run.nodeRunId, "artifacts/plan.html");
+
+      expect(reply.code).toBe(1);
+      expect(reply.stderr).toContain("plan.md");
+      expect(reply.stderr).toContain("artifacts/plan.html was not rebuilt");
+      expect(await approvalRequests(run.repo)).toEqual([]);
+    });
+
+    test("SC714: with interaction off, await-approval still builds artifacts/plan.html before auto-approving it", async () => {
+      const policies: SavedPolicies = {
+        values: { interaction: false },
+        sources: { interaction: "cli" },
+      };
+      const run = startedRun(ONE_AGENT, undefined, { policies });
+      const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
+      writePlan(run.repo, "Plan: Export");
+
+      const reply = awaitApproval(run, next.nodeRunId, "artifacts/plan.html");
+
+      expect(reply.code).toBe(0);
+      expect(JSON.parse(reply.stdout)).toMatchObject({ autoApproved: true });
+      expect(existsSync(planPage(run.repo))).toBe(true);
+      const events = await eventsOf(run.repo);
+      expect(events.filter((event) => event.type === "policy.applied")).toHaveLength(1);
+    });
+
+    test("SC715: await-approval on artifacts/design.md writes no plan.html", () => {
+      const run = awaitingRun();
+      writePlan(run.repo, "Plan: Export");
+
+      expect(awaitApproval(run, run.nodeRunId, "artifacts/design.md").code).toBe(0);
+      expect(existsSync(planPage(run.repo))).toBe(false);
+    });
   });
 });
 
@@ -702,6 +770,55 @@ nodes:
         output: { action: "compact", applied: true, sessionId: "A" },
       });
       expect(flow.next()).toMatchObject({ kind: "agent", nodeId: "second" });
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+});
+
+describe("SC26: the stop that ends a run's finishing turn closes its tmux pane", () => {
+  const sessionGone = (socket: string) =>
+    spawnSync("tmux", ["-L", socket, "has-session", "-t", "agent"]).status !== 0;
+
+  // A finished run whose registered terminal is the fake agent's tmux session.
+  const finishedRun = async (socket: string) => {
+    const flow = await runInPane(
+      ONE_AGENT,
+      socket,
+      { terminal: "agent" },
+      { YOK_TMUX_SOCKET: socket },
+    );
+    const plan = flow.next();
+    const done = ["done", plan.nodeRunId, "--run", "feat-x", "--summary", "Planned."];
+    expect(flow.step([...done, "--output", "{}"]).code).toBe(0);
+    expect(flow.next()).toMatchObject({ kind: "finished", status: "completed" });
+    return flow;
+  };
+
+  test("SC811: the next that ends the run closes nothing; the finishing session's stop then kills the run's terminal at once, with nothing typed", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(sessionGone(socket)).toBe(false);
+
+      flow.stop();
+
+      expect(sessionGone(socket)).toBe(true);
+      expect(flow.typed()).toEqual([]);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+
+  test("SC828: a session resumed after the finish keeps its terminal through its stop", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(flow.sessionStart("A", "resume").code).toBe(0);
+
+      expect(flow.stop().code).toBe(0);
+
+      expect(sessionGone(socket)).toBe(false);
     } finally {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
     }

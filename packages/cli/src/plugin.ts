@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { chmod, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Command, InvalidArgumentError, Option } from "@commander-js/extra-typings";
 import { agentBinary, installPlugin, type WorkflowAgent, WorkflowAgentSchema } from "@yok/core";
 import { execWithTimeout, type Result } from "@yok/sdk";
@@ -89,6 +92,25 @@ export const installPlugins = async (
   return 0;
 };
 
+export type PackageManager = "homebrew" | "npm";
+
+// A binary Homebrew or npm put in place is theirs to replace and remove.
+export const installedBy = (execPath: string): PackageManager | null => {
+  if (execPath.includes("/Cellar/yok/")) return "homebrew";
+  if (execPath.includes("/node_modules/@vertexcover/yok-")) return "npm";
+  return null;
+};
+
+// The two lines install.sh writes. An update runs plugin install in the new binary, so every
+// update from any version leaves the shortcut a fresh install leaves. npm and Homebrew make
+// yok-remote from their package, and their bin folder is theirs.
+export const writeRemoteShortcut = async (execPath: string): Promise<void> => {
+  if (installedBy(execPath) !== null) return;
+  const shortcut = join(dirname(execPath), "yok-remote");
+  await writeFile(shortcut, '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n');
+  await chmod(shortcut, 0o755);
+};
+
 export const pluginCommand = () =>
   new Command("plugin").description("Manage the yok agent plugin").addCommand(
     new Command("install")
@@ -96,6 +118,7 @@ export const pluginCommand = () =>
       .addOption(agentOption("claude or codex; repeat for both; default: every one found on PATH"))
       .action(async ({ agent }) => {
         if (!isCompiled) return fail(DEV_PLUGIN);
+        await writeRemoteShortcut(realpathSync(process.execPath));
         process.exitCode = await installPlugins(agent, process.env);
       }),
   );

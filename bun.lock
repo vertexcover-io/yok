@@ -12,7 +12,7 @@
     },
     "packages/cli": {
       "name": "@yok/cli",
-      "version": "0.0.5",
+      "version": "0.0.9",
       "bin": {
         "yok-dev": "./src/index.ts",
       },
@@ -27,27 +27,32 @@
     },
     "packages/core": {
       "name": "@yok/core",
-      "version": "0.0.5",
+      "version": "0.0.9",
       "dependencies": {
         "@commander-js/extra-typings": "^15.0.0",
         "@yok/sdk": "workspace:*",
         "commander": "^15.0.0",
         "croner": "^10.0.1",
+        "highlight.js": "^11.12.0",
+        "markdown-it": "^14.1.0",
         "pino": "^9",
         "yaml": "^2.9.1",
         "zod": "^4",
       },
+      "devDependencies": {
+        "@types/markdown-it": "^14.1.2",
+      },
     },
     "packages/plugins": {
       "name": "@yok/plugins",
-      "version": "0.0.5",
+      "version": "0.0.9",
       "dependencies": {
         "@yok/core": "workspace:*",
       },
     },
     "packages/sdk": {
       "name": "@yok/sdk",
-      "version": "0.0.5",
+      "version": "0.0.9",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4",
@@ -55,20 +60,15 @@
     },
     "packages/server": {
       "name": "@yok/server",
-      "version": "0.0.5",
+      "version": "0.0.9",
       "dependencies": {
         "@hono/zod-validator": "^0.9.1",
         "@yok/core": "workspace:*",
         "@yok/sdk": "workspace:*",
         "croner": "^10.0.1",
-        "highlight.js": "^11.12.0",
         "hono": "^4.13.9",
-        "markdown-it": "^14.1.0",
         "pino-pretty": "^13",
         "zod": "^4",
-      },
-      "devDependencies": {
-        "@types/markdown-it": "^14.1.2",
       },
     },
   },

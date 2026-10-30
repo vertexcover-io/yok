@@ -1,6 +1,7 @@
-# A short path for small, well-understood changes: no baseline, design, planning or qa.
-# A plain prompt passes through ticket-fetcher unchanged; a ticket URL or key is fetched.
 name: quick
+description: >-
+  A short path for a small, well-understood change you could describe to a colleague in two
+  sentences: implement, review, commit, PR. No baseline, design, planning or qa.
 inputs:
   prompt:
     type: string

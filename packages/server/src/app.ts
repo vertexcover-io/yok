@@ -4,7 +4,8 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
-import { runRoutes } from "./run.ts";
+import { type ProjectDeps, projectRoutes } from "./projects.ts";
+import { doctorRoutes, runRoutes } from "./run.ts";
 import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 const requestLogger =
@@ -20,11 +21,12 @@ const requestLogger =
     const fields = { ...route, status: c.res.status, durationMs: Date.now() - start };
     // Every CLI command checks /health first, so it would drown the other lines at info.
     if (c.res.status >= 500) reqLog.error(fields, "request finished");
-    else if (route.path === "/health") reqLog.debug(fields, "request finished");
+    else if (route.path === "/api/health") reqLog.debug(fields, "request finished");
     else reqLog.info(fields, "request finished");
   };
 
-export type AppDeps = TriggerRouteDeps &
+export type ApiDeps = TriggerRouteDeps &
+  ProjectDeps &
   Readonly<{
     log: ILogger;
     pid: number;
@@ -33,8 +35,8 @@ export type AppDeps = TriggerRouteDeps &
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the
-// client (client.ts) reads through AppType.
-export const createApp = (deps: AppDeps) =>
+// client (client.ts) reads through ApiType. createRoot (server.ts) mounts it at /api.
+export const createApi = (deps: ApiDeps) =>
   new Hono<{ Variables: Vars }>()
     .use("*", requestLogger(deps.log))
     .onError((error, c) => {
@@ -48,6 +50,8 @@ export const createApp = (deps: AppDeps) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
     .route("/runs", runRoutes(deps))
-    .route("/triggers", triggerRoutes(deps));
+    .route("/projects", projectRoutes(deps))
+    .route("/triggers", triggerRoutes(deps))
+    .route("/doctor", doctorRoutes(deps));
 
-export type AppType = ReturnType<typeof createApp>;
+export type ApiType = ReturnType<typeof createApi>;

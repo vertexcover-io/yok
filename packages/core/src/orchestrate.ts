@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readdir } from "node:fs/promises";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { Command, Option } from "@commander-js/extra-typings";
 import {
   type AgentAdapter,
@@ -68,13 +69,15 @@ import {
   loadProjectConfig,
   loadSkill,
   orchestrateArgv,
+  projectWorkflowsDir,
   type Ref,
   type Skill,
   type SkillRef,
   type SkillScope,
+  yokWorkflowsDir,
 } from "./stage.ts";
 import { renderStatusline } from "./statusline.ts";
-import { runStageDirs } from "./workflow/compile.ts";
+import { readWorkflowFile, runStageDirs } from "./workflow/compile.ts";
 import { WorkflowCompileErrorSchema, WorkflowError } from "./workflow/types.ts";
 
 const RUN_HELP = "spec name of the run, as given to init (default: $YOK_RUN_ID)";
@@ -160,6 +163,7 @@ const initCommand = () =>
           terminal: currentTerminal(),
           provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
+          notifyThread: process.env.YOK_SLACK_THREAD || undefined,
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
       });
@@ -264,7 +268,10 @@ const awaitApprovalCommand = () =>
   new Command("await-approval")
     .description("Mark an agent node as waiting for the user to approve an artifact")
     .argument("<nodeRunId>", "node run id from next")
-    .requiredOption("--file <path>", "the artifact to approve, such as artifacts/design.md")
+    .requiredOption(
+      "--file <path>",
+      "the artifact to approve, such as artifacts/design.md; artifacts/plan.html is rebuilt from the plan files first",
+    )
     .option("--run <name>", RUN_HELP)
     .option("--run-id <id>", RUN_ID_HELP)
     .action(async (nodeRunId, opts) =>
@@ -850,6 +857,52 @@ const runSubscriberCommand = () => {
   return runSubscriber;
 };
 
+type ListedWorkflow = Readonly<{
+  name: string;
+  description: string;
+  workflow: string;
+  path: string;
+}>;
+
+const listWorkflowsIn = async (
+  dir: string,
+  workflowOf: (file: string) => string,
+): Promise<readonly ListedWorkflow[]> => {
+  const files = (await readdir(dir)).filter((file) => /\.ya?ml$/.test(file)).sort();
+  return Promise.all(
+    files.map(async (file) => {
+      const path = join(dir, file);
+      const { description } = await readWorkflowFile(path);
+      return {
+        name: basename(file, extname(file)),
+        description: description ?? "",
+        workflow: workflowOf(file),
+        path,
+      };
+    }),
+  );
+};
+
+// `workflow` is what `yok run` takes: a shipped workflow's name, or a project workflow's path
+// from the repo root.
+const listWorkflows = async (cwd: string): Promise<Result<readonly ListedWorkflow[]>> => {
+  const shipped = await listWorkflowsIn(yokWorkflowsDir(), (file) => basename(file, extname(file)));
+  const checkout = await loadProjectConfig(null, cwd);
+  if (!checkout.ok) return checkout;
+  const dir = projectWorkflowsDir(checkout.value);
+  if (dir === null) return { ok: true, value: shipped };
+  if (!existsSync(dir)) return { ok: false, error: `workflowPath ${dir} does not exist` };
+  const own = await listWorkflowsIn(dir, (file) => relative(checkout.value.root, join(dir, file)));
+  return { ok: true, value: [...shipped, ...own] };
+};
+
+const workflowsCommand = () =>
+  new Command("workflows")
+    .description(
+      "List the workflows yok ships and the project's own, each with its name, description, the argument yok run takes and its file, as JSON",
+    )
+    .action(() => runWorkflowCommand(async () => printResult(await listWorkflows(process.cwd()))));
+
 export const orchestrateCommand = () =>
   new Command("orchestrate")
     .description("Actions a skill takes on a yok run; each one calls core directly")
@@ -873,4 +926,5 @@ export const orchestrateCommand = () =>
     .addCommand(modelCommand())
     .addCommand(autoResumeCommand())
     .addCommand(commentsCommand())
+    .addCommand(workflowsCommand())
     .addCommand(runSubscriberCommand(), { hidden: true });

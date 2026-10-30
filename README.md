@@ -110,7 +110,7 @@ yok update --agent claude     # move the plugin for claude only (repeat --agent 
 yok update --pre-release      # release candidates too
 ```
 
-On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
+On a curl install, `yok update` swaps the binary in place, and the new binary's plugin install writes the `yok-remote` shortcut beside it, so an update from any version leaves the same files a fresh install does. On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
 
 `yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
 
@@ -181,7 +181,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project.
+A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
 
 ### task: the full pipeline
 
@@ -303,7 +303,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 
 | Command | What it does |
 |---|---|
-| `yok run WORKFLOW --prompt TEXT` | Start a run. `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
+| `yok run WORKFLOW` | Start a run. `--prompt TEXT` (when the workflow takes one), `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
 | `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
 | `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
@@ -343,6 +343,7 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [baseline](./skills/baseline/README.md) | Records the project's checks before any code changes |
 | [writing-style](./skills/writing-style/README.md) | How every document a person reads is written: reports, PR bodies, READMEs |
 | [orchestrate](./skills/orchestrate/README.md) | Drives a run from inside the agent session. The server starts it; you never type it |
+| [run](./skills/run/README.md) | Starts a yok run from inside your session: picks the workflow, builds the inputs, launches `yok run` |
 
 ## Uninstall
 

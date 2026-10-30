@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { EmitInput, Event, emitRunEvent, JsonValue, NodeRun, RunRef, State } from "@yok/sdk";
@@ -190,64 +190,72 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "SC1: a design waiting for approval tags the user and says where to approve",
+      "SC1, SC716: a design waiting for approval tags the user and says where to approve, and uploads design.md",
       event("artifact.approval.requested", { path: "artifacts/design.md" }, "design"),
       openDesign,
       notice("Design ready for approval", {
         mention: true,
         body: "_Approve in the viewer, or type approve in the session._",
+        files: ["artifacts/design.md"],
       }),
     ],
     [
-      "SC2: a plan waiting for approval reads Plan",
+      "SC2, SC716: a plan waiting for approval reads Plan, and uploads plan.md",
       event("artifact.approval.requested", { path: "artifacts/plan.md" }, "design"),
       openDesign,
       notice("Plan ready for approval", {
         mention: true,
         body: "_Approve in the viewer, or type approve in the session._",
+        files: ["artifacts/plan.md"],
       }),
     ],
     [
-      "SC2: a plan.html waiting for approval also reads Plan, whatever the extension",
+      "SC2, SC716: a plan.html waiting for approval also reads Plan, whatever the extension, and uploads plan.html",
       event("artifact.approval.requested", { path: "artifacts/plan.html" }, "design"),
       openDesign,
       notice("Plan ready for approval", {
         mention: true,
         body: "_Approve in the viewer, or type approve in the session._",
+        files: ["artifacts/plan.html"],
       }),
     ],
     [
-      "SC3: any other file waiting for approval is named by its file name",
+      "SC3, SC716: any other file waiting for approval is named by its file name, and uploads factors.md",
       event("artifact.approval.requested", { path: "artifacts/factors.md" }, "design"),
       openDesign,
       notice("factors.md ready for approval", {
         mention: true,
         body: "_Approve in the viewer, or type approve in the session._",
+        files: ["artifacts/factors.md"],
       }),
     ],
     [
-      "SC3: a file named after an Object property, constructor.md, is still named by its file name",
+      "SC3, SC716: a file named after an Object property, constructor.md, is still named by its file name, and uploads constructor.md",
       event("artifact.approval.requested", { path: "artifacts/constructor.md" }, "design"),
       openDesign,
       notice("constructor.md ready for approval", {
         mention: true,
         body: "_Approve in the viewer, or type approve in the session._",
+        files: ["artifacts/constructor.md"],
       }),
     ],
     [
-      "the run's end shows the duration, the last summary and every link",
+      "SC814: the run's end shows the duration, the last summary, every link and ends with the resume line",
       event("workflow.completed"),
       finished,
       notice("✅ Run complete · 2h 17m", {
         mention: true,
-        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442",
+        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442\nRun demo completed. Resume it with: yok resume demo",
       }),
     ],
     [
-      "a failed run names the first failed node and the first line of its error",
+      "SC814: a failed run names the first failed node, the first line of its error, then the resume line",
       event("workflow.failed"),
       failedBuild,
-      notice("❌ Run failed at build · 12m", { mention: true, body: "tsc exit 2" }),
+      notice("❌ Run failed at build · 12m", {
+        mention: true,
+        body: "tsc exit 2\nRun demo failed. Resume it with: yok resume demo",
+      }),
     ],
     [
       "a stuck agent names the open node and what to do",
@@ -625,14 +633,19 @@ describe("notify", () => {
     ]);
   });
 
-  // A run folder holding artifacts/design.md, artifacts/big.html over the upload limit, and
+  // A run folder holding artifacts/design.md, a 2 MB artifacts/page.html, artifacts/big.html over
+  // the upload limit, and
   // artifacts/env.md linking to the checkout's .env; design ended listing PATHS.
   const runFolder = async (...paths: readonly string[]) => {
     const checkout = await realpath(await mkdtemp(join(tmpdir(), "notifier-run-")));
     const runDir = join(checkout, ".yok", "demo");
     await mkdir(join(runDir, "artifacts"), { recursive: true });
     await writeFile(join(runDir, "artifacts", "design.md"), "# design\n");
-    await writeFile(join(runDir, "artifacts", "big.html"), "x".repeat(UPLOAD_LIMIT_BYTES + 1));
+    // Sparse files: the notifier checks the size stat reports, and these take no disk.
+    await writeFile(join(runDir, "artifacts", "page.html"), "");
+    await truncate(join(runDir, "artifacts", "page.html"), 2_000_000);
+    await writeFile(join(runDir, "artifacts", "big.html"), "");
+    await truncate(join(runDir, "artifacts", "big.html"), UPLOAD_LIMIT_BYTES + 1);
     await writeFile(join(checkout, ".env"), "SLACK_BOT_TOKEN=xoxb-secret\n");
     await symlink(join(checkout, ".env"), join(runDir, "artifacts", "env.md"));
     const artifacts = paths.map((path) => ({
@@ -665,16 +678,16 @@ describe("notify", () => {
     expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
   });
 
-  test("a file over the upload limit is named in the message instead of uploaded", async () => {
+  test("SC717: a 2 MB page is uploaded, and a file over the 100 MB limit is named in the message instead", async () => {
     const { calls, open } = fakeOpener();
-    const inRun = await runFolder("artifacts/big.html", "artifacts/design.md");
+    const inRun = await runFolder("artifacts/big.html", "artifacts/page.html");
 
     await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record);
 
     expect(calls.notices.map((posted) => posted.body)).toEqual([
       "Chose two buttons.\nbig.html is too big to attach; open it in the run viewer.",
     ]);
-    expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
+    expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "page.html"), "171.1"]]);
   });
 
   test("SC217: an orchestrate.next with a steps reply returns nothing and never opens the notifier", async () => {

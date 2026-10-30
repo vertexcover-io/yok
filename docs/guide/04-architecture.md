@@ -7,7 +7,7 @@ Yok is one program, four packages, a folder of skills, and a few files on disk. 
 ```mermaid
 flowchart TD
     cli["@yok/cli<br/>packages/cli · ~900 lines<br/>commands people type"]
-    server["@yok/server<br/>packages/server · ~1,400 lines<br/>HTTP on a Unix socket, viewer, comment delivery"]
+    server["@yok/server<br/>packages/server · ~1,400 lines<br/>HTTP on loopback behind a Host/Origin guard, projects, viewer, comment delivery"]
     core["@yok/core<br/>packages/core · ~9,500 lines<br/>workflow engine, orchestrate commands, agents, hooks"]
     sdk["@yok/sdk<br/>packages/sdk · ~4,000 lines<br/>schemas, events, state, registry, config, subscribers"]
     skills["skills/<br/>one folder per skill<br/>what the agent reads"]
@@ -66,11 +66,11 @@ The biggest package, and the one you will edit most.
 
 ### `@yok/server`: the one long-lived process
 
-A Hono app on a Unix socket in the yok home. Two routes matter: `GET /health` and `POST /runs`. It also serves the viewer page for each run, the list of every run at `/` (what `yok view` opens when no run is named), streams the run's files to it, stores comments, and types them into the run's tmux session when the agent's input box is free. It is the only process that launches agent sessions. It is started on demand by the CLI and stays up until stopped. Each run's page has an Artifacts tab and a Workflow tab that lists the run's steps in order with their status, model, files and output.
+A Hono app on one HTTP port on loopback, at the port in `server.port`, with no auth: the API under `/api`, the dashboard on every other path, and a Host/Origin guard on every request that also accepts `SERVER_DOMAIN` from the home's `.env`. The routes that matter are `GET /api/health`, `POST /api/runs`, `/api/projects` and `POST /api/doctor`: a run starts from a project's name, which every request must give, and the server pulls a checkout it cloned with `git pull --ff-only`, then compiles the workflow, loads the env and runs the doctor on that project's checkout. `POST /api/doctor` returns the doctor's report on a project and stores nothing. It also serves the viewer page for each run at `/runs/RUN_ID`, the list of every run at `/` (what `yok view` opens when no run is named), streams the run's files to it, stores comments, and types them into the run's tmux session when the agent's input box is free. It is the only process that launches agent sessions. It is started on demand by the CLI and stays up until stopped. Each run's page has an Artifacts tab and a Workflow tab that lists the run's steps in order with their status, model, files and output.
 
 ### `@yok/cli`: commands for people
 
-`run`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `uninstall`, `server start|stop|status`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.
+`run`, `project add|list|remove`, `doctor`, `attach`, `view`, `verify`, `types`, `plugin install`, `update`, `uninstall`, `server start|stop|status`, `claude`, `codex`. Each one parses flags, maybe calls `ensureServer()`, calls one route or one core function, and prints. The `orchestrate` subtree is mounted here too, but it is core's code. The whole binary is built from `packages/cli/src/index.ts`.
 
 ### `skills/`: what the agent reads
 
@@ -110,11 +110,11 @@ Every box is the same binary. Only the CLI and the hooks are short-lived. The se
 
 | Path | Owner | What |
 |---|---|---|
-| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `yok.sock`, `server.pid`, `server.log`, `shims/` |
+| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (`SERVER_DOMAIN`, the domain a proxy in front of yok answers on), `projects.yaml`, `shims/` |
 | `REPO/.yok/RUN_NAME/` | orchestrate | `workflow.yaml`, `event.jsonl`, `state.json`, `comments.json`, `artifacts/` |
 | `REPO/.worktrees/RUN_NAME/` | create-workspace stage | the git worktree the code is written in |
 | `REPO/orchestrate.config.yaml` | you | packages, commands, tiers, extensions, subscribers, workspace, notifier |
-| `REPO/.env` | you | secrets a run's env starts with |
+| `REPO/.env` | you | secrets a run's env starts with, read by the server at run start |
 | `REPO/.yok/types/` | `yok types` | SDK type files for your editor |
 
 The release binary and the dev build never share a home, so they never share a server or a registry. `YOK_HOME` overrides either.
@@ -135,5 +135,6 @@ The release binary and the dev build never share a home, so they never share a s
 | change what a hook decides | `packages/core/src/hooks/*.ts` |
 | change what the doctor checks | `packages/core/src/doctor.ts` |
 | change the browser page | `packages/server/src/viewer.ts`, `viewer.html`, `overview.ts`, `runs.html` |
+| change how markdown renders, in the viewer and in plan.html | `packages/core/src/markdown.ts`, `doc.css`, `plan-page.ts`, `plan-page.html` |
 
 Next: [One task, end to end](05-one-task-end-to-end.md).

@@ -95,7 +95,7 @@ const pathLines = (home: string): number =>
     .filter((line) => line === PATH_LINE).length
 
 describe("install.sh", () => {
-  test("SC138: installs the verified binary, adds the PATH line once over two runs, and installs the plugin for claude only", async () => {
+  test("SC138: installs the verified binary, adds the PATH line once over two runs, and leaves yok to pick the plugin's agents", async () => {
     const home = temp("yok-install-home-")
     const log = join(temp("yok-install-log-"), "log")
     const url = await serve(under("", releaseFiles("0.0.9", log)))
@@ -109,8 +109,23 @@ describe("install.sh", () => {
     const binary = join(home, ".yok/bin/yok")
     assert.ok((statSync(binary).mode & 0o111) !== 0)
     assert.equal(pathLines(home), 1)
-    assert.deepEqual(logLines(log), ["0.0.9 plugin install --agent claude", "0.0.9 plugin install --agent claude"])
+    assert.deepEqual(logLines(log), ["0.0.9 plugin install", "0.0.9 plugin install"])
     assert.match(second.stdout.trim().split("\n").at(-1) ?? "", /^yok 0\.0\.9 is ready/)
+  })
+
+  test("SC4015: puts an executable yok-remote beside yok that runs `yok --remote` with the same arguments", async () => {
+    const home = temp("yok-install-home-")
+    const log = join(temp("yok-install-log-"), "log")
+    const url = await serve(under("", releaseFiles("0.0.9", log)))
+
+    const result = await install(home, url, fakeAgents(["claude"]))
+
+    assert.equal(result.code, 0, result.stderr)
+    const shortcut = join(home, ".yok/bin/yok-remote")
+    assert.ok((statSync(shortcut).mode & 0o111) !== 0)
+    const ran = spawnSync(shortcut, ["run", "task", "--project", "web"], { encoding: "utf8" })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.equal(logLines(log).at(-1), "0.0.9 --remote run task --project web")
   })
 
   test("SC139: stops on a checksum mismatch and installs nothing", async () => {
@@ -126,7 +141,7 @@ describe("install.sh", () => {
     assert.deepEqual(readdirSync(home), [])
   })
 
-  test("SC140: YOK_AGENTS=codex installs only codex's plugin, and no agent on PATH names the later install command", async () => {
+  test("SC140: YOK_AGENTS=codex installs only codex's plugin, and with no YOK_AGENTS yok picks, even with no agent on PATH", async () => {
     const log = join(temp("yok-install-log-"), "log")
     const url = await serve(under("", releaseFiles("0.0.9", log)))
 
@@ -138,8 +153,7 @@ describe("install.sh", () => {
 
     const none = await install(temp("yok-install-home-"), url, fakeAgents([]))
     assert.equal(none.code, 0, none.stderr)
-    assert.deepEqual(logLines(log), ["0.0.9 plugin install --agent codex"])
-    assert.match(none.stdout, /yok plugin install --agent claude/)
+    assert.deepEqual(logLines(log), ["0.0.9 plugin install --agent codex", "0.0.9 plugin install"])
   })
 
   test("SC144: running it again with a newer release moves both the binary and the plugin", async () => {
@@ -158,7 +172,7 @@ describe("install.sh", () => {
     assert.equal(newer.code, 0, newer.stderr)
     const binary = join(home, ".yok/bin/yok")
     assert.equal(spawnSync(binary, ["--version"], { encoding: "utf8" }).stdout.trim(), "0.0.2")
-    assert.equal(logLines(log).filter((line) => line.endsWith("plugin install --agent claude")).at(-1), "0.0.2 plugin install --agent claude")
+    assert.equal(logLines(log).filter((line) => line.endsWith("plugin install")).at(-1), "0.0.2 plugin install")
     assert.equal(pathLines(home), 1)
   })
 

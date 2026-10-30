@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 with high effort · Claude Max
+ ▝▝   ▝▝   ~/Projects/yok · /rc            
+
+
+❯ Use the Bash tool with run_in_background true to run: sleep 900. Then reply   
+  with just the word done.                                                      
+
+  Ran 1 shell command                      
+
+⏺ done
+
+✻ Sautéed for 5s · done 2:34 PM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────── ref-26119 ─
+❯                               
+────────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5.5 | Ctx Used: 5.0% | ⏱ ...
+  ⏵⏵ auto mode on · PR #47 · 1 shell · ← 4 agents           

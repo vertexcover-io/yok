@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ITerminal, ITerminalHost, TerminalSpec } from "@yok/sdk";
@@ -29,6 +37,16 @@ describe("codexArgs", () => {
     expect(overrides[2]).toContain("'record-guard'");
     expect(overrides[2]).toContain("'record-resumed'");
     expect(overrides[2]).not.toContain("bash-antipatterns");
+  });
+
+  test("a trusted folder becomes a projects override before the prompt, its path quoted", () => {
+    const args = codexArgs({ trustedFolder: "/home/a/.yok/projects/web", prompt: "go" });
+
+    expect(args.slice(-3)).toEqual([
+      "-c",
+      'projects={"/home/a/.yok/projects/web"={trust_level="trusted"}}',
+      "go",
+    ]);
   });
 
   test("SC7: model, effort and developer instructions appear only when given", () => {
@@ -183,6 +201,22 @@ describe("codexProvider.run", () => {
 });
 
 describe("codexProvider.launch", () => {
+  test("trusts the folder's real path through a -c override and writes no codex config", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-codex-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-codex-cwd-")));
+    const link = join(mkdtempSync(join(tmpdir(), "yok-codex-link-")), "link");
+    symlinkSync(cwd, link);
+    const created: Created = {};
+    const provider = codexProvider({ host: fakeHost(created), newId: () => "u1" });
+
+    await provider.launch({ cwd: link, env: { CODEX_HOME: home } });
+
+    expect(created.spec?.argv).toContain(
+      `projects={${JSON.stringify(cwd)}={trust_level="trusted"}}`,
+    );
+    expect(existsSync(join(home, "config.toml"))).toBe(false);
+  });
+
   test("names the tmux session by a fresh id and runs the codex binary with the launch argv", async () => {
     const created: Created = {};
     const provider = codexProvider({
@@ -197,7 +231,13 @@ describe("codexProvider.launch", () => {
     expect(created.spec).toMatchObject({
       name: "u1",
       cwd: "/repo",
-      argv: ["codex-x", "--dangerously-bypass-hook-trust", "go"],
+      argv: [
+        "codex-x",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        'projects={"/repo"={trust_level="trusted"}}',
+        "go",
+      ],
     });
   });
 
@@ -320,9 +360,30 @@ describe("codexProvider pane control", () => {
       ["kill", null],
       [
         "respawn",
-        { cwd: "/repo", argv: ["codex-x", "--dangerously-bypass-hook-trust", "go"], env: {} },
+        {
+          cwd: "/repo",
+          argv: [
+            "codex-x",
+            "--dangerously-bypass-hook-trust",
+            "-c",
+            'projects={"/repo"={trust_level="trusted"}}',
+            "go",
+          ],
+          env: {},
+        },
       ],
     ]);
+  });
+
+  test("trusts the folder it respawns in through a -c override", async () => {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-codex-cwd-")));
+    const provider = codexProvider({ host: fakeHost({}) });
+    const { pane, calls } = screenPane("");
+
+    await provider.relaunch(pane, "s1", { cwd });
+
+    const spec = calls.find(([name]) => name === "respawn")?.[1] as TerminalSpec | undefined;
+    expect(spec?.argv).toContain(`projects={${JSON.stringify(cwd)}={trust_level="trusted"}}`);
   });
 
   test("SC29: a relaunch with resume is refused and respawns nothing", async () => {

@@ -10,7 +10,7 @@ macOS or Linux. Install what is missing:
 
 | Tool | Version | Install | Why |
 |---|---|---|---|
-| Bun | 1.3.3 or newer | `curl -fsSL https://bun.sh/install \| bash` | runs the source and the tests |
+| Bun | 1.4.3 or newer | `curl -fsSL https://bun.sh/install \| bash` | runs the source and the tests |
 | Node | 22.12 or newer | `brew install node` | a few repo scripts use `node --test` |
 | tmux | 3.3 or newer | `brew install tmux` | every agent session lives in a tmux window |
 | git | any recent | `brew install git` | |
@@ -73,7 +73,7 @@ You know it worked when the JSON shows `"errors": 0` for typecheck and lint and 
 
 Start with `step-demo`. It has only exec and wait nodes, so the agent only drives the loop and nothing needs a ticket, a Slack token, or a worktree. It finishes in under a minute.
 
-One more check runs at `yok run` time that the doctor alone does not: the notifier. This repo's config turns the Slack notifier on, so a run blocks unless `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are in a `.env` file at the repo root. If you do not have them, make a local config that turns it off. This file is yours and is not committed:
+One more check runs at `yok run` time that the doctor alone does not: the notifier. The server runs it, with the rest of the doctor, when the run starts. This repo's config turns the Slack notifier on, so a run blocks unless `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are in a `.env` file at the repo root. If you do not have them, make a local config that turns it off. This file is yours and is not committed:
 
 ```bash
 cat > /tmp/yok-local.yaml <<'EOF'
@@ -92,7 +92,7 @@ Drop `--config …` if you have the Slack variables in `.env`.
 
 What you will see, in order:
 
-1. The CLI compiles the workflow, runs the doctor, and starts the server. The first time, that takes a few seconds.
+1. The CLI starts the server and adds this checkout as a project, named after its folder. The server compiles the workflow and runs the doctor. The first time, that takes a few seconds.
 2. It prints a run id like `r-1a2b3c4d`, an attach command, and a `view:` URL, and opens the URL in your browser.
 3. Your terminal becomes the agent's tmux window. `yok run` attaches by default; `--no-attach` skips it. You watch Claude read the orchestrate skill, run `yok orchestrate init`, then `next`, `exec`, `next`, `exec`, and so on.
 4. Claude says the run finished with `completed`.
@@ -130,11 +130,120 @@ yok-dev run task --prompt "Describe a small change to this repo"
 
 This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it even for a plain prompt), `gh` logged in, and about an hour. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
+## 9. Run yok on a server
+
+To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1` and has no login of its own. Caddy does https and the login, then forwards each request to yok. On the server itself, nothing asks for a login.
+
+On the server, as the user who will own the runs:
+
+1. Install yok, tmux, git, claude (or codex) and Caddy. Log in to claude once: every run uses that login.
+2. Set the public domain in `~/.yok/.env`, so dashboard links point at Caddy and yok accepts the requests Caddy forwards:
+
+   ```sh
+   SERVER_DOMAIN=yok.example.com
+   ```
+
+   yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+
+3. Write `~/.config/systemd/user/yok.service`:
+
+   ```ini
+   [Unit]
+   Description=yok server
+   After=network-online.target
+
+   [Service]
+   ExecStart=%h/.yok/bin/yok server start --port 7777
+   Restart=on-failure
+   Environment=PATH=%h/.yok/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   The `PATH` line matters because a service does not load your shell profile. Without it, yok cannot find claude, tmux or git. `--port 7777` pins the port the Caddyfile points at.
+
+4. Start it, and keep it running when nobody is logged in:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now yok
+   sudo loginctl enable-linger "$USER"   # keep it running with nobody logged in
+   journalctl --user -u yok -f           # follow the log
+   ```
+
+5. Print a password hash with `caddy hash-password`, then write `/etc/caddy/Caddyfile`. The domain on its first line must match `SERVER_DOMAIN`:
+
+   ```caddyfile
+   yok.example.com {
+       # Slack cannot send the password; the server checks Slack's signature on this path instead.
+       handle /api/hooks/slack {
+           reverse_proxy 127.0.0.1:7777
+       }
+       handle {
+           basic_auth {
+               ritesh HASH_FROM_CADDY_HASH_PASSWORD
+           }
+           reverse_proxy 127.0.0.1:7777
+       }
+   }
+   ```
+
+   ```sh
+   sudo systemctl enable --now caddy
+   ```
+
+   Caddy gets and renews the https certificate itself. That needs the domain pointing at the server's public IP, and ports 80 and 443 open. A machine without those can use Tailscale Serve instead.
+
+On your laptop:
+
+```bash
+YOK_SERVER_PASSWORD=… yok-remote login https://yok.example.com --user ritesh
+yok-remote project add web --git git@github.com:acme/web.git
+yok-remote run task --prompt "fix login" --project web
+yok-remote server status
+```
+
+`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
+
+`login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
+
+Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
+
+A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, SSH into the server and attach to the run there.
+
+You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
+
+### Drive yok from Slack
+
+1. Create a Slack app in your workspace. Under Event Subscriptions, turn events on, set the request URL to `https://yok.example.com/api/hooks/slack`, and subscribe to the `app_mentions:read` bot event (`app_mention`). Add the `chat:write` bot scope and install the app.
+2. Create a private channel, invite the people allowed to drive yok and the app, and copy the channel's id (channel details, at the bottom).
+3. Add three lines to the server's `~/.yok/.env`; the server reads them on every request, so no restart is needed:
+
+   ```sh
+   SLACK_SIGNING_SECRET=…   # the app's Basic Information page
+   SLACK_BOT_TOKEN=xoxb-…   # the app's OAuth & Permissions page
+   SLACK_COMMAND_CHANNEL=C0123456789
+   ```
+
+4. Type `@yok help` in the channel. Only messages in that channel are answered, so the channel's member list is who can use yok.
+
+A command is typed as on the command line, quotes included: `@yok run task --project web --prompt "fix login"`. Curly quotes, which Slack often types for you, work the same. A prompt without `--prompt` is refused. `--input KEY=VALUE` and the policy flags work as with `yok run`, except that `interaction` stays off whatever you pass: nobody sits at a Slack-started run's terminal to answer it.
+
+A run started from Slack posts its updates in the thread under the message only when its project's notifier posts to that same channel (`SLACK_CHANNEL_ID` in the project's `.env`).
+
 ## Useful commands
 
 ```bash
 yok-dev server status           # is the server up, pid, version
 yok-dev server stop             # stop it; tmux sessions keep running
+yok-dev project list            # the checkouts the server runs on, and their status
+yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
+yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
+yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
+yok-dev --remote server status  # the server's version, pid and start time
+yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
+yok-dev --remote project list   # the server's projects; also doctor, trigger
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
 tmux ls                         # every agent session on the machine
@@ -146,11 +255,11 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 
 ## When it breaks
 
-**"yok server did not start within 5s."** Read the tail it prints, or `~/.yok-dev/server.log`. A stale `yok.sock` from a crashed server is removed on start, so the usual cause is a port or a missing tmux.
+**"yok server did not start within 5s."** Read the tail it prints, or `~/.yok-dev/server.log`. A port another program took is not the cause: the server falls back to a free port and rewrites `server.port`. The usual cause is a missing tmux.
 
 **The doctor says `.yok/` is not gitignored.** Add `.yok/*` to `.gitignore`. This repo already has it.
 
-**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow.
+**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow. The doctor reads a key missing from `.env` from the server's environment, not your shell's, so on a remote server the key belongs in the project's `.env`.
 
 **Two servers, two registries.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`. A run started by one is invisible to the other. Pick one for the day.
 

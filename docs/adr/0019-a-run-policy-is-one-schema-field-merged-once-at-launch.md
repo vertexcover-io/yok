@@ -13,13 +13,13 @@ A developer needs per-run settings that change how stages behave (first: `intera
 
 ## Considered Options
 
-- One `PoliciesSchema` in `packages/sdk/src/policies.ts`; `yok run` sends the top workflow's `policies:` block and its `--NAME VALUE` flags (read as YAML) in the start-run request, as it sends `plan.tiers`; the server merges CLI > workflow > config > default once, saves values with their sources on the registry entry, and init copies them into state.json
-- The request carries only the flags, and the server parses the workflow file itself
+- One `PoliciesSchema` in `packages/sdk/src/policies.ts`; the server reads the top workflow's `policies:` block from the plan it compiles, and `yok run` sends only its `--NAME VALUE` flags (read as YAML) in the start-run request; the server merges CLI > workflow > config > default once, saves values with their sources on the registry entry, and init copies them into state.json
+- The CLI compiles the workflow and sends both layers in the start-run request
 - (rejected outright) a separate registry object beside the schema, or a shared framework for policy behaviour
 
 ## Decision Outcome
 
-Chosen: the CLI sends both layers and the server merges once, because it is the route tiers already take (ADR 0009): the CLI has already compiled and checked the workflow, the server keeps one merge point beside `resolveTiers` without parsing workflows itself, and a resumed run or a mid-run config edit keeps the behaviour the run started with. A new policy is one schema line that the config, workflows, CLI and every step reply pick up. Each policy's effect lives where it applies (a hook, the engine, a `references/policies.md` entry), since policies differ too much to share one shape.
+Chosen: the server reads the workflow layer from its compiled plan and merges once, because it is the route tiers already take (ADRs 0009, 0018): the server already compiles and checks the workflow, it keeps one merge point beside `resolveTiers`, and a resumed run or a mid-run config edit keeps the behaviour the run started with. A new policy is one schema line that the config, workflows, CLI and every step reply pick up. Each policy's effect lives where it applies (a hook, the engine, a `references/policies.md` entry), since policies differ too much to share one shape.
 
 ## Consequences
 

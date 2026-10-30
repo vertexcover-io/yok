@@ -5,6 +5,7 @@ import {
   AgentStoppedEvent,
   type ArtifactRef,
   type AskedQuestion,
+  closingLine,
   type Event,
   emitRunEvent,
   LimitWaitingEvent,
@@ -182,6 +183,7 @@ const describeApproval = (event: Event): Notice | undefined => {
   return makeNotice(`${name} ready for approval`, {
     mention: true,
     body: "_Approve in the viewer, or type approve in the session._",
+    files: [path],
   });
 };
 
@@ -207,7 +209,11 @@ const describeNodeEnd = (event: Event, state: State): Notice | undefined => {
 const describeCompleted = (_: Event, state: State): Notice =>
   makeNotice(`✅ Run complete · ${formatDuration(state)}`, {
     mention: true,
-    body: [...lastSummary(state), ...listLinks(state)].join("\n"),
+    body: [
+      ...lastSummary(state),
+      ...listLinks(state),
+      closingLine(state.runName, "completed"),
+    ].join("\n"),
   });
 
 const describeFailed = (_: Event, state: State): Notice => {
@@ -216,7 +222,9 @@ const describeFailed = (_: Event, state: State): Notice => {
   const error = MessageSchema.safeParse(failed?.run.output).data?.message;
   return makeNotice(`❌ Run failed${where} · ${formatDuration(state)}`, {
     mention: true,
-    body: [...firstLine(error), ...listLinks(state)].join("\n"),
+    body: [...firstLine(error), ...listLinks(state), closingLine(state.runName, "failed")].join(
+      "\n",
+    ),
   });
 };
 
@@ -291,7 +299,7 @@ export const describeEvent = (event: Event, state: State): Notice | undefined =>
 
 // Slack reads <…> as a mention or a link, so text from a prompt or an agent could ping the
 // channel or disguise a link.
-const escapeSlack = (text: string): string =>
+export const escapeSlack = (text: string): string =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 // Outside the bold marker: Slack renders <@ID> as a name, and bold-wrapping it reads as shouting.
@@ -303,8 +311,8 @@ export const formatSlackText = (notice: Notice, memberId: string | undefined): s
 
 const SLACK_API = "https://slack.com/api";
 
-type Fetch = (url: string, init: RequestInit) => Promise<Response>;
-type SlackConfig = Readonly<{
+export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+export type SlackConfig = Readonly<{
   token: string;
   channel: string;
   memberId: string | undefined;
@@ -313,7 +321,7 @@ type SlackConfig = Readonly<{
 
 const SlackReplySchema = z.looseObject({ ok: z.boolean(), error: z.string().optional() });
 
-const callSlack = async (
+export const callSlack = async (
   config: SlackConfig,
   method: string,
   form: Readonly<Record<string, string>>,
@@ -395,9 +403,9 @@ export type OpenNotifier = typeof openNotifier;
 // it loads in a compiled binary, where this file has no path on disk.
 export const NOTIFIER_MODULE = "yok:notifier";
 
-// A file larger than this is named in the message instead of uploaded, so a 4 MB proof report
-// does not land in the channel.
-export const UPLOAD_LIMIT_BYTES = 1_000_000;
+// A file larger than this is named in the message instead of uploaded. A plan page embeds every
+// frame, so it runs to several MB.
+export const UPLOAD_LIMIT_BYTES = 100_000_000;
 
 const splitBySize = async (
   files: readonly string[],

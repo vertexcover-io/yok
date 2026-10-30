@@ -63,6 +63,7 @@ import {
 import * as z from "zod";
 import { unwrap } from "./agents/common.ts";
 import { buildNotifierSubscribers, pickNotifier } from "./notifier-subscriber.ts";
+import { PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 import { buildSamskaraSubscribers, pickSamskara } from "./samskara.ts";
 import { type AgentMode, extensionPath } from "./stage.ts";
 import { compileRunWorkflow, compileWorkflow, readWorkflowFile } from "./workflow/compile.ts";
@@ -112,6 +113,8 @@ export type InitOptions = Readonly<{
   provider?: IAgentProvider | undefined;
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
+  // the Slack thread the run's updates reply in
+  notifyThread?: string | undefined;
 }>;
 
 export const terminalName = (agent: string, runName: string, runId: string): string =>
@@ -235,6 +238,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
   const { run, eventHandlers, subscribers, config } = checked;
   const { name } = options;
   const dir = runDirOf(run.cwd, name);
+  const ref = { id: run.id, cwd: run.cwd, name };
   await copyFile(run.workflowPath, join(dir, "workflow.yaml"));
   await createState({
     runId: run.id,
@@ -246,15 +250,21 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     tiers: run.tiers,
     ...(run.policies === undefined ? {} : { policies: run.policies }),
   });
-  const appended = await appendRunEvent(
-    { id: run.id, cwd: run.cwd, name },
-    {
-      id: "workflow-started",
-      type: "workflow.started",
+  // Before workflow.started, whose notice is the notifier's first post: it finds the thread set.
+  if (options.notifyThread !== undefined) {
+    const seeded = await appendRunEvent(ref, {
+      type: "notification.thread.started",
       source: "orchestrate",
-      payload: { workflow: run.workflow, inputs: run.inputs, activeSessions: run.sessions },
-    },
-  );
+      payload: { provider: "slack", threadId: options.notifyThread },
+    });
+    if (!seeded.ok) throw new Error(seeded.error);
+  }
+  const appended = await appendRunEvent(ref, {
+    id: "workflow-started",
+    type: "workflow.started",
+    source: "orchestrate",
+    payload: { workflow: run.workflow, inputs: run.inputs, activeSessions: run.sessions },
+  });
   if (!appended.ok) throw new Error(appended.error);
   const state = await syncState(dir);
   if (state === null) throw new Error(`${dir}/state.json disappeared during init`);
@@ -788,6 +798,15 @@ export const requestApproval = async (
 ): Promise<Result<Readonly<{ nodeRunId: string; path: string; autoApproved?: true }>>> => {
   const step = await loadRunningLeaf(run, nodeRunId);
   if (!step.ok) return step;
+  // The plan page is generated, never edited: build it from the markdown each time it is shown.
+  if (path === PLAN_PAGE_PATH) {
+    try {
+      await writePlanPage(run);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `${PLAN_PAGE_PATH} was not rebuilt: ${reason}` };
+    }
+  }
   const issue = await findArtifactFileIssue(runDirOf(run.cwd, run.name), { name: path, path });
   if (issue !== undefined) return { ok: false, error: issue.message };
   // No one reviews in this run: the file counts as approved, and nothing waits.

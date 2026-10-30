@@ -1,5 +1,6 @@
 export { type ClaudeProviderOptions, claudeArgs, claudeProvider } from "./agents/claude.ts";
 export { type CodexProviderOptions, codexProvider } from "./agents/codex.ts";
+export { unwrap } from "./agents/common.ts";
 export { type AgentProviderOptions, agentBinary, agentProvider } from "./agents/index.ts";
 export { yokTerminalHost } from "./agents/tmux.ts";
 export {
@@ -40,8 +41,18 @@ export {
   type LogBase,
   resolveLevel,
 } from "./logging.ts";
+export {
+  colorFile,
+  DOC_STYLES,
+  type RepoFiles,
+  renderMarkdown,
+  repoFiles,
+  resolveRepoPath,
+} from "./markdown.ts";
 export * as notifierHooks from "./notifier.ts";
+export { pickNotifier } from "./notifier-subscriber.ts";
 export { orchestrateCommand } from "./orchestrate.ts";
+export { buildPlanPage, PLAN_PAGE_PATH, writePlanPage } from "./plan-page.ts";
 export {
   enabledVersions,
   installPlugin,
@@ -54,8 +65,11 @@ export * as samskaraHooks from "./samskara.ts";
 export {
   findPluginSkills,
   findWorkflowPath,
+  isWorkflowFile,
   loadProjectConfig,
+  locateWorkflow,
   orchestrateArgv,
+  projectWorkflowsDir,
   type Stage,
   StageSchema,
 } from "./stage.ts";

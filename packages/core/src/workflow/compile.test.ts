@@ -7,7 +7,13 @@ import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./test-stages.ts";
-import { NodeFailure, WorkflowError, type WorkflowErrorCode } from "./types.ts";
+import {
+  type InputDeclarations,
+  NodeFailure,
+  resolveWorkflowInputs,
+  WorkflowError,
+  type WorkflowErrorCode,
+} from "./types.ts";
 
 let workflowCount = 0;
 const workflowDir = mkdtempSync(join(tmpdir(), "wf-yaml-"));
@@ -1334,6 +1340,38 @@ describe("the shipped task workflow", () => {
       "learn",
     ]);
   });
+
+  test("SC12 (design): the planning stage loads the design-coverage function verifier and consumes design-refs as optional", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+
+    const planning = plan.nodes.find((node) => node.id === "planning");
+    expect(planning).toMatchObject({
+      stage: {
+        verifiers: [{ id: "design-coverage", kind: "function" }],
+        consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
+      },
+    });
+  });
+
+  test("SC19 (design): the qa stage inside qa-loop loads the design-coverage function verifier and consumes design-refs as optional", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
+    );
+
+    expect(plan.nodes.find((node) => node.id === "qa-loop")).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({
+          id: "qa",
+          stage: expect.objectContaining({
+            verifiers: [expect.objectContaining({ id: "design-coverage", kind: "function" })],
+            consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
+          }),
+        }),
+      ]),
+    });
+  });
 });
 
 describe("the shipped regression workflow", () => {
@@ -1453,5 +1491,27 @@ describe("the shipped regression workflow", () => {
         },
       ],
     });
+  });
+});
+
+// `yok run --input KEY=VALUE` hands every value over as text, so a typed input reads its text the
+// way a YAML file would.
+describe("resolveWorkflowInputs", () => {
+  const declarations: InputDeclarations = {
+    prompt: { type: "string", required: true },
+    yok: { type: "boolean", required: false, default: false },
+    count: { type: "number", required: false, default: 0 },
+  };
+
+  test("reads a typed input's text as YAML and keeps a string input as it is", () => {
+    expect(
+      resolveWorkflowInputs(declarations, { prompt: "true", yok: "true", count: "3" }),
+    ).toEqual({ prompt: "true", yok: true, count: 3 });
+  });
+
+  test("text that is not the declared type is an input error naming the input", () => {
+    expect(() => resolveWorkflowInputs(declarations, { prompt: "x", yok: "nope" })).toThrow(
+      /^inputs\.yok:/,
+    );
   });
 });

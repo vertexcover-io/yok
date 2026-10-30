@@ -1,6 +1,6 @@
 {
   "name": "harness-engineering",
-  "version": "0.0.5",
+  "version": "0.0.9",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -8,10 +8,10 @@
   ],
   "engines": {
     "node": ">=22.12",
-    "bun": ">=1.3.3"
+    "bun": ">=1.4.3"
   },
   "scripts": {
-    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro && tsc -p skills/fix && tsc -p skills/code-review && tsc -p skills/review-regression-tests && tsc -p skills/learn && tsc -p skills/skill-author && tsc -p skills/skill-audit",
+    "typecheck": "bun run --filter '@yok/*' typecheck && tsc -p skills/create-workspace && tsc -p skills/ticket-fetcher && tsc -p skills/baseline && tsc -p skills/qa && tsc -p skills/retro && tsc -p skills/fix && tsc -p skills/code-review && tsc -p skills/review-regression-tests && tsc -p skills/learn && tsc -p skills/skill-author && tsc -p skills/skill-audit && tsc -p skills/planning",
     "test": "bun test --parallel --timeout 20000 ./packages ./skills",
     "lint": "biome check",
     "check": "bun scripts/check.ts",

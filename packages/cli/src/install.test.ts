@@ -9,22 +9,28 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assetName,
   checksumFor,
   githubToken,
-  installedBy,
   managedUpdate,
   pickRelease,
   removeInstall,
   runUpdate,
   updateYok,
 } from "./install.ts";
-import { installAll, installPlugins, updateAgents } from "./plugin.ts";
+import {
+  installAll,
+  installedBy,
+  installPlugins,
+  updateAgents,
+  writeRemoteShortcut,
+} from "./plugin.ts";
 
 const dirs: string[] = [];
 const temp = (prefix: string): string => {
@@ -170,6 +176,17 @@ describe("runUpdate", () => {
     expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
     expect(code).toBe(3);
     expect(binaryReady).toBe(true);
+  });
+
+  test("SC148: the swap writes no shortcut itself; the new binary's plugin install does that", async () => {
+    const log = join(temp("yok-log-"), "log");
+    const execPath = installed(log);
+    const { target } = serveReleases({ tag: "v0.0.2", script: fakeYok("0.0.2", log) });
+
+    await runUpdate({ ...target, execPath, version: "0.0.1" }, ["claude"], false);
+
+    expect(existsSync(join(dirname(execPath), "yok-remote"))).toBe(false);
+    expect(logLines(log)).toEqual(["0.0.2 plugin install --agent claude"]);
   });
 
   test("SC147: keeps the 0.0.1 binary and runs no plugin install when the checksum is wrong", async () => {
@@ -567,18 +584,51 @@ describe("removeInstall", () => {
     expect(done).toEqual([`removed ${home}`, `removed the yok PATH line from ${rc}`]);
   });
 
-  test("deletes a binary installed outside the yok home as well", async () => {
-    const root = temp("yok-uninstall-");
-    const home = join(root, ".yok");
-    mkdirSync(home);
-    const execPath = join(root, "yok");
-    writeFileSync(execPath, "binary");
+  test.each([
+    ["inside the yok home", (root: string) => join(root, ".yok", "bin"), false],
+    ["in a folder outside the yok home", (root: string) => join(root, "bin"), true],
+  ] as const)(
+    "SC4017: with yok and yok-remote %s, both are gone along with the yok home",
+    async (_layout, binDir, listed) => {
+      const root = temp("yok-uninstall-");
+      const home = join(root, ".yok");
+      mkdirSync(home);
+      mkdirSync(binDir(root), { recursive: true });
+      const execPath = join(binDir(root), "yok");
+      const shortcut = join(binDir(root), "yok-remote");
+      writeFileSync(execPath, "binary");
+      writeFileSync(shortcut, "shortcut");
 
-    const done = await removeInstall({ execPath, installDir: home, rcFiles: [] });
+      const done = await removeInstall({ execPath, installDir: home, rcFiles: [] });
 
-    expect(existsSync(execPath)).toBe(false);
-    expect(existsSync(home)).toBe(false);
-    expect(done).toEqual([`removed ${execPath}`, `removed ${home}`]);
+      expect(existsSync(execPath)).toBe(false);
+      expect(existsSync(shortcut)).toBe(false);
+      expect(existsSync(home)).toBe(false);
+      expect(done).toEqual([
+        ...(listed ? [`removed ${execPath}`, `removed ${shortcut}`] : []),
+        `removed ${home}`,
+      ]);
+    },
+  );
+});
+
+describe("writeRemoteShortcut", () => {
+  test("SC149: writes the installer's two-line yok-remote beside a curl-installed binary, mode 755, and nothing beside an npm or Homebrew one", async () => {
+    const dir = temp("yok-shortcut-");
+    const curl = join(dir, "yok");
+    writeFileSync(curl, "");
+
+    await writeRemoteShortcut(curl);
+
+    expect(readFileSync(join(dir, "yok-remote"), "utf8")).toBe(
+      '#!/bin/sh\nexec "$(dirname "$0")/yok" --remote "$@"\n',
+    );
+    expect(statSync(join(dir, "yok-remote")).mode & 0o777).toBe(0o755);
+
+    const npm = join(temp("yok-npm-"), "node_modules", "@vertexcover", "yok-linux-x64", "bin");
+    mkdirSync(npm, { recursive: true });
+    await writeRemoteShortcut(join(npm, "yok"));
+    expect(existsSync(join(npm, "yok-remote"))).toBe(false);
   });
 });
 

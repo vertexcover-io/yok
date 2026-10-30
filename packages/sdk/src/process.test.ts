@@ -223,6 +223,11 @@ describe("spawnDetached", () => {
 });
 
 describe("execWithTimeout", () => {
+  test("the env it was given reaches the command", async () => {
+    const exec = execWithTimeout(5000, { YOK_EXEC_PROBE: "seen" });
+    expect((await exec("sh", ["-c", "printf %s $YOK_EXEC_PROBE"], tmpdir())).stdout).toBe("seen");
+  });
+
   test("a command past the deadline is killed with its children and rejects", async () => {
     const { dir, pidFile, script } = await backgroundSleep();
     await expect(execWithTimeout(200)("sh", ["-c", script], dir)).rejects.toThrow(
