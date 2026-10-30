@@ -1,0 +1,114 @@
+{
+  "skill_name": "run",
+  "evals": [
+    {
+      "id": 1,
+      "name": "ambiguous-size-asks-once-task-first",
+      "prompt": "yok this: the settings page should remember the last tab the user opened",
+      "expected_output": "Lists the shipped workflows with yok orchestrate workflows, asks one question with two options, task first and quick second, then launches the chosen workflow with --no-attach and the whole request as --prompt, and replies with the three lines yok run printed.",
+      "files": [],
+      "expectations": [
+        "Runs yok orchestrate workflows to list the shipped workflows before choosing",
+        "Asks exactly one question before launching, offering task and quick with task first",
+        "Runs yok run with --no-attach",
+        "The --prompt holds the user's request whole, including 'remember the last tab'",
+        "The reply is the run id, the attach command and the page URL, and nothing more"
+      ],
+      "anti_expectations": [
+        "Launches without asking when both task and quick fit",
+        "Asks more than one question, or offers regression or skill as options",
+        "Shortens the prompt to a title",
+        "Runs tmux, yok attach, or switches the user's terminal",
+        "Searches the repository for workflow files when the user named none"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "quoted-prompt-goes-through-heredoc",
+      "prompt": "Run this through yok as a quick change: rename the `fullName` getter on Customer to `displayName`, and keep the old name working for $legacy callers.",
+      "expected_output": "Launches yok run quick --no-attach with the prompt passed through a quoted heredoc, so the backticks and the $ reach the agent unchanged, then replies with the three printed lines.",
+      "files": [],
+      "expectations": [
+        "Picks quick without asking, since the user named it",
+        "Passes the prompt with a quoted heredoc (<<'PROMPT') rather than inline double quotes",
+        "The prompt still contains the backticks and '$legacy' as the user typed them",
+        "Reports the run id, the attach command and the page URL, and nothing more"
+      ],
+      "anti_expectations": [
+        "Puts the prompt inline in double quotes, where $legacy expands",
+        "Asks which workflow to use",
+        "Adds a line about attaching, switching or following the run"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "blocked-doctor-starts-no-second-run",
+      "prompt": "Start a yok task run to add rate limiting to the API. When you run yok run, it exits non-zero and prints: BLOCKED\ntmux: tmux not found on PATH\n  fix: brew install tmux",
+      "expected_output": "Shows the failed check and its fix line to the user and stops, without running yok run again.",
+      "files": [],
+      "expectations": [
+        "Repeats the failed check (tmux not found) and its fix line to the user",
+        "Runs yok run exactly once"
+      ],
+      "anti_expectations": [
+        "Retries yok run, with or without different flags",
+        "Tries to install tmux or fix the check itself",
+        "Reports a run id when none was printed"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "project-workflow-runs-by-path-with-its-own-inputs",
+      "prompt": "Run ci/nightly.yaml through yok for the payments service, against the release branch. The file declares inputs prompt (string, required) and branch (string, default main).",
+      "expected_output": "Reads ci/nightly.yaml from the repository root, takes its inputs from the file, and runs yok run ci/nightly.yaml --no-attach --prompt \"...\" --input branch=release from the repository root, then replies with the three printed lines.",
+      "files": [],
+      "expectations": [
+        "Reads ci/nightly.yaml, the file the user named, for its inputs",
+        "Runs yok run with the path ci/nightly.yaml, not a bare name",
+        "Passes --input branch=release, the value the user gave for an input the file declares",
+        "Passes --prompt, since the file declares a prompt input",
+        "Runs yok run with --no-attach"
+      ],
+      "anti_expectations": [
+        "Runs yok run nightly, which looks for a shipped workflow",
+        "Lists or searches for other workflows when the user named a file",
+        "Passes an --input the file does not declare"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "workflow-without-prompt-input-gets-no-prompt-flag",
+      "prompt": "yok this with audit.yaml: run the audit on packages/server. The file declares one input, scope (string, required), and no prompt.",
+      "expected_output": "Runs yok run audit.yaml --no-attach --input scope=packages/server with no --prompt flag, then replies with the three printed lines.",
+      "files": [],
+      "expectations": [
+        "Reads audit.yaml's inputs and sees it declares no prompt",
+        "Runs yok run audit.yaml with --input scope=packages/server and --no-attach",
+        "Passes no --prompt flag",
+        "Reports the run id, the attach command and the page URL, and nothing more"
+      ],
+      "anti_expectations": [
+        "Passes --prompt, which the workflow does not declare",
+        "Asks which workflow to use when the user named it",
+        "Runs tmux or yok attach after the launch"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "unknown-workflow-name-stops-without-a-run",
+      "prompt": "Start a yok hotfix run: the checkout button is unresponsive on Safari. yok orchestrate workflows lists quick, regression, skill and task, and no hotfix.yaml exists in the repository.",
+      "expected_output": "Lists the shipped workflows, finds no hotfix among them and no hotfix.yaml file, tells the user hotfix is neither a shipped workflow nor a file and names the four shipped ones, and starts no run.",
+      "files": [],
+      "expectations": [
+        "Runs yok orchestrate workflows and sees hotfix is not listed",
+        "Tells the user hotfix was not found and names the shipped workflows",
+        "Runs no yok run command"
+      ],
+      "anti_expectations": [
+        "Silently falls back to task or quick",
+        "Searches the repository for a workflow that might fit",
+        "Starts a run"
+      ]
+    }
+  ]
+}

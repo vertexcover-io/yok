@@ -2379,23 +2379,39 @@ describe("POST /runs/:id/resume", () => {
   );
 
   test.each(["completed", "failed", "cancelled"] as const)(
-    "SC603: a %s run is 409 conflict naming its status and telling the person to start a new run with yok run, and nothing launches",
+    "SC812: a %s run whose session is gone resumes with one launch continuing s-1 in claude-demo-3c4d",
     async (status) => {
       const { deps, launches } = await resumeDeps();
       const run = await seedRun(deps.registry, { status });
 
       const res = await resume(deps, run.id);
 
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({
-        error: {
-          code: "conflict",
-          message: `run demo is ${status}; there is nothing to resume, so start a new run with yok run`,
-        },
+      expect(res.status).toBe(200);
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.continueSession).toEqual({
+        id: "s-1",
+        terminalName: "claude-demo-3c4d",
       });
-      expect(launches).toEqual([]);
+      expect(launches[0]?.prompt).toBe("/orchestrate --resume demo");
     },
   );
+
+  test("SC813: a completed run whose tmux session is still alive is 409 conflict pointing at yok attach demo, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = { ...base, host: fakeHost("", true).host };
+    const run = await seedRun(deps.registry, { status: "completed" });
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo still has its agent session; use yok attach demo",
+      },
+    });
+    expect(launches).toEqual([]);
+  });
 
   test("SC604: a switch to opus-x requested but never applied launches on haiku-x, the default tier's model", async () => {
     const { deps, launches } = await resumeDeps();

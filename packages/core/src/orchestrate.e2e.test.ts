@@ -1017,3 +1017,54 @@ describe("SC26: orchestrate call log", () => {
     expect(await eventsOf(repo)).toHaveLength(before);
   });
 });
+
+describe("orchestrate workflows", () => {
+  type Listed = Readonly<{ name: string; description: string; workflow: string; path: string }>;
+  const list = (repo: string): readonly Listed[] => {
+    const listed = orchestrate(repo, tempDir(), ["workflows"]);
+    expect(listed.code).toBe(0);
+    return JSON.parse(listed.stdout) as readonly Listed[];
+  };
+
+  test("prints every shipped workflow with its name, description and file as JSON", () => {
+    const workflows = list(tempRepo());
+
+    expect(workflows.map((workflow) => workflow.name)).toEqual([
+      "quick",
+      "regression",
+      "skill",
+      "task",
+    ]);
+    for (const workflow of workflows) {
+      expect(workflow.description).not.toBe("");
+      expect(workflow.workflow).toBe(workflow.name);
+      expect(workflow.path.endsWith(join("workflows", `${workflow.name}.yaml`))).toBe(true);
+    }
+  });
+
+  test("lists the project's workflows from the config's workflowPath after the shipped ones, run by their path", () => {
+    const repo = configuredRepo({ workflowPath: "flows" });
+    mkdirSync(join(repo, "flows"));
+    writeFileSync(
+      join(repo, "flows", "nightly.yaml"),
+      "name: nightly\ndescription: Nightly checks.\nnodes:\n  - id: a\n    type: exec\n    runtime: sh\n    script: 'true'\n    input: null\n",
+    );
+    writeFileSync(join(repo, "flows", "notes.md"), "not a workflow\n");
+
+    const workflows = list(repo);
+
+    expect(workflows.map((workflow) => workflow.name)).toEqual([
+      "quick",
+      "regression",
+      "skill",
+      "task",
+      "nightly",
+    ]);
+    expect(workflows.at(-1)).toEqual({
+      name: "nightly",
+      description: "Nightly checks.",
+      workflow: "flows/nightly.yaml",
+      path: join(repo, "flows", "nightly.yaml"),
+    });
+  });
+});

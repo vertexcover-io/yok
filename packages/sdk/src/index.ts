@@ -254,6 +254,7 @@ export {
 } from "./registry.ts";
 export {
   type CheckoutConfig,
+  closingLine,
   findConfigRoot,
   findRoot,
   loadCheckoutConfig,

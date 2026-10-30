@@ -8,6 +8,7 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ import {
 import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
 import { recordGuard, runPreToolUse } from "./pre-tool-use.ts";
-import { decideStop, offerLearn, runStopHook, type StopCheck } from "./stop.ts";
+import { decideStop, finishedBySession, offerLearn, runStopHook, type StopCheck } from "./stop.ts";
 
 const seed: State = {
   schemaVersion: 1,
@@ -278,6 +279,49 @@ describe("decideStop", () => {
     };
     const decision = decide({ nodeRuns: { design } }, { waitingOnBackground: true });
     expect(decision).toEqual({ reason: "awaiting-approval", blockStreak: 0, nodeRunId: "design" });
+  });
+});
+
+const logged = (seq: number, type: sdk.Event["type"], payload: sdk.JsonValue = {}): sdk.Event => ({
+  schemaVersion: 1,
+  seq,
+  id: `e-${seq}`,
+  ts: "2026-09-26T10:00:00.000Z",
+  type,
+  source: "t",
+  runId: "r-1",
+  payload,
+});
+const started = (seq: number, sessionId: string, source: string) =>
+  logged(seq, "hooks.session-start.called", { agent: "claude", sessionId, source });
+
+describe("finishedBySession", () => {
+  test.each([
+    ["workflow.completed", "no start event", []],
+    ["workflow.completed", "a start before the finish", [started(1, "s1", "startup")]],
+    ["workflow.failed", "no start event", []],
+    ["workflow.failed", "a start before the finish", [started(1, "s1", "startup")]],
+  ] as const)(
+    "SC801: a log ending in %s, for a session with %s, has that session as the finishing one",
+    (finish, _, before) => {
+      const events = [...before, logged(2, "workflow.node.started"), logged(3, finish)];
+      expect(finishedBySession(events, "s1")).toBe(true);
+    },
+  );
+
+  test("SC802: a session whose resume start comes after workflow.completed is not the finishing session", () => {
+    const events = [
+      started(1, "s1", "startup"),
+      logged(2, "workflow.completed"),
+      started(3, "s1", "resume"),
+    ];
+    expect(finishedBySession(events, "s1")).toBe(false);
+  });
+
+  test("SC803: a log with no workflow.completed or workflow.failed has no finishing session", () => {
+    const events = [started(1, "s1", "startup"), logged(2, "workflow.node.started")];
+    expect(finishedBySession(events, "s1")).toBe(false);
+    expect(finishedBySession(events, "s2")).toBe(false);
   });
 });
 
@@ -706,6 +750,69 @@ describe("an open context node", () => {
   });
 });
 
+describe("the stop that ends the run's finishing turn", () => {
+  const sockets: string[] = [];
+  afterAll(() => {
+    for (const socket of sockets) spawnSync("tmux", ["-L", socket, "kill-server"]);
+  });
+
+  // A run with STATUS whose registered terminal is a real tmux session on a server of its own.
+  const runWithTerminal = async (status: State["status"], agent: "claude" | "codex" = "claude") => {
+    const socket = `yok-stop-${crypto.randomUUID()}`;
+    sockets.push(socket);
+    const tmux = (...args: string[]) =>
+      spawnSync("tmux", ["-L", socket, "-f", "/dev/null", ...args]);
+    tmux("new-session", "-d", "-s", "agent", "sleep", "60");
+    const set = await setUp({}, agent, { status });
+    await set.deps.registry.setTerminal("r-1", "agent");
+    const deps = { ...set.deps, env: { ...set.deps.env, YOK_TMUX_SOCKET: socket } };
+    const alive = () => tmux("has-session", "-t", "=agent").status === 0;
+    return { ...set, deps, run: { id: "r-1", cwd: set.cwd, name: "feat-x" }, alive };
+  };
+
+  test.each([
+    ["claude", "completed", "workflow.completed"],
+    ["codex", "completed", "workflow.completed"],
+    ["claude", "failed", "workflow.failed"],
+  ] as const)(
+    "SC830: a %s session's stop after the run %s kills the run's terminal, after recording the stop",
+    async (agent, status, finish) => {
+      const { deps, run, runDir, alive } = await runWithTerminal(status, agent);
+      await appendRunEvent(run, { type: finish, source: "t", payload: {} });
+      expect(alive()).toBe(true);
+
+      await runStopHook(input(undefined, agent), deps);
+
+      expect(alive()).toBe(false);
+      const events = await jsonlEventStore(runDir).read();
+      expect(events.map((event) => event.type)).toEqual([finish, "hooks.stop.called"]);
+    },
+  );
+
+  test("SC831: a session resumed after the finish keeps its terminal through its stops", async () => {
+    const { deps, run, alive } = await runWithTerminal("completed");
+    await appendRunEvent(run, { type: "workflow.completed", source: "t", payload: {} });
+    await appendRunEvent(run, {
+      type: "hooks.session-start.called",
+      source: "hooks",
+      payload: { agent: "claude", sessionId: "s1", source: "resume" },
+    });
+
+    await runStopHook(input(undefined), deps);
+    await runStopHook(input(undefined), deps);
+
+    expect(alive()).toBe(true);
+  });
+
+  test("SC832: a stop on a live run keeps the terminal", async () => {
+    const { deps, alive } = await runWithTerminal("running");
+
+    await runStopHook(input(orchestrateAfterPrompt), deps);
+
+    expect(alive()).toBe(true);
+  });
+});
+
 describe("offerLearn", () => {
   // A run whose PR stage has finished while retro still runs: the user now reviews the code and
   // asks for changes.
@@ -781,6 +888,29 @@ describe("offerLearn", () => {
       { kind: "command", command: "git push" },
     ];
     expect(await offer(learnPush, deps)).toEqual({ kind: "allow" });
+  });
+
+  test("SC809: the turn that finished the run gets no learn offer; a session resumed after the finish still gets one", async () => {
+    const { deps, cwd, runDir } = await setUp({ pr: nodeRun("pr", "completed") });
+    const run = { id: "r-1", cwd, name: "feat-x" };
+    const completed = await appendRunEvent(run, {
+      type: "workflow.completed",
+      source: "t",
+      payload: {},
+    });
+    if (!completed.ok) throw new Error(completed.error);
+
+    expect(await offer(firstPr, deps)).toEqual({ kind: "allow" });
+    expect(await eventTypes(runDir)).toEqual(["workflow.completed"]);
+
+    await appendRunEvent(run, {
+      type: "hooks.session-start.called",
+      source: "hooks",
+      payload: { agent: "claude", sessionId: "s1", source: "resume" },
+    });
+    const reply = await offer(reviewPush, deps);
+    expect(reply).toMatchObject({ kind: "continue" });
+    expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
   });
 
   test("a session that is not a yok run's lets the turn end", async () => {

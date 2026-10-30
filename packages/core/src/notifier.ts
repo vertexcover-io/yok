@@ -5,6 +5,7 @@ import {
   AgentStoppedEvent,
   type ArtifactRef,
   type AskedQuestion,
+  closingLine,
   type Event,
   emitRunEvent,
   LimitWaitingEvent,
@@ -208,7 +209,11 @@ const describeNodeEnd = (event: Event, state: State): Notice | undefined => {
 const describeCompleted = (_: Event, state: State): Notice =>
   makeNotice(`✅ Run complete · ${formatDuration(state)}`, {
     mention: true,
-    body: [...lastSummary(state), ...listLinks(state)].join("\n"),
+    body: [
+      ...lastSummary(state),
+      ...listLinks(state),
+      closingLine(state.runName, "completed"),
+    ].join("\n"),
   });
 
 const describeFailed = (_: Event, state: State): Notice => {
@@ -217,7 +222,9 @@ const describeFailed = (_: Event, state: State): Notice => {
   const error = MessageSchema.safeParse(failed?.run.output).data?.message;
   return makeNotice(`❌ Run failed${where} · ${formatDuration(state)}`, {
     mention: true,
-    body: [...firstLine(error), ...listLinks(state)].join("\n"),
+    body: [...firstLine(error), ...listLinks(state), closingLine(state.runName, "failed")].join(
+      "\n",
+    ),
   });
 };
 

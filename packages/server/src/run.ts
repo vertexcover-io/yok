@@ -5,7 +5,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   clearDeadSwitchLocks,
   compilePlan,
-  findWorkflowPath,
+  locateWorkflow,
   orchestrateArgv,
   pickNotifier,
   resolveWorkflowInputs,
@@ -40,7 +40,6 @@ import {
 import {
   devPluginDir,
   foldModelSwitch,
-  isRunLive,
   jsonlEventStore,
   type Registry,
   resolvePolicies,
@@ -290,7 +289,9 @@ export const compileWorkflow = async (
   cwd: string,
   config: string | null,
 ): Promise<Result<Readonly<{ plan: WorkflowPlan; workflowPath: string }>>> => {
-  const workflowPath = findWorkflowPath(workflow, cwd);
+  const located = await locateWorkflow(workflow, cwd, config);
+  if (!located.ok) return located;
+  const workflowPath = located.value;
   if (!existsSync(workflowPath)) return { ok: false, error: `no workflow at ${workflowPath}` };
   const compiled = await compilePlan(workflowPath, cwd, config);
   return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;
@@ -394,8 +395,9 @@ const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
     })
     .at(-1);
 
-// Brings back a run whose agent session is gone: the last linked session continues on the
-// model the run was on, in a tmux session under the run's old name.
+// Brings back a run whose agent session is gone, finished or not: the last linked session
+// continues on the model the run was on, in a tmux session under the run's old name. A finished
+// run's resumed session stays open as a chat.
 const resumeRun = async (
   c: Context<{ Variables: Vars }>,
   deps: RunDeps,
@@ -412,12 +414,6 @@ const resumeRun = async (
   const runDir = runDirOf(run.cwd, run.name);
   const state = await readStateOrNull(runDir);
   if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
-  if (!isRunLive(state.status)) {
-    return conflict(
-      c,
-      `run ${run.name} is ${state.status}; there is nothing to resume, so start a new run with yok run`,
-    );
-  }
   if (await isAgentAlive(run, deps.host)) {
     return conflict(c, `run ${run.name} still has its agent session; use yok attach ${run.name}`);
   }

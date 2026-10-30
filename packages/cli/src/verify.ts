@@ -1,6 +1,6 @@
 import { Command } from "@commander-js/extra-typings";
-import { findWorkflowPath } from "@yok/core";
-import { compileOrFail } from "./client.ts";
+import { locateWorkflow } from "@yok/core";
+import { compileOrFail, fail } from "./client.ts";
 
 export const verifyCommand = () =>
   new Command("verify")
@@ -8,7 +8,9 @@ export const verifyCommand = () =>
     .argument("<workflow>", "shipped workflow name, or workflow file to compile")
     .action(async (workflowArg) => {
       const cwd = process.cwd();
-      const plan = await compileOrFail(findWorkflowPath(workflowArg, cwd), cwd);
+      const located = await locateWorkflow(workflowArg, cwd);
+      if (!located.ok) return fail(located.error);
+      const plan = await compileOrFail(located.value, cwd);
       if (plan === null) return;
       const count = plan.nodes.length;
       console.log(`ok: workflow ${plan.name} compiles (${count} node${count === 1 ? "" : "s"})`);

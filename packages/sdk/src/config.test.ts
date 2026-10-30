@@ -169,6 +169,10 @@ describe("ConfigSchema", () => {
     });
   });
 
+  test("workflowPath names the folder of the project's own workflows", () => {
+    expect(ConfigSchema.parse({ version: 2, workflowPath: "flows" }).workflowPath).toBe("flows");
+  });
+
   test("EH1 — eventHandlers lists module and handler per event type, custom.* included", () => {
     const eventHandlers = {
       "workspace.created": [{ module: "scripts/review-state.ts", handler: "onWorkspaceCreated" }],

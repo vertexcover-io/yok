@@ -10,7 +10,7 @@ macOS or Linux. Install what is missing:
 
 | Tool | Version | Install | Why |
 |---|---|---|---|
-| Bun | 1.3.3 or newer | `curl -fsSL https://bun.sh/install \| bash` | runs the source and the tests |
+| Bun | 1.4.3 or newer | `curl -fsSL https://bun.sh/install \| bash` | runs the source and the tests |
 | Node | 22.12 or newer | `brew install node` | a few repo scripts use `node --test` |
 | tmux | 3.3 or newer | `brew install tmux` | every agent session lives in a tmux window |
 | git | any recent | `brew install git` | |

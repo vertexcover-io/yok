@@ -776,6 +776,55 @@ nodes:
   }, 30_000);
 });
 
+describe("SC26: the stop that ends a run's finishing turn closes its tmux pane", () => {
+  const sessionGone = (socket: string) =>
+    spawnSync("tmux", ["-L", socket, "has-session", "-t", "agent"]).status !== 0;
+
+  // A finished run whose registered terminal is the fake agent's tmux session.
+  const finishedRun = async (socket: string) => {
+    const flow = await runInPane(
+      ONE_AGENT,
+      socket,
+      { terminal: "agent" },
+      { YOK_TMUX_SOCKET: socket },
+    );
+    const plan = flow.next();
+    const done = ["done", plan.nodeRunId, "--run", "feat-x", "--summary", "Planned."];
+    expect(flow.step([...done, "--output", "{}"]).code).toBe(0);
+    expect(flow.next()).toMatchObject({ kind: "finished", status: "completed" });
+    return flow;
+  };
+
+  test("SC811: the next that ends the run closes nothing; the finishing session's stop then kills the run's terminal at once, with nothing typed", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(sessionGone(socket)).toBe(false);
+
+      flow.stop();
+
+      expect(sessionGone(socket)).toBe(true);
+      expect(flow.typed()).toEqual([]);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+
+  test("SC828: a session resumed after the finish keeps its terminal through its stop", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(flow.sessionStart("A", "resume").code).toBe(0);
+
+      expect(flow.stop().code).toBe(0);
+
+      expect(sessionGone(socket)).toBe(false);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+});
+
 describe("SC26: orchestrate hook stop-failure", () => {
   // The test itself may run inside tmux; the helper must not find this pane and type into it.
   const RUN_ENV = { YOK_RUN_ID: "r-1", TMUX: undefined, TMUX_PANE: undefined };

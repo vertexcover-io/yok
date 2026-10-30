@@ -8,4 +8,5 @@
 - [Build a new feature for every agent yok runs, not just Claude](build-for-all-agents.md) — Use when building a new feature that works with the agent, such as Claude Code or Codex
 - [Run the suite with `bun run test` and watch that it does not hang](run-tests-with-bun-run-test.md) — Use when running the project's whole test suite
 - [Rewrite the section a skill edit touches, in plain steps ordered by execution](skill-edit-rules.md) — Use when editing a skill's SKILL.md or its references
+- [After pushing to a branch with an open PR, run the pr skill to update the PR description](update-pr-description-on-push.md) — Use when pushing a new commit, or force-pushing, to a branch that has an open PR
 - [Don't add guards for cases only a manual or made-up action can cause](no-guards-for-rare-cases.md) — Use when adding a check or branch for a case yok's own flow never produces

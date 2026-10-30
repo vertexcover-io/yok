@@ -161,7 +161,7 @@ export const pickProjectName = async (
 };
 
 type RunOptions = Readonly<{
-  prompt: string;
+  prompt?: string;
   name?: string;
   project?: string;
   input: Record<string, string>;
@@ -207,7 +207,7 @@ export const addPolicyOptions = (command: CommandUnknownOpts): void => {
 export const runCommand = () => {
   const command = new Command("run")
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
-    .requiredOption("--prompt <text>", "first message sent to the agent")
+    .option("--prompt <text>", "first message sent to the agent, when the workflow takes one")
     .option("--name <name>", "run name (default: derived from the prompt)")
     .option(
       "--project <name>",
@@ -233,7 +233,10 @@ export const runCommand = () => {
 
       const result = await client.run({
         ...target.value,
-        inputs: { prompt: opts.prompt, ...opts.input } satisfies JsonObject,
+        inputs: {
+          ...(opts.prompt === undefined ? {} : { prompt: opts.prompt }),
+          ...opts.input,
+        } satisfies JsonObject,
         // Nobody sits at a remote run's terminal, so by default no stage waits for an answer.
         policies: remote ? { interaction: false, ...cliPolicies.value } : cliPolicies.value,
         ...(opts.name === undefined ? {} : { name: opts.name }),

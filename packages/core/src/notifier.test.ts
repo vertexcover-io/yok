@@ -240,19 +240,22 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "the run's end shows the duration, the last summary and every link",
+      "SC814: the run's end shows the duration, the last summary, every link and ends with the resume line",
       event("workflow.completed"),
       finished,
       notice("✅ Run complete · 2h 17m", {
         mention: true,
-        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442",
+        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442\nRun demo completed. Resume it with: yok resume demo",
       }),
     ],
     [
-      "a failed run names the first failed node and the first line of its error",
+      "SC814: a failed run names the first failed node, the first line of its error, then the resume line",
       event("workflow.failed"),
       failedBuild,
-      notice("❌ Run failed at build · 12m", { mention: true, body: "tsc exit 2" }),
+      notice("❌ Run failed at build · 12m", {
+        mention: true,
+        body: "tsc exit 2\nRun demo failed. Resume it with: yok resume demo",
+      }),
     ],
     [
       "a stuck agent names the open node and what to do",

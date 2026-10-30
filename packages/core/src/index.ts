@@ -67,7 +67,9 @@ export {
   findWorkflowPath,
   isWorkflowFile,
   loadProjectConfig,
+  locateWorkflow,
   orchestrateArgv,
+  projectWorkflowsDir,
   type Stage,
   StageSchema,
 } from "./stage.ts";
