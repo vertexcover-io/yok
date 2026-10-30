@@ -1403,10 +1403,10 @@ const replies = (posts: readonly SlackPost[]): readonly string[] =>
   );
 
 describe("Slack run command", () => {
-  test("SC20: @yok run ok.yaml --project demo fix login launches once with YOK_SLACK_THREAD=100.1, prompt input and interaction off, and replies starting then the run id and view", async () => {
+  test("SC20: @yok run ok.yaml --project demo --prompt 'fix login' launches once with YOK_SLACK_THREAD=100.1, prompt input and interaction off, and replies starting then the run id and view", async () => {
     const { app, deps, posts, launches } = await slackRunRoot();
 
-    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
     expect(launches).toHaveLength(1);
@@ -1421,23 +1421,26 @@ describe("Slack run command", () => {
     expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
   });
 
-  test("SC21: --interaction true saves the run with interaction on", async () => {
+  test("SC21: --interaction true still saves the run with interaction off, and the reply says why", async () => {
     const { app, deps, posts } = await slackRunRoot();
 
     await signedHook(
       app,
-      mention("<@UBOT> run ok.yaml --project demo fix login --interaction true"),
+      mention('<@UBOT> run ok.yaml --project demo --prompt "fix login" --interaction true'),
     );
 
     await until(() => posts.length >= 2);
     const [run] = await deps.registry.listRuns();
-    expect(run?.policies?.values.interaction).toBe(true);
+    expect(run?.policies?.values.interaction).toBe(false);
+    expect(replies(posts)[1]).toContain(
+      "questions stay off: nobody is at the terminal of a run started from Slack",
+    );
   });
 
   test("SC22: a project whose updates go to C9 is refused naming C9, launches nothing and registers no run", async () => {
     const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
 
-    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
     const reply = replies(posts)[1];
@@ -1450,7 +1453,7 @@ describe("Slack run command", () => {
   test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
     const { app, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
 
-    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
     expect(launches).toHaveLength(1);
@@ -1460,7 +1463,7 @@ describe("Slack run command", () => {
 
   test("SC24: a run mention delivered twice launches once and registers one run", async () => {
     const { app, deps, posts, launches } = await slackRunRoot();
-    const payload = mention("<@UBOT> run ok.yaml --project demo fix login");
+    const payload = mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"');
 
     await signedHook(app, payload);
     await signedHook(app, payload);
@@ -1480,7 +1483,7 @@ describe("Slack run command", () => {
     });
     const { app, deps, posts } = await slackRunRoot({ checkCheckout: blocked });
 
-    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo fix login"));
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
     const reply = replies(posts)[1];
@@ -1492,7 +1495,10 @@ describe("Slack run command", () => {
   test("SC27: a run named Bad_Name is refused as bad-request naming name, and no run is registered", async () => {
     const { app, deps, posts } = await slackRunRoot();
 
-    await signedHook(app, mention("<@UBOT> run ok.yaml --project demo --name Bad_Name go"));
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --name Bad_Name --prompt "go"'),
+    );
 
     await until(() => posts.length > 0);
     const [reply] = replies(posts);
@@ -1508,7 +1514,7 @@ describe("Slack run command", () => {
     const { app, deps, posts, cwd } = await slackRunRoot();
     if (config !== "") writeFileSync(join(cwd, "orchestrate.config.yaml"), config);
 
-    await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo fix login`));
+    await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo --prompt "fix login"`));
 
     await until(() => posts.length >= 2);
     expect(replies(posts)[1]).toBe(
@@ -1640,24 +1646,46 @@ describe("Slack commands", () => {
   });
 
   test.each([
-    [
-      "after the last flag, as typed",
-      "--project demo fix --verbose\nthen  login",
-      "fix --verbose\nthen  login",
-    ],
-    ["after --, flags included", "--project demo -- keep --name x", "keep --name x"],
-    ["before a flag", "fix login --project demo", "fix login"],
-  ])("a run prompt %s is the run's prompt input", async (_label, rest, prompt) => {
+    ["in straight quotes", '--prompt "fix --verbose\nthen  login"', "fix --verbose\nthen  login"],
+    ["in the curly quotes Slack types", "--prompt “keep --name x”", "keep --name x"],
+    ["before the other flags", '--prompt "fix login" --project demo', "fix login"],
+  ])("a --prompt %s is the run's prompt input, as typed", async (_label, rest, prompt) => {
     const { deps, launches } = await chatDeps();
     tempWorkspace(deps.home);
 
-    const reply = await chat(deps, `run ok.yaml ${rest}`);
+    const reply = await chat(deps, `run ok.yaml --project demo ${rest}`);
 
     expect(reply).toContain("started");
     expect(launches).toHaveLength(1);
     const [run] = await deps.registry.listRuns();
     expect(run?.inputs).toEqual({ prompt });
     expect(run?.name).toBeNull();
+  });
+
+  test("--input KEY=VALUE adds run inputs beside the prompt, as yok run does", async () => {
+    const { deps } = await chatDeps();
+    const optional = { type: "string", required: false };
+    tempWorkspace(
+      deps.home,
+      okWorkflow({ inputs: { prompt: optional, mode: optional, ticket: optional } }),
+    );
+
+    await chat(
+      deps,
+      'run ok.yaml --project demo --prompt "go" --input mode=full --input ticket=T-1',
+    );
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt: "go", mode: "full", ticket: "T-1" });
+  });
+
+  test("an --input without = is refused with the usage, and nothing starts", async () => {
+    const { deps, launches } = await chatDeps();
+
+    const reply = await chat(deps, 'run ok.yaml --project demo --prompt "go" --input mode');
+
+    expect(reply).toContain('--input must be KEY=VALUE, got "mode"');
+    expect(launches).toHaveLength(0);
   });
 
   test("runs shows the newest 20 of 21 runs", async () => {

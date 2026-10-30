@@ -1,6 +1,6 @@
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import { DoctorReportSchema } from "@yok/core";
-import type { ILogger, Result } from "@yok/sdk";
+import { type ILogger, POLICY_NAMES, type Result } from "@yok/sdk";
 import { parsePolicyFlags } from "@yok/sdk/internal";
 import * as z from "zod";
 import { apiErrorText, type YokClient } from "./client.ts";
@@ -33,8 +33,6 @@ export type DispatchDeps = RunDeps &
 type Args = Readonly<{
   positionals: readonly string[];
   values: Readonly<Record<string, unknown>>;
-  // a freeText command's text after its flags, as typed
-  text?: string;
 }>;
 
 // readonly fields, not Readonly<…>: mapping over a type that holds YokClient makes tsc give up
@@ -43,8 +41,6 @@ type ChatCommand = {
   readonly words: readonly string[];
   readonly usage: string;
   readonly options: ParseArgsOptionsConfig;
-  // the text after the last of its flags, or after --, is kept as typed rather than parsed
-  readonly freeText?: true;
   readonly run: (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => Promise<string>;
 };
 
@@ -70,6 +66,12 @@ const stringFlag = (args: Args, flag: string): string | undefined => {
   return typeof value === "string" ? value : undefined;
 };
 
+// A repeatable flag's values; none when it was not given.
+const stringsFlag = (args: Args, flag: string): readonly string[] => {
+  const value = args.values[flag];
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+};
+
 // Every --remote command names its project: the server never picks one.
 const requireProject = (args: Args): string => {
   const project = stringFlag(args, "project");
@@ -89,27 +91,44 @@ const showStatus = async (_args: Args, _thread: ChatThread, deps: DispatchDeps) 
 const SILENT_NOTIFIER =
   "this project's notifier is off, so no updates will follow here; follow the run in the dashboard";
 
-// Nobody sits at the run's terminal, so by default no stage waits for an answer, as with
-// yok --remote run.
+const QUESTIONS_OFF = "questions stay off: nobody is at the terminal of a run started from Slack";
+
+// --input KEY=VALUE, repeatable, as yok run takes it.
+const runInputs = (pairs: readonly string[]): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    pairs.map((pair) => {
+      const at = pair.indexOf("=");
+      if (at === -1) throw needsUsage(`--input must be KEY=VALUE, got "${pair}"`);
+      return [pair.slice(0, at), pair.slice(at + 1)];
+    }),
+  );
+
+// Flags as yok run takes them: the prompt in --prompt, inputs and policies as --NAME VALUE.
+// Nobody sits at the run's terminal, so interaction is off whatever the flag says.
 const startRun = async (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => {
-  const [workflow, ...words] = args.positionals;
-  const prompt = [words.join(" "), args.text ?? ""].filter((part) => part !== "").join(" ");
+  const [workflow, ...extra] = args.positionals;
   const project = stringFlag(args, "project");
+  const prompt = stringFlag(args, "prompt");
   if (workflow === undefined || project === undefined) {
     throw needsUsage("a WORKFLOW and --project NAME are required");
   }
-  // The flag's text, not a boolean: parsePolicyFlags reads it as YAML.
-  const policies = parsePolicyFlags({ interaction: stringFlag(args, "interaction") ?? "false" });
-  if (!policies.ok) return policies.error;
+  if (extra.length > 0) {
+    throw needsUsage(`unexpected words: ${extra.join(" ")}; put the prompt in --prompt "TEXT"`);
+  }
+  if (prompt === undefined) throw needsUsage('--prompt "TEXT" is required');
+  const inputs = runInputs(stringsFlag(args, "input"));
+  // Each flag's text, not a boolean: parsePolicyFlags reads it as YAML.
+  const policies = parsePolicyFlags(args.values);
+  if (!policies.ok) throw needsUsage(policies.error);
   const name = stringFlag(args, "name");
   const config = stringFlag(args, "config");
   const body = StartRunBodySchema.safeParse({
     project,
     workflow,
-    inputs: prompt === "" ? {} : { prompt },
+    inputs: { prompt, ...inputs },
     ...(name === undefined ? {} : { name }),
     ...(config === undefined ? {} : { config }),
-    policies: policies.value,
+    policies: { ...policies.value, interaction: false },
   });
   if (!body.success) return `bad-request: ${z.prettifyError(body.error)}`;
   await say(`starting ${workflow} on ${project}…`);
@@ -121,6 +140,7 @@ const startRun = async (args: Args, thread: ChatThread, deps: DispatchDeps, say:
     `${run.id} started`,
     `view: ${view}`,
     ...(threaded === true ? [] : [SILENT_NOTIFIER]),
+    ...(policies.value.interaction === true ? [QUESTIONS_OFF] : []),
   ].join("\n");
 };
 
@@ -288,14 +308,15 @@ const COMMANDS: readonly ChatCommand[] = [
   {
     words: ["run"],
     usage:
-      "run WORKFLOW --project NAME [--name NAME] [--config FILE] [--interaction true] [--] PROMPT...",
+      'run WORKFLOW --project NAME --prompt "TEXT" [--name NAME] [--config FILE] [--input KEY=VALUE] [--POLICY VALUE]',
     options: {
       project: { type: "string" },
+      prompt: { type: "string" },
       name: { type: "string" },
       config: { type: "string" },
-      interaction: { type: "string" },
+      input: { type: "string", multiple: true },
+      ...Object.fromEntries(POLICY_NAMES.map((name) => [name, { type: "string" } as const])),
     },
-    freeText: true,
     run: startRun,
   },
   { words: ["status"], usage: "status", options: {}, run: showStatus },
@@ -365,43 +386,57 @@ const plainWord = (token: string): string =>
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
 
-// Slack turns straight quotes into curly ones, so no quoting is honoured: words split on
-// whitespace only.
-export const splitWords = (text: string): readonly string[] =>
-  text
-    .split(/\s+/)
-    .filter((word) => word !== "")
-    .map(plainWord);
+// The quote that closes each opening one. Slack's editor often turns typed quotes into curly
+// ones, so “…” and ‘…’ quote too.
+const CLOSING: Readonly<Record<string, string>> = { '"': '"', "'": "'", "“": "”", "‘": "’" };
 
-type Token = Readonly<{ word: string; at: number }>;
+type Split = Readonly<{
+  words: readonly string[];
+  word: string | null;
+  // the quote that ends the quoted text the next character is in, or null outside quotes
+  closing: string | null;
+  // the last character was the \\ of a \\" inside double quotes
+  escaped: boolean;
+}>;
 
-// Where the command's own words end: at --, else after the last of its flags and that flag's
-// value, else at the end of the text.
-const flagsEnd = (tokens: readonly Token[], options: ParseArgsOptionsConfig): number => {
-  const dashes = tokens.findIndex(({ word }) => word === "--");
-  if (dashes !== -1) return dashes;
-  const last = tokens.findLastIndex(
-    ({ word }) =>
-      word.startsWith("--") && Object.hasOwn(options, word.slice(2).split("=")[0] ?? ""),
-  );
-  if (last === -1) return tokens.length;
-  return last + (tokens[last]?.word.includes("=") === true ? 1 : 2);
+const addTo = (state: Split, char: string): Split => ({
+  ...state,
+  word: `${state.word ?? ""}${char}`,
+  escaped: false,
+});
+
+// Inside quotes a character joins the word, and \\" keeps a quote inside double quotes. Outside,
+// a space ends the word and an opening quote starts quoted text.
+const splitStep = (state: Split, char: string, next: string | undefined): Split => {
+  const { words, word, closing } = state;
+  if (state.escaped) return addTo(state, char);
+  if (closing !== null) {
+    if (char === "\\" && closing === '"' && next === '"') return { ...state, escaped: true };
+    if (char === closing) return { ...state, word: word ?? "", closing: null };
+    return addTo(state, char);
+  }
+  if (/\s/.test(char))
+    return { ...state, words: word === null ? words : [...words, word], word: null };
+  const opening = CLOSING[char];
+  if (opening !== undefined) return { ...state, word: word ?? "", closing: opening };
+  return addTo(state, char);
 };
 
-// A prompt keeps its spacing, newlines and words like --verbose: what follows --, or else the
-// last of the command's own flags and its value, is taken as typed.
-const splitFreeText = (
-  tokens: readonly Token[],
-  text: string,
-  options: ParseArgsOptionsConfig,
-): Readonly<{ words: readonly string[]; text: string }> => {
-  const end = flagsEnd(tokens, options);
-  const start = tokens[end]?.word === "--" ? end + 1 : end;
-  const from = tokens[start]?.at ?? text.length;
-  return {
-    words: tokens.slice(0, end).map(({ word }) => plainWord(word)),
-    text: text.slice(from).trim().replace(/\S+/g, plainWord),
-  };
+// Words split as a shell splits them: on spaces outside quotes, the quotes removed.
+export const splitWords = (text: string): Result<readonly string[]> => {
+  const chars = [...text];
+  const end = chars.reduce<Split>(
+    (state, char, index) => splitStep(state, char, chars[index + 1]),
+    { words: [], word: null, closing: null, escaped: false },
+  );
+  if (end.closing !== null) {
+    return {
+      ok: false,
+      error: `a quote is not closed: put a matching ${end.closing} at the end of the quoted text`,
+    };
+  }
+  const words = end.word === null ? end.words : [...end.words, end.word];
+  return { ok: true, value: words.map(plainWord) };
 };
 
 const parseWords = (args: readonly string[], options: ParseArgsOptionsConfig): Args => {
@@ -418,14 +453,6 @@ const parseWords = (args: readonly string[], options: ParseArgsOptionsConfig): A
   }
 };
 
-const commandArgs = (command: ChatCommand, text: string, words: readonly string[]): Args => {
-  if (command.freeText !== true)
-    return parseWords(words.slice(command.words.length), command.options);
-  const tokens = [...text.matchAll(/\S+/g)].map((match) => ({ word: match[0], at: match.index }));
-  const split = splitFreeText(tokens.slice(command.words.length), text, command.options);
-  return { ...parseWords(split.words, command.options), text: split.text };
-};
-
 // The words after the mention in, the final reply text out. `say` posts anything the command
 // reports before it finishes.
 export const dispatchCommand = async (
@@ -434,14 +461,17 @@ export const dispatchCommand = async (
   deps: DispatchDeps,
   say: Say,
 ): Promise<string> => {
-  const words = splitWords(text);
+  const split = splitWords(text);
+  if (!split.ok) return split.error;
+  const words = split.value;
   if (words.length === 0) return helpText();
   const command = LONGEST_FIRST.find((c) => c.words.every((word, index) => words[index] === word));
   if (command === undefined) {
     return [`unknown command: ${words.join(" ")}`, "", helpText()].join("\n");
   }
   try {
-    return await command.run(commandArgs(command, text, words), thread, deps, say);
+    const args = parseWords(words.slice(command.words.length), command.options);
+    return await command.run(args, thread, deps, say);
   } catch (error) {
     if (!(error instanceof ChatError)) throw error;
     const usage = error.usage ? [`usage: ${command.usage}`] : [];

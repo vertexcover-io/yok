@@ -38,16 +38,54 @@ const dispatch = (text: string) =>
 
 describe("dispatchCommand", () => {
   test("SC26: run with no --project replies that WORKFLOW and --project NAME are required, with the usage, and launches nothing", async () => {
-    const reply = await dispatch("run task fix login");
+    const reply = await dispatch('run task --prompt "fix login"');
     expect(reply).toContain("a WORKFLOW and --project NAME are required");
-    expect(reply).toContain("usage: run WORKFLOW --project NAME [--name NAME]");
+    expect(reply).toContain('usage: run WORKFLOW --project NAME --prompt "TEXT" [--name NAME]');
+    expect(launched).toEqual([]);
+  });
+
+  test("a prompt typed without --prompt is refused, as yok run refuses it, and launches nothing", async () => {
+    const reply = await dispatch("run task --project web fix login");
+    expect(reply).toContain('unexpected words: fix login; put the prompt in --prompt "TEXT"');
+    expect(reply).toContain("usage: run WORKFLOW");
+    expect(launched).toEqual([]);
+  });
+
+  test("run with no --prompt says it is required, and launches nothing", async () => {
+    const reply = await dispatch("run task --project web");
+    expect(reply).toContain('--prompt "TEXT" is required');
+    expect(launched).toEqual([]);
+  });
+
+  test("an unclosed quote is refused before any command runs", async () => {
+    expect(await dispatch('run task --project web --prompt "fix login')).toBe(
+      'a quote is not closed: put a matching " at the end of the quoted text',
+    );
     expect(launched).toEqual([]);
   });
 
   test("SC4: Slack's <link> and &amp; entities come back as the typed words", () => {
     expect(splitWords("project add web --git <https://github.com/acme/web.git> a &amp; b")).toEqual(
-      ["project", "add", "web", "--git", "https://github.com/acme/web.git", "a", "&", "b"],
+      {
+        ok: true,
+        value: ["project", "add", "web", "--git", "https://github.com/acme/web.git", "a", "&", "b"],
+      },
     );
+  });
+
+  test.each([
+    ["straight double quotes", '--prompt "fix  the login"', ["--prompt", "fix  the login"]],
+    ["the curly quotes Slack types", "--prompt “fix the login”", ["--prompt", "fix the login"]],
+    ["single quotes", "--prompt 'say \"hi\"'", ["--prompt", 'say "hi"']],
+    ["an escaped quote inside double quotes", '--prompt "say \\"hi\\""', ["--prompt", 'say "hi"']],
+    ["a flag and its quoted value joined by =", '--prompt="fix login"', ["--prompt=fix login"]],
+    [
+      "a newline inside quotes",
+      '--prompt "line one\nline two"',
+      ["--prompt", "line one\nline two"],
+    ],
+  ])("words in %s stay one word, quotes removed", (_label, text, words) => {
+    expect(splitWords(text)).toEqual({ ok: true, value: words });
   });
 
   test("SC5: an unknown command replies with its words, then the help listing status and help", async () => {
