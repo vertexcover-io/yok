@@ -193,15 +193,22 @@ const statusMark = (run) => {
   return mark;
 };
 
+const formatClock = (iso) =>
+  new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+const describeBlocker = ({ reason, details }) => {
+  switch (reason) {
+    case "question": return details.questions[0].question;
+    case "usage-limit": return `hit its usage limit; resumes at ${formatClock(details.resumeAt)}`;
+    case "api-error": return `API error ${details.error}; retrying at ${formatClock(details.resumeAt)}`;
+    case "stuck": return details.message ?? "stopped making progress";
+    case "agent-error": return details.message ?? details.error;
+    default: return reason;
+  }
+};
+
 const blockerText = (blocker) => {
-  const { reason, details } = blocker;
-  const text =
-    reason === "question" ? details.questions[0].question
-    : reason === "usage-limit"
-      ? `hit its usage limit; resumes at ${new Date(details.resumeAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
-    : reason === "stuck" ? (details.message ?? "stopped making progress")
-    : reason === "agent-error" ? (details.message ?? details.error)
-    : reason;
+  const text = describeBlocker(blocker);
   return blocker.node === undefined ? text : `${text} · in ${blocker.node}`;
 };
 
