@@ -1810,7 +1810,7 @@ describe("Slack commands", () => {
 
     const { text, table } = await chatReply(deps, "ls");
 
-    expect(text).toBe("Showing 20 of 21 runs");
+    expect(text).toBe("Showing 20 of 21 runs\nUse --limit N or --all to see more");
     expect(table?.headers).toEqual([
       "ID",
       "NAME",
@@ -1844,7 +1844,9 @@ describe("Slack commands", () => {
     });
 
     expect(await firstCells(deps, "ls --status starting")).toEqual(["r-0"]);
-    expect((await chatReply(deps, "ls --limit 1")).text).toBe("Showing 1 of 3 runs");
+    expect((await chatReply(deps, "ls --limit 1")).text).toBe(
+      "Showing 1 of 3 runs\nUse --limit N or --all to see more",
+    );
     expect((await chatReply(deps, "ls --all")).text).toBe("3 runs");
     const bogus = await chat(deps, "ls --status bogus");
     expect(bogus).toStartWith("bad-request:");

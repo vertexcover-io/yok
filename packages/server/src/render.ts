@@ -76,11 +76,15 @@ const countLine = ({ runs, total }: RunList, { project }: RunFlags): string => {
 const emptyText = ({ project, status }: RunFlags): string =>
   project === undefined && status === undefined ? NO_RUNS : NO_MATCH;
 
-// Slack cuts a long table itself and says so, so the reply carries no hint.
-export const runsReply = (list: RunList, flags: RunFlags): Reply =>
-  list.total === 0
-    ? { text: emptyText(flags) }
-    : { text: countLine(list, flags), table: runTable(list.runs) };
+// Slack cuts a table only past 100 rows, so a reply cut at the default 20 carries the hint itself.
+export const runsReply = (list: RunList, flags: RunFlags): Reply => {
+  if (list.total === 0) return { text: emptyText(flags) };
+  const cut = list.runs.length < list.total;
+  return {
+    text: cut ? `${countLine(list, flags)}\n${MORE_HINT}` : countLine(list, flags),
+    table: runTable(list.runs),
+  };
+};
 
 export const renderRuns = (list: RunList, flags: RunFlags, terminal: boolean): string => {
   if (!terminal) return renderTable(runTable(list.runs));
