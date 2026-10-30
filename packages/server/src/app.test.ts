@@ -1617,6 +1617,10 @@ describe("GET /runs", () => {
     expect((await listIds(deps, { all: "true" })).ids).toHaveLength(21);
     const refused = await deps.client.runs({ limit: "0" });
     expect(!refused.ok && refused.error.code).toBe("bad-request");
+    const both = await deps.client.runs({ all: "true", limit: "5" });
+    expect(!both.ok && both.error.code).toBe("bad-request");
+    expect(!both.ok && both.error.message).toContain("--all");
+    expect((await listIds(deps, { all: "false", limit: "5" })).ids).toHaveLength(5);
   });
 
   test("SC5007: a run in demo's folder carries project demo, and one in an unregistered folder carries null", async () => {

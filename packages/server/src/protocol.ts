@@ -151,6 +151,8 @@ export const ListRunsQuerySchema = z.strictObject({
     .transform(Number)
     .optional(),
   all: z.enum(["true", "false"]).optional(),
+}).refine((query) => query.all !== "true" || query.limit === undefined, {
+  message: "--all and --limit cannot be used together",
 });
 export type ListRunsQuery = z.input<typeof ListRunsQuerySchema>;
 export type RunsFilter = z.output<typeof ListRunsQuerySchema>;
