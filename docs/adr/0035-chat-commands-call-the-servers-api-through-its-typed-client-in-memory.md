@@ -18,7 +18,7 @@ Each Slack command must do what the matching `yok --remote` command does. The pr
 
 ## Decision Outcome
 
-The in-memory client, because every body schema, lock and error shape the API applies reaches Slack unchanged, with no handler rewritten, and the reply text comes from the same formatters the CLI uses, now in the server. `run` is the exception: it calls `startProjectRun` directly to pass the thread, and `runs`/`run status` read `listRunSummaries`, which has no route.
+The in-memory client, because every body schema, lock and error shape the API applies reaches Slack unchanged, with no handler rewritten, and the reply text comes from the same formatters the CLI uses, now in the server. `run` is the exception: it calls `startProjectRun` directly to pass the thread. `ls` and `run status` read runs through `GET /runs`, the route `yok ls` calls (amended 2026-10-30).
 
 ## Consequences
 
