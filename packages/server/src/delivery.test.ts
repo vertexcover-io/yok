@@ -7,9 +7,10 @@ import type { NodeRun, WorkflowRun } from "@yok/sdk";
 import { noopLogger, runDirOf } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
 import { deliverComments, lastDelivery, scheduleDelivery, stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 
-const MENU = `${EMPTY_BOX}\nEnter to select · ↑/↓ to navigate · Esc to cancel`;
+// What Claude shows for a question: its own rule, then a ❯ cursor on the options.
+const MENU = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · Esc to cancel`;
 const NOW = new Date("2026-01-01T00:00:00.000Z");
 
 const setup = async (overrides: Partial<WorkflowRun> = {}) => {
@@ -72,6 +73,22 @@ describe("deliverComments", () => {
       .map((e) => JSON.parse(e))
       .filter((e) => e.type === "artifact.comment.delivered");
     expect(delivered.map((e) => e.payload)).toEqual([{ ids: ["c1", "c2"] }]);
+  });
+
+  test("comments are typed into an empty box while Claude works under a spinner", async () => {
+    const { run, runDir } = await setup();
+    const { host, calls } = fakeHost(`· Ionizing… (6s · ↓ 359 tokens)\n${EMPTY_BOX}`);
+
+    const outcome = await deliverComments(run, {
+      providerFor: () => claudeOver(host),
+      host,
+      log: noopLogger,
+      now: () => NOW,
+    });
+
+    expect(outcome).toEqual({ kind: "delivered", ids: ["c1", "c2"] });
+    expect(calls[0]).toContain("2 new comments");
+    expect(await statuses(runDir)).toEqual(["delivered", "delivered"]);
   });
 
   test("SC24: delivery waits with its own reason and changes nothing when typing is unsafe", async () => {

@@ -247,14 +247,12 @@ const typedLine = (line: string) => ["C-u", line, "Enter"];
 // leaving it; the popup hides the input box.
 const CONFIG_SEARCH_FOOTER = "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear";
 const CONFIG_LIST_FOOTER = "Enter/Space to change · / to search · Esc to close";
-// A permission dialog draws its own ❯ cursor between rules; Enter there would approve.
-const PERMISSION = `${RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`;
 // The shape of what Claude 2.1.309 shows for a permission asked mid-turn and for a question: no
 // spinner and no input box. An Escape rejects the permission or declines the question.
 const PERMISSION_PROMPT = `${RULE}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
 const QUESTION = `${RULE}\n Which colour?\n ❯ 1. Red\n   2. Blue\n Enter to select · ↑/↓ to navigate · Esc to cancel`;
 // An Escape here would reject the permission Claude asked for mid-turn.
-const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION}`;
+const BUSY_DIALOG = `· Vibing… (3s)\n${PERMISSION_PROMPT}`;
 const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Escape";
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
@@ -515,26 +513,13 @@ describe("runContextStep: compact", () => {
     });
   });
 
-  test.each([CONFIG_SEARCH_FOOTER, CONFIG_LIST_FOOTER])(
-    "an input box left in scrollback above a /config popup whose footer reads %j is not taken for the box: the popup gets Escapes and nothing is typed",
-    async (footer) => {
-      const context = await setUp("type: context, action: compact");
-      const fake = losingTerminal(
-        context,
-        () => true,
-        () => `${IDLE}\n  Theme  Dark\n${footer}`,
-      );
-
-      await helper(context, fake.terminal);
-
-      expect(typesOf(fake.typed)).toEqual(Array(9).fill("Escape"));
-    },
-  );
-
   test.each([
     ["a permission prompt", PERMISSION_PROMPT],
     ["a question", QUESTION],
-    ["a permission dialog whose ❯ 1. Yes sits between rules", PERMISSION],
+    [
+      "the /config page, a list with its ❯ cursor,",
+      readFileSync(join(import.meta.dir, "agents/fixtures/claude-screen-cfg.txt"), "utf8"),
+    ],
   ])(
     "%s no one answers, with no spinner, gets no Escape and no line: each try waits 30 seconds, the compaction ends unreachable and the resume line's notice is agent.input.unreachable",
     async (_, screen) => {
@@ -755,7 +740,8 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
+      (_, typed) =>
+        typed.includes("/compact") && Date.now() - startedAt < 300_000 ? COMPACTING : IDLE,
     );
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -781,7 +767,8 @@ describe("runContextStep: compact", () => {
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      () => (Date.now() - startedAt < 300_000 ? COMPACTING : IDLE),
+      (_, typed) =>
+        typed.includes("/compact") && Date.now() - startedAt < 300_000 ? COMPACTING : IDLE,
     );
 
     await helper(context, fake.terminal);
@@ -797,17 +784,18 @@ describe("runContextStep: compact", () => {
     });
   }, 30_000);
 
-  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line is typed", async () => {
+  test("a compact Claude shows as busy for good fails at the 10-minute cap, and the resume line, held back by the busy sign, ends agent.input.unreachable", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
       (line) => line === RESUME,
-      () => COMPACTING,
+      (_, typed) => (typed.includes("/compact") ? COMPACTING : IDLE),
     );
 
     await helper(context, fake.terminal);
 
-    expect(typesOf(fake.typed)).toEqual([...typedLine("/compact"), ...typedLine(RESUME)]);
+    expect(typesOf(fake.typed)).toEqual(typedLine("/compact"));
+    expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
     expect(await stepOutput(context.runDir)).toMatchObject({
       output: {
         action: "compact",
@@ -817,12 +805,12 @@ describe("runContextStep: compact", () => {
     });
   }, 60_000);
 
-  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact at once, and the compaction completes applied", async () => {
+  test("SC4: a Claude still finishing its turn, its input box on screen, gets no Escape and /compact once its busy sign goes, and the compaction completes applied", async () => {
     const context = await setUp("type: context, action: compact");
     const fake = losingTerminal(
       context,
       () => true,
-      () => BUSY,
+      (captures) => (captures < 3 ? BUSY : IDLE),
     );
 
     await helper(context, fake.terminal);
@@ -865,12 +853,12 @@ describe("runContextStep: compact", () => {
     ]);
   });
 
-  test("a resume line typed while Claude finishes a turn is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
+  test("a resume line Claude works on for 100 seconds is not typed again while Claude shows busy, though that takes longer than the 30-second window", async () => {
     const context = await setUp("type: context, action: compact");
     let typedAt: number | undefined;
     const busyFor = 100_000;
     const fake = fakeTerminal(
-      () => (typedAt === undefined || Date.now() < typedAt + busyFor ? BUSY : IDLE),
+      () => (typedAt !== undefined && Date.now() < typedAt + busyFor ? BUSY : IDLE),
       async (text) => {
         if (text === RESUME) typedAt = Date.now();
         else await completeContextOnSessionStart(context.run, "A", "compact");

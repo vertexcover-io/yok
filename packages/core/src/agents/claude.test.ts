@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,14 +11,12 @@ import {
 } from "@yok/sdk";
 import * as z from "zod";
 import {
-  canTypeComment,
+  type ClaudeScreen,
   claudeArgs,
   claudeProvider,
   claudeRunArgs,
-  hasClaudeInputBox,
   interpretOutput,
-  isClaudeBusy,
-  isClaudeChoicePending,
+  readClaudeScreen,
 } from "./claude.ts";
 import { claudeSettings } from "./claude-hooks.ts";
 
@@ -463,18 +461,6 @@ describe("claudeProvider.run", () => {
   );
 });
 
-describe("isClaudeBusy", () => {
-  test.each([
-    ["· Vibing… (3s · ↓ 136 tokens)", true],
-    ["✢ Compacting conversation… (15s · ↓ 637 tokens)", true],
-    ["  Press up to edit queued messages\n❯ ", true],
-    ["✻ Churned for 8s · done 4:40 PM\n❯ ", false],
-    ["❯ ", false],
-  ])("SC22: %j is busy: %p", (screen, busy) => {
-    expect(isClaudeBusy(screen)).toBe(busy);
-  });
-});
-
 const RULE = "─".repeat(40);
 const box = (line: string): string => `${RULE}\n${line}\n${RULE}`;
 // Claude 2.1.286's empty input box, with its status line below.
@@ -507,10 +493,11 @@ describe("claudeProvider.limitResetWait", () => {
 });
 
 describe("claudeProvider.promptWhenReady", () => {
-  const typedInto = async (...screens: readonly string[]) => {
+  const typedInto = async (screens: readonly string[], options = {}) => {
     const calls: Call[] = [];
     const provider = claudeProvider({ host: fakeHost() });
-    const result = await provider.promptWhenReady(fakePane("p", calls, true, screens), "continue");
+    const pane = fakePane("p", calls, true, screens);
+    const result = await provider.promptWhenReady(pane, "continue", options);
     const typed = calls.map((c) =>
       c.method === "sendText" ? c.text : c.method === "sendKeys" ? c.keys : c.method,
     );
@@ -525,14 +512,14 @@ describe("claudeProvider.promptWhenReady", () => {
       [`1. Fixed the bug\n2. Added a test\n${PROMPT}`],
     ],
   ])("%s: the input is cleared and the text submitted", async (_, screens) => {
-    expect(await typedInto(...screens)).toEqual({
+    expect(await typedInto(screens)).toEqual({
       result: { ok: true, value: "sent" },
       typed: SENT,
     });
   });
 
   test("an open limit menu is answered with Stop and wait before the text is typed", async () => {
-    expect(await typedInto(LIMIT_MENU, PROMPT)).toEqual({
+    expect(await typedInto([LIMIT_MENU, PROMPT])).toEqual({
       result: { ok: true, value: "sent" },
       typed: [["Down", "Enter"], ...SENT],
     });
@@ -556,32 +543,37 @@ describe("claudeProvider.promptWhenReady", () => {
       "What do you want to do?\n❯ 1. Upgrade your plan\n  2. Ask your admin",
     ],
   ])("%s: nothing is typed and the answer is not-ready", async (_, screen) => {
-    expect(await typedInto(screen)).toEqual({
+    expect(await typedInto([screen])).toEqual({
       result: { ok: true, value: "not-ready" },
       typed: [],
     });
   });
-});
 
-describe("canTypeComment", () => {
-  test.each([
-    ["idle empty box", PROMPT, true],
+  test.each<[string, "sent" | "not-ready", string]>([
+    ["an idle empty box", "sent", PROMPT],
     [
-      "spinner above an empty box",
+      "an empty box under a spinner",
+      "sent",
       `· Ionizing… (6s · ↓ 359 tokens)\n${box("❯")}\n  Model: Opus`,
-      true,
     ],
-    ["menu footer", `${PROMPT}\nEnter to select · ↑/↓ to navigate · Esc to cancel`, false],
-    ["half-typed text", box("❯ half a sentence"), false],
-    ["queued-messages hint", box("❯ Press up to edit queued messages"), false],
+    ["a named session's empty box under a spinner", "sent", `· Ionizing… (6s)\n${NAMED_PROMPT}`],
+    ["half-typed text", "not-ready", box("❯ half a sentence")],
+    ["the queued-messages hint", "not-ready", box("❯ Press up to edit queued messages")],
     [
       "an empty ❯ between rules above the bottom box, which holds text",
+      "not-ready",
       `${box("❯")}\n${box("❯ half")}`,
-      false,
     ],
-    ["a named session's empty box under a spinner", `· Ionizing… (6s)\n${NAMED_PROMPT}`, true],
-  ])("SC14: %s -> %p", (_name, screen, expected) => {
-    expect(canTypeComment(screen)).toBe(expected);
+    [
+      "a permission prompt under a spinner",
+      "not-ready",
+      `· Ionizing… (6s)\n${RULE}\n Do you want to proceed?\n ❯ 1. Yes\n   2. No`,
+    ],
+    ["a panel with no ❯", "not-ready", `${RULE}\n Status\n Version 2.1.312\n Esc to close`],
+  ])("SC14: whileBusy, %s -> %s, and the box is never cleared", async (_, value, screen) => {
+    const { result, typed } = await typedInto([screen], { whileBusy: true });
+    expect(result).toEqual({ ok: true, value });
+    expect(typed).toEqual(value === "sent" ? ["continue", ["Enter"]] : []);
   });
 });
 
@@ -610,109 +602,127 @@ const QUESTION = [
   " Enter to select · ↑/↓ to navigate · Esc to cancel",
 ].join("\n");
 
-describe("isClaudeChoicePending", () => {
-  test.each([
-    ["a permission prompt", `● Creating the file.\n${PERMISSION_PROMPT}`, true],
-    ["a question", QUESTION, true],
-    ["a permission option between rules", `${box("❯ 1. Yes")}\n  2. No`, true],
+// Captures of Claude Code 2.1.312's pane, and ask of 2.1.314's question dialog, whose ─ divider
+// above its last option is the lowest rule; trust is rebuilt by hand from the dialog's text.
+const FIXTURE_KINDS = [
+  ["w50", "ready"],
+  ["w80", "ready"],
+  ["w120", "ready"],
+  ["bg", "ready"],
+  ["perm", "menu"],
+  ["trust", "menu"],
+  ["cfg", "menu"],
+  ["ask", "menu"],
+] as const;
+
+const readFixture = (name: string): string =>
+  readFileSync(join(import.meta.dir, "fixtures", `claude-screen-${name}.txt`), "utf8");
+
+describe("readClaudeScreen", () => {
+  test.each(FIXTURE_KINDS)("the %s capture reads as %s", (name, kind) => {
+    expect(readClaudeScreen(readFixture(name)).kind).toBe(kind);
+  });
+
+  test.each<[string, string, ClaudeScreen]>([
     [
-      "an answered prompt left in scrollback above the box",
-      `${PERMISSION_PROMPT}\n● Created the file.\n${PROMPT}`,
-      false,
+      "a named session's box in a pane too narrow for any dashes before the name",
+      ` ref-26119 ─\n❯\n${RULE}`,
+      { kind: "ready", text: "" },
     ],
     [
-      "the /config popup",
+      "a named session's box with five dashes before the name",
+      `───── add-retry-to-the-webhook-delivery-worker ─\n❯\n${RULE}`,
+      { kind: "ready", text: "" },
+    ],
+    ["a box with text typed", box("❯ half a sentence"), { kind: "ready", text: "half a sentence" }],
+    [
+      "a box holding a cancelled /compact",
+      box("❯ /compact keep the plan"),
+      { kind: "ready", text: "/compact keep the plan" },
+    ],
+    ["a spinner above the box", `· Vibing… (3s · ↓ 136 tokens)\n${PROMPT}`, { kind: "busy" }],
+    ["a compaction's spinner", "✢ Compacting conversation… (15s · ↓ 637 tokens)", { kind: "busy" }],
+    ["the queued-messages hint", box("❯ Press up to edit queued messages"), { kind: "busy" }],
+    [
+      "transcript text that mentions queued messages above the box",
+      `⏺ grep found screen.includes("queued messages")\n${PROMPT}`,
+      { kind: "ready", text: "" },
+    ],
+    [
+      "a finished turn's line above the box",
+      `✻ Churned for 8s · done 4:40 PM\n${PROMPT}`,
+      { kind: "ready", text: "" },
+    ],
+    [
+      "a panel with no ❯ under the lowest rule",
+      `${RULE}\n Status\n Version 2.1.312\n Esc to close`,
+      { kind: "popup" },
+    ],
+    [
+      "an empty box left in history above a /config panel with no ❯",
+      `${PROMPT}\n▔▔▔▔▔▔\n Settings  Status  Config  Usage\n\n Version 2.1.314\n Esc to close`,
+      { kind: "popup" },
+    ],
+    [
+      "a popup on a screen with no rule and no ❯",
       "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
-      false,
+      { kind: "popup" },
     ],
-    ["a box under a spinner", `· Ionizing… (6s)\n${box("❯ ")}`, false],
+    ["a question", QUESTION, { kind: "menu" }],
+    [
+      "a permission prompt under transcript",
+      `● Creating the file.\n${PERMISSION_PROMPT}`,
+      {
+        kind: "menu",
+      },
+    ],
+    [
+      "a dialog on a screen with no rule",
+      "Do you want to run this command?\n❯ 1. Yes\n  2. No",
+      { kind: "menu" },
+    ],
+    [
+      "a permission prompt under a box left in scrollback",
+      `${PROMPT}\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Tab to amend`,
+      { kind: "menu" },
+    ],
+    [
+      "an answered prompt and an old user message above the box",
+      `❯ make the file\n${PERMISSION_PROMPT}\n● Created the file.\n${PROMPT}`,
+      { kind: "ready", text: "" },
+    ],
     [
       "a numbered list in Claude's reply above the box",
       `1. Fixed it\n2. Tested it\n${PROMPT}`,
-      false,
+      { kind: "ready", text: "" },
     ],
-  ])("%s -> %p", (_name, screen, expected) => {
-    expect(isClaudeChoicePending(screen)).toBe(expected);
-  });
-});
-
-describe("hasClaudeInputBox", () => {
-  test.each([
-    ["an empty box", PROMPT, true],
-    ["a box holding text", box("❯ half a sentence"), true],
-    ["a box under a spinner", `· Ionizing… (6s · ↓ 359 tokens)\n${box("❯ ")}`, true],
-    [
-      "the /config popup",
-      "  Theme  Dark\nEnter/Space to change · / to search · Esc to close",
-      false,
-    ],
-    ["the limit menu", LIMIT_MENU, false],
-    ["a ❯ with no rules around it", "❯ ", false],
     [
       "a box under transcript text quoting a dialog footer",
       `● Its footer reads Enter to select · Esc to cancel.\n${PROMPT}`,
-      true,
+      { kind: "ready", text: "" },
     ],
     [
-      "a permission dialog whose ❯ 1. Yes sits between rules",
-      `${box("❯ 1. Yes")}\n  2. No\nEsc to cancel · Tab to amend`,
-      false,
-    ],
-    [
-      "an AskUserQuestion dialog",
-      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
-      false,
-    ],
-    [
-      "a box left in scrollback above the /config popup with its search box focused",
-      `${PROMPT}\n  Search settings\nType to filter · Enter/↓ to select · ↑ to tabs · Esc to clear`,
-      false,
-    ],
-    [
-      "a box left in scrollback above the /config popup's list",
-      `${PROMPT}\n  Theme  Dark\nEnter/Space to change · / to search · Esc to close`,
-      false,
-    ],
-    [
-      "a box with Claude's interrupt hint under it while it works",
+      "a box with Claude's interrupt hint under it",
       `${box("❯ ")}\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt`,
-      true,
-    ],
-    ["a box with Claude's shortcuts hint under it", `${box("❯ ")}\n  ? for shortcuts`, true],
-    [
-      "a permission dialog whose ❯ 1. Yes sits between rules above a footer yok does not know",
-      `${box("❯ 1. Yes")}\n  2. No\n  Tab to amend`,
-      false,
-    ],
-    ["a box holding a cancelled /compact", box("❯ /compact keep the plan"), true],
-    [
-      "a dialog whose footer reads Enter to select with no Esc to cancel",
-      `Which colour?\n${box("❯ 1. Red")}\n  2. Blue\nEnter to select · ↑/↓ to navigate`,
-      false,
-    ],
-    ["a named session's box, its name drawn in the top rule", NAMED_PROMPT, true],
-    // In a pane narrow for the name, Claude draws fewer dashes before it, or none and cuts it.
-    [
-      "a named session's box in a narrow pane, five dashes before the name",
-      `───── add-retry-to-the-webhook-delivery-worker ─\n❯\n${RULE}`,
-      true,
-    ],
-    [
-      "a named session's box in a pane too narrow for the name, no dashes before it",
-      ` add-retry-to-the-webhook-delivery-wo… ─\n❯\n${RULE}`,
-      true,
+      { kind: "ready", text: "" },
     ],
     [
       "a ❯ under a transcript line that starts with dashes",
       `${"─".repeat(20)} notes\n❯\n${RULE}`,
-      false,
+      { kind: "popup" },
     ],
     [
-      "a named session's permission dialog whose ❯ 1. Yes sits between rules",
-      `${NAMED_RULE}\n❯ 1. Yes\n${RULE}\n  2. No\nEsc to cancel · Tab to amend`,
-      false,
+      "a question whose cursor sits between two lines that end in a dash",
+      `${RULE}\n Pick one ─\n❯ 1. Red\n Or this ─\n  2. Blue`,
+      { kind: "menu" },
     ],
-  ])("%s -> %p", (_name, screen, expected) => {
-    expect(hasClaudeInputBox(screen)).toBe(expected);
+    ["a blank pane", "", { kind: "unknown" }],
+  ])("%s", (_name, screen, expected) => {
+    expect(readClaudeScreen(screen)).toEqual(expected);
+  });
+
+  test("a ❯ line between a search box's ╰──╯ edge and another box's ╭──╮ is not ready", () => {
+    const screen = `╰${"─".repeat(20)}╯\n❯\n╭${"─".repeat(20)}╮`;
+    expect(readClaudeScreen(screen).kind).not.toBe("ready");
   });
 });

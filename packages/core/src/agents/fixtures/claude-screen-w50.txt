@@ -1,0 +1,40 @@
+
+           Claude Code v2.1.312
+ ▐▛███▛█   Opus 5.5 with high effort
+▝▜██████▀  Claude Max
+ ▝▝   ▝▝   ~/Projects/yok
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                ● high · /effort
+────────────────────────────────────── ref-26119 ─
+❯ Try "edit run.e2e.test.ts to..."
+──────────────────────────────────────────────────
+  Model: ...
+  ⏵⏵ auto mode on · PR #47 · ← 4 agents         

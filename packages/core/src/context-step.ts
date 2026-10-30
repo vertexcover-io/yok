@@ -39,9 +39,7 @@ import {
   CLAUDE_ESCAPE_PAUSE_MS,
   CLAUDE_MAX_ESCAPES,
   CLAUDE_NOTHING_TO_COMPACT,
-  hasClaudeInputBox,
-  isClaudeBusy,
-  isClaudeChoicePending,
+  readClaudeScreen,
 } from "./agents/claude.ts";
 import { typeLine, unwrap } from "./agents/common.ts";
 import { completeContextStep, findContextPlanNode, loadSessionEnv } from "./runs.ts";
@@ -58,6 +56,7 @@ const RESUME_TIMEOUT_MS = 30_000;
 const RESUME_CAP_MS = 180_000;
 const RESUME_ATTEMPTS = 2;
 const INPUT_UNREACHABLE = "Could not reach Claude's input box";
+const SCREEN_TAIL_LINES = 15;
 // A long chat can take longer to compact: while Claude shows the compact as busy it may run up
 // to the cap, and it fails once Claude has not looked busy for the grace.
 const COMPACT_MAX_MS = 600_000;
@@ -106,10 +105,16 @@ const pollUntil = async <T>(
   }
 };
 
+// Claude is at work, or waits on a person's answer to a permission prompt or question.
+const isClaudeHeld = (screen: string): boolean => {
+  const { kind } = readClaudeScreen(screen);
+  return kind === "busy" || kind === "menu";
+};
+
 const waitForIdle = (terminal: ITerminal): Promise<true> =>
   pollUntil(
     { everyMs: IDLE_POLL_MS, timeoutMs: IDLE_TIMEOUT_MS, timeoutError: "Claude did not go idle" },
-    async () => (isClaudeBusy(unwrap(await terminal.capture())) ? undefined : true),
+    async () => (isClaudeHeld(unwrap(await terminal.capture())) ? undefined : true),
   );
 
 const messageOf = (error: unknown): string =>
@@ -122,10 +127,6 @@ const failureOf = (step: Promise<void>): Promise<unknown> =>
     (error: unknown) => error ?? new Error("step failed"),
   );
 
-// Claude is at work, or waits on a person's answer to a permission prompt or question.
-const isClaudeHeld = (screen: string): boolean =>
-  isClaudeBusy(screen) || isClaudeChoicePending(screen);
-
 const resumePrompt = (run: RunRef): string => `/yok:orchestrate --resume ${run.name}`;
 
 // The session a line goes to, and the step it is typed for.
@@ -137,27 +138,33 @@ type LineTarget = Readonly<{
   log: ILogger;
 }>;
 
-// Types once the input box shows, even while Claude finishes its turn: it holds the line until
-// then. Escape only while the box is hidden and Claude is free: at a box it could interrupt the
-// turn or open the Rewind menu; while Claude is held it could cancel a compaction, reject a
-// permission or decline a question. false: the box never showed, nothing was typed.
-const typeAtInputBox = async (terminal: ITerminal, line: string): Promise<boolean> => {
-  const busyUntil = Date.now() + IDLE_TIMEOUT_MS;
+// Types only at the input box with Claude free. Escape only at a popup: at the box it could open
+// the Rewind menu; while Claude is held it could cancel a compaction, reject a permission or
+// decline a question. false: the box never showed, nothing was typed.
+const typeAtInputBox = async (
+  terminal: ITerminal,
+  line: string,
+  log: ILogger,
+): Promise<boolean> => {
+  const heldUntil = Date.now() + IDLE_TIMEOUT_MS;
   let escapesLeft = CLAUDE_MAX_ESCAPES;
   for (;;) {
     const screen = unwrap(await terminal.capture());
-    // A pending choice first: a dialog with an unknown footer under a box left in scrollback would
-    // otherwise pass for the box, and Enter there picks its option.
-    if (!isClaudeChoicePending(screen) && hasClaudeInputBox(screen)) break;
-    if (isClaudeHeld(screen)) {
-      if (Date.now() >= busyUntil) return false;
+    const { kind } = readClaudeScreen(screen);
+    if (kind === "ready") break;
+    if ((kind === "busy" || kind === "menu") && Date.now() < heldUntil) {
       await Bun.sleep(IDLE_POLL_MS);
       continue;
     }
-    if (escapesLeft === 0) return false;
-    escapesLeft -= 1;
-    unwrap(await terminal.sendKeys(["Escape"]));
-    await Bun.sleep(CLAUDE_ESCAPE_PAUSE_MS);
+    if (kind === "popup" && escapesLeft > 0) {
+      escapesLeft -= 1;
+      unwrap(await terminal.sendKeys(["Escape"]));
+      await Bun.sleep(CLAUDE_ESCAPE_PAUSE_MS);
+      continue;
+    }
+    const tail = screen.split("\n").slice(-SCREEN_TAIL_LINES).join("\n");
+    log.warn({ line, kind, screen: tail }, "line not typed: Claude's input box did not show");
+    return false;
   }
   unwrap(await terminal.sendKeys([CLAUDE_CLEAR_INPUT_KEY]));
   unwrap(await typeLine(terminal, line));
@@ -302,7 +309,7 @@ const watchCompact = async (
     const screen = captured.ok ? captured.value : "";
     if (screen.includes(CLAUDE_NOTHING_TO_COMPACT)) throw new Error(CLAUDE_NOTHING_TO_COMPACT);
     const now = Date.now();
-    if (isClaudeBusy(screen)) busyAt = now;
+    if (readClaudeScreen(screen).kind === "busy") busyAt = now;
     const waited = now - startedAt;
     if (waited >= COMPACT_MAX_MS) {
       throw new Error(`no SessionStart for the compact within ${COMPACT_MAX_MS / 1000} seconds`);
@@ -356,7 +363,7 @@ const compact = async (
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
   // Typed once: a compaction can take minutes, so a retype could start a second one. A compaction
   // that did not happen is no emergency: the run goes on in a fuller session.
-  if (!(await typeAtInputBox(target.terminal, command))) throw new Error(INPUT_UNREACHABLE);
+  if (!(await typeAtInputBox(target.terminal, command, log))) throw new Error(INPUT_UNREACHABLE);
   log.info({ command }, "compact typed");
   await watchCompact(options, target.terminal);
   log.info({}, "node completed by the compact's SessionStart");
@@ -428,10 +435,7 @@ const resumeRun = async (
     const attempts = launchedAfterSeq === undefined ? RESUME_ATTEMPTS : 1;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       if (launchedAfterSeq === undefined) {
-        if (!(await typeAtInputBox(terminal, line))) {
-          log.warn({ line, attempt }, "resume line not typed: Claude's input box did not show");
-          continue;
-        }
+        if (!(await typeAtInputBox(terminal, line, log))) continue;
         typedOnce = true;
       }
       const wait = await waitForResumed(terminal, store, afterSeq);
