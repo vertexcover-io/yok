@@ -42,7 +42,6 @@ export type AutoResumeOptions = Readonly<{
 type Wait = Readonly<{ ms: number; from: z.infer<typeof LimitWaitingEvent>["payload"]["from"] }>;
 
 type DraftEvent = Readonly<{ type: string; payload: Readonly<Record<string, string>> }>;
-// What one wait records: an event when it starts, and an event once continue is typed.
 type Retry = Readonly<{ ms: number; waiting: DraftEvent; resumed: DraftEvent }>;
 type WaitStart = Readonly<{ sessionId: string; eventId: string; now: Date }>;
 
@@ -72,9 +71,8 @@ const countInARow = (activity: readonly Event[], type: string): number => {
   return counted.slice(Math.max(start, 0)).filter((event) => event.type === type).length;
 };
 
-// After this wait's event: the session's own activity, its agent resuming work after a person typed
-// to it, or any session starting, which means the terminal may now hold another session, as after
-// /clear.
+// After this wait's event: the session's own activity, its agent back at work after a person typed
+// to it, or any session starting, since the terminal may then hold another session (after /clear).
 const movedOn = (events: readonly Event[], sessionId: string, eventId: string): boolean =>
   events
     .slice(events.findIndex((event) => event.id === eventId) + 1)
