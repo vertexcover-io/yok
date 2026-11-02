@@ -1314,16 +1314,12 @@ describe("the shipped skill workflow", () => {
 });
 
 describe("the shipped task workflow", () => {
-  test("declares the Linear key, bun and gh as its doctor checks", async () => {
+  test("declares bun and gh as its doctor checks, and no ticket key", async () => {
     const plan = await compileWorkflow(
       join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
     );
 
-    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual([
-      "env:LINEAR_API_KEY",
-      "binary:bun",
-      "binary:gh",
-    ]);
+    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual(["binary:bun", "binary:gh"]);
   });
 
   test("runs learn after planning, before the compact, and a learn failure never stops the run", async () => {

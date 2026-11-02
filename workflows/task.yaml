@@ -12,9 +12,6 @@ inputs:
     type: string
     default: default
 doctor:
-  - check: env
-    key: LINEAR_API_KEY
-    fix: Set LINEAR_API_KEY in .env
   - check: binary
     key: bun
     fix: Install Bun

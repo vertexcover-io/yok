@@ -12,7 +12,7 @@ inputs:
   prompt: { type: string, required: true }
   environment: { type: string, default: default }
 doctor:
-  - { check: env, key: LINEAR_API_KEY, fix: Set LINEAR_API_KEY in .env }
+  - { check: binary, key: gh, fix: Install the GitHub CLI and run gh auth login }
 nodes:
   - id: design
     type: agent
