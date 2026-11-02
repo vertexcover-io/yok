@@ -111,6 +111,8 @@ const FINISHED: Readonly<Record<string, string>> = {
 const blockedText = (blocker: Blocker): string => {
   if (blocker.reason === "question") return "needs your answer";
   if (blocker.reason === "usage-limit") return `paused until ${clockOf(blocker.details.resumeAt)}`;
+  if (blocker.reason === "api-error")
+    return `API error, retrying at ${clockOf(blocker.details.resumeAt)}`;
   return blocker.reason === "stuck" ? "stuck" : "agent error";
 };
 

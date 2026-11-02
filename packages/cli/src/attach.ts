@@ -1,13 +1,16 @@
 import { Command } from "@commander-js/extra-typings";
 import { yokTerminalHost } from "@yok/core";
 import {
+  closingLine,
   type Result,
+  readState,
   registryPath,
   requireRun,
+  runDirOf,
   spawnInteractive,
   type WorkflowRun,
 } from "@yok/sdk";
-import { createRegistry, type Registry } from "@yok/sdk/internal";
+import { createRegistry, isRunLive, type Registry } from "@yok/sdk/internal";
 import { commandLog, fail } from "./client.ts";
 
 const findById = async (registry: Registry, id: string): Promise<Result<WorkflowRun>> => {
@@ -33,10 +36,22 @@ const findRunToAttach = async (
   return picked.ok ? findById(registry, picked.value.id) : picked;
 };
 
-const attachArgv = (run: WorkflowRun): Result<readonly string[]> =>
-  run.terminal === null
-    ? { ok: false, error: `run ${run.id} has no terminal yet` }
-    : { ok: true, value: yokTerminalHost().find(run.terminal).attachCommand() };
+// The session is gone: a finished run says how it ended, any other run how to bring it back.
+// readState throws on a broken state.json; that run is treated as one still going.
+const goneMessage = async (run: WorkflowRun): Promise<string> => {
+  const name = run.name ?? run.id;
+  const state =
+    run.name === null ? null : await readState(runDirOf(run.cwd, run.name)).catch(() => null);
+  if (state !== null && !isRunLive(state.status)) return closingLine(name, state.status);
+  return `Run ${name} has no running session. Resume it with: yok resume ${name}`;
+};
+
+const attachArgv = async (run: WorkflowRun): Promise<Result<readonly string[]>> => {
+  if (run.terminal === null) return { ok: false, error: `run ${run.id} has no terminal yet` };
+  const terminal = yokTerminalHost().find(run.terminal);
+  if (await terminal.isAlive()) return { ok: true, value: terminal.attachCommand() };
+  return { ok: false, error: await goneMessage(run) };
+};
 
 export const attachCommand = () =>
   new Command("attach")
@@ -47,7 +62,7 @@ export const attachCommand = () =>
     .action(async (name, opts) => {
       const run = await findRunToAttach(createRegistry(registryPath()), name, opts.runId);
       if (!run.ok) return fail(run.error);
-      const argv = attachArgv(run.value);
+      const argv = await attachArgv(run.value);
       if (!argv.ok) return fail(argv.error);
       if (opts.print === true) {
         console.log(argv.value.join(" "));

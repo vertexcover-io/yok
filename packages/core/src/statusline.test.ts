@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type RunRef, runDirOf } from "@yok/sdk";
-import { isClaudeBusy } from "./agents/claude.ts";
+import { readClaudeScreen } from "./agents/claude.ts";
 import { renderStatusline } from "./statusline.ts";
 
 const plain = (line: string): string => stripVTControlCharacters(line);
@@ -201,13 +201,18 @@ describe("renderStatusline", () => {
       expect(line).toStartWith("yok");
       expect(SPINNER_START.test(line)).toBe(false);
       for (const word of FORBIDDEN) expect(line).not.toContain(word);
-      expect(isClaudeBusy(line)).toBe(false);
+      expect(readClaudeScreen(line).kind).not.toBe("busy");
     }
   });
 
   test.each([
     ["question", { questions: [{ question: "Ship?", options: [] }] }, "needs your answer"],
     ["usage-limit", { resumeAt: new Date(2026, 8, 26, 14, 0).toISOString() }, "paused until 14:00"],
+    [
+      "api-error",
+      { error: "server_error", resumeAt: new Date(2026, 8, 26, 14, 0).toISOString() },
+      "API error, retrying at 14:00",
+    ],
     ["stuck", { message: null }, "stuck"],
     ["agent-error", { error: "authentication_failed", message: null }, "agent error"],
   ])(

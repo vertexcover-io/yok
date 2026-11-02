@@ -190,6 +190,7 @@ describe("StateSchema", () => {
   test.each([
     ["question", { questions: [question] }],
     ["usage-limit", { resumeAt: "2026-09-26T14:00:00Z" }],
+    ["api-error", { error: "server_error", resumeAt: "2026-09-26T14:00:00Z" }],
     ["stuck", { message: null }],
     ["agent-error", { error: "rate_limit", message: "slow down" }],
   ])("SC130: a blocked run with a %s blocker and its details parses", (reason, details) => {

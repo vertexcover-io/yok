@@ -106,7 +106,11 @@ export type StopFailureInput = Readonly<{
   error: string;
   // set by the agent's adapter, which knows its own error names
   usageLimit: boolean;
+  // an API error that may pass on its own, such as a dropped connection
+  retryable: boolean;
   message: string | undefined;
+  // undefined when the transcript is missing or cannot be read
+  readTranscript: () => Promise<readonly TranscriptEntry[] | undefined>;
 }>;
 
 // The agent ignores this hook's answer, so a handler only observes.

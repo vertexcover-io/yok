@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 with high effort · Claude Max
+ ▝▝   ▝▝   ~/Projects/yok · /rc            
+
+
+❯ Use the Bash tool to run exactly this command and nothing else: mkdir -p      
+  /private/tmp/claude-501/yokdbg-perm-test                                      
+
+⏺ Creating test directory 
+  ⎿  $ mkdir -p /private/tmp/claude-501/yokdbg-perm-test
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" 
+ below
+ Create test directory
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ mkdir -p /private/tmp/claude-501/yokdbg-perm-test
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /private/tmp/claude-501 from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+                                                                                
+
+
+
+                                          
+                                        

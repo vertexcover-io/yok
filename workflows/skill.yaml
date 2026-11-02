@@ -1,7 +1,8 @@
-# Writes a new agent skill, or edits one that exists, from a prompt; then audits and fixes it,
-# two passes at most. A new skill with no path: skill-author asks where to save it, project or
-# user, .agents or .claude.
 name: skill
+description: >-
+  Write a new agent skill, or edit one that exists, from a prompt; then audit and fix it, two
+  passes at most. A new skill with no path is asked where to save it: project or user, .agents or
+  .claude.
 inputs:
   # The skill to edit: its folder, or its name. Empty creates a new skill, unless the prompt
   # names one that exists.

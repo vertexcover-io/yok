@@ -5,8 +5,9 @@ import { zValidator } from "@hono/zod-validator";
 import {
   clearDeadSwitchLocks,
   compilePlan,
-  findWorkflowPath,
+  locateWorkflow,
   orchestrateArgv,
+  pickNotifier,
   resolveWorkflowInputs,
   verdict,
   type WorkflowAgent,
@@ -23,6 +24,7 @@ import {
   type JsonObject,
   type JsonValue,
   loadStartConfig,
+  type Notifier,
   type PermissionMode,
   type PolicyLayer,
   type ResolvedTiers,
@@ -38,7 +40,6 @@ import {
 import {
   devPluginDir,
   foldModelSwitch,
-  isRunLive,
   jsonlEventStore,
   type Registry,
   resolvePolicies,
@@ -48,14 +49,17 @@ import {
 } from "@yok/sdk/internal";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { errorResponse, jsonBody, type Vars } from "./api.ts";
+import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-import { addRunIfProjectKept, pickProject, refuseBody } from "./projects.ts";
+import { type ListedRun, listRunSummaries } from "./overview.ts";
+import { addRunIfProjectKept, pickProject, readProjects, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
   DoctorBodySchema,
+  ListRunsQuerySchema,
   type ResumeRunBody,
   ResumeRunBodySchema,
+  type RunsFilter,
   type StartRunBody,
   StartRunBodySchema,
 } from "./protocol.ts";
@@ -94,7 +98,15 @@ const resolveRunSettings = async (
   cwd: string,
   plan: WorkflowPlan,
   cli: PolicyLayer,
-): Promise<Result<Readonly<{ tiers: ResolvedTiers | null; policies: SavedPolicies }>>> => {
+): Promise<
+  Result<
+    Readonly<{
+      tiers: ResolvedTiers | null;
+      policies: SavedPolicies;
+      notifier: Notifier | undefined;
+    }>
+  >
+> => {
   const loaded = await loadStartConfig(config, cwd);
   if (!loaded.ok) return loaded;
   const tiers = resolveTiers(loaded.value.config, plan.agent, plan.tiers);
@@ -104,13 +116,35 @@ const resolveRunSettings = async (
     workflow: plan.policies,
     cli,
   });
-  return { ok: true, value: { tiers: tiers.value, policies } };
+  const notifier = pickNotifier(plan.notifier, loaded.value.config.notifier);
+  return { ok: true, value: { tiers: tiers.value, policies, notifier } };
+};
+
+// The channel a Slack command was typed in, and the ts of its thread's first message.
+export type ChatThread = Readonly<{ channel: string; ts: string }>;
+
+// A run started from a chat thread replies in it only when its notifier posts to that channel:
+// the thread's id means nothing anywhere else. True when the session gets the thread.
+const checkThread = (
+  thread: ChatThread | undefined,
+  notifier: Notifier | undefined,
+  env: Readonly<Record<string, string>>,
+): Result<boolean> => {
+  if (thread === undefined || notifier?.enabled !== true) return { ok: true, value: false };
+  const channel = env.SLACK_CHANNEL_ID ?? process.env.SLACK_CHANNEL_ID;
+  if (channel === thread.channel) return { ok: true, value: true };
+  return {
+    ok: false,
+    error: `run not started: this project's updates go to Slack channel ${channel ?? "(none set)"}, not this one; start the run from that channel, or set its SLACK_CHANNEL_ID to this one`,
+  };
 };
 
 export type LaunchReply = Readonly<{
   run: WorkflowRun;
   attach: readonly string[];
   view: string;
+  // set only for a start from a chat thread: whether the run's updates reply in it
+  threaded?: boolean;
 }>;
 export type LaunchError = Readonly<{
   status: 400 | 409 | 422 | 502;
@@ -128,6 +162,7 @@ export type LaunchRequest = Readonly<{
   name?: string;
   policies: PolicyLayer;
   permissionMode?: PermissionMode;
+  thread?: ChatThread;
   // Adds the run to the registry unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
 }>;
@@ -171,7 +206,9 @@ export const launchRun = async (
     );
     return refused(400, "bad-request", resolved.error);
   }
-  const { tiers, policies } = resolved.value;
+  const { tiers, policies, notifier } = resolved.value;
+  const threaded = checkThread(request.thread, notifier, checked.env.value);
+  if (!threaded.ok) return refused(400, "bad-request", threaded.error);
 
   const provider = deps.providerFor(agent);
   const id = `r-${randomBytes(4).toString("hex")}`;
@@ -204,7 +241,10 @@ export const launchRun = async (
     .launch({
       cwd,
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
-      env: sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+      env: {
+        ...sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+        ...(threaded.value && request.thread ? { YOK_SLACK_THREAD: request.thread.ts } : {}),
+      },
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
       ...tierLaunch(tiers === null ? null : (tiers.models[tiers.default] ?? null)),
@@ -229,12 +269,18 @@ export const launchRun = async (
   runLog.info({ workflow, cwd, agent, terminalName }, "run started");
   return {
     ok: true,
-    value: { run, attach: [...terminal.attachCommand()], view: viewUrl(deps, id) },
+    value: {
+      run,
+      attach: [...terminal.attachCommand()],
+      view: viewUrl(deps, id),
+      ...(request.thread === undefined ? {} : { threaded: threaded.value }),
+    },
   };
 };
 
 export type StartExtra = Readonly<{
   permissionMode?: PermissionMode;
+  thread?: ChatThread;
   // Asked just before the run is registered; false refuses the start with a conflict.
   stillWanted?: () => Promise<boolean>;
 }>;
@@ -246,14 +292,16 @@ export const compileWorkflow = async (
   cwd: string,
   config: string | null,
 ): Promise<Result<Readonly<{ plan: WorkflowPlan; workflowPath: string }>>> => {
-  const workflowPath = findWorkflowPath(workflow, cwd);
+  const located = await locateWorkflow(workflow, cwd, config);
+  if (!located.ok) return located;
+  const workflowPath = located.value;
   if (!existsSync(workflowPath)) return { ok: false, error: `no workflow at ${workflowPath}` };
   const compiled = await compilePlan(workflowPath, cwd, config);
   return compiled.ok ? { ok: true, value: { plan: compiled.value, workflowPath } } : compiled;
 };
 
-// The one start-up path: POST /runs and trigger firings both start here. A project yok cloned
-// is pulled first, and every refusal comes before the run is registered.
+// The one start-up path: POST /runs, trigger firings and the Slack run command all start here.
+// A project yok cloned is pulled first, and every refusal comes before the run is registered.
 export const startProjectRun = async (
   body: StartRunBody,
   deps: RunDeps & GitDeps,
@@ -276,7 +324,7 @@ export const startProjectRun = async (
   const config = body.config === undefined ? null : resolve(cwd, body.config);
   const compiled = await compileWorkflow(body.workflow, cwd, config);
   if (!compiled.ok) return refused(400, "bad-request", compiled.error);
-  const { permissionMode, stillWanted } = extra;
+  const { permissionMode, stillWanted, thread } = extra;
   return launchRun(
     {
       ...compiled.value,
@@ -286,6 +334,7 @@ export const startProjectRun = async (
       ...(body.name === undefined ? {} : { name: body.name }),
       policies: body.policies ?? {},
       ...(permissionMode === undefined ? {} : { permissionMode }),
+      ...(thread === undefined ? {} : { thread }),
       register: async (add) => {
         if (stillWanted !== undefined && !(await stillWanted())) {
           return { ok: false, error: "withdrawn while the run was being checked" };
@@ -349,8 +398,9 @@ const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
     })
     .at(-1);
 
-// Brings back a run whose agent session is gone: the last linked session continues on the
-// model the run was on, in a tmux session under the run's old name.
+// Brings back a run whose agent session is gone, finished or not: the last linked session
+// continues on the model the run was on, in a tmux session under the run's old name. A finished
+// run's resumed session stays open as a chat.
 const resumeRun = async (
   c: Context<{ Variables: Vars }>,
   deps: RunDeps,
@@ -367,12 +417,6 @@ const resumeRun = async (
   const runDir = runDirOf(run.cwd, run.name);
   const state = await readStateOrNull(runDir);
   if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
-  if (!isRunLive(state.status)) {
-    return conflict(
-      c,
-      `run ${run.name} is ${state.status}; there is nothing to resume, so start a new run with yok run`,
-    );
-  }
   if (await isAgentAlive(run, deps.host)) {
     return conflict(c, `run ${run.name} still has its agent session; use yok attach ${run.name}`);
   }
@@ -430,6 +474,28 @@ const resumeRun = async (
   );
 };
 
+const RUNS_SHOWN = 20;
+
+// Filters run before the cut, so total counts only the runs that match.
+const listRuns = async (c: Context<{ Variables: Vars }>, deps: RunDeps, query: RunsFilter) => {
+  const projects = Object.entries(await readProjects(deps.home));
+  if (query.project !== undefined && !projects.some(([name]) => name === query.project)) {
+    return errorResponse(c, 404, "not-found", `no project named ${query.project}`);
+  }
+  const projectAt = (cwd: string): string | null =>
+    projects.find(([, project]) => project.path === cwd)?.[0] ?? null;
+  const listed: readonly ListedRun[] = (await listRunSummaries(deps.registry, deps.host)).map(
+    (run) => ({ ...run, project: projectAt(run.cwd) }),
+  );
+  const matched = listed.filter(
+    (run) =>
+      (query.project === undefined || run.project === query.project) &&
+      (query.status === undefined || query.status.includes(run.status)),
+  );
+  const runs = query.all === "true" ? matched : matched.slice(0, query.limit ?? RUNS_SHOWN);
+  return c.json({ runs, total: matched.length }, 200);
+};
+
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach ApiType.
 export const runRoutes = (deps: RunDeps & GitDeps) =>
   new Hono<{ Variables: Vars }>()
@@ -443,6 +509,7 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
     .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
       resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
     )
+    .get("/", queryParams(ListRunsQuerySchema), (c) => listRuns(c, deps, c.req.valid("query")))
     .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");

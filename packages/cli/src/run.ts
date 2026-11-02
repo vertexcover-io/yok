@@ -3,8 +3,6 @@ import { Command, type CommandUnknownOpts } from "@commander-js/extra-typings";
 import {
   builtInChecks,
   compileRunWorkflow,
-  type DoctorReport,
-  DoctorReportSchema,
   isWorkflowFile,
   runDoctor,
   verdict,
@@ -25,7 +23,7 @@ import {
   spawnInteractive,
 } from "@yok/sdk";
 import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import { type ApiError, folderSlug, runtimeChecks } from "@yok/server";
+import { blockedText, folderSlug, runtimeChecks, startError } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
@@ -47,14 +45,6 @@ export const collectInput = (pair: string, acc: Record<string, string>): Record<
   if (index === -1) throw new Error(`--input must be KEY=VALUE, got "${pair}"`);
   return { ...acc, [pair.slice(0, index)]: pair.slice(index + 1) };
 };
-
-const blockedText = (message: string, report: DoctorReport): string =>
-  [
-    message,
-    ...report.results
-      .filter((row) => row.status === "fail")
-      .flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]),
-  ].join("\n");
 
 // The run's saved policies have no say here: an unattended run can still be watched.
 export const followUps = ({
@@ -119,11 +109,6 @@ const showStartedRun = async (
   process.exitCode = exitCode;
 };
 
-export const startError = (error: ApiError): string => {
-  const report = DoctorReportSchema.safeParse(error.details);
-  return report.success ? blockedText(error.message, report.data) : apiErrorText(error);
-};
-
 export const projectAt = async (
   client: YokClient,
   root: string,
@@ -176,7 +161,7 @@ export const pickProjectName = async (
 };
 
 type RunOptions = Readonly<{
-  prompt: string;
+  prompt?: string;
   name?: string;
   project?: string;
   input: Record<string, string>;
@@ -222,7 +207,7 @@ export const addPolicyOptions = (command: CommandUnknownOpts): void => {
 export const runCommand = () => {
   const command = new Command("run")
     .argument("<workflow>", "shipped workflow name (e.g. task), or workflow file to run")
-    .requiredOption("--prompt <text>", "first message sent to the agent")
+    .option("--prompt <text>", "first message sent to the agent, when the workflow takes one")
     .option("--name <name>", "run name (default: derived from the prompt)")
     .option(
       "--project <name>",
@@ -248,7 +233,10 @@ export const runCommand = () => {
 
       const result = await client.run({
         ...target.value,
-        inputs: { prompt: opts.prompt, ...opts.input } satisfies JsonObject,
+        inputs: {
+          ...(opts.prompt === undefined ? {} : { prompt: opts.prompt }),
+          ...opts.input,
+        } satisfies JsonObject,
         // Nobody sits at a remote run's terminal, so by default no stage waits for an answer.
         policies: remote ? { interaction: false, ...cliPolicies.value } : cliPolicies.value,
         ...(opts.name === undefined ? {} : { name: opts.name }),

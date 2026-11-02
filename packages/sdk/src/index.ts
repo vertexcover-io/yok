@@ -143,6 +143,9 @@ export {
   AgentStuckEvent,
   type AnsweredQuestion,
   AnsweredQuestionSchema,
+  ApiErrorReachedEvent,
+  ApiErrorResumedEvent,
+  ApiErrorWaitingEvent,
   ContextStartedEvent,
   CustomStateUpdatedEvent,
   type EmitInput,
@@ -254,6 +257,7 @@ export {
 } from "./registry.ts";
 export {
   type CheckoutConfig,
+  closingLine,
   findConfigRoot,
   findRoot,
   loadCheckoutConfig,

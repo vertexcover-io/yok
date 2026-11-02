@@ -776,42 +776,101 @@ nodes:
   }, 30_000);
 });
 
+describe("SC26: the stop that ends a run's finishing turn closes its tmux pane", () => {
+  const sessionGone = (socket: string) =>
+    spawnSync("tmux", ["-L", socket, "has-session", "-t", "agent"]).status !== 0;
+
+  // A finished run whose registered terminal is the fake agent's tmux session.
+  const finishedRun = async (socket: string) => {
+    const flow = await runInPane(
+      ONE_AGENT,
+      socket,
+      { terminal: "agent" },
+      { YOK_TMUX_SOCKET: socket },
+    );
+    const plan = flow.next();
+    const done = ["done", plan.nodeRunId, "--run", "feat-x", "--summary", "Planned."];
+    expect(flow.step([...done, "--output", "{}"]).code).toBe(0);
+    expect(flow.next()).toMatchObject({ kind: "finished", status: "completed" });
+    return flow;
+  };
+
+  test("SC811: the next that ends the run closes nothing; the finishing session's stop then kills the run's terminal at once, with nothing typed", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(sessionGone(socket)).toBe(false);
+
+      flow.stop();
+
+      expect(sessionGone(socket)).toBe(true);
+      expect(flow.typed()).toEqual([]);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+
+  test("SC828: a session resumed after the finish keeps its terminal through its stop", async () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    try {
+      const flow = await finishedRun(socket);
+      expect(flow.sessionStart("A", "resume").code).toBe(0);
+
+      expect(flow.stop().code).toBe(0);
+
+      expect(sessionGone(socket)).toBe(false);
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  }, 30_000);
+});
+
 describe("SC26: orchestrate hook stop-failure", () => {
   // The test itself may run inside tmux; the helper must not find this pane and type into it.
   const RUN_ENV = { YOK_RUN_ID: "r-1", TMUX: undefined, TMUX_PANE: undefined };
 
-  test("a usage limit is logged as agent.limit.reached and its detached wait starts, which with no terminal only logs why it cannot type", async () => {
-    const run = startedRun(ONE_AGENT);
-    const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
-    expect(orchestrate(run.repo, run.home, link).code).toBe(0);
+  const hasEvent = (repo: string, type: string) => {
+    const path = join(runDirOf(repo, "feat-x"), "event.jsonl");
+    return existsSync(path) && readFileSync(path, "utf8").includes(`"type":"${type}"`);
+  };
 
-    const result = orchestrate(
-      run.repo,
-      run.home,
-      ["hook", "stop-failure", "--agent", "claude", "--handler", "resume-after-limit"],
-      RUN_ENV,
-      JSON.stringify({
-        session_id: "A",
-        error: "rate_limit",
-        last_assistant_message: "resets 3pm (UTC)",
-      }),
-    );
+  test.each([
+    ["SC26: a usage limit", "resume-after-limit", "rate_limit", "agent.limit.reached", {}],
+    [
+      "SC15: a server_error",
+      "record-agent-error",
+      "server_error",
+      "agent.error.reached",
+      // no transcript_path, so no progress to read
+      { progressed: false },
+    ],
+  ])(
+    "%s is logged as its reached event, and its detached wait, with no terminal, records agent.stopped",
+    async (_label, handler, error, reachedType, read) => {
+      const run = startedRun(ONE_AGENT);
+      const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
+      expect(orchestrate(run.repo, run.home, link).code).toBe(0);
 
-    expect(result).toMatchObject({ code: 0, stdout: "" });
-    expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
-      type: "agent.limit.reached",
-      payload: {
-        agent: "claude",
-        sessionId: "A",
-        error: "rate_limit",
-        message: "resets 3pm (UTC)",
-      },
-    });
-    const log = join(runDirOf(run.repo, "feat-x"), "limit-wait.log");
-    await waitFor(
-      () => existsSync(log) && readFileSync(log, "utf8").includes("no terminal to type into"),
-    );
-  }, 20_000);
+      const result = orchestrate(
+        run.repo,
+        run.home,
+        ["hook", "stop-failure", "--agent", "claude", "--handler", handler],
+        RUN_ENV,
+        JSON.stringify({ session_id: "A", error, last_assistant_message: "resets 3pm (UTC)" }),
+      );
+
+      expect(result).toMatchObject({ code: 0, stdout: "" });
+      const payload = { agent: "claude", sessionId: "A", error, message: "resets 3pm (UTC)" };
+      await waitFor(() => hasEvent(run.repo, "agent.stopped"));
+      const events = await eventsOf(run.repo);
+      expect(events.find((event) => event.type === reachedType)?.payload).toEqual({
+        ...payload,
+        ...read,
+      });
+      expect(events.find((event) => event.type === "agent.stopped")?.payload).toEqual(payload);
+    },
+    20_000,
+  );
 });
 
 describe("SC26: orchestrate hook --agent codex", () => {

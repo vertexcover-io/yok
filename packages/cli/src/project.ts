@@ -1,27 +1,12 @@
 import { basename, resolve } from "node:path";
 import { Command } from "@commander-js/extra-typings";
 import { createGit } from "@yok/sdk";
-import { folderSlug, type ProjectView } from "@yok/server";
+import { folderSlug, renderProjects } from "@yok/server";
 import { apiErrorText, fail, isRemote, resolveClient } from "./client.ts";
 
 // The folder you are in means nothing on the server, so every --remote command names its project
 // and checks it before resolveClient sends anything.
 export const PROJECT_REQUIRED = "--project NAME is required with --remote";
-
-const HEADERS = ["NAME", "STATUS", "PATH", "ADDED BY"] as const;
-
-export const renderProjects = (projects: readonly ProjectView[]): string => {
-  const rows = projects.map((p) => [p.name, p.status, p.path, p.addedBy.name ?? p.addedBy.channel]);
-  const widths = HEADERS.map((header, column) =>
-    Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),
-  );
-  const line = (values: readonly string[]): string =>
-    values
-      .map((value, column) => value.padEnd(widths[column] ?? 0))
-      .join("  ")
-      .trimEnd();
-  return [line(HEADERS), ...rows.map(line)].join("\n");
-};
 
 export const projectCommand = () => {
   const project = new Command("project").description("Manage the checkouts the server runs on");

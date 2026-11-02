@@ -190,6 +190,57 @@ const waitFor = (predicate: () => boolean, timeoutMs = 5000): void => {
 
 describe("yok run", () => {
   test(
+    "a bare name runs the project's workflow from the config's workflowPath",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+      writeFileSync(
+        join(repo, "orchestrate.config.json"),
+        JSON.stringify({ version: 2, workflowPath: "flows" }),
+      );
+      mkdirSync(join(repo, "flows"));
+      writeFileSync(
+        join(repo, "flows", "nightly.yaml"),
+        OK_WORKFLOW.replace("name: ok", "name: nightly"),
+      );
+
+      expect(yok(repo, env, "run", "nightly", "--no-open").code).toBe(0);
+      waitFor(() => readLines(fakeOut).some(isLaunch));
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test("a bare name neither shipped nor in workflowPath fails naming the files it looked for", () => {
+    const repo = makeRepo();
+    const { env } = makeEnv();
+
+    const result = yok(repo, env, "run", "ghost", "--no-open");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("no workflow ghost; looked for ");
+  });
+
+  test(
+    "a workflow that declares no required prompt runs without --prompt",
+    () => {
+      const repo = makeRepo();
+      const { env, fakeOut } = makeEnv();
+
+      const result = yok(repo, env, "run", "ok.yaml", "--no-open");
+      expect(result.code).toBe(0);
+      waitFor(() => readLines(fakeOut).some(isLaunch));
+      const argv = readLines(fakeOut).find(isLaunch)?.argv;
+      const prompt = Array.isArray(argv) ? argv.at(-1) : undefined;
+      expect(prompt).toContain("--inputs {}");
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "a supplied --name reaches the launched agent without replacing the prompt input",
     () => {
       const repo = makeRepo();

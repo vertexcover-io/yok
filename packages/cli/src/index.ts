@@ -9,6 +9,7 @@ import { checkRemoteFlag, commandPath, fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { loginCommand } from "./login.ts";
+import { lsCommand } from "./ls.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
 import { resumeCommand, runCommand } from "./run.ts";
@@ -48,6 +49,7 @@ await new Command()
   .addCommand(agentCommand("codex"))
   .addCommand(doctorCommand())
   .addCommand(loginCommand())
+  .addCommand(lsCommand())
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())
   .addCommand(projectCommand())

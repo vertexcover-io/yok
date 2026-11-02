@@ -759,6 +759,15 @@ describe("blocker", () => {
     });
   const limitResumed = (seq: number) =>
     runEvent(seq, "agent.limit.resumed", { sessionId: "s1", limitEventId: "evt-0" });
+  const errorWaiting = (seq: number) =>
+    runEvent(seq, "agent.error.waiting", {
+      sessionId: "s1",
+      errorEventId: "evt-0",
+      error: "server_error",
+      resumeAt,
+    });
+  const errorResumed = (seq: number) =>
+    runEvent(seq, "agent.error.resumed", { sessionId: "s1", errorEventId: "evt-0" });
   const stopCalled = (seq: number) =>
     runEvent(seq, "hooks.stop.called", {
       ...session,
@@ -829,6 +838,11 @@ describe("blocker", () => {
       "agent.limit.waiting",
       limitWaiting(2),
       { ...onDesign, reason: "usage-limit", details: { resumeAt } },
+    ],
+    [
+      "agent.error.waiting",
+      errorWaiting(2),
+      { ...onDesign, reason: "api-error", details: { error: "server_error", resumeAt } },
     ],
     [
       "agent.stuck with a message",
@@ -960,6 +974,13 @@ describe("blocker", () => {
 
   test("SC128: agent.limit.resumed clears a usage-limit blocker", () => {
     unblockedState(project([designRunning, limitWaiting(2), limitResumed(3)]));
+  });
+
+  test("SC12: agent.error.resumed clears an api-error blocker, and agent.limit.resumed leaves it", () => {
+    unblockedState(project([designRunning, errorWaiting(2), errorResumed(3)]));
+    expect(project([designRunning, errorWaiting(2), limitResumed(3)]).blocker).toMatchObject({
+      reason: "api-error",
+    });
   });
 
   test("SC128: a question blocker survives agent.limit.resumed, and a newer question replaces a usage-limit blocker", () => {
@@ -1191,6 +1212,27 @@ describe("emitEvent refusals", () => {
       {},
       { sessionId: "s1" },
       "agent.limit.resumed",
+    ],
+    [
+      "agent.error.reached with a bad payload",
+      "agent.error.reached",
+      {},
+      session,
+      "agent.error.reached",
+    ],
+    [
+      "agent.error.waiting with a bad payload",
+      "agent.error.waiting",
+      {},
+      { sessionId: "s1", errorEventId: "e-1", error: "server_error", resumeAt: "soon" },
+      "agent.error.waiting",
+    ],
+    [
+      "agent.error.resumed with a bad payload",
+      "agent.error.resumed",
+      {},
+      { sessionId: "s1" },
+      "agent.error.resumed",
     ],
     [
       "agent.input.unreachable with no step",

@@ -1,0 +1,35 @@
+
+  ⎿  Read .worktrees/claude-screen-state/packages/server/src/delivery.test.ts (170 lines)
+  ⎿  Skills restored (yok:writing-style, yok:adr, yok:tdd, yok:code-quality, yok:orchestrate)
+
+❯ /yok:orchestrate --resume claude-screen-state
+
+⏺ The run is picking up again.
+
+  Ran 1 shell command
+
+⏺ ▶ fix (stage fix)
+
+  Listed 1 directory, ran 5 shell commands
+  ⎿  Loaded CLAUDE.md
+
+⏺ Starting the fix step. First I'll grab a real picture of Claude's question box, then ask you one thing.
+
+  Ran 1 shell command
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Question box
+
+│ Claude's real question box draws a ─ line between the options and the last row ('Chat about this'). yok reads that line as the
+│ bottom, finds no ❯ under it, calls it a popup, and presses Escape. That cancels your question. How should yok spot this box?
+
+❯ 1. Allow numbered ❯ (Recommended)
+     Small exception to your 'no option numbers' rule: a '❯ 1.'-style line between the two lowest ─ lines also means menu. Narrow and
+     simple. A popup with old chat lines above it still gets Escape.
+  2. Look above the divider
+     Any ❯ line between the two lowest ─ lines means menu, numbers or not. Catches more dialogs, but an old chat line like '❯ fix the
+     bug' above a popup would make yok wait instead of pressing Escape.
+  3. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

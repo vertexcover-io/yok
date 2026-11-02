@@ -12,7 +12,7 @@ import {
 } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { type ApiError, logPath, pidPath, readHomeEnv, readPort } from "@yok/server";
+import { logPath, pidPath, readHomeEnv, readPort } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 import * as z from "zod";
 
@@ -76,7 +76,7 @@ export const compileOrFail = async (
   });
 };
 
-export const apiErrorText = (error: ApiError): string => `${error.code}: ${error.message}`;
+export { apiErrorText } from "@yok/server/client";
 
 // With no port file yet, port 1 answers nothing and the server counts as unreachable.
 export const localUrl = (home: string): string => `http://127.0.0.1:${readPort(home) ?? 1}`;
@@ -194,7 +194,15 @@ export const resolveClient = async (remote: boolean): Promise<YokClient> => {
 export const commandPath = (command: CommandUnknownOpts): string =>
   command.parent === null ? "" : `${commandPath(command.parent)} ${command.name()}`.trim();
 
-const REMOTE_COMMANDS = new Set(["run", "project", "trigger", "doctor", "login", "server status"]);
+const REMOTE_COMMANDS = new Set([
+  "run",
+  "project",
+  "trigger",
+  "doctor",
+  "login",
+  "ls",
+  "server status",
+]);
 const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop"]);
 
 // Refuses --remote on a command that acts on this machine, and login without it, before the

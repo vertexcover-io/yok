@@ -345,7 +345,7 @@ class Checker:
     def check_tools(self, fm: dict, body: str):
         allowed = fm.get("allowed-tools") or fm.get("allowed_tools")
         if allowed:
-            declared = {t.strip() for t in re.split(r"[,\s]+", allowed) if t.strip()}
+            declared = {t.strip() for t in re.split(r"[,\s\[\]]+", allowed) if t.strip()}
             used = set(re.findall(r"\b(Bash|Read|Write|Edit|Glob|Grep|WebFetch|WebSearch|Agent|Task)\b", body))
             for tool in sorted(used - declared):
                 self.add("I1", "integrity", "tool_not_allowed", BLOCK, "SKILL.md", tool,

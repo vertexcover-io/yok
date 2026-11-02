@@ -305,3 +305,14 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_bracketed_allowed_tools_list_declares_its_last_tool():
+    """`[Bash, Read]` declares Read. Regression: the closing bracket stuck to the last name and fired I1."""
+    skill = (
+        "---\nname: invoice-reader\n"
+        "description: Reads an invoice. Use when the user asks to read an invoice.\n"
+        "allowed-tools: [Bash, Read]\n---\n\n# Invoice reader\n\nRead the invoice with `cat`.\n"
+    )
+    got = findings_for({"SKILL.md": skill})
+    assert "I1" not in got, f"declared tool flagged: {[f.evidence for f in got['I1']]}"

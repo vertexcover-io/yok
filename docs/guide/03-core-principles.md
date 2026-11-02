@@ -52,7 +52,7 @@ A project changes a shipped skill through `extensions` in its `orchestrate.confi
 
 ## 7. The person can leave.
 
-The Stop hook sends an agent back when it ends a turn with work owed. The limit wait pauses and resumes when a usage cap resets. A model switch between stages needs no one. A comment left in the browser is typed into the agent's terminal by the server.
+The Stop hook sends an agent back when it ends a turn with work owed. The auto-resume helper pauses and resumes when a usage cap resets or an API error may have passed. A model switch between stages needs no one. A comment left in the browser is typed into the agent's terminal by the server.
 
 **Why.** The two audited runs spent most of their hours waiting on a human. Every wait we remove is hours saved.
 

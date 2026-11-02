@@ -1,4 +1,7 @@
 name: task
+description: >-
+  The full pipeline for a change that needs decisions, touches more than one part, or must be
+  verified in the running app: baseline, design, plan, implement, review, qa, commit, PR.
 inputs:
   prompt:
     type: string

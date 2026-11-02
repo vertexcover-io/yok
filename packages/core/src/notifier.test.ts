@@ -240,19 +240,22 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "the run's end shows the duration, the last summary and every link",
+      "SC814: the run's end shows the duration, the last summary, every link and ends with the resume line",
       event("workflow.completed"),
       finished,
       notice("✅ Run complete · 2h 17m", {
         mention: true,
-        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442",
+        body: "Opened a PR in lydia.\nlydia · https://github.com/refrens/lydia/pull/5442\nRun demo completed. Resume it with: yok resume demo",
       }),
     ],
     [
-      "a failed run names the first failed node and the first line of its error",
+      "SC814: a failed run names the first failed node, the first line of its error, then the resume line",
       event("workflow.failed"),
       failedBuild,
-      notice("❌ Run failed at build · 12m", { mention: true, body: "tsc exit 2" }),
+      notice("❌ Run failed at build · 12m", {
+        mention: true,
+        body: "tsc exit 2\nRun demo failed. Resume it with: yok resume demo",
+      }),
     ],
     [
       "a stuck agent names the open node and what to do",
@@ -396,6 +399,26 @@ describe("describeEvent", () => {
         path: "artifacts/design.md",
       }),
       openDesign,
+    ],
+    [
+      "SC14: an API error that may pass",
+      event("agent.error.reached", { agent: "claude", sessionId: "s-1", error: "server_error" }),
+      state,
+    ],
+    [
+      "SC14: an API-error wait",
+      event("agent.error.waiting", {
+        sessionId: "s-1",
+        errorEventId: "e-1",
+        error: "server_error",
+        resumeAt: "2026-09-26T14:00:00Z",
+      }),
+      state,
+    ],
+    [
+      "SC14: an API-error retry",
+      event("agent.error.resumed", { sessionId: "s-1", errorEventId: "e-1" }),
+      state,
     ],
   ])("%s posts nothing", (_label, stored, at) => {
     expect(describeEvent(stored, at)).toBeUndefined();

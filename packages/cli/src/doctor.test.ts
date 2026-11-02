@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DoctorJsonSchema, type DoctorReport, type DoctorRow, summarize } from "@yok/core";
-import { exitCodeFor, renderJson, renderTable, renderText } from "./doctor.ts";
+import { renderDoctorReport, renderDoctorTable } from "@yok/server";
+import { exitCodeFor, renderJson } from "./doctor.ts";
 
 const row = (overrides: Partial<DoctorRow>): DoctorRow => ({
   name: "git",
@@ -13,14 +14,14 @@ const row = (overrides: Partial<DoctorRow>): DoctorRow => ({
 
 const report = (results: readonly DoctorRow[]): DoctorReport => summarize(results);
 
-describe("renderText", () => {
+describe("renderDoctorReport", () => {
   test("SC1: READY with every row OK ends the text at the verdict line, with no advice", () => {
-    const text = renderText(report([row({})]));
+    const text = renderDoctorReport(report([row({})]));
     expect(text.endsWith("VERDICT\nREADY")).toBe(true);
   });
 
   test("SC2: BLOCKED with a failure and a warning prints the FAIL advice line", () => {
-    const text = renderText(
+    const text = renderDoctorReport(
       report([
         row({ name: "jq", status: "fail", detail: "not on PATH" }),
         row({ name: "gh", status: "warn", optional: true, detail: "not authenticated" }),
@@ -31,7 +32,7 @@ describe("renderText", () => {
   });
 
   test("SC3: DEGRADED with only warnings names every warned row and prints the WARN advice line", () => {
-    const text = renderText(
+    const text = renderDoctorReport(
       report([
         row({ name: "gh", status: "warn", optional: true, detail: "not authenticated" }),
         row({ name: "samskara", status: "warn", optional: true, detail: "not paired" }),
@@ -42,10 +43,10 @@ describe("renderText", () => {
   });
 });
 
-describe("renderTable", () => {
+describe("renderDoctorTable", () => {
   test("SC7: aligns STATUS across rows, truncates a long detail, and wraps extra fix steps", () => {
     const longDetail = "x".repeat(80);
-    const table = renderTable([
+    const table = renderDoctorTable([
       row({ name: "git", status: "ok" }),
       row({
         name: "jq",

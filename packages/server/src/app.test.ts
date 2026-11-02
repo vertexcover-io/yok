@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import {
   accessSync,
   appendFileSync,
@@ -36,8 +37,10 @@ import { Hono } from "hono";
 import * as z from "zod";
 import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
+import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
 import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
-import { AddProjectBodySchema } from "./protocol.ts";
+import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
+import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
 
@@ -1133,6 +1136,814 @@ describe("createRoot guard", () => {
   });
 });
 
+const SLACK_NOW = new Date("2026-10-29T12:00:00.000Z");
+const SLACK_ENV =
+  "SLACK_SIGNING_SECRET=s3cret\nSLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n";
+
+type SlackPost = Readonly<{ url: string; form: Readonly<Record<string, string>> }>;
+
+// The root on localhost:4000 with HOME/.env holding ENV; posts records every Slack Web API call.
+const slackRoot = async (
+  env = SLACK_ENV,
+  launch: Parameters<typeof buildDeps>[0] = launchesOk,
+  checkCheckout: CheckCheckout = readyCheckout,
+) => {
+  const deps = { ...(await buildDeps(launch)), checkCheckout };
+  writeFileSync(join(deps.home, ".env"), env);
+  const posts: SlackPost[] = [];
+  const app = createRoot({
+    ...deps,
+    port: 4000,
+    domain: "localhost:4000",
+    now: () => SLACK_NOW,
+    openInEditor: () => ({ ok: true, value: null }),
+    slackFetch: async (url, init) => {
+      posts.push({ url, form: Object.fromEntries(new URLSearchParams(String(init.body))) });
+      return Response.json({ ok: true });
+    },
+  });
+  return { app, deps, posts };
+};
+
+const signedHook = async (
+  app: ReturnType<typeof createRoot>,
+  payload: unknown,
+  secret = "s3cret",
+): Promise<Response> => {
+  const body = JSON.stringify(payload);
+  const ts = String(SLACK_NOW.getTime() / 1000);
+  const signature = `v0=${createHmac("sha256", secret).update(`v0:${ts}:${body}`).digest("hex")}`;
+  return app.request("/api/hooks/slack", {
+    method: "POST",
+    headers: {
+      host: "localhost:4000",
+      "content-type": "application/json",
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": signature,
+    },
+    body,
+  });
+};
+
+const mention = (text: string, extra: object = {}, eventId = "Ev1") => ({
+  type: "event_callback",
+  event_id: eventId,
+  event: { type: "app_mention", channel: "C1", ts: "100.1", text, ...extra },
+});
+
+// The hook acks before it posts, so a test waits on the fake's recorded calls.
+const until = async (check: () => boolean): Promise<void> => {
+  for (let i = 0; i < 50 && !check(); i++) await Bun.sleep(20);
+};
+
+describe("Slack hook", () => {
+  test("SC8: @yok help from the command channel gets one reply in its thread, as blocks with a text fallback", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+    await until(() => posts.length > 0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1" });
+    expect(posts[0]?.form.text).toBe("*Type `@yok` and one of:*");
+    expect(replies(posts)[0]).toStartWith("*Type `@yok` and one of:*\n• `ls ");
+    expect(replies(posts)[0]).toEndWith("\n• `help`");
+  });
+
+  test("SC9: @yok status replies with the server's own version and pid", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> status"));
+
+    await until(() => posts.length > 0);
+    expect(replies(posts)[0]).toContain("*Version* `0.0.0-test`");
+    expect(replies(posts)[0]).toContain("*PID* `4242`");
+  });
+
+  test("SC10: a mention typed inside thread 90.0 replies in that thread, not under its own ts", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> help", { thread_ts: "90.0" }));
+
+    await until(() => posts.length > 0);
+    expect(posts[0]?.form.thread_ts).toBe("90.0");
+  });
+
+  test("SC11: a request signed with another secret gets 401 and Slack is never called", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help"), "other");
+
+    expect(res.status).toBe(401);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC12: a mention from channel C2 gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, mention("<@UBOT> help", { channel: "C2" }));
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC13: the same event delivered twice gets one reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const first = await signedHook(app, mention("<@UBOT> help"));
+    const second = await signedHook(app, mention("<@UBOT> help"));
+
+    expect([first.status, second.status]).toEqual([200, 200]);
+    await until(() => posts.length > 0);
+    await Bun.sleep(100);
+    expect(posts).toHaveLength(1);
+  });
+
+  test("SC14: Slack's URL check gets its challenge back", async () => {
+    const { app } = await slackRoot();
+
+    const res = await signedHook(app, { type: "url_verification", challenge: "abc" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ challenge: "abc" });
+  });
+
+  test("SC15: without SLACK_SIGNING_SECRET the hook answers 503 and Slack is never called", async () => {
+    const { app, posts } = await slackRoot("SLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n");
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(503);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("a command that throws replies with internal: and the error's message", async () => {
+    const { app, deps, posts } = await slackRoot();
+    Object.assign(deps.registry, {
+      listRuns: async () => {
+        throw new Error("EACCES: /srv/secret/registry.json");
+      },
+    });
+
+    await signedHook(app, mention("<@UBOT> ls"));
+
+    await until(() => posts.length > 0);
+    expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/registry.json"]);
+  });
+
+  test("a reply echoing <!channel> posts it escaped, so it never pings the channel", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> &lt;!channel&gt;"));
+
+    await until(() => posts.length > 0);
+    expect(posts[0]?.form.text).toBe("unknown command: &lt;!channel&gt;");
+    expect(replies(posts)[0]).toStartWith("unknown command: &lt;!channel&gt;\n");
+    expect(JSON.stringify(posts[0]?.form)).not.toContain("<!channel>");
+  });
+
+  test("after 1001 distinct events the first id counts as new again, and the newest is still dropped", async () => {
+    const { app, posts } = await slackRoot();
+    for (let i = 0; i <= 1000; i++) await signedHook(app, mention("<@UBOT> help", {}, `Ev${i}`));
+    await until(() => posts.length >= 1001);
+
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev0"));
+    await until(() => posts.length >= 1002);
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev1000"));
+    await Bun.sleep(100);
+
+    expect(posts).toHaveLength(1002);
+  });
+
+  test("without SLACK_COMMAND_CHANNEL a mention gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot(
+      "SLACK_SIGNING_SECRET=s3cret\nSLACK_BOT_TOKEN=xoxb-test\n",
+    );
+
+    const res = await signedHook(app, mention("<@UBOT> help"));
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("an event other than app_mention gets 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+    const message = mention("<@UBOT> help");
+
+    const res = await signedHook(app, { ...message, event: { ...message.event, type: "message" } });
+
+    expect(res.status).toBe(200);
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("a signed payload of no known shape gets an empty 200 and no reply", async () => {
+    const { app, posts } = await slackRoot();
+
+    const res = await signedHook(app, { type: "event_callback", event: { type: "app_mention" } });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+    await Bun.sleep(100);
+    expect(posts).toEqual([]);
+  });
+
+  test("SC16: /api/health and /api/projects answer through the root as the bare API does, and /api/hooks/other is 404", async () => {
+    const { app, deps } = await slackRoot();
+    tempWorkspace(deps.home);
+    const bare = new Hono().route("/api", createApi(deps));
+    const get = (target: { request: typeof app.request }, path: string) =>
+      target.request(path, { headers: { host: "localhost:4000" } });
+
+    for (const path of ["/api/health", "/api/projects"]) {
+      const viaRoot = await get(app, path);
+      expect(viaRoot.status).toBe(200);
+      expect(await viaRoot.json()).toEqual(await (await get(bare, path)).json());
+    }
+    expect((await get(app, "/api/hooks/other")).status).toBe(404);
+  });
+});
+
+type SlackRunSetup = Readonly<{
+  // the project's .env value for SLACK_CHANNEL_ID
+  channel?: string;
+  // the project config's notifier block
+  notifier?: string;
+  checkCheckout?: CheckCheckout;
+}>;
+
+// slackRoot with project demo holding ok.yaml, a config turning the notifier on and a .env that
+// sends its updates to C1; launches records every agent launch.
+const slackRunRoot = async (setup: SlackRunSetup = {}) => {
+  const { channel = "C1", notifier = "{ type: slack }", checkCheckout = readyCheckout } = setup;
+  const launches: LaunchOptions[] = [];
+  const recordLaunch = (options: LaunchOptions) => {
+    launches.push(options);
+    return launchesOk();
+  };
+  const root = await slackRoot(SLACK_ENV, recordLaunch, checkCheckout);
+  const { cwd } = tempWorkspace(root.deps.home);
+  writeFileSync(join(cwd, "orchestrate.config.yaml"), `version: 2\nnotifier: ${notifier}\n`);
+  writeFileSync(join(cwd, ".env"), `SLACK_CHANNEL_ID=${channel}\nSLACK_BOT_TOKEN=xoxb-test\n`);
+  return { ...root, launches, cwd };
+};
+
+type Cell = { text?: string; elements?: { elements: { text: string }[] }[] };
+type Block = { type: string; text?: { text: string }; rows?: Cell[][] };
+
+const cellText = (cell: Cell): string => cell.text ?? cell.elements?.[0]?.elements[0]?.text ?? "";
+
+// A section reads as its text, a table as one line per row, its cells two spaces apart.
+const blockText = (block: Block): string =>
+  block.type === "table"
+    ? (block.rows ?? []).map((row) => row.map(cellText).join("  ")).join("\n")
+    : (block.text?.text ?? "");
+
+// Each post's blocks as text.
+const replies = (posts: readonly SlackPost[]): readonly string[] =>
+  posts.map((post) => (JSON.parse(String(post.form.blocks)) as Block[]).map(blockText).join("\n"));
+
+describe("Slack run command", () => {
+  test("SC20: @yok run ok.yaml --project demo --prompt 'fix login' launches once with YOK_SLACK_THREAD=100.1, prompt input and interaction off, and replies starting then the run id and view", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot();
+
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt: "fix login" });
+    expect(run?.policies?.values.interaction).toBe(false);
+    const [starting, started] = replies(posts);
+    expect(starting).toBe("Starting `ok.yaml` on *demo*…");
+    expect(started).toBe(`*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`);
+    expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
+  });
+
+  test("SC21: --interaction true still saves the run with interaction off, and the reply says why", async () => {
+    const { app, deps, posts } = await slackRunRoot();
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --prompt "fix login" --interaction true'),
+    );
+
+    await until(() => posts.length >= 2);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.policies?.values.interaction).toBe(false);
+    expect(replies(posts)[1]).toContain(
+      "questions stay off: nobody is at the terminal of a run started from Slack",
+    );
+  });
+
+  test("SC22: a project whose updates go to C9 is refused naming C9, launches nothing and registers no run", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
+
+    await until(() => posts.length >= 2);
+    const reply = replies(posts)[1];
+    expect(reply).toContain("C9");
+    expect(reply).toContain("run not started");
+    expect(launches).toEqual([]);
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
+    const { app, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
+
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
+    expect(replies(posts)[1]?.split("\n").at(-1)).toContain("no updates will follow here");
+  });
+
+  test("SC24: a run mention delivered twice launches once and registers one run", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot();
+    const payload = mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"');
+
+    await signedHook(app, payload);
+    await signedHook(app, payload);
+
+    await until(() => posts.length >= 2);
+    await Bun.sleep(100);
+    expect(launches).toHaveLength(1);
+    expect(await deps.registry.listRuns()).toHaveLength(1);
+  });
+
+  test("SC25: a start the doctor blocks on git replies with the check and its fix and registers no run", async () => {
+    const blocked: CheckCheckout = async (input) => ({
+      ...(await readyCheckout(input)),
+      report: summarize([
+        { name: "git", status: "fail", optional: false, detail: "not found", fix: ["install git"] },
+      ]),
+    });
+    const { app, deps, posts } = await slackRunRoot({ checkCheckout: blocked });
+
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
+
+    await until(() => posts.length >= 2);
+    const reply = replies(posts)[1];
+    expect(reply).toContain("CHECK  DETAIL  FIX\ngit  not found  install git");
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test("SC27: a run named Bad_Name is refused as bad-request naming name, and no run is registered", async () => {
+    const { app, deps, posts } = await slackRunRoot();
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --name Bad_Name --prompt "go"'),
+    );
+
+    await until(() => posts.length > 0);
+    const [reply] = replies(posts);
+    expect(reply).toStartWith("bad-request:");
+    expect(reply).toContain("name");
+    expect(await deps.registry.listRuns()).toEqual([]);
+  });
+
+  test.each([
+    ["a workflow that does not exist", "nosuch", "", "no workflow nosuch"],
+    ["a project config that does not parse", "ok.yaml", "version: [2\n", "invalid YAML"],
+  ])(
+    "%s gets a bad-request reply naming the problem",
+    async (_label, workflow, config, problem) => {
+      const { app, deps, posts, cwd } = await slackRunRoot();
+      if (config !== "") writeFileSync(join(cwd, "orchestrate.config.yaml"), config);
+
+      await signedHook(app, mention(`<@UBOT> run ${workflow} --project demo --prompt "fix login"`));
+
+      await until(() => posts.length >= 2);
+      expect(replies(posts)[1]).toStartWith("bad-request: ");
+      expect(replies(posts)[1]).toContain(problem);
+      expect(await deps.registry.listRuns()).toEqual([]);
+    },
+  );
+
+  test("SC28 (regression): POST /api/runs replies with no threaded key and launches with no YOK_SLACK_THREAD", async () => {
+    const launches: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      launches.push(options);
+      return launchesOk();
+    });
+    tempWorkspace(deps.home);
+
+    const res = await postRun(createApi(deps));
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).not.toHaveProperty("threaded");
+    expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
+  });
+});
+
+// buildDeps whose client answers through createApi in memory, as createRoot wires it; launches
+// records every agent launch.
+const chatDeps = async () => {
+  const launches: LaunchOptions[] = [];
+  const deps = await buildDeps((options) => {
+    launches.push(options);
+    return launchesOk();
+  });
+  const api = new Hono().route("/api", createApi(deps));
+  const client = createYokClient({
+    url: "http://yok.internal",
+    send: async (input, init) => api.request(input, init),
+  });
+  return { deps: { ...deps, client }, launches };
+};
+
+const chatReply = (deps: DispatchDeps, text: string): Promise<Reply> =>
+  dispatchCommand(text, { channel: "C1", ts: "100.1" }, deps, async () => undefined);
+
+const chat = async (deps: DispatchDeps, text: string): Promise<string> =>
+  replyText(await chatReply(deps, text));
+
+// The first cell of each table row.
+const firstCells = async (deps: DispatchDeps, text: string): Promise<readonly string[]> =>
+  ((await chatReply(deps, text)).table?.rows ?? []).map((row) => row[0] ?? "");
+
+// Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
+const addRunAt = (
+  registry: Registry,
+  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name">>,
+) =>
+  registry.addRun({
+    workflow: "ok",
+    workflowPath: join(run.cwd, "ok.yaml"),
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    ...run,
+  });
+
+// The shown runs' ids and the matched total from GET /runs.
+const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
+  const listed = await deps.client.runs(query);
+  if (!listed.ok) throw new Error(listed.error.message);
+  return { ids: listed.value.runs.map((run) => run.id), total: listed.value.total };
+};
+
+describe("GET /runs", () => {
+  const minute = (n: number): string => new Date(Date.UTC(2026, 9, 29, 10, n)).toISOString();
+
+  test("SC5006: 21 runs list the newest 20 by default, limit=5 shows 5, all=true shows 21, limit=0 is bad-request", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    for (let n = 0; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    const byDefault = await listIds(deps, {});
+    expect(byDefault.ids).toHaveLength(20);
+    expect(byDefault.ids[0]).toBe("r-20");
+    expect(byDefault.ids).not.toContain("r-0");
+    expect(byDefault.total).toBe(21);
+    expect(await listIds(deps, { limit: "5" })).toMatchObject({ total: 21 });
+    expect((await listIds(deps, { limit: "5" })).ids).toHaveLength(5);
+    expect((await listIds(deps, { all: "true" })).ids).toHaveLength(21);
+    const refused = await deps.client.runs({ limit: "0" });
+    expect(!refused.ok && refused.error.code).toBe("bad-request");
+    const both = await deps.client.runs({ all: "true", limit: "5" });
+    expect(!both.ok && both.error.code).toBe("bad-request");
+    expect(!both.ok && both.error.message).toContain("--all");
+    expect((await listIds(deps, { all: "false", limit: "5" })).ids).toHaveLength(5);
+  });
+
+  test("SC5007: a run in demo's folder carries project demo, and one in an unregistered folder carries null", async () => {
+    const { deps } = await chatDeps();
+    const registered = gitRepo();
+    addProjectEntry(deps.home, "demo", registered);
+    await addRunAt(deps.registry, { id: "r-a", cwd: registered, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-b", cwd: gitRepo(), createdAt: minute(2) });
+
+    const listed = await deps.client.runs({});
+
+    expect(listed.ok && listed.value.runs.map((run) => [run.id, run.project])).toEqual([
+      ["r-b", null],
+      ["r-a", "demo"],
+    ]);
+  });
+
+  test("SC5008: project=demo keeps demo's two runs, and project=nope is a 404 not-found naming it", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    await addRunAt(deps.registry, { id: "r-1", cwd: demo, createdAt: minute(1) });
+    await addRunAt(deps.registry, { id: "r-2", cwd: demo, createdAt: minute(2) });
+    await addRunAt(deps.registry, { id: "r-3", cwd: other, createdAt: minute(3) });
+
+    expect(await listIds(deps, { project: "demo" })).toEqual({ ids: ["r-2", "r-1"], total: 2 });
+    const unknown = await deps.client.runs({ project: "nope" });
+    expect(!unknown.ok && unknown.error).toMatchObject({
+      code: "not-found",
+      message: "no project named nope",
+    });
+  });
+
+  test("SC5009: status filters before the cut, takes a comma list, and bogus is bad-request naming the valid statuses", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: minute(0) });
+    for (let n = 1; n < 21; n++) {
+      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+    }
+
+    expect(await listIds(deps, { status: "starting", limit: "5" })).toEqual({
+      ids: ["r-0"],
+      total: 1,
+    });
+    const runDir = runDirOf(cwd, "done-run");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), status: "completed" }),
+    );
+    await addRunAt(deps.registry, {
+      id: "r-done",
+      name: "done-run",
+      cwd,
+      createdAt: minute(30),
+    });
+
+    const both = await listIds(deps, { status: "starting,missing", limit: "30" });
+    expect(both.ids).toHaveLength(21);
+    expect(both.ids).not.toContain("r-done");
+    expect(both.total).toBe(21);
+    expect(await listIds(deps, { status: "completed" })).toEqual({ ids: ["r-done"], total: 1 });
+    const bogus = await deps.client.runs({ status: "bogus" });
+    expect(!bogus.ok && bogus.error.code).toBe("bad-request");
+    for (const valid of ["running", "blocked", "unreadable"]) {
+      expect(!bogus.ok && bogus.error.message).toContain(valid);
+    }
+  });
+});
+
+const DAILY = [
+  "name: daily",
+  "trigger:",
+  '  cron: "0 9 * * *"',
+  "  timezone: UTC",
+  "nodes:",
+  "  - id: a",
+  "    type: exec",
+  "    runtime: sh",
+  '    script: "true"',
+  "    input: null",
+  "",
+].join("\n");
+
+describe("Slack commands", () => {
+  test("SC32: run status fix-login shows run r-1 and launches nothing, not a workflow named status", async () => {
+    const { deps, launches } = await chatDeps();
+    await addRunAt(deps.registry, {
+      id: "r-1",
+      name: "fix-login",
+      cwd: gitRepo(),
+      createdAt: "2026-10-29T10:00:00.000Z",
+    });
+
+    const reply = await chat(deps, "run status fix-login");
+
+    expect(reply.split("\n")[0]).toBe("*`r-1`* · fix-login · `ok`");
+    expect(reply).toContain("http://localhost:1/runs/r-1");
+    expect(launches).toEqual([]);
+  });
+
+  test("SC33: run status of a run the registry does not hold replies not-found naming it", async () => {
+    const { deps } = await chatDeps();
+
+    expect(await chat(deps, "run status r-404")).toBe("not-found: no run r-404");
+  });
+
+  test("SC34: ls --project demo lists demo's two runs newest first and not other's; ls lists all three", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    await addRunAt(deps.registry, { id: "r-10", cwd: demo, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.registry, { id: "r-11", cwd: demo, createdAt: "2026-10-29T11:00:00.000Z" });
+    await addRunAt(deps.registry, {
+      id: "r-12",
+      cwd: other,
+      createdAt: "2026-10-29T12:00:00.000Z",
+    });
+
+    expect(await firstCells(deps, "ls --project demo")).toEqual(["r-11", "r-10"]);
+    expect(await firstCells(deps, "ls")).toEqual(["r-12", "r-11", "r-10"]);
+  });
+
+  test("SC5015 (regression): run status of a name two projects share is ambiguous; --project or the id picks one", async () => {
+    const { deps } = await chatDeps();
+    const demo = gitRepo();
+    const other = gitRepo();
+    addProjectEntry(deps.home, "demo", demo);
+    addProjectEntry(deps.home, "other", other);
+    const at = "2026-10-29T10:00:00.000Z";
+    await addRunAt(deps.registry, { id: "r-1", name: "fix-login", cwd: demo, createdAt: at });
+    await addRunAt(deps.registry, { id: "r-2", name: "fix-login", cwd: other, createdAt: at });
+    const firstLine = async (text: string) => (await chat(deps, text)).split("\n")[0];
+
+    expect(await chat(deps, "run status fix-login")).toBe(
+      "ambiguous: runs r-1, r-2 are named fix-login; pass --project NAME or the run id",
+    );
+    expect(await firstLine("run status fix-login --project other")).toStartWith("*`r-2`*");
+    expect(await firstLine("run status r-2")).toStartWith("*`r-2`*");
+  });
+
+  test.each([
+    ["in straight quotes", '--prompt "fix --verbose\nthen  login"', "fix --verbose\nthen  login"],
+    ["in the curly quotes Slack types", "--prompt “keep --name x”", "keep --name x"],
+    ["before the other flags", '--prompt "fix login" --project demo', "fix login"],
+  ])("a --prompt %s is the run's prompt input, as typed", async (_label, rest, prompt) => {
+    const { deps, launches } = await chatDeps();
+    tempWorkspace(deps.home);
+
+    const reply = await chat(deps, `run ok.yaml --project demo ${rest}`);
+
+    expect(reply).toContain("started");
+    expect(launches).toHaveLength(1);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt });
+    expect(run?.name).toBeNull();
+  });
+
+  test("--input KEY=VALUE adds run inputs beside the prompt, as yok run does", async () => {
+    const { deps } = await chatDeps();
+    const optional = { type: "string", required: false };
+    tempWorkspace(
+      deps.home,
+      okWorkflow({ inputs: { prompt: optional, mode: optional, ticket: optional } }),
+    );
+
+    await chat(
+      deps,
+      'run ok.yaml --project demo --prompt "go" --input mode=full --input ticket=T-1',
+    );
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.inputs).toEqual({ prompt: "go", mode: "full", ticket: "T-1" });
+  });
+
+  test("an --input without = is refused with the usage, and nothing starts", async () => {
+    const { deps, launches } = await chatDeps();
+
+    const reply = await chat(deps, 'run ok.yaml --project demo --prompt "go" --input mode');
+
+    expect(reply).toContain('--input must be KEY=VALUE, got "mode"');
+    expect(launches).toHaveLength(0);
+  });
+
+  test("SC5012: ls replies 'Showing 20 of 21 runs' with the shared table, r-20 first, r-0 absent, PROJECT demo", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    addProjectEntry(deps.home, "demo", cwd);
+    for (let i = 0; i < 21; i++) {
+      const minute = String(i).padStart(2, "0");
+      await addRunAt(deps.registry, {
+        id: `r-${i}`,
+        cwd,
+        createdAt: `2026-10-29T10:${minute}:00.000Z`,
+      });
+    }
+
+    const { text, table } = await chatReply(deps, "ls");
+
+    expect(text).toBe("Showing 20 of 21 runs\nUse --limit N or --all to see more");
+    expect(table?.headers).toEqual([
+      "ID",
+      "NAME",
+      "PROJECT",
+      "WORKFLOW",
+      "STATUS",
+      "STEPS",
+      "STARTED (UTC)",
+    ]);
+    expect(table?.rows).toHaveLength(20);
+    expect(table?.rows[0]?.[0]).toBe("r-20");
+    expect(table?.rows.map((row) => row[0])).not.toContain("r-0");
+    expect(table?.rows[0]?.[2]).toBe("demo");
+  });
+
+  test("SC5013: ls passes --status, --limit and --all to the route, and a bogus status is a bad-request naming the valid ones", async () => {
+    const { deps } = await chatDeps();
+    const cwd = gitRepo();
+    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.registry, {
+      id: "r-1",
+      name: "one",
+      cwd,
+      createdAt: "2026-10-29T10:01:00.000Z",
+    });
+    await addRunAt(deps.registry, {
+      id: "r-2",
+      name: "two",
+      cwd,
+      createdAt: "2026-10-29T10:02:00.000Z",
+    });
+
+    expect(await firstCells(deps, "ls --status starting")).toEqual(["r-0"]);
+    expect((await chatReply(deps, "ls --limit 1")).text).toBe(
+      "Showing 1 of 3 runs\nUse --limit N or --all to see more",
+    );
+    expect((await chatReply(deps, "ls --all")).text).toBe("3 runs");
+    const bogus = await chat(deps, "ls --status bogus");
+    expect(bogus).toStartWith("bad-request:");
+    for (const valid of ["running", "blocked", "unreadable"]) expect(bogus).toContain(valid);
+  });
+
+  test("SC5014: runs is an unknown command followed by the help, and ls --json is refused naming --json and the ls usage", async () => {
+    const { deps } = await chatDeps();
+
+    const unknown = await chat(deps, "runs");
+    expect(unknown.split("\n")[0]).toBe("unknown command: runs");
+    expect(unknown).toContain("*Type `@yok` and one of:*");
+    const json = await chat(deps, "ls --json");
+    expect(json).toContain("--json");
+    expect(json.split("\n").at(-1)).toStartWith("usage: `ls ");
+  });
+
+  test("SC35: project add demo2 --path DIR replies that it added demo2 at DIR, and project list shows it added by slack", async () => {
+    const { deps } = await chatDeps();
+    const dir = gitRepo();
+
+    expect(await chat(deps, `project add demo2 --path ${dir}`)).toBe(`Added *demo2* at \`${dir}\``);
+
+    const { table } = await chatReply(deps, "project list");
+    expect(table?.headers).toEqual(["NAME", "STATUS", "PATH", "ADDED BY"]);
+    expect(table?.rows.find((row) => row[0] === "demo2")).toEqual(["demo2", "ready", dir, "slack"]);
+  });
+
+  test("SC36: project remove demo2 --purge on a folder yok did not clone keeps it and says so", async () => {
+    const { deps } = await chatDeps();
+    const dir = gitRepo();
+    await chat(deps, `project add demo2 --path ${dir}`);
+
+    expect(await chat(deps, "project remove demo2 --purge")).toBe(
+      `Removed *demo2*\nkept ${dir}: yok deletes only the folders it cloned`,
+    );
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test("SC37: project remove nope replies with the API's refusal as the CLI prints it", async () => {
+    const { deps } = await chatDeps();
+    expect(await chat(deps, "project remove nope")).toBe("not-found: no project named nope");
+  });
+
+  test("SC38: doctor --project demo replies with the verdict, then a table of every check", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home);
+
+    const reply = await chatReply(deps, "doctor --project demo");
+
+    expect(reply.text).toStartWith("*Verdict:* ");
+    expect(reply.table?.headers).toEqual(["CHECK", "REQUIRED", "STATUS", "DETAIL", "FIX"]);
+  });
+
+  test("SC40: a trigger added from Slack is listed, fires, and its fire shows in its log", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home, DAILY);
+
+    expect(await chat(deps, "trigger add ok.yaml --project demo")).toMatch(
+      /^\*daily\* in \*demo\*: `0 9 \* \* \*` \(UTC\), next fire \d\d-\d\d \d\d:\d\d UTC$/,
+    );
+    const listed = (await chatReply(deps, "trigger list --project demo")).table?.rows ?? [];
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.slice(0, 3)).toEqual(["daily", "demo", "0 9 * * * (UTC)"]);
+
+    const fired = await chat(deps, "trigger fire daily --project demo");
+    const status = fired.match(/^\*(\w+)\* at /)?.[1];
+    expect(status).toBeDefined();
+    const logged = (await chatReply(deps, "trigger log daily --project demo")).table?.rows ?? [];
+    expect(logged.map((row) => row[1])).toContain(status);
+  });
+
+  test("SC41: trigger rm removes the trigger, and the list then says no triggers", async () => {
+    const { deps } = await chatDeps();
+    tempWorkspace(deps.home, DAILY);
+    await chat(deps, "trigger add ok.yaml --project demo");
+
+    expect(await chat(deps, "trigger rm daily --project demo")).toBe("Removed *daily* from *demo*");
+    expect(await chat(deps, "trigger list --project demo")).toBe("No triggers.");
+  });
+});
+
 describe("run page URL", () => {
   test("SC11: POST /runs returns the page URL, GET /runs/:id/view returns it later, and a missing run is 404", async () => {
     const deps = { ...(await buildDeps(launchesOk)), publicOrigin: "http://localhost:4321" };
@@ -1737,23 +2548,39 @@ describe("POST /runs/:id/resume", () => {
   );
 
   test.each(["completed", "failed", "cancelled"] as const)(
-    "SC603: a %s run is 409 conflict naming its status and telling the person to start a new run with yok run, and nothing launches",
+    "SC812: a %s run whose session is gone resumes with one launch continuing s-1 in claude-demo-3c4d",
     async (status) => {
       const { deps, launches } = await resumeDeps();
       const run = await seedRun(deps.registry, { status });
 
       const res = await resume(deps, run.id);
 
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({
-        error: {
-          code: "conflict",
-          message: `run demo is ${status}; there is nothing to resume, so start a new run with yok run`,
-        },
+      expect(res.status).toBe(200);
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.continueSession).toEqual({
+        id: "s-1",
+        terminalName: "claude-demo-3c4d",
       });
-      expect(launches).toEqual([]);
+      expect(launches[0]?.prompt).toBe("/orchestrate --resume demo");
     },
   );
+
+  test("SC813: a completed run whose tmux session is still alive is 409 conflict pointing at yok attach demo, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = { ...base, host: fakeHost("", true).host };
+    const run = await seedRun(deps.registry, { status: "completed" });
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo still has its agent session; use yok attach demo",
+      },
+    });
+    expect(launches).toEqual([]);
+  });
 
   test("SC604: a switch to opus-x requested but never applied launches on haiku-x, the default tier's model", async () => {
     const { deps, launches } = await resumeDeps();

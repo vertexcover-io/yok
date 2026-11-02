@@ -21,6 +21,7 @@ import {
 } from "@yok/sdk";
 import { AgentModeSchema } from "@yok/sdk/internal";
 import { Cron } from "croner";
+import { parse } from "yaml";
 import { z } from "zod";
 import type { ArtifactDeclaration, Stage } from "../stage.ts";
 
@@ -262,6 +263,8 @@ export type TriggerBlock = z.infer<typeof TriggerBlockSchema>;
 
 export const WorkflowSchema = z.strictObject({
   name: NonEmptyStringSchema,
+  // one line on what the workflow is for, shown by `yok orchestrate workflows`
+  description: z.string().optional(),
   version: z.union([z.string(), z.number()]).optional(),
   agent: WorkflowAgentSchema.default("claude"),
   // over the yok's and the config's agents.AGENT.tiers, for this workflow's agent. Only the
@@ -482,12 +485,24 @@ export class NodeFailure extends Error {
   }
 }
 
+// A value given as text (`yok run --input yok=true`) is read as YAML, as a file would read it;
+// text that is not YAML stays text and fails the type check with the usual message.
+const fromText = (schema: z.ZodType<JsonValue>): z.ZodType<JsonValue> =>
+  z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    try {
+      return parse(value);
+    } catch {
+      return value;
+    }
+  }, schema) as z.ZodType<JsonValue>;
+
 const INPUT_TYPES: Record<InputDeclarations[string]["type"], z.ZodType<JsonValue>> = {
   string: z.string(),
-  number: z.number(),
-  boolean: z.boolean(),
-  object: z.record(z.string(), z.json()),
-  array: z.array(z.json()),
+  number: fromText(z.number()),
+  boolean: fromText(z.boolean()),
+  object: fromText(z.record(z.string(), z.json())),
+  array: fromText(z.array(z.json())),
 };
 
 // The workflow's inputs with their defaults filled in; an input that breaks its declaration throws.
