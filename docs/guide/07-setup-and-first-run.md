@@ -147,6 +147,8 @@ On the server, as the user who will own the runs:
 
    yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
 
+   The server listens on loopback. When the proxy is not on this machine, such as a hosting provider's edge, add `YOK_BIND=<address>` to the same file so the proxy can reach it. yok asks nobody for a login, so pick an address only the proxy reaches.
+
 3. Write `~/.config/systemd/user/yok.service`:
 
    ```ini

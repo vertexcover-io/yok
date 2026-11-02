@@ -88,9 +88,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          PROXY: ${{ secrets.PROXY }}
+          YOK_BIND: ${{ secrets.YOK_BIND }}
         run: |
           umask 077
-          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY; do
+          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY PROXY YOK_BIND; do
             eval "value=\${$name:-}"
             [ -z "$value" ] || printf '%s=%s\n' "$name" "$value"
           done > secrets.env
@@ -103,8 +105,8 @@ jobs:
       - name: Run the deploy on the server
         run: ssh "$TARGET" sh /tmp/yok-deploy/deploy.sh "$(printf %q "$TAG")"
 
-      # The request a laptop makes: through Caddy, with the login, expecting the new version.
-      - name: Check the server through Caddy
+      # The request a laptop makes: through the proxy, with the login, expecting the new version.
+      - name: Check the server through the proxy
         env:
           DOMAIN: ${{ secrets.SERVER_DOMAIN }}
           LOGIN: ${{ secrets.YOK_USER }}:${{ secrets.YOK_PASSWORD }}

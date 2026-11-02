@@ -25,7 +25,10 @@ esac
 # secrets.env is the one file the workflow wrote from the GitHub secrets. It is sourced here and
 # never echoed. SERVER_DOMAIN, YOK_USER and YOK_PASSWORD must be present; one agent credential
 # must be, or the server could never run anything; GH_TOKEN is needed only while the repo is
-# private.
+# private. PROXY is caddy (this script runs Caddy) or own (something already in front of the box
+# does https and the login, and the server listens on YOK_BIND so that proxy can reach it).
+# yok has no login of its own, so with an own proxy the bind address is never guessed: whoever
+# deploys names the interface the proxy reaches, and nothing else may.
 load_secrets() {
   [ -f "$STAGE/secrets.env" ] || die "$STAGE/secrets.env is missing; deploy.yml writes it from the GitHub secrets"
   set -a; . "$STAGE/secrets.env"; set +a
@@ -37,16 +40,30 @@ load_secrets() {
   [ -z "$missing" ] || die "secrets.env lacks:$missing"
   [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${CODEX_API_KEY:-}" ] ||
     die "secrets.env has neither CLAUDE_CODE_OAUTH_TOKEN nor CODEX_API_KEY; a run needs one agent"
+  PROXY="${PROXY:-caddy}"
+  case "$PROXY" in
+    caddy) BIND=127.0.0.1 ;;
+    own)
+      [ -n "${YOK_BIND:-}" ] ||
+        die "PROXY=own needs YOK_BIND: the address only the proxy reaches, since yok has no login of its own"
+      BIND="$YOK_BIND"
+      ;;
+    *) die "PROXY is '$PROXY'; it must be caddy or own" ;;
+  esac
 }
 
-# Everything a run's doctor looks for, plus Caddy and both agents. A tool already on PATH is
-# skipped, so this is quick after the first time.
+own_proxy() { [ "$PROXY" = own ]; }
+
+# Everything a run's doctor looks for, plus both agents, plus Caddy when this script runs it. A
+# tool already on PATH is skipped, so this is quick after the first time.
 install_packages() {
   say "packages"
-  for tool in git tmux jq curl gh rg ffmpeg node caddy; do
+  caddy=caddy
+  own_proxy && caddy=""
+  for tool in git tmux jq curl gh rg ffmpeg node $caddy; do
     command -v "$tool" >/dev/null 2>&1 && continue
     sudo apt-get update -qq
-    sudo apt-get install -y -qq git tmux jq curl gh ripgrep ffmpeg nodejs npm caddy
+    sudo apt-get install -y -qq git tmux jq curl gh ripgrep ffmpeg nodejs npm $caddy
     break
   done
   for tool in claude codex agent-browser ast-grep; do
@@ -57,23 +74,28 @@ install_packages() {
   done
 }
 
-# Three files, each owned by the thing that reads it. The password hash is made here, so the
-# plain password lives only in this process.
+# Three files, each owned by the thing that reads it; with an own proxy, only yok's two. The
+# password hash is made here, so the plain password lives only in this process.
 write_config() {
   say "config"
   install -d -m 700 "$YOK_HOME"
-  printf 'SERVER_DOMAIN=%s\n' "$SERVER_DOMAIN" > "$YOK_HOME/.env"
+  printf 'SERVER_DOMAIN=%s\nYOK_BIND=%s\n' "$SERVER_DOMAIN" "$BIND" > "$YOK_HOME/.env"
   {
     [ -z "${GH_TOKEN:-}" ] || printf 'GH_TOKEN=%s\n' "$GH_TOKEN"
     [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
     [ -z "${CODEX_API_KEY:-}" ] || printf 'CODEX_API_KEY=%s\n' "$CODEX_API_KEY"
   } | install -m 600 /dev/stdin "$YOK_HOME/secrets.env"
+  own_proxy && return 0
   hash=$(printf '%s' "$YOK_PASSWORD" | caddy hash-password)
   printf 'SERVER_DOMAIN=%s\nYOK_USER=%s\nYOK_PASSWORD_HASH=%s\n' "$SERVER_DOMAIN" "$YOK_USER" "$hash" |
     sudo install -m 600 -o root -g root /dev/stdin /etc/caddy/.env
 }
 
 configure_caddy() {
+  if own_proxy; then
+    say "caddy: skipped, PROXY=own"
+    return 0
+  fi
   say "caddy"
   sudo install -m 644 "$STAGE/Caddyfile" /etc/caddy/Caddyfile
   sudo install -d /etc/systemd/system/caddy.service.d
@@ -115,7 +137,7 @@ start_service() {
   fi
 }
 
-# On loopback, so a failure here is yok's and not Caddy's. deploy.yml then checks through Caddy.
+# On the box, so a failure here is yok's and not the proxy's. deploy.yml then checks through it.
 check() {
   say "check"
   version=""
@@ -125,7 +147,7 @@ check() {
   done
   [ "$version" = "${TAG#v}" ] ||
     die "the server answers '${version}', not ${TAG#v}; see: journalctl --user -u yok"
-  say "yok ${TAG#v} is serving on 127.0.0.1:$PORT behind https://$SERVER_DOMAIN"
+  say "yok ${TAG#v} is serving on $BIND:$PORT behind https://$SERVER_DOMAIN"
 }
 
 load_secrets

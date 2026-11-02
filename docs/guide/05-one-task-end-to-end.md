@@ -342,7 +342,7 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
 ~/.yok-dev/                    or ~/.yok for the release binary
   registry.json                every run on this machine, with its sessions and tmux name
   server.port                  the port the server listens on at 127.0.0.1
-  .env                         SERVER_DOMAIN, the domain a proxy in front of yok answers on
+  .env                         SERVER_DOMAIN, the domain a proxy in front of yok answers on; YOK_BIND, the address it listens on
   projects.yaml                the projects: a name for each checkout the server runs on
   server.log
   shims/HASH/yok               the PATH shim from hop 2
