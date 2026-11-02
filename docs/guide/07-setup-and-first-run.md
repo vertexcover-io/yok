@@ -129,7 +129,7 @@ This one uses agent nodes with demo stages, a loop that fails its first pass on 
 yok-dev run task --prompt "Describe a small change to this repo"
 ```
 
-This needs `gh` logged in and about an hour. A prompt that names a ticket also needs that platform's key in `.env` (`LINEAR_API_KEY` for Linear, `ASANA_API_KEY` for Asana); a plain prompt does not. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
+This takes about an hour. The doctor runs first and names anything the run is missing, with its fix, such as `gh` not logged in. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
 ## 9. Run yok on a server
 
