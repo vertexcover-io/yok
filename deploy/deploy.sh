@@ -66,11 +66,13 @@ install_packages() {
     sudo apt-get install -y -qq git tmux jq curl gh ripgrep ffmpeg nodejs npm $caddy
     break
   done
-  for tool in claude codex agent-browser ast-grep; do
+  # One package at a time: an image may ship an agent as a plain binary, which npm would refuse
+  # to overwrite, and a failure names the package.
+  for pair in claude=@anthropic-ai/claude-code codex=@openai/codex agent-browser=agent-browser ast-grep=@ast-grep/cli; do
+    tool="${pair%%=*}"
     command -v "$tool" >/dev/null 2>&1 && continue
-    sudo npm install -g --silent @anthropic-ai/claude-code @openai/codex agent-browser @ast-grep/cli
-    agent-browser install --with-deps
-    break
+    sudo npm install -g --silent "${pair#*=}" || die "npm could not install ${pair#*=}"
+    [ "$tool" = agent-browser ] && agent-browser install --with-deps
   done
 }
 
@@ -107,13 +109,24 @@ configure_caddy() {
   sudo systemctl reload caddy
 }
 
-# install.sh comes from the tag it installs, through gh so a private repo works with GH_TOKEN.
-# yok update must not run here: it restarts the server outside systemd. install.sh swaps the
-# binary only; start_service brings the new version up.
+# install.sh comes from the tag it installs. With GH_TOKEN it goes through gh, so a private repo
+# works; without one the repo is public, and the raw file and the release assets are plain
+# downloads, which is what install.sh's YOK_RELEASE_URL takes. yok update must not run here: it
+# restarts the server outside systemd. install.sh swaps the binary only; start_service brings
+# the new version up.
 install_yok() {
   say "yok $TAG"
-  gh api "repos/$REPO/contents/install.sh?ref=$TAG" -H "Accept: application/vnd.github.raw" |
-    YOK_VERSION="$TAG" sh
+  script=$(mktemp)
+  if [ -n "${GH_TOKEN:-}" ]; then
+    gh api "repos/$REPO/contents/install.sh?ref=$TAG" -H "Accept: application/vnd.github.raw" > "$script" ||
+      die "could not fetch install.sh at $TAG with gh"
+    YOK_VERSION="$TAG" sh "$script"
+  else
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/$TAG/install.sh" -o "$script" ||
+      die "could not fetch install.sh at $TAG; set GH_TOKEN if the repo is private"
+    YOK_VERSION="$TAG" YOK_RELEASE_URL="https://github.com/$REPO/releases/download/$TAG" sh "$script"
+  fi
+  rm -f "$script"
   installed=$("$YOK_HOME/bin/yok" --version)
   [ "$installed" = "${TAG#v}" ] || die "installed yok is $installed, not ${TAG#v}"
   if [ -n "${CODEX_API_KEY:-}" ]; then
@@ -122,14 +135,17 @@ install_yok() {
 }
 
 # The unit's environment is what every run's tmux session, and so every agent, inherits.
+# Linger first, so the user manager exists and outlives this login; an ssh session that skipped
+# logind has no XDG_RUNTIME_DIR, and without it systemctl --user cannot find that manager.
 start_service() {
   say "service"
+  sudo loginctl enable-linger "$USER"
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   install -d "$HOME/.config/systemd/user"
   install -m 644 "$STAGE/yok.service" "$HOME/.config/systemd/user/yok.service"
   systemctl --user daemon-reload
   systemctl --user enable yok
   systemctl --user restart yok
-  sudo loginctl enable-linger "$USER"
   # A tmux server with no sessions still holds the environment it was born with. Dropping an
   # idle one means the next run's session sees today's tokens. A busy one is left alone.
   if [ -z "$(tmux -L yok list-sessions 2>/dev/null)" ]; then
@@ -138,11 +154,16 @@ start_service() {
 }
 
 # On the box, so a failure here is yok's and not the proxy's. deploy.yml then checks through it.
+# The port answers 503 while the app loads, which takes a small box half a minute.
 check() {
   say "check"
+  # curl's status, not jq's: a pipe would report jq's success on an empty body.
   version=""
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    version=$(curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | jq -r .version) && break
+  for _ in $(seq 1 30); do
+    if body=$(curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null); then
+      version=$(printf '%s' "$body" | jq -r .version)
+      break
+    fi
     sleep 2
   done
   [ "$version" = "${TAG#v}" ] ||
