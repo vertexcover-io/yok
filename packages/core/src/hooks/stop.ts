@@ -221,12 +221,9 @@ export const decideStop = ({
   if (position.kind === "between-nodes" && pendingSwitch !== null) {
     return { reason: "model-switch", blockStreak: prior, seq: pendingSwitch.seq };
   }
-  // The task's end wakes the agent, so a turn that waits on it is neither a lapse nor stuck. An
-  // inline node is the session's own work, so background work beside it never excuses its done.
-  const owesInline = position.kind === "open-node" && position.leaf.mode === "inline";
-  if (waitingOnBackground && (!owesInline || prior >= maxBlocks)) {
-    return { reason: "background-task", blockStreak: prior };
-  }
+  // Ending the turn is how the agent waits: the task's end wakes it, so this is neither a lapse nor
+  // stuck, even with an inline node open whose command Bash moved to the background.
+  if (waitingOnBackground) return { reason: "background-task", blockStreak: prior };
   if (position.kind === "between-nodes" && touchedRun === false)
     return { reason: "user-chat", blockStreak: prior };
   // No one answers, so the agent is sent back each time, and fails the node once it keeps stopping.
