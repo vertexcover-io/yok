@@ -83,22 +83,23 @@ rule that admits port 7777 from the proxy alone.
 
 ### Example: an exe.dev VM
 
-exe.dev's edge terminates TLS, forwards ports 3000 to 9999 as `https://VM.exe.xyz:PORT/`, and
-gates them behind its own login: a browser is sent to exe.dev to sign in, and a script sends a
+exe.dev's edge terminates TLS, forwards `https://VM.exe.xyz/` to the VM's shared port, and
+gates it behind its own login: a browser is sent to exe.dev to sign in, and a script sends a
 VM token as the Basic auth password with any username. That maps onto the secrets directly.
 
 ```
-browser ──► https://VM.exe.xyz:7777 ──► exe.dev login (once) ──┐
-yok-remote ──► same URL + Basic anyone:<VM token> ─────────────┼──► exe.dev edge ──► yok 0.0.0.0:7777
+browser ──► https://VM.exe.xyz ──► exe.dev login (once) ──┐
+yok-remote ──► same URL + Basic anyone:<VM token> ────────┼──► exe.dev edge ──► yok 0.0.0.0:7777
 ```
 
 1. `ssh exe.dev new --name=VM`, then `ssh exe.dev share port VM 7777`. Leave the VM private;
    `ssh exe.dev share add VM someone@example.com` for each dashboard user.
 2. `ssh exe.dev ssh-key generate-api-key --vm=VM --label=deploy` prints the token.
 3. Secrets: `PROXY=own`, `YOK_BIND=0.0.0.0` (the VM has only private addresses; its public
-   side is exe.dev's edge), `SERVER_DOMAIN=VM.exe.xyz:7777`, `YOK_PASSWORD=<the token>`,
-   `YOK_USER` anything, `DEPLOY_HOST=VM.exe.xyz`, `DEPLOY_USER=exedev`.
-4. On a laptop: `YOK_SERVER_PASSWORD=<the token> yok-remote login https://VM.exe.xyz:7777 --user me`.
+   side is exe.dev's edge), `SERVER_DOMAIN=VM.exe.xyz`, `YOK_PASSWORD=<the token>`,
+   `YOK_USER` anything, `DEPLOY_HOST=VM.exe.xyz`, `DEPLOY_USER=exedev`. The deploy key goes in
+   with `ssh exe.dev ssh-key add --vm=VM --ssh-user=exedev`, not into `authorized_keys`.
+4. On a laptop: `YOK_SERVER_PASSWORD=<the token> yok-remote login https://VM.exe.xyz --user me`.
 
 Each person mints their own token the same way, so leaving the team means removing one key.
 
