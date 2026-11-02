@@ -49,6 +49,7 @@ Yok runs on macOS and Linux, arm64 and x64. The `yok` binary has no runtime of i
 | Bun | the scripts the `task` workflow's skills run | `brew install oven-sh/bun/bun` | `curl -fsSL https://bun.sh/install \| bash` |
 | jq, curl | shell steps inside skills | `brew install jq curl` | `sudo apt install jq curl` |
 | ffmpeg, agent-browser | the QA stage films proof of the feature | `brew install ffmpeg`, then `npm i -g agent-browser && agent-browser install` | `sudo apt install ffmpeg`, then the same npm commands |
+| agent-device (optional) | the QA stage drives iOS and Android apps | `npm i -g agent-device@latest && agent-device doctor` | same |
 
 ## Installation
 
