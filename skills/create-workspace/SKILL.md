@@ -39,24 +39,30 @@ If `yok` is not found, stop and report that; do not create worktrees by hand.
 
 ## Steps
 
-1. Run the `workspace` script with `info`. It prints `{ layout, packages }`.
-2. Choose the repos:
+1. **Read the layout.** Run the `workspace` script with `info`. It prints `{ layout, packages }`.
+2. **Choose the repos.**
    - The input has `repos`: use them as given, and skip `select-repos`.
    - `layout` is `mono`: skip this step. The workspace is the one repo.
    - `layout` is `multi`: read the `select-repos` reference and follow it to pick repo names
      from `packages`.
-3. Run the `workspace` script with `create SPEC_NAME --run SPEC_NAME`, adding
-   `--base BASE_BRANCH` when the input has `baseBranch`, and `--repos NAME1,NAME2` in multi
-   layout. `--run SPEC_NAME` names the run, so its event log records the workspace; always pass it.
-4. The command prints a JSON report. If it exits non-zero, stop and report why: each repo in
-   `repos` with `status: "failed"`, with its `name`, `error.kind` and `error.message`, and any
-   error printed on stderr. An error saying the workspace changed but its event was not recorded
-   means the worktrees exist but the run has no record of them, so later stages would not find
-   them. Do not retry, and do not remove or delete anything. A person decides what to do; the
-   clean retry is the script's `remove SPEC_NAME --run SPEC_NAME`, then this skill again. Don't
-   suggest the script's `add` to finish a failed create: the run never recorded the workspace, so
-   an added repo would land in a workspace later stages can't see.
-5. Reply with the `create-workspace.output.v1` JSON, built from the report:
+3. **Create the workspace with a 5-minute timeout.** Run the `workspace` script with
+   `create SPEC_NAME --run SPEC_NAME`, adding `--base BASE_BRANCH` when the input has
+   `baseBranch`, and `--repos NAME1,NAME2` in multi layout. `--run SPEC_NAME` names the run, so
+   its event log records the workspace; always pass it. `create` also runs the project's
+   `workspace.setup`, which can take minutes, so run it through the Bash tool with an explicit
+   `timeout: 300000` (5 minutes).
+4. **Read the JSON report.** `create` prints it when it ends. If Bash moved `create` to the
+   background, it is still running: wait for the task-finished notice and read the report from
+   the task's output file, as the orchestrate reference for your agent says. Slow is not dead:
+   never fail the node while it runs.
+5. **Stop on a failed create.** If `create` exits non-zero, or any repo in its report has
+   `status: "failed"`, report each failed repo's `name`, `error.kind` and `error.message`, plus
+   anything on stderr, and stop. Change nothing: no retry, no cleanup. A person decides.
+
+   The only clean retry is `remove SPEC_NAME --run SPEC_NAME`, then this skill again. Never use
+   `add` to patch a failed create: the run has no record of the workspace, so later stages would
+   not find it.
+6. **Reply with the output.** Give the `create-workspace.output.v1` JSON, built from the report:
 
    ```json
    {

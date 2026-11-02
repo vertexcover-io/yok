@@ -104,7 +104,7 @@ describe("SC26: orchestrate hook stop", () => {
     return { run, input: JSON.stringify({ session_id: "s1", transcript_path: transcript }) };
   };
 
-  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and a stop while the review runs in the background sends the agent back to write's done once, then lets the turn end with no agent.stuck", async () => {
+  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and every stop while the review runs in the background lets the turn end as background-task with no agent.stuck", async () => {
     const run = startedRun(`name: mixed
 inputs:
   prompt: { type: string, required: true }
@@ -130,16 +130,13 @@ nodes:
     const first = stop(run, waiting);
     const second = stop(run, waiting);
 
-    expect(JSON.parse(first.stdout)).toEqual({
-      decision: "block",
-      reason: expect.stringContaining(`yok orchestrate done ${write.nodeRunId} --run feat-x`),
-    });
+    expect(first).toMatchObject({ code: 0, stdout: "" });
     expect(second).toMatchObject({ code: 0, stdout: "" });
     const events = await eventsOf(run.repo);
     const stops = events.filter((event) => event.type === "hooks.stop.called");
     expect(stops.map((event) => event.payload)).toEqual([
-      expect.objectContaining({ reason: "node-not-done" }),
-      expect.objectContaining({ reason: "background-task" }),
+      expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
+      expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
     ]);
     expect(events.map((event) => event.type)).not.toContain("agent.stuck");
   });
