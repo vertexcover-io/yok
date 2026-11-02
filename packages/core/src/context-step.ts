@@ -56,7 +56,6 @@ const DONE_TIMEOUT_MS = { new: 60_000, compact: 180_000 } as const;
 const RESUME_TIMEOUT_MS = 30_000;
 const RESUME_CAP_MS = 180_000;
 const RESUME_ATTEMPTS = 2;
-const INPUT_UNREACHABLE = "Could not reach Claude's input box";
 const SCREEN_TAIL_LINES = 15;
 // A long chat can take longer to compact: while Claude shows the compact as busy it may run up
 // to the cap, and it fails once Claude has not looked busy for the grace.
@@ -374,18 +373,47 @@ const startNewSession = async (options: ContextStepOptions, terminal: ITerminal)
   log.info({ sessionId }, "node completed by the new session's SessionStart");
 };
 
+const UNREAD = "Claude's input box not read before the relaunch";
+
+// A relaunch ends the Claude in the pane, and with it whatever sits in its input box. Only the
+// draft's size is logged, never its text.
+const logDraft = async (terminal: ITerminal, log: ILogger): Promise<void> => {
+  const captured = await terminal.capture();
+  if (!captured.ok) return log.warn({ error: captured.error }, UNREAD);
+  const box = readClaudeBox(captured.value);
+  if (box.kind !== "ready") return log.warn({ kind: box.kind }, UNREAD);
+  if (box.text !== "") {
+    const lines = box.text.split("\n").length;
+    log.warn(
+      { chars: box.text.length, lines },
+      "draft in Claude's input box dropped by the relaunch",
+    );
+  }
+};
+
+// The same session is relaunched with /compact as its first message, so no popup or draft can
+// swallow it; its id stays, so nothing is linked or swapped.
 const compact = async (
   options: ContextStepOptions,
   target: LineTarget,
   prompt: string | undefined,
 ): Promise<void> => {
-  const { log } = target;
+  const { run, provider, home, log } = options;
   await recordStarted(options, "compact", target.sessionId);
+  const env = unwrap(await loadSessionEnv(run, provider.type));
+  await waitForIdle(target.terminal);
+  await logDraft(target.terminal, log);
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
-  // Typed once: a compaction can take minutes, so a retype could start a second one. A compaction
-  // that did not happen is no emergency: the run goes on in a fuller session.
-  if (!(await typeAtInputBox(target.terminal, command, log))) throw new Error(INPUT_UNREACHABLE);
-  log.info({ command }, "compact typed");
+  unwrap(
+    await provider.relaunch(target.terminal, target.sessionId, {
+      ...options.launch,
+      resume: true,
+      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
+      prompt: command,
+      name: run.name,
+    }),
+  );
+  log.info({ command }, "Claude relaunched with the compact");
   await watchCompact(options, target.terminal);
   log.info({}, "node completed by the compact's SessionStart");
   // Typed here, not in the SessionStart hook: Claude holds a typed prompt until its SessionStart
