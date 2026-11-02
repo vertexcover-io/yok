@@ -2774,3 +2774,181 @@ describe("POST /runs/:id/resume", () => {
     expect(existsSync(lock)).toBe(true);
   });
 });
+
+// demo, failed on its workflow's exec node two: two started, two failed, then the run failed.
+const seedFailedRun = async (
+  registry: Registry,
+  seed: Seed = {},
+  error: Readonly<{ kind: string; message: string }> = { kind: "exit", message: "exit 1" },
+): Promise<WorkflowRun> => {
+  const run = await seedRun(registry, { status: "failed", ...seed });
+  // Retry compiles the run's workflow, which reads the git repo the run started in.
+  execFileSync("git", ["init", "-q"], { cwd: run.cwd });
+  const runDir = runDirOf(run.cwd, "demo");
+  // The copy of the workflow orchestrate init keeps in the run folder.
+  writeFileSync(
+    join(runDir, "workflow.yaml"),
+    'name: ok\nnodes:\n  - { id: two, type: exec, runtime: sh, script: "exit 1", input: {} }\n',
+  );
+  const store = jsonlEventStore(runDir);
+  const two = { nodeId: "two", nodeRunId: "nr-two" };
+  const events = [
+    { type: "workflow.node.started", ...two, payload: { nodeType: "exec" } },
+    {
+      type: "workflow.node.failed",
+      ...two,
+      payload: { nodeType: "exec", attempts: 1, error },
+    },
+    { type: "workflow.failed", payload: {} },
+  ];
+  for (const [index, event] of events.entries()) {
+    const stored = await store.append({
+      id: `e-fail-${index}`,
+      ts: "2026-01-01T00:00:03.000Z",
+      source: "workflow",
+      runId: run.id,
+      ...event,
+    });
+    if (!stored.ok) throw new Error(stored.error);
+  }
+  return run;
+};
+
+const retry = (
+  deps: Parameters<typeof createApi>[0],
+  runId: string,
+  env = {},
+  answered?: boolean,
+) =>
+  createApi(deps).request(`/runs/${runId}/retry`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ env, ...(answered === undefined ? {} : { answered }) }),
+  });
+
+const stateOf = (run: WorkflowRun): State =>
+  JSON.parse(readFileSync(join(runDirOf(run.cwd, "demo"), "state.json"), "utf8"));
+
+describe("POST /runs/:id/retry", () => {
+  test("SC12: a failed run gets its failed step two reopened and continues s-1 with the resume prompt", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry);
+
+    const res = await retry(deps, run.id, { FOO: "bar" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      run,
+      attach: ["tmux", "attach-session", "-t", "%9"],
+      view: `http://localhost:1/runs/${run.id}`,
+    });
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.prompt).toBe("/orchestrate --resume demo");
+    expect(launches[0]?.continueSession).toEqual({ id: "s-1", terminalName: "claude-demo-3c4d" });
+    expect(launches[0]?.env).toMatchObject({ FOO: "bar" });
+    const state = stateOf(run);
+    expect(state.status).toBe("running");
+    expect(state.nodeRuns.two?.status).toBe("interrupted");
+  });
+
+  test("a failed run the runs list already showed is listed as no longer failed once it is retried", async () => {
+    const { deps } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry);
+    const listedStatus = async () => {
+      const res = await createApi(deps).request("/runs");
+      const body: { runs: readonly { id: string; status: string }[] } = await res.json();
+      return body.runs.find((listed) => listed.id === run.id)?.status;
+    };
+    expect(await listedStatus()).toBe("failed");
+
+    expect((await retry(deps, run.id)).status).toBe(200);
+
+    // Running again, with no agent session behind it: the fake launch starts none.
+    expect(await listedStatus()).toBe("gone");
+  });
+
+  test("a run whose step two failed needing an answer is 409 and stays failed until answered: true, which reopens it and launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(
+      deps.registry,
+      {},
+      {
+        kind: "needs-input",
+        message: "Which database?",
+      },
+    );
+
+    const refused = await retry(deps, run.id);
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(await refused.json())).toContain("Which database?");
+    expect(launches).toEqual([]);
+    expect(stateOf(run).status).toBe("failed");
+
+    expect((await retry(deps, run.id, {}, true)).status).toBe(200);
+    expect(launches).toHaveLength(1);
+    expect(stateOf(run).status).toBe("running");
+  });
+
+  test("SC13: a failed codex run asks for the codex provider and prompts $orchestrate --resume demo", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry, {
+      run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },
+    });
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(deps.asked).toEqual(["codex"]);
+    expect(launches.map((options) => options.prompt)).toEqual(["$orchestrate --resume demo"]);
+  });
+
+  test("SC14: a completed run is 409 conflict saying retry brings back only a failed run, and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { status: "completed" });
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo is completed; retry brings back only a failed run",
+      },
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test("SC15: a failed run whose tmux session is still alive is 409 pointing at yok attach demo, stays failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = { ...base, host: fakeHost("", true).host };
+    const run = await seedFailedRun(deps.registry);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo still has its agent session; use yok attach demo",
+      },
+    });
+    expect(launches).toEqual([]);
+    expect(stateOf(run).status).toBe("failed");
+  });
+
+  test("SC16: a launch that fails after the retry is 502 saying yok resume demo starts the reopened run", async () => {
+    const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
+    const run = await seedFailedRun(deps.registry);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "agent-failed",
+        message: "boom; its failed steps are reopened, so yok resume demo starts it",
+      },
+    });
+    expect(stateOf(run).status).toBe("running");
+  });
+});

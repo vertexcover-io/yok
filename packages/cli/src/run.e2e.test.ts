@@ -48,6 +48,20 @@ const OK_WORKFLOW = [
   "",
 ].join("\n");
 
+// One exec node that exits 1, so the run fails on it.
+const FAIL_WORKFLOW = [
+  "name: fail",
+  "inputs:",
+  "  prompt: { type: string }",
+  "nodes:",
+  "  - id: two",
+  "    type: exec",
+  "    runtime: sh",
+  '    script: "exit 1"',
+  "    input: null",
+  "",
+].join("\n");
+
 const CYCLE_WORKFLOW = [
   "name: bad",
   "nodes:",
@@ -89,6 +103,7 @@ const makeRepo = (): string => {
   writeFileSync(join(dir, "orchestrate.config.json"), '{ "version": 2 }\n');
   writeFileSync(join(dir, "ok.yaml"), OK_WORKFLOW);
   writeFileSync(join(dir, "bad.yaml"), CYCLE_WORKFLOW);
+  writeFileSync(join(dir, "fail.yaml"), FAIL_WORKFLOW);
   git("add", ".");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
   return dir;
@@ -1055,6 +1070,88 @@ describe("yok resume", () => {
       const again = yok(repo, env, "resume", "demo", "--no-attach", "--no-open");
       expect(again.code).toBe(1);
       expect(again.stderr).toContain("use yok attach demo");
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("yok retry", () => {
+  // A demo run of fail.yaml whose agent ran init and linked session s-1, with its tmux server
+  // killed so the session is gone; orchestrate runs what the agent would inside that session.
+  const startGoneRun = () => {
+    const repo = makeRepo();
+    const { env, fakeOut, socket } = makeEnv();
+    const launches = () => readLines(fakeOut).filter(isLaunch);
+    const started = yok(
+      repo,
+      env,
+      "run",
+      "fail.yaml",
+      "--name",
+      "demo",
+      "--prompt",
+      "go",
+      "--no-attach",
+      "--no-open",
+    );
+    expect(started.code).toBe(0);
+    const runId = started.stdout.trim().split("\n")[0] ?? "";
+    waitFor(() => launches().length === 1);
+    const sessionEnv = launches()[0]?.env as NodeJS.ProcessEnv;
+    const orchestrate = (...args: string[]) =>
+      spawnSync("bun", [NO_DOTENV, ...ORCHESTRATE, ...args], {
+        cwd: repo,
+        env: sessionEnv,
+        encoding: "utf8",
+      });
+    expect(orchestrate("init", "demo").status).toBe(0);
+    expect(orchestrate("link-session", "--agent", "claude", "--session-id", "s-1").status).toBe(0);
+    spawnSync("tmux", ["-L", socket, "kill-server"]);
+    return { repo, env, runId, launches, orchestrate };
+  };
+
+  test(
+    "SC17: yok retry demo on a run failed at two relaunches claude --resume s-1 with the resume prompt",
+    () => {
+      const { repo, env, runId, launches, orchestrate } = startGoneRun();
+      const two = JSON.parse(orchestrate("next", "--run", "demo").stdout);
+      orchestrate("exec", two.steps[0].nodeRunId, "--run", "demo");
+      expect(JSON.parse(orchestrate("next", "--run", "demo").stdout)).toEqual({
+        kind: "finished",
+        status: "failed",
+      });
+
+      const retried = yok(repo, env, "retry", "demo", "--no-attach", "--no-open");
+
+      expect(retried.code).toBe(0);
+      expect(retried.stdout.trim().split("\n")).toEqual([
+        runId,
+        `yok-dev attach --run-id ${runId}`,
+        expect.stringMatching(/^view: http/),
+      ]);
+      waitFor(() => launches().length === 2);
+      const argv = (launches()[1]?.argv ?? []) as string[];
+      expect(argv.slice(0, 2)).toEqual(["--resume", "s-1"]);
+      expect(argv.at(-1)).toBe("/yok:orchestrate --resume demo");
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC18: yok retry demo on a run that never failed is refused, and yok resume demo still relaunches it",
+    () => {
+      const { repo, env, launches } = startGoneRun();
+
+      const refused = yok(repo, env, "retry", "demo", "--no-attach", "--no-open");
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("retry brings back only a failed run");
+      expect(launches()).toHaveLength(1);
+
+      const resumed = yok(repo, env, "resume", "demo", "--no-attach", "--no-open");
+      expect(resumed.code).toBe(0);
+      waitFor(() => launches().length === 2);
       stopServer(repo, env);
     },
     TIMEOUT_MS,

@@ -249,12 +249,12 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "SC814: a failed run names the first failed node, the first line of its error, then the resume line",
+      "SC814: a failed run names the first failed node, the first line of its error, then the retry line",
       event("workflow.failed"),
       failedBuild,
       notice("❌ Run failed at build · 12m", {
         mention: true,
-        body: "tsc exit 2\nRun demo failed. Resume it with: yok resume demo",
+        body: "tsc exit 2\nRun demo failed. Retry it from the failed step with: yok retry demo",
       }),
     ],
     [

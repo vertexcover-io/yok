@@ -252,6 +252,64 @@ export const runCommand = () => {
   return command;
 };
 
+type RelaunchFlags = Readonly<{
+  runId?: string;
+  answered?: boolean;
+  attach: boolean;
+  open: boolean;
+}>;
+
+// Starts a new agent session on a run that has none: resume as it stopped, or retry its failed
+// steps first. Both load the run's config, plan and env and run the doctor checks yok run does.
+const relaunch = async (
+  action: "resume" | "retry",
+  name: string | undefined,
+  opts: RelaunchFlags,
+): Promise<void> => {
+  const log = commandLog(action);
+  const registry = createRegistry(registryPath());
+  const picked = await requireRun({
+    registry,
+    name,
+    id: opts.runId,
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (!picked.ok) {
+    // A run that died before orchestrate init has no folder to resume from.
+    const found = opts.runId === undefined ? undefined : await registry.findRun(opts.runId);
+    return fail(
+      found?.name === null
+        ? `run ${found.id} never started its agent session; start it again with yok run`
+        : picked.error,
+    );
+  }
+  const run = picked.value;
+  const config = await loadRunConfig(run);
+  if (!config.ok) return fail(config.error);
+  const plan = await compileRunWorkflow(run, config.value).catch((error: unknown) => {
+    fail(errorText(error));
+    return null;
+  });
+  if (plan === null) return;
+
+  // the env every later session of the run gets, from the config init recorded
+  const env = await loadEnv(config.value, plan, run.cwd);
+  const blocked = await checkBeforeStart(run.cwd, config.value.path ?? undefined, plan, env);
+  if (blocked !== null) return fail(blocked);
+  if (!env.ok) return fail(env.error);
+
+  await ensureServer();
+  const result =
+    action === "retry"
+      ? await yokClient().retry(run.id, { env: env.value, answered: opts.answered === true })
+      : await yokClient().resume(run.id, { env: env.value });
+  if (!result.ok) return fail(apiErrorText(result.error));
+  const done = action === "retry" ? "run retried" : "run resumed";
+  log.info({ runId: run.id, terminal: result.value.run.terminal }, done);
+  await showStartedRun(result.value, opts, process.cwd(), log);
+};
+
 export const resumeCommand = () =>
   new Command("resume")
     .description("Bring back a run whose agent session is gone, after a reboot or a crash")
@@ -259,43 +317,14 @@ export const resumeCommand = () =>
     .option("--run-id <id>", "resume by run id instead of name")
     .option("--no-attach", "do not attach to the session's terminal once it starts")
     .option("--no-open", "do not open the run's page in the browser")
-    .action(async (name, opts) => {
-      const log = commandLog("resume");
-      const registry = createRegistry(registryPath());
-      const picked = await requireRun({
-        registry,
-        name,
-        id: opts.runId,
-        env: process.env,
-        cwd: process.cwd(),
-      });
-      if (!picked.ok) {
-        // A run that died before orchestrate init has no folder to resume from.
-        const found = opts.runId === undefined ? undefined : await registry.findRun(opts.runId);
-        return fail(
-          found?.name === null
-            ? `run ${found.id} never started its agent session; start it again with yok run`
-            : picked.error,
-        );
-      }
-      const run = picked.value;
-      const config = await loadRunConfig(run);
-      if (!config.ok) return fail(config.error);
-      const plan = await compileRunWorkflow(run, config.value).catch((error: unknown) => {
-        fail(errorText(error));
-        return null;
-      });
-      if (plan === null) return;
+    .action((name, opts) => relaunch("resume", name, opts));
 
-      // the env every later session of the run gets, from the config init recorded
-      const env = await loadEnv(config.value, plan, run.cwd);
-      const blocked = await checkBeforeStart(run.cwd, config.value.path ?? undefined, plan, env);
-      if (blocked !== null) return fail(blocked);
-      if (!env.ok) return fail(env.error);
-
-      await ensureServer();
-      const result = await yokClient().resume(run.id, { env: env.value });
-      if (!result.ok) return fail(apiErrorText(result.error));
-      log.info({ runId: run.id, terminal: result.value.run.terminal }, "run resumed");
-      await showStartedRun(result.value, opts, process.cwd(), log);
-    });
+export const retryCommand = () =>
+  new Command("retry")
+    .description("Bring back a failed run from the step that failed, in a new agent session")
+    .argument("[name]", "run name in this repo (default: $YOK_RUN_ID)")
+    .option("--run-id <id>", "retry by run id instead of name")
+    .option("--answered", "retry a step that failed waiting on a person, once it is dealt with")
+    .option("--no-attach", "do not attach to the session's terminal once it starts")
+    .option("--no-open", "do not open the run's page in the browser")
+    .action((name, opts) => relaunch("retry", name, opts));

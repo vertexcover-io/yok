@@ -7,6 +7,7 @@ import { ConfigSchema } from "./config.ts";
 import type { RunRef } from "./events.ts";
 import { createRegistry, type WorkflowRun } from "./registry.ts";
 import {
+  closingLine,
   findConfigRoot,
   loadCheckoutConfig,
   loadNamedConfig,
@@ -281,5 +282,14 @@ describe("loadPickedConfig", () => {
 
     expect(unwrap(await loadPickedConfig(run, repo)).path).toBe(recorded);
     expect(unwrap(await loadPickedConfig(undefined, repo)).path).toBe(checkout);
+  });
+});
+
+describe("closingLine", () => {
+  test.each([
+    ["failed", "Run demo failed. Retry it from the failed step with: yok retry demo"],
+    ["completed", "Run demo completed. Resume it with: yok resume demo"],
+  ] as const)("SC11: a %s run's closing line reads %s", (status, line) => {
+    expect(closingLine("demo", status)).toBe(line);
   });
 });

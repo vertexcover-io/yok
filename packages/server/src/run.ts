@@ -9,6 +9,7 @@ import {
   orchestrateArgv,
   pickNotifier,
   resolveWorkflowInputs,
+  retryFailedSteps,
   verdict,
   type WorkflowAgent,
   WorkflowAgentSchema,
@@ -51,7 +52,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-import { type ListedRun, listRunSummaries } from "./overview.ts";
+import { forgetFinishedRun, type ListedRun, listRunSummaries } from "./overview.ts";
 import { addRunIfProjectKept, pickProject, readProjects, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
@@ -59,6 +60,8 @@ import {
   ListRunsQuerySchema,
   type ResumeRunBody,
   ResumeRunBodySchema,
+  type RetryRunBody,
+  RetryRunBodySchema,
   type RunsFilter,
   type StartRunBody,
   StartRunBodySchema,
@@ -401,12 +404,14 @@ const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
 
 // Brings back a run whose agent session is gone, finished or not: the last linked session
 // continues on the model the run was on, in a tmux session under the run's old name. A finished
-// run's resumed session stays open as a chat.
-const resumeRun = async (
+// run's resumed session stays open as a chat. A retry first reopens a failed run's failed steps,
+// once the guards pass and before the launch.
+const relaunchRun = async (
   c: Context<{ Variables: Vars }>,
   deps: RunDeps,
   id: string,
   body: ResumeRunBody,
+  retry?: Readonly<{ answered: boolean }>,
 ) => {
   const log = c.get("log").child({ component: "runs", runId: id });
   const run = await deps.registry.findRun(id);
@@ -438,6 +443,12 @@ const resumeRun = async (
     );
   }
 
+  if (retry !== undefined) {
+    const reopened = await retryFailedSteps({ id, cwd: run.cwd, name: run.name }, retry.answered);
+    if (!reopened.ok) return conflict(c, reopened.error);
+    forgetFinishedRun(runDir);
+  }
+
   const provider = deps.providerFor(agent.data);
   const { current } = foldModelSwitch(events, state.tiers);
   const launched = await provider.launch({
@@ -456,7 +467,11 @@ const resumeRun = async (
       { err: String(launched.error) },
       "run not resumed: the agent session failed to launch",
     );
-    return errorResponse(c, 502, "agent-failed", String(launched.error));
+    const reopened =
+      retry === undefined
+        ? ""
+        : `; its failed steps are reopened, so yok resume ${run.name} starts it`;
+    return errorResponse(c, 502, "agent-failed", `${String(launched.error)}${reopened}`);
   }
   log.info(
     {
@@ -465,7 +480,7 @@ const resumeRun = async (
       terminal: run.terminal,
       model: current?.model,
     },
-    "run resumed",
+    retry === undefined ? "run resumed" : "run retried",
   );
   // Comments posted while the session was down; delivery waits until the agent is ready for them.
   void scheduleDelivery(id, { ...deps, log, now: () => new Date() });
@@ -508,8 +523,12 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
       (c) => startRun(c, deps, c.req.valid("json")),
     )
     .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
-      resumeRun(c, deps, c.req.param("id"), c.req.valid("json")),
+      relaunchRun(c, deps, c.req.param("id"), c.req.valid("json")),
     )
+    .post("/:id/retry", jsonBody(RetryRunBodySchema), (c) => {
+      const { answered, ...body }: RetryRunBody = c.req.valid("json");
+      return relaunchRun(c, deps, c.req.param("id"), body, { answered: answered ?? false });
+    })
     .get("/", queryParams(ListRunsQuerySchema), (c) => listRuns(c, deps, c.req.valid("query")))
     .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
