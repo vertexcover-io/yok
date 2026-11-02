@@ -82,11 +82,10 @@ write_config() {
   say "config"
   install -d -m 700 "$YOK_HOME"
   printf 'SERVER_DOMAIN=%s\nYOK_BIND=%s\n' "$SERVER_DOMAIN" "$BIND" > "$YOK_HOME/.env"
-  {
-    [ -z "${GH_TOKEN:-}" ] || printf 'GH_TOKEN=%s\n' "$GH_TOKEN"
-    [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
-    [ -z "${CODEX_API_KEY:-}" ] || printf 'CODEX_API_KEY=%s\n' "$CODEX_API_KEY"
-  } | install -m 600 /dev/stdin "$YOK_HOME/secrets.env"
+  for name in GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY SLACK_BOT_TOKEN SLACK_CHANNEL_ID SLACK_MEMBER_ID; do
+    eval "value=\${$name:-}"
+    [ -z "$value" ] || printf '%s=%s\n' "$name" "$value"
+  done | install -m 600 /dev/stdin "$YOK_HOME/secrets.env"
   own_proxy && return 0
   hash=$(printf '%s' "$YOK_PASSWORD" | caddy hash-password)
   printf 'SERVER_DOMAIN=%s\nYOK_USER=%s\nYOK_PASSWORD_HASH=%s\n' "$SERVER_DOMAIN" "$YOK_USER" "$hash" |
@@ -134,6 +133,16 @@ install_yok() {
   fi
 }
 
+# claude asks a first-time user to pick a theme before it reads its prompt, and a run's session
+# would wait on that menu forever. Marking onboarding done sends it straight to the prompt.
+seed_claude() {
+  say "claude onboarding"
+  settings="$HOME/.claude.json"
+  [ -s "$settings" ] || printf '{}\n' | install -m 600 /dev/stdin "$settings"
+  updated=$(jq '. + {hasCompletedOnboarding: true, theme: "dark"}' "$settings") || die "$settings is not valid JSON"
+  printf '%s\n' "$updated" | install -m 600 /dev/stdin "$settings"
+}
+
 # The unit's environment is what every run's tmux session, and so every agent, inherits.
 # Linger first, so the user manager exists and outlives this login; an ssh session that skipped
 # logind has no XDG_RUNTIME_DIR, and without it systemctl --user cannot find that manager.
@@ -176,6 +185,7 @@ install_packages
 write_config
 configure_caddy
 install_yok
+seed_claude
 start_service
 check
 rm -rf "$STAGE"

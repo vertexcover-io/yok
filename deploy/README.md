@@ -42,6 +42,8 @@ and names any required one that is missing.
 | `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | from `claude setup-token` on your laptop; lasts a year |
 | `CODEX_API_KEY` | one of the two | an OpenAI API key; stored on the server by `codex login` |
 | `GH_TOKEN` | only if the repo is private | a token that can read the repository's contents |
+| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | for Slack messages | the notifier's bot token and channel; a run whose config turns the notifier on stops without them |
+| `SLACK_MEMBER_ID` | no | the person the notifier mentions when a run needs someone |
 
 ## What a deploy does
 
@@ -49,12 +51,14 @@ and names any required one that is missing.
 
 1. **packages**: installs git, tmux, jq, curl, gh, ripgrep, ffmpeg, node and Caddy with apt, and
    claude, codex, agent-browser and ast-grep with npm, skipping what is present.
-2. **config**: writes `SERVER_DOMAIN` and `YOK_BIND` to `~/.yok/.env`, the tokens to
-   `~/.yok/secrets.env` (mode 600), and the domain, user and password hash to `/etc/caddy/.env`.
+2. **config**: writes `SERVER_DOMAIN` and `YOK_BIND` to `~/.yok/.env`, the tokens and Slack
+   keys to `~/.yok/secrets.env` (mode 600), and the domain, user and password hash to `/etc/caddy/.env`.
 3. **caddy**: installs the Caddyfile and the drop-in that points Caddy at its env file, then
    validates and reloads. With `PROXY=own`, steps 1 to 3 leave Caddy out entirely.
 4. **yok**: installs the tag with `install.sh`, which also moves the agent plugin and writes the
    `yok-remote` shortcut, then logs Codex in when it has a key.
+   Then marks Claude's first-run onboarding as done, so a run's session goes straight to its
+   prompt instead of waiting on the theme menu.
 5. **service**: installs the user unit, enables linger so it survives logout, restarts it, and
    drops an idle tmux server so the next run's session sees today's tokens.
 6. **check**: waits for `/api/health` on loopback to answer with the tag's version.

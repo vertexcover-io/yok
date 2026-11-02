@@ -88,11 +88,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SLACK_MEMBER_ID: ${{ secrets.SLACK_MEMBER_ID }}
           PROXY: ${{ secrets.PROXY }}
           YOK_BIND: ${{ secrets.YOK_BIND }}
         run: |
           umask 077
-          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY PROXY YOK_BIND; do
+          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY \
+              SLACK_BOT_TOKEN SLACK_CHANNEL_ID SLACK_MEMBER_ID PROXY YOK_BIND; do
             eval "value=\${$name:-}"
             [ -z "$value" ] || printf '%s=%s\n' "$name" "$value"
           done > secrets.env
