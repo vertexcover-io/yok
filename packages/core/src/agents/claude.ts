@@ -66,10 +66,6 @@ const isRule = (line: string): boolean => {
   return RULE.test(trimmed) && !BOX_EDGE.test(trimmed);
 };
 
-// More lines under the box than this mean a panel drawn under an old box, or a status area too
-// tall to tell apart from one.
-const MAX_STATUS_LINES = 4;
-
 const isCursorLine = (line: string): boolean => line.trim().startsWith("❯");
 // The box's bottom edge and a dialog's edges never carry a title, and a line of text can end in " ─".
 const isPlainRule = (line: string): boolean => /^─+$/.test(line.trim());
@@ -87,9 +83,7 @@ export const readClaudeBox = (screen: string): ClaudeScreen => {
   const [input = "", ...rest] = lines.slice(top + 1, rule);
   if (top >= 0 && isCursorLine(input) && !rest.some(isCursorLine)) {
     const text = [input.trim().slice(1), ...rest].map((line) => line.trim()).join("\n");
-    return lines.length - rule - 1 <= MAX_STATUS_LINES
-      ? { kind: "ready", text }
-      : { kind: "unknown" };
+    return { kind: "ready", text };
   }
   const plainAbove = lines.slice(0, rule).findLastIndex(isPlainRule);
   const ruleAbove = plainAbove >= 0 ? plainAbove : top;
