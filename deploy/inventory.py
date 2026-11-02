@@ -1,0 +1,91 @@
+"""
+Inventory for provision.py. One box, described by environment variables.
+
+Required:
+  DEPLOY_HOST     ip or hostname of the box
+  SERVER_DOMAIN   public domain yok is served on; with Caddy, DNS must already point at the box
+  DEPLOY_PUBKEY   path to the public key the Deploy workflow logs in with (on exe.dev the proxy
+                  checks the account's keys instead, so also `ssh exe.dev ssh-key add` it)
+  YOK_USER        the dashboard login Caddy asks for (with PROXY=caddy only)
+  YOK_PASSWORD    its password; only a bcrypt hash of it reaches the box (PROXY=caddy only)
+
+Optional:
+  PROXY           caddy (default): install Caddy, serve SERVER_DOMAIN with auto TLS, bind yok
+                  to loopback. external: a platform proxy (exe.dev, a web panel's nginx)
+                  already terminates TLS and asks for the login; skip Caddy and the firewall
+  YOK_BIND        with PROXY=external, the address yok listens on. yok has no login of its
+                  own, so this must be an address only the proxy reaches; 0.0.0.0 is right
+                  only on a box whose public side is the proxy. No default: it is never guessed
+  APP_USER        user that owns ~/.yok, runs the server and the runs, and that the Deploy
+                  workflow logs in as (default: yok, created). exedev on exe.dev
+  ADMIN_USER      user with sudo that provisioning logs in as (default: root)
+"""
+
+import os
+import sys
+from pathlib import Path
+from typing import Mapping
+
+import bcrypt
+
+_REQUIRED = ("DEPLOY_HOST", "SERVER_DOMAIN", "DEPLOY_PUBKEY")
+_PROXIES = ("caddy", "external")
+
+
+def _bind(env: Mapping[str, str], proxy: str) -> str:
+    if proxy == "caddy":
+        return "127.0.0.1"
+    bind = env.get("YOK_BIND", "").strip()
+    if not bind:
+        sys.exit(
+            "inventory.py: PROXY=external needs YOK_BIND, the address only the proxy reaches,"
+            " since yok has no login of its own"
+        )
+    return bind
+
+
+def _password_hash(env: Mapping[str, str], proxy: str) -> str | None:
+    if proxy != "caddy":
+        return None
+    missing = [key for key in ("YOK_USER", "YOK_PASSWORD") if not env.get(key)]
+    if missing:
+        sys.exit(f"inventory.py: PROXY=caddy needs {', '.join(missing)}")
+    return bcrypt.hashpw(env["YOK_PASSWORD"].encode(), bcrypt.gensalt()).decode()
+
+
+def _pubkey(env: Mapping[str, str]) -> str:
+    path = Path(env["DEPLOY_PUBKEY"]).expanduser()
+    if not path.is_file():
+        sys.exit(f"inventory.py: DEPLOY_PUBKEY is not a file: {path}")
+    return path.read_text().strip()
+
+
+def build_inventory(env: Mapping[str, str]) -> list[tuple[str, dict]]:
+    missing = [key for key in _REQUIRED if not env.get(key)]
+    if missing:
+        sys.exit(f"inventory.py: missing environment variables: {', '.join(missing)}")
+    proxy = env.get("PROXY") or "caddy"
+    if proxy not in _PROXIES:
+        sys.exit(f"inventory.py: PROXY must be one of {', '.join(_PROXIES)}")
+    admin_user = env.get("ADMIN_USER") or "root"
+    return [
+        (
+            env["DEPLOY_HOST"],
+            {
+                "ssh_user": admin_user,
+                "_sudo": admin_user != "root",
+                "domain": env["SERVER_DOMAIN"],
+                "proxy": proxy,
+                "bind": _bind(env, proxy),
+                "app_user": env.get("APP_USER") or "yok",
+                "yok_user": env.get("YOK_USER") or "",
+                "password_hash": _password_hash(env, proxy),
+                "deploy_pubkey": _pubkey(env),
+            },
+        )
+    ]
+
+
+# pyinfra imports this file for the `box` list; a test imports build_inventory alone.
+if "pyinfra" in sys.modules:
+    box = build_inventory(os.environ)

@@ -1,59 +1,74 @@
 name: Deploy
 
-# Puts one release on the server. Run by hand: with a tag, that release; with none, the latest
-# stable release. Re-running it with the current tag rotates a secret.
+# Puts one release on the server. The box was provisioned once with deploy/provision.py; this
+# only installs the tag and restarts the service, over ssh as the user that owns the runs,
+# with no sudo.
+#
+# Triggers:
+#   - release.yml dispatches this with each stable tag it publishes (workflow_dispatch is the
+#     one event GITHUB_TOKEN may fire, so no extra token is needed).
+#   - "Run workflow" with a tag deploys that tag by hand; an older tag rolls back, and the
+#     current tag re-sent rotates a secret.
+#
+# Required in the `production` environment:
+#   vars     DEPLOY_HOST     the server's address
+#            DEPLOY_USER     the ssh user: APP_USER from provisioning, exedev on exe.dev
+#            SERVER_DOMAIN   the domain the proxy serves, as given to provisioning
+#            YOK_USER        the login the proxy asks for
+#   secrets  SSH_PRIVATE_KEY deploy key for DEPLOY_USER@DEPLOY_HOST
+#            SSH_HOST_KEY    the server's public host key, one line as in known_hosts
+#            YOK_PASSWORD    the login's password, or the platform token with an external proxy
+#            CLAUDE_CODE_OAUTH_TOKEN or CODEX_API_KEY, at least one
+#            GH_TOKEN        only while the repo is private
+#            SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID   for the notifier
+#
+# The agent and Slack secrets are named one by one below: a blanket toJSON(secrets) is what
+# GitHub's workflow scanner flags as exfiltration.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to deploy, such as v0.0.8 (default: the latest release)"
-        required: false
+        description: "Release tag to deploy, such as v0.0.8"
+        required: true
 
 permissions:
   contents: read
 
-# Two deploys at once would race on the same binary and service; the second waits its turn.
 concurrency:
-  group: deploy-server
+  group: deploy-production
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment:
+      name: production
+      url: https://${{ vars.SERVER_DOMAIN }}
     env:
-      TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+      TAG: ${{ inputs.tag }}
+      TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
     steps:
-      # The latest release is what install.sh with no version would pick, so the two agree.
-      - name: Pick the tag
+      # Before anything reaches the server: every required value, named when missing.
+      - name: Check the environment
         env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          tag="${INPUT_TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "deploying $tag"
-
-      # Before anything reaches the server: every required secret, named when missing.
-      - name: Check the secrets
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
-          YOK_USER: ${{ secrets.YOK_USER }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          SERVER_DOMAIN: ${{ vars.SERVER_DOMAIN }}
+          YOK_USER: ${{ vars.YOK_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
           YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
         run: |
           missing=""
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS SERVER_DOMAIN YOK_USER YOK_PASSWORD; do
+          for name in DEPLOY_HOST DEPLOY_USER SERVER_DOMAIN YOK_USER SSH_PRIVATE_KEY SSH_HOST_KEY YOK_PASSWORD; do
             eval "value=\${$name:-}"
             [ -n "$value" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
-            echo "::error::missing repository secrets:$missing. Add them under Settings > Secrets and variables > Actions."
+            echo "::error::missing in the production environment:$missing. See deploy/README.md."
             exit 1
           fi
           if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}${CODEX_API_KEY}" ]; then
@@ -65,59 +80,45 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] ||
             { echo "::error::'$TAG' is not a release tag like v0.0.8"; exit 1; }
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The host key is a secret you recorded once with ssh-keyscan, so the first connection is
       # to the server you meant and not to whatever answers the address today.
-      - name: Trust the server and load the deploy key
+      - name: Configure SSH
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      # One file carries every secret, written at mode 600 here and on the server; nothing goes
-      # on a command line. An empty optional secret is left out, so the script sees it as unset.
-      - name: Write the secrets file
+      # The secrets go over ssh stdin as KEY=VALUE lines into deploy.sh, so none reaches a
+      # command line, a file in /tmp, or the log. An unset secret is skipped.
+      - name: Deploy
         env:
-          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
-          YOK_USER: ${{ secrets.YOK_USER }}
-          YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_MEMBER_ID: ${{ secrets.SLACK_MEMBER_ID }}
-          PROXY: ${{ secrets.PROXY }}
-          YOK_BIND: ${{ secrets.YOK_BIND }}
         run: |
-          umask 077
-          for name in SERVER_DOMAIN YOK_USER YOK_PASSWORD GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY \
-              SLACK_BOT_TOKEN SLACK_CHANNEL_ID SLACK_MEMBER_ID PROXY YOK_BIND; do
-            eval "value=\${$name:-}"
-            [ -z "$value" ] || printf '%s=%s\n' "$name" "$value"
-          done > secrets.env
-
-      - name: Copy the deploy files to the server
-        run: |
-          ssh "$TARGET" 'rm -rf /tmp/yok-deploy && mkdir -m 700 /tmp/yok-deploy'
-          scp -q secrets.env deploy/Caddyfile deploy/yok.service deploy/deploy.sh "$TARGET:/tmp/yok-deploy/"
-
-      - name: Run the deploy on the server
-        run: ssh "$TARGET" sh /tmp/yok-deploy/deploy.sh "$(printf %q "$TAG")"
+          set -euo pipefail
+          scp -q deploy/deploy.sh "$TARGET:/tmp/yok-deploy.sh"
+          jq -rn '$ENV
+              | {GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY, SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID}
+              | with_entries(select(.value != null and .value != ""))
+              | to_entries[] | "\(.key)=\(.value)"' \
+          | ssh "$TARGET" sh /tmp/yok-deploy.sh "$(printf %q "$TAG")"
+          ssh "$TARGET" rm -f /tmp/yok-deploy.sh
 
       # The request a laptop makes: through the proxy, with the login, expecting the new version.
       - name: Check the server through the proxy
         env:
-          DOMAIN: ${{ secrets.SERVER_DOMAIN }}
-          LOGIN: ${{ secrets.YOK_USER }}:${{ secrets.YOK_PASSWORD }}
+          DOMAIN: ${{ vars.SERVER_DOMAIN }}
+          LOGIN: ${{ vars.YOK_USER }}:${{ secrets.YOK_PASSWORD }}
         run: |
-          version=""
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            version=$(curl -fsS -u "$LOGIN" "https://$DOMAIN/api/health" | jq -r .version) && break
-            sleep 6
-          done
+          version=$(curl -fsS --retry 12 --retry-delay 5 --retry-all-errors -u "$LOGIN" "https://$DOMAIN/api/health" | jq -r .version)
+          echo "the server answers $version"
           test "$version" = "${TAG#v}"

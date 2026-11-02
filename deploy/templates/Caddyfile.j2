@@ -1,0 +1,9 @@
+# Caddy in front of the yok server: https and the login, then every request to yok on loopback.
+# Rendered by provision.py. The domain must equal SERVER_DOMAIN in ~/.yok/.env, or yok's Host
+# guard answers 403.
+{{ domain }} {
+	basic_auth {
+		{{ yok_user }} {{ password_hash }}
+	}
+	reverse_proxy 127.0.0.1:7777
+}
