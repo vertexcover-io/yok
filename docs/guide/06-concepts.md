@@ -141,7 +141,7 @@ extensions:
 | `packages` | each part of the repo: `path`, `runner`, `commands` (`typecheck`, `lint`, `testAll`, `testFile`, `build`, …), `timeoutSeconds` |
 | `baseline` | one command whose output the baseline stage stores |
 | `doctor` | an extra check command |
-| `environments` | named targets qa verifies against, with a `default` |
+| `environments` | named targets qa verifies against, with a `default`; each entry is its steps (`stackUp`, `stackDown`, `seed`, `auth`, …) plus `platform` (`web`, `ios` or `android`, default `web`) and, on a device, the `app` id it opens and an optional `devices` list (the first is the main walk, each later one a replay) |
 | `workspace` | `layout: mono\|multi`, `path` template, `baseBranch`, `setup`, `teardown` |
 | `agents.claude.tiers`, `agents.codex.tiers` | model per tier, and the default tier |
 | `extensions` | see above |

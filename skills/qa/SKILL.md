@@ -24,6 +24,8 @@ consumes:
     optional: true
   - artifact: design-refs
     optional: true
+  - artifact: fix-result
+    optional: true
 produces:
   - artifact: proof-report
     optional: true
@@ -35,6 +37,9 @@ references:
   driving-the-browser:
     path: references/driving-the-browser.md
     description: How to drive agent-browser, capture and promote frames, and replay a flow on a phone.
+  driving-the-device:
+    path: references/driving-the-device.md
+    description: How to drive agent-device on an iOS or Android app, assert without eval, batch, and capture and promote frames.
   headless-verification:
     path: references/headless-verification.md
     description: The parts of a headless walk and the guards that prove the code under test ran.
@@ -74,7 +79,8 @@ from its `packages` and `environments` blocks; the `environment` variable picks 
 ## Your Contract
 
 You are the gate between "tests are green" and "feature is done". A behaviour reachable through a form, page, or
-click is proven by driving it in a browser (Step 2). A behaviour with no screen — a webhook, a cron job, an API
+tap is proven by driving it on the surface the environment entry declares — a browser, or an iOS or Android app on
+a device (Step 2). A behaviour with no screen — a webhook, a cron job, an API
 contract, a DB row — is proven headlessly at the same evidentiary bar (Step 3). **A feature with no UI is verified
 entirely in Step 3, at full scope**: "backend-only" describes where the evidence comes from, never how much of the
 feature you verify. You produce **one file**, `verification/proof-report.html`, and the evidence beside it — except
@@ -101,7 +107,9 @@ skipping" and stop.
 
 RUN below is the run's spec name; standalone, use a short kebab-case name for the feature. Read a
 reference with `yok orchestrate skill ref qa.NAME`; outside a run, read it from this skill's
-`references/` folder. In a run, the input may hold:
+`references/` folder: `stack-up.md`, `driving-the-browser.md`, `driving-the-device.md`,
+`headless-verification.md`, `visual-verification.md` and `writing-the-report.md`, with
+`README.md` beside `SKILL.md` as the overview. In a run, the input may hold:
 
 | Field | Meaning |
 |---|---|
@@ -126,7 +134,9 @@ Everything else comes from the run's artifacts:
   frame's `design/FILE` path. `done` checks each frame and its width, and rejects a PASS or PARTIAL whose report
   carries a BLOCKER.
 - **The config's `environments` entry the `environment` variable picks** — how the stack starts, seeds
-  and authenticates. Step 1 works its keys through the `stack-up` reference.
+  and authenticates, and which surface it drives: an entry whose `platform` is `ios` or `android` is a device
+  walk on the app its `app` field names, on each device its `devices` list names; one with no platform, or
+  `web`, is a browser walk. Step 1 works its keys through the `stack-up` reference.
 - **The project's stack skill** — the app facts verification turns on that no key carries (self-lying surfaces,
   toast duration, where a triggered email lands, what the stack shares). This lives in the **project's own skills**
   and `CLAUDE.md`. This skill mandates no dedicated file for it — only that Step 1's two unknowns come back
@@ -216,8 +226,10 @@ the exception — you
 could not drive the feature at all, a stack that would not come up, a tool that is not installed.
 **`BLOCKED:no-infra` is not one of the four**, and annotating the status halts the run as a broken
 contract instead of as the block you meant; the token opens `reason` instead — `no-infra: …`,
-`no-agent-browser: …`, `no-ffmpeg: …`. `BLOCKED` enters no fix round, so that one line is all the
-workflow gets: what was missing, and what you tried.
+`no-agent-browser: …`, `no-agent-device: …`, `no-ffmpeg: …`. `BLOCKED` enters no fix round, so that one line
+is all the workflow gets: what was missing, and what you tried. A missing driver names its install beside what
+you tried: `npm i -g agent-browser && agent-browser install` for the browser, `npm i -g agent-device@latest` for
+the device.
 
 `gaps[]` carries one entry per requirement the report's `coverage[]` marks `NOT VERIFIED`, so a
 scenario that left two requirements unproven gives two entries naming that scenario, each with its
@@ -295,8 +307,8 @@ differs between those commits and now:
 
 1. every scenario whose last verdict is `FAILURE` or `NOT VERIFIED`;
 2. every scenario whose requirements a changed file serves;
-3. every phone replay whose desktop scenario is in the set — the replay is its own `NN_SLUG` with its own line, and
-   it follows the scenario it replays;
+3. every replay — on a phone, or on a later device of a device walk — whose main scenario is in the set; the
+   replay is its own `NN_SLUG` with its own line, and it follows the scenario it replays;
 4. **never an `INVALID` scenario**, whatever changed.
 
 **Done when:**
@@ -313,8 +325,19 @@ read the `stack-up` reference and run that entry's steps as it says. With no blo
 belongs to the project's stack skill (among its own skills, or one `CLAUDE.md` names), else to the codebase. Follow
 that skill for procedure, never for proof. A later round usually arrives to a stack the attempt before it left running
 (Step 7), fixtures still seeded: check the route before you bring anything up, and start only what is missing. Take
-the base URL from the entry's own command — never from an assumed port — and hold it for the session; it is the
-report's `Base URL` row (the `writing-the-report` reference).
+the base URL from the entry's own command — never from an assumed port — and hold it for the session.
+
+**Then record the surface row the report carries** (the `writing-the-report` reference):
+
+- **A browser walk** holds the base URL as the report's `Base URL` row.
+- **A device walk** runs on each device the entry's `devices` list names, in order, else on the device that is
+  booted. Each device has its own session: export `AGENT_DEVICE_SESSION` as the `stack-up` reference names it
+  before that device's first step, so the session the app lands in is the one every later command on it and
+  Step 7's close name. `stackUp` installed and ran the app on each device; once `seed` and `auth` are done, open
+  it fresh on each with `agent-device open APP --platform PLATFORM --device "DEVICE" --relaunch`, filled from the
+  entry's fields. Each `open` reply names the device it bound; read that device's entry from
+  `agent-device devices --json` and hold the report's `App` row: the app id, the platform, and each device's name
+  and OS version.
 
 **Then answer the two questions no config key expresses**, from the stack skill, before the first walk:
 
@@ -334,32 +357,39 @@ you tried — and nothing else: no report, no prose report-back.
 
 **Done when:**
 
-- the route you came to drive returns the page you expect;
+- the route you came to drive returns the page you expect, or the app you came to drive is open on the device at
+  its first screen;
 - every service a scenario needs is up — including the sink a side effect lands in, often a separate service the
   stack-up does not launch;
-- the base URL is held for the session;
+- the base URL, and on a device walk the `App` row, are held for the session;
 - both questions above are answered;
 - every scenario's fixtures are seeded and its session authenticated.
 
 ## Step 2 — UI Verification: Film the Whole Life of the Scenario
 
-Every behaviour reachable through a screen is proven here, by driving a real browser through the `agent-browser`
-CLI and filming what it did. The craft — batching, the `eval` laws, the capture loop, the phone device — is in
-the `driving-the-browser` reference; read it before your first `open`. This step is the order things happen in.
+Every behaviour reachable through a screen is proven here, by driving the surface the environment entry declares
+and filming what it did: a real browser through the `agent-browser` CLI on a browser walk, or the app on a
+simulator, emulator or phone through the `agent-device` CLI on a device walk. The craft is in one reference per
+surface — `driving-the-browser` (batching, the `eval` laws, the capture loop, the phone device) or
+`driving-the-device` (the snapshot loop, asserts without `eval`, batches, the capture loop) — so read the one for
+this entry before your first `open`. This step is the order things happen in.
 
 **Before the first walk**
 
-- **Check both binaries no UI scenario can finish without**: `agent-browser`, and `ffmpeg`, which Step 5 needs on
-  whichever attempt turns out to be the last — so check it even on a round that will skip Step 5. Either one
-  missing stops the run on *The Return Contract*'s block: `"status": "BLOCKED"`, `report` as `null`, a `reason`
-  opening `no-agent-browser:` or `no-ffmpeg:`, and every scenario you could not prove in `gaps[]` against the
-  requirement it carried. For a missing `agent-browser`, print `npm i -g agent-browser && agent-browser install`.
+- **Check both binaries no UI scenario can finish without**: the entry's driver — `agent-browser` on a browser
+  walk, `agent-device` on a device walk — and `ffmpeg`, which Step 5 needs on whichever attempt turns out to be the
+  last, so check it even on a round that will skip Step 5. Either one missing stops the run on *The Return
+  Contract*'s block: `"status": "BLOCKED"`, `report` as `null`, a `reason` opening `no-agent-browser:`,
+  `no-agent-device:` or `no-ffmpeg:` with the driver's install hint from that section, and every scenario you could
+  not prove in `gaps[]` against the requirement it carried.
 - **Plan the fewest complete flows that reach every behaviour the docs claim.** A flow is one user's journey end to
   end — prefer one crossing five behaviours to five scenarios proving one each. A behaviour no flow reaches gets its
   own scenario.
 - **Name and number every scenario** as in *Output Layout* before you capture anything — or keep the `NN_SLUG`
   the ledger already gave it, where Step 0 found one.
-- **Open the stack's UI URL and hold one session** for every scenario in the run.
+- **Hold one session for every scenario in the run**: open the stack's UI URL on a browser walk, or resume the
+  session Step 1's `open` started on a device walk — the first device's for the main walk, each later device's
+  for its replays.
 
 **Each scenario, in this order**
 
@@ -367,11 +397,12 @@ the `driving-the-browser` reference; read it before your first `open`. This step
    files it produced (a download, a webhook body, its `NN_SLUG.EXT`) — or last round's artifact survives and
    gets cited as this round's evidence. What leaks into the rebuilt video without this sits beside the capture loop
    in the `driving-the-browser` reference.
-2. **Drive it, recording its paths.** The browser proves the behaviour under test, not the setup that reached it —
+2. **Drive it, recording its paths.** The driver proves the behaviour under test, not the setup that reached it —
    a fixture you find missing mid-walk is seeded the Step 1 way and the walk re-driven. Record the path the
    scenario opened on and any path a step moved to: query kept, host dropped, auth and identity values redacted
-   (shape and reasons in the `writing-the-report` reference). A path reached by clicking comes back in the assert
-   batch you already run, never a batch of its own.
+   (shape and reasons in the `writing-the-report` reference). On a browser walk a path reached by clicking comes
+   back in the assert batch you already run, never a batch of its own; on a device walk the path is the deep link
+   the scenario opened, else the screen path it reached.
 3. **Confirm every frame.** A frame is evidence only once its assert passed **and** your own eyes confirmed it shows
    what you think — read it at the moment you shoot, since frames lag renders.
 4. **Read the frames.** The `visual-verification` reference is the one pass that does it, and the scenario's
@@ -379,9 +410,12 @@ the `driving-the-browser` reference; read it before your first `open`. This step
 5. **Write it up and append its ledger line**, in Step 0's shape, whatever the verdict — one line per scenario per
    round, appended and never edited.
 
-**A phone replay is a scenario.** Every flow on the surface the change landed on is driven again on a phone, as its
-own numbered scenario in the same session, through steps 1–5 like any other. Whether this app is meant to work on a
-phone at all is a project fact like any other.
+**A replay is a scenario.** On a browser walk, every flow on the surface the change landed on is driven again on a
+phone, as its own numbered scenario in the same session, through steps 1–5 like any other; whether this app is
+meant to work on a phone at all is a project fact like any other. On a device walk, every flow is driven on the
+first device, then again on each later device the entry lists, as its own numbered scenario in that device's
+session, through the same steps; the `driving-the-device` reference says how a replay is driven and graded. A
+device walk with one device, or none listed, drives each flow once.
 
 **Done when:**
 
@@ -391,8 +425,8 @@ phone at all is a project fact like any other.
 - every UI scenario carries a `visualMatch` — a derived fidelity, or the named absence of a baseline — with each of
   the seven questions evidenced or called clean, and every frame the plan builds is some scenario's baseline, read at
   the width the plan gives it, or named in the `mechanism` of the gap of the scenario that could not reach it;
-- every flow on the surface the change landed on has a phone replay driven to its closing assert, whatever it
-  returned.
+- every flow has its replays driven to their closing assert, whatever it returned: on a phone on a browser walk,
+  on each later listed device on a device walk.
 
 ## Step 3 — API, DB & Side-Effects: Proving What Has No Screen
 
@@ -472,6 +506,12 @@ your first request. This step is the order things happen in.
    - **on every screen the frame pass called clean**, the divergence you most expected to find there — the state
      nobody built, the label that overflows on a real name. A fidelity near 100 that nobody tried to break is a claim
      like any other; drive the attack and record what ruled the divergence out.
+4. **Two more are owed on every device walk**, on the first device, on each screen the change landed on, with the
+   state the scenario built still on it:
+   - **background and return** — `agent-device home`, then `agent-device open APP --platform PLATFORM` without
+     `--relaunch`, and assert the screen and its state are as they were;
+   - **rotate** — `agent-device orientation landscape-left`, assert and shoot the screen, then
+     `agent-device orientation portrait` before the next probe.
 
 **Drive each probe as in Step 2** — same session, same `NN_SLUG` prefix; a probe with no screen follows Step 3.
 Route what it returns by provenance:
@@ -497,8 +537,8 @@ is written up and appended as its own ledger line, in Step 0's shape.
 
 **Done when:**
 
-- every surface in the attack list has been probed by each actor that can write it, and every UI surface took the
-  longer-than-fixture attack;
+- every surface in the attack list has been probed by each actor that can write it, every UI surface took the
+  longer-than-fixture attack, and on a device walk every touched screen took background-and-return and rotate;
 - every bug reproduces from its own steps, is filmed as its own scenario, and carries `reachedBy` and an `origin`
   settled by `git blame` or the diff;
 - every `NOT VERIFIED` names the line, condition or absent datum that blocks it;
@@ -519,9 +559,10 @@ captured, and the `writing-the-report` reference owns what the settings do and w
 2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 crop=…` or `FAILED NN_SLUG — REASON`, and
    the exit is non-zero if any failed. A scenario with no `ok` line has no video: its `video` stays unset, and its
    frames still prove it.
-3. **Check every phone replay's `crop` yourself.** The value has to read as a portrait picture inside the bars
-   (`crop=320:720:478:0`-shaped); the full canvas width on a portrait frame means the frame was stretched, which is a
-   failure whatever the script printed — the `writing-the-report` reference has the numbers.
+3. **Check every portrait scenario's `crop` yourself** — each phone replay, and on a device walk every scenario.
+   The value has to read as a portrait picture inside the bars (`crop=320:720:478:0`-shaped); the full canvas width
+   on a portrait frame means the frame was stretched, which is a failure whatever the script printed — the
+   `writing-the-report` reference has the numbers.
 4. **Append a ledger line per scenario that built**, in Step 0's shape: the `.mp4` now in `video` and in `artifacts`,
    every other field as the line it supersedes had it, **`round` and `commits` copied across, never restamped** — the
    line records which round drove the scenario, not which round encoded it.
@@ -530,7 +571,7 @@ captured, and the `writing-the-report` reference owns what the settings do and w
 
 - every scenario the script printed `ok` for has its `.mp4` beside the report, and no scenario names a video it does
   not have;
-- every phone replay's `crop` shows a portrait picture, not the canvas width;
+- every portrait scenario's `crop` shows a portrait picture, not the canvas width;
 - the last ledger line per built scenario names its `video`, with the `round` and `commits` of the round that drove
   it.
 
@@ -586,9 +627,11 @@ act on rather than an account of your afternoon:
 
 ## Step 7 — Clean Up
 
-Close the browser on every attempt: `agent-browser --session "$AGENT_BROWSER_SESSION" close`, naming the session
-the `driving-the-browser` reference exported before the first `open` — that file says why a close naming anything
-else exits 0 and releases nothing.
+Close the driver's session on every attempt, naming the session the run exported before its first `open`:
+
+- **a browser walk**: `agent-browser --session "$AGENT_BROWSER_SESSION" close`; the `driving-the-browser`
+  reference says why a close naming any other session exits 0 and releases nothing;
+- **a device walk**: `agent-device close` once per device, with that device's `AGENT_DEVICE_SESSION` exported.
 
 **The one deferred attempt** — Step 6's case, a `FAIL` with rounds left above zero — **leaves the stack up, the
 fixtures in place, and the staging dir where it is.** A fix and another verification follow, and Step 1 of that round
@@ -607,6 +650,6 @@ particular is never deleted** — it is what the next round reads in Step 0 and 
 
 **Done when:**
 
-- the browser session the run exported is closed;
+- every browser or device session the run exported is closed;
 - a terminal attempt has removed its fixtures, released only what it brought up, and deleted `verify-staging/`;
 - `verification/` and `run-log.jsonl` are as Step 6 left them.

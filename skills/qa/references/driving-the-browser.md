@@ -3,7 +3,7 @@
 **Read this when:** driving UI scenarios (Step 2), or re-driving a bug's repro (Step 4). Everything here is done
 with a browser open; grading, videos, and the report are in `writing-the-report.md`.
 
-**In here:**
+**Contents:**
 
 - Setup
 - The rules
@@ -144,13 +144,13 @@ EOF
 
 **Write the screenshot path absolute** — the heredoc is quoted and your shell's cwd resets between calls.
 
-Then **`Read` the staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the assert
+Then **open the staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the assert
 passed and your eyes confirmed the frame, **promote it**: `mv` it into `verification/screenshots/` under its
 `NN_<slug>__SS_<step>.png` name, and record the assert's deciding value (the returned `{n: …}`, the measured rect,
 the quoted string) for the scenario's `reason`.
 
 You need both checks. **The assert answers whether the state took hold** — a click that silently no-ops looks
-identical to one that worked until you ask the DOM. **The Read answers whether the frame shows it.** When they
+identical to one that worked until you ask the DOM. **The look answers whether the frame shows it.** When they
 disagree, re-drive rather than promote: the frame usually lags the render (`wait` on the condition and re-shoot),
 but check the assert against *The rules* above too, where its ways of lying are listed. Settle it by asking the page
 a second way.

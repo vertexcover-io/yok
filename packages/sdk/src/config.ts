@@ -96,10 +96,49 @@ const PackageSchema = z.strictObject({
   description: NonEmptyStringSchema.optional(),
 });
 
+const DEVICE_PLATFORMS = ["ios", "android"] as const;
+
+const ENVIRONMENT_FIELDS = new Set(["platform", "app", "devices"]);
+
+// An environment entry is written flat: its steps, one command each, beside the surface qa
+// drives — web when platform is absent, or the app named by `app` on an ios or android device,
+// on the named `devices` (the first is the main walk, each later one a replay) or on whichever
+// device is booted. It loads with the steps under `steps`, so the surface fields and the step
+// names never mix.
+const EnvironmentEntrySchema = z
+  .object({
+    platform: z.enum(["web", ...DEVICE_PLATFORMS]).default("web"),
+    app: NonEmptyStringSchema.optional(),
+    devices: z.array(NonEmptyStringSchema).min(1).optional(),
+  })
+  .catchall(CommandSchema.nullable())
+  .check((ctx) => {
+    for (const key of Object.keys(ctx.value)) {
+      if (ENVIRONMENT_FIELDS.has(key)) continue;
+      const name = NameSchema.safeParse(key);
+      if (name.success) continue;
+      ctx.issues.push({
+        code: "custom",
+        input: key,
+        path: [key],
+        message: `Invalid key "${key}": ${name.error.issues[0]?.message ?? "invalid"}`,
+      });
+    }
+  })
+  .refine((entry) => entry.platform === "web" || entry.app !== undefined, {
+    path: ["app"],
+    message: "Required when platform is ios or android",
+  })
+  .refine((entry) => entry.platform !== "web" || entry.devices === undefined, {
+    path: ["devices"],
+    message: "Only on ios or android",
+  })
+  .transform(({ platform, app, devices, ...steps }) => ({ platform, app, devices, steps }));
+
 const EnvironmentsSchema = z
   .strictObject({
     default: NameSchema,
-    entries: recordOf(NameSchema, CommandsSchema),
+    entries: recordOf(NameSchema, EnvironmentEntrySchema),
   })
   .refine((value) => Object.hasOwn(value.entries, value.default), {
     path: ["default"],
