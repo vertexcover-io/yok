@@ -111,6 +111,17 @@ on the model and in the conversation it had:
 yok-dev resume step-demo
 ```
 
+A run that failed, on a test that would not pass or a stage that gave up, can pick up at the step
+that failed instead of starting over. Every step that finished stays finished; the failed one runs
+again in a new agent session, which reads the run's artifacts in `.yok/step-demo/artifacts`:
+
+```bash
+yok-dev retry step-demo
+```
+
+When the step failed waiting on a person's answer (every agent step's error is recorded that way
+when the run's `interaction` policy is off), deal with what it asked first, then pass `--answered`.
+
 You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
 
 Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.

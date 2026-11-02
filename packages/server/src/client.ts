@@ -11,6 +11,7 @@ import {
   ErrorBodySchema,
   type ListRunsQuery,
   type ResumeRunBody,
+  type RetryRunBody,
   type StartRunBody,
   type TriggerRef,
 } from "./protocol.ts";
@@ -100,6 +101,8 @@ export const createYokClient = ({
     run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),
     resume: (runId: string, body: ResumeRunBody) =>
       unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
+    retry: (runId: string, body: RetryRunBody) =>
+      unwrap(api.runs[":id"].retry.$post({ param: { id: runId }, json: body })),
     projects: () => unwrap(api.projects.$get()),
     addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
     removeProject: (name: string, purge: boolean) =>

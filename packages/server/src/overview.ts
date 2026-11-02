@@ -129,9 +129,13 @@ export const summarizeRun = (
 };
 
 // By run folder. init copies workflow.yaml once and nothing rewrites it, and a finished run's state
-// never changes again, so the list reads neither twice.
+// changes again only through a retry, which forgets it here, so the list reads neither twice.
 const workflows = new Map<string, Workflow>();
 const finishedRuns = new Map<string, RunFiles>();
+
+export const forgetFinishedRun = (runDir: string): void => {
+  finishedRuns.delete(runDir);
+};
 
 const readWorkflowOnce = async (runDir: string): Promise<Workflow | null> => {
   const kept = workflows.get(runDir);

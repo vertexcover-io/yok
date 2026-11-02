@@ -12,7 +12,7 @@ import { loginCommand } from "./login.ts";
 import { lsCommand } from "./ls.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
-import { resumeCommand, runCommand } from "./run.ts";
+import { resumeCommand, retryCommand, runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
 import { triggerCommand } from "./trigger.ts";
@@ -55,6 +55,7 @@ await new Command()
   .addCommand(projectCommand())
   .addCommand(runCommand())
   .addCommand(resumeCommand())
+  .addCommand(retryCommand())
   .addCommand(serverCommand())
   .addCommand(triggerCommand())
   .addCommand(typesCommand())

@@ -137,6 +137,10 @@ export const folderSlug = (folder: string): string =>
 export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
 export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
 
+// answered: a person has dealt with what a needs-input failure asked, so retry may rerun it
+export const RetryRunBodySchema = ResumeRunBodySchema.extend({ answered: z.boolean().optional() });
+export type RetryRunBody = z.infer<typeof RetryRunBodySchema>;
+
 // GET /runs. Query values arrive as text; status is one comma list.
 export const ListRunsQuerySchema = z
   .strictObject({

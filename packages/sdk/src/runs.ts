@@ -182,11 +182,15 @@ export const requireRun = async (input: PickRunInput): Promise<Result<RunRef>> =
     : { ok: true, value: picked.value };
 };
 
-// The one line that tells a person how a finished run ended and how to bring it back.
+// The one line that tells a person how a finished run ended and how to bring it back: a failed
+// run from the step that failed, any other from where it stopped.
 export const closingLine = (
   name: string,
   status: Exclude<State["status"], "running" | "blocked">,
-): string => `Run ${name} ${status}. Resume it with: yok resume ${name}`;
+): string =>
+  status === "failed"
+    ? `Run ${name} failed. Retry it from the failed step with: yok retry ${name}`
+    : `Run ${name} ${status}. Resume it with: yok resume ${name}`;
 
 export const loadPickedConfig = (
   run: RunRef | undefined,
