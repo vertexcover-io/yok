@@ -129,7 +129,7 @@ This one uses agent nodes with demo stages, a loop that fails its first pass on 
 yok-dev run task --prompt "Describe a small change to this repo"
 ```
 
-This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it even for a plain prompt), `gh` logged in, and about an hour. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
+This takes about an hour. The doctor runs first and names anything the run is missing, with its fix, such as `gh` not logged in. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
 ## 9. Run yok on a server
 
@@ -260,7 +260,7 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 
 **The doctor says `.yok/` is not gitignored.** Add `.yok/*` to `.gitignore`. This repo already has it.
 
-**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow. The doctor reads a key missing from `.env` from the server's environment, not your shell's, so on a remote server the key belongs in the project's `.env`.
+**The ticket-fetcher stage stops on a missing API key.** Your prompt names a ticket and the key for its platform is not set: `LINEAR_API_KEY` for Linear, `ASANA_API_KEY` for Asana, or the key a project-added provider names. Add it to `.env`, or describe the task in a plain prompt. The stage reads the key from the project's `.env`, then the environment, so on a remote server the key belongs in the project's `.env`.
 
 **Two servers, two registries.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`. A run started by one is invisible to the other. Pick one for the day.
 
