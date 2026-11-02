@@ -18,6 +18,7 @@ macOS or Linux. Install what is missing:
 | Claude Code | current | see claude.com/claude-code | the agent |
 | GitHub CLI | any, logged in | `brew install gh && gh auth login` | the pr stage |
 | ffmpeg, agent-browser | any | `brew install ffmpeg`, `npm i -g agent-browser && agent-browser install` | the qa stage films proof |
+| agent-device | any, optional | `npm i -g agent-device@latest && agent-device doctor` | the qa stage drives iOS and Android apps |
 
 Codex works too. Install it with `npm i -g @openai/codex`. The rest of this page says Claude.
 
