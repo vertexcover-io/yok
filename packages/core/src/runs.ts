@@ -24,6 +24,7 @@ import {
   loadRecordedConfig,
   loadRunConfig,
   loadStartConfig,
+  NodeIteratedEvent,
   type NodeRun,
   NodeStartedEvent,
   type Policies,
@@ -86,9 +87,14 @@ import {
   type Decision,
   decideNext,
   type Emit,
+  findRetryTargets,
   findRunningLeaf,
   findRunningLeaves,
+  findStuckContainer,
+  isLeaf,
+  NeedsInputSchema,
   pickNodeTier,
+  type RetryTarget,
   type RunningLeaf,
   type StartedLeaf,
 } from "./workflow/next.ts";
@@ -445,7 +451,10 @@ export type StepReply =
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
   | Exclude<Decision, { kind: "steps" | "context" }>;
 
-type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
+type Call = Readonly<{
+  command: "next" | "exec" | "done" | "resume" | "retry";
+  input: JsonValue;
+}>;
 
 // Parsing gives the reply the type an event payload needs.
 const replyOf = (outcome: Result<unknown, string | DoneError> | Error): JsonValue => {
@@ -703,6 +712,99 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
 
 export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
   logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
+
+export type RetryReport = Readonly<{
+  retried: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
+}>;
+
+// What a loop's failed pass read as iteration.previous: the output its last iterated event
+// carried. A first pass read none.
+const findPassPrevious = (events: readonly Event[], nodeRunId: string): JsonValue | undefined => {
+  const iterated = events.findLast(
+    (event) => event.type === "workflow.node.iterated" && event.nodeRunId === nodeRunId,
+  );
+  return iterated === undefined ? undefined : NodeIteratedEvent.parse(iterated).payload.output;
+};
+
+const buildRetriedEvent = ({ node, nodeRun }: RetryTarget, events: readonly Event[]): EmitInput => {
+  const previous = node.type === "loop" ? findPassPrevious(events, nodeRun.nodeRunId) : undefined;
+  return {
+    type: "workflow.node.retried",
+    source: "workflow",
+    nodeId: node.id,
+    nodeRunId: nodeRun.nodeRunId,
+    payload: {
+      nodeType: node.type,
+      attempts: 1,
+      ...buildParentsField(node.parents),
+      ...(previous === undefined ? {} : { previous }),
+    },
+  };
+};
+
+// Why retry would not help, or undefined when it would. `stuck` is a failed container that stopped
+// on its own, which retry cannot reopen.
+const findRetryRefusal = ({
+  name,
+  targets,
+  stuck,
+  answered,
+}: Readonly<{
+  name: string;
+  targets: readonly RetryTarget[];
+  stuck: string | undefined;
+  answered: boolean;
+}>): string | undefined => {
+  if (stuck !== undefined || targets.length === 0) {
+    return `run ${name} has no failed step to retry: ${stuck ?? "a step"} failed on its own, so it would fail again`;
+  }
+  if (answered) return undefined;
+  const asking = targets.find(
+    ({ node, nodeRun }) => isLeaf(node) && NeedsInputSchema.safeParse(nodeRun.output).success,
+  );
+  if (asking === undefined) return undefined;
+  const asked = NeedsInputSchema.extend({ message: z.string() }).safeParse(asking.nodeRun.output);
+  const message = asked.success ? asked.data.message : "";
+  return `${asking.node.id} failed needing a person's answer: ${message}\nOnce a person has dealt with it, retry with --answered`;
+};
+
+const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result<RetryReport>> => {
+  const runDir = runDirOf(run.cwd, run.name);
+  const state = await readRunState(runDir);
+  if (state.status !== "failed") {
+    return {
+      ok: false,
+      error: `run ${run.name} is ${state.status}; retry brings back only a failed run`,
+    };
+  }
+  const plan = await loadRunPlan(run, state);
+  if (!plan.ok) return plan;
+  const targets = findRetryTargets(plan.value.nodes, state.nodeRuns);
+  const stuck = findStuckContainer(plan.value.nodes, state.nodeRuns);
+  const refusal = findRetryRefusal({ name: run.name, targets, stuck, answered });
+  if (refusal !== undefined) return { ok: false, error: refusal };
+  const events = await jsonlEventStore(runDir).read();
+  // The run's status changes only on the last event, so every event checks it is still failed:
+  // a retry racing another stops at the first event the other already stored.
+  const isFailed = (current: State | null): boolean => current?.status === "failed";
+  const reopenEvents: readonly EmitInput[] = [
+    ...targets
+      .filter(({ nodeRun }) => nodeRun.status === "failed")
+      .map((target) => buildRetriedEvent(target, events)),
+    { type: "workflow.resumed", source: "workflow", payload: {} },
+  ];
+  for (const event of reopenEvents) {
+    const stored = await appendRunEventIf(run, event, isFailed);
+    if (!stored.ok) return { ok: false, error: `run ${run.name} was not retried: ${stored.error}` };
+  }
+  const retried = targets
+    .filter(({ node }) => isLeaf(node))
+    .map(({ node, nodeRun }) => ({ nodeRunId: nodeRun.nodeRunId, nodeId: node.id }));
+  return { ok: true, value: { retried } };
+};
+
+export const retryFailedSteps = (run: RunRef, answered: boolean): Promise<Result<RetryReport>> =>
+  logCall(run, { command: "retry", input: { answered } }, reopenFailedSteps(run, answered));
 
 // The running step, with the run's policies read from the same state.
 const loadRunningLeaf = async (

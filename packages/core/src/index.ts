@@ -60,7 +60,7 @@ export {
   uninstallPlugin,
   YOK_REPO,
 } from "./plugin.ts";
-export { getNodeFacts, loadStartEnv } from "./runs.ts";
+export { getNodeFacts, loadStartEnv, retryFailedSteps } from "./runs.ts";
 export * as samskaraHooks from "./samskara.ts";
 export {
   findPluginSkills,

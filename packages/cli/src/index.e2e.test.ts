@@ -124,6 +124,7 @@ describe("yok as one program", () => {
         "context",
         "auto-resume",
         "comments",
+        "retry",
       ]),
     );
     expect(help.stdout).not.toContain("run-subscriber");
