@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { runDirOf, type SavedPolicies, type WorkflowRun } from "@yok/sdk";
+import { appendRunEvent } from "@yok/sdk/internal";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
 import {
   eventsOf,
@@ -875,5 +877,290 @@ nodes:
     const late = orchestrate(repo, home, done, env, "{}");
     expect(late.code).toBe(1);
     expect(JSON.parse(late.stderr)).toMatchObject({ kind: "not-running", retryable: false });
+  });
+});
+
+describe("SC26: orchestrate retry", () => {
+  const workflowEventTypes = async (repo: string) =>
+    (await eventsOf(repo))
+      .map((event) => event.type)
+      .filter((type) => type.startsWith("workflow."));
+
+  // Hands out each step with next and runs it with exec until next reports the run finished.
+  const driveToEnd = (repo: string, home: string) => {
+    const steps: ReturnType<typeof parseStep>[] = [];
+    for (;;) {
+      const step = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+      if (step.kind === "finished") return { steps };
+      steps.push(step);
+      orchestrate(repo, home, ["exec", step.nodeRunId, "--run", "feat-x"]);
+    }
+  };
+
+  test("SC6: retry reopens the exec that failed the run, next hands it out under a new id, and the node before it stays completed", () => {
+    const { repo, home } = startedRun(`name: three
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: one, type: exec, runtime: sh, script: "true", input: {} }
+  - { id: two, type: exec, runtime: sh, script: "exit 1", dependsOn: [one], input: {} }
+  - { id: three, type: exec, runtime: sh, script: "true", dependsOn: [two], input: {} }
+`);
+    const { steps } = driveToEnd(repo, home);
+    const [one, two] = steps;
+    expect(stateOf(repo).status).toBe("failed");
+
+    const retried = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
+    expect(retried.code).toBe(0);
+    expect(JSON.parse(retried.stdout)).toEqual({
+      retried: [{ nodeRunId: two?.nodeRunId, nodeId: "two" }],
+    });
+    expect(stateOf(repo).status).toBe("running");
+
+    const again = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "exec", nodeId: "two" });
+    expect(again.nodeRunId).not.toBe(two?.nodeRunId);
+    expect(stateOf(repo).nodeRuns.one).toMatchObject({
+      nodeRunId: one?.nodeRunId,
+      status: "completed",
+    });
+  });
+
+  test("SC7: a loop pass that failed reruns in the same pass, reading the same iteration.previous", () => {
+    const { repo, home } = startedRun(`name: looped
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - id: fix
+    type: loop
+    until: "{{ iteration.index >= 3 }}"
+    maxIterations: 3
+    input: {}
+    nodes:
+      - id: test
+        type: exec
+        runtime: sh
+        script: "cat; [ ! -f broken ]"
+        input: { index: "{{ iteration.index }}", previous: "{{ iteration.previous }}" }
+`);
+    const step = (args: readonly string[]) => orchestrate(repo, home, args);
+    const first = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    expect(step(["exec", first.nodeRunId, "--run", "feat-x"]).code).toBe(0);
+    writeFileSync(join(repo, "broken"), "");
+    const second = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    const failedInput = stateOf(repo).nodeRuns.fix.nodes.test.input;
+    expect(failedInput).toMatchObject({
+      index: 2,
+      previous: expect.stringContaining('"index":1'),
+    });
+    expect(step(["exec", second.nodeRunId, "--run", "feat-x"]).code).toBe(1);
+    expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toEqual({
+      kind: "finished",
+      status: "failed",
+    });
+
+    expect(step(["retry", "--run", "feat-x"]).code).toBe(0);
+    const again = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "exec", nodeId: "test" });
+    expect(again.nodeRunId).not.toBe(second.nodeRunId);
+    const fix = stateOf(repo).nodeRuns.fix;
+    expect(fix).toMatchObject({ status: "running", iteration: 2 });
+    expect(fix.nodes.test.input).toEqual(failedInput);
+  });
+
+  test("SC8: retry refuses a run that has not failed and stores no workflow event", async () => {
+    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    orchestrate(repo, home, ["next", "--run", "feat-x"], { YOK_SKILLS_DIR: STAGE_SKILLS });
+    const before = await workflowEventTypes(repo);
+
+    const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("run feat-x is running; retry brings back only a failed run");
+    expect(await workflowEventTypes(repo)).toEqual(before);
+  });
+
+  test("SC9: retry refuses a needs-input failure, quoting the question, until --answered says a person dealt with it", async () => {
+    const policies: SavedPolicies = {
+      values: { interaction: false },
+      sources: { interaction: "cli" },
+    };
+    const { repo, home } = startedRun(
+      `name: asks
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: ask, type: agent, prompt: pick a database, input: {} }
+`,
+      undefined,
+      { policies },
+    );
+    const step = (args: readonly string[], input = "") => orchestrate(repo, home, args, {}, input);
+    const ask = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    step(["done", ask.nodeRunId, "--run", "feat-x", "--error", "-"], "Which database?");
+    expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({ status: "failed" });
+    const before = await workflowEventTypes(repo);
+
+    const refused = step(["retry", "--run", "feat-x"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("Which database?");
+    expect(refused.stderr).toContain("--answered");
+    expect(await workflowEventTypes(repo)).toEqual(before);
+
+    expect(step(["retry", "--run", "feat-x", "--answered"]).code).toBe(0);
+    const again = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "agent", nodeId: "ask" });
+    expect(again.nodeRunId).not.toBe(ask.nodeRunId);
+  });
+
+  test("SC10: retry refuses a loop that ran out of passes, since nothing inside it failed", async () => {
+    const { repo, home } = startedRun(`name: endless
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - id: fix
+    type: loop
+    until: "{{ iteration.index >= 9 }}"
+    maxIterations: 2
+    input: {}
+    nodes:
+      - { id: test, type: exec, runtime: sh, script: "true", input: {} }
+`);
+    driveToEnd(repo, home);
+    expect(stateOf(repo).status).toBe("failed");
+    const before = await workflowEventTypes(repo);
+
+    const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("has no failed step to retry: fix failed on its own");
+    expect(await workflowEventTypes(repo)).toEqual(before);
+  });
+
+  test("retry refuses while the run's agent session is still alive, and reopens the run once that session is gone", () => {
+    const socket = `yok-e2e-${crypto.randomUUID()}`;
+    const tmux = (...args: string[]) =>
+      execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8" });
+    const { repo, home } = startedRun(
+      `name: two
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: two, type: exec, runtime: sh, script: "exit 1", input: {} }
+`,
+      undefined,
+      { terminal: "agent-x" },
+    );
+    driveToEnd(repo, home);
+    tmux("new-session", "-d", "-s", "agent-x", "--", "sleep", "60");
+    try {
+      const env = { YOK_TMUX_SOCKET: socket };
+      const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"], env);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("run feat-x still has its agent session");
+      expect(stateOf(repo).status).toBe("failed");
+
+      tmux("kill-session", "-t", "agent-x");
+      expect(orchestrate(repo, home, ["retry", "--run", "feat-x"], env).code).toBe(0);
+      expect(stateOf(repo).status).toBe("running");
+    } finally {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    }
+  });
+
+  // prep, then unit and the loop polish side by side; unit passes once the file fixed exists.
+  const besideLoop = (until: string) => `name: beside
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: prep, type: exec, runtime: sh, script: "true", input: {} }
+  - { id: unit, type: exec, runtime: sh, script: "[ -f fixed ]", dependsOn: [prep], input: {} }
+  - id: polish
+    type: loop
+    dependsOn: [prep]
+    until: "${until}"
+    maxIterations: 1
+    input: {}
+    nodes:
+      - { id: lint, type: exec, runtime: sh, script: "true", input: {} }
+`;
+
+  // Runs prep, then lint, then unit, which fails; with closeLoopFirst a next between lint and
+  // unit lets polish end its pass before unit fails.
+  const failBesideLoop = (repo: string, home: string, closeLoopFirst: boolean) => {
+    const step = (args: readonly string[]) => orchestrate(repo, home, args);
+    const prep = parseStep(step(["next", "--run", "feat-x"]).stdout);
+    step(["exec", prep.nodeRunId, "--run", "feat-x"]);
+    const side = JSON.parse(step(["next", "--run", "feat-x"]).stdout).steps;
+    const idOf = (nodeId: string) =>
+      side.find((s: { nodeId: string }) => s.nodeId === nodeId).nodeRunId;
+    step(["exec", idOf("lint"), "--run", "feat-x"]);
+    if (closeLoopFirst) step(["next", "--run", "feat-x"]);
+    step(["exec", idOf("unit"), "--run", "feat-x"]);
+    expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toEqual({
+      kind: "finished",
+      status: "failed",
+    });
+  };
+
+  test("a step that failed beside a loop it stopped is handed out again after retry, and the run completes once the step passes", () => {
+    const { repo, home } = startedRun(besideLoop("{{ iteration.index >= 1 }}"));
+    failBesideLoop(repo, home, false);
+    expect(stateOf(repo).nodeRuns.polish.output).toMatchObject({ kind: "drained" });
+
+    expect(orchestrate(repo, home, ["retry", "--run", "feat-x"]).code).toBe(0);
+    writeFileSync(join(repo, "fixed"), "");
+    const again = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
+    expect(again).toMatchObject({ kind: "exec", nodeId: "unit" });
+    orchestrate(repo, home, ["exec", again.nodeRunId, "--run", "feat-x"]);
+    expect(parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout)).toEqual({
+      kind: "finished",
+      status: "completed",
+    });
+  });
+
+  test("retry refuses a run where a loop beside the failed step ran out of passes on its own, and stores no workflow event", async () => {
+    const { repo, home } = startedRun(besideLoop("{{ false }}"));
+    failBesideLoop(repo, home, true);
+    expect(stateOf(repo).nodeRuns.polish.output).toMatchObject({ kind: "exhausted" });
+    const before = await workflowEventTypes(repo);
+
+    const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "run feat-x has no failed step to retry: polish failed on its own, so it would fail again",
+    );
+    expect(await workflowEventTypes(repo)).toEqual(before);
+  });
+
+  test("a retry that stopped after reopening two but before resuming the run is finished by a second retry", async () => {
+    const { repo, home } = startedRun(`name: two
+inputs:
+  prompt: { type: string, required: true }
+nodes:
+  - { id: one, type: exec, runtime: sh, script: "true", input: {} }
+  - { id: two, type: exec, runtime: sh, script: "exit 1", dependsOn: [one], input: {} }
+`);
+    const [, two] = driveToEnd(repo, home).steps;
+    const run = { id: stateOf(repo).runId, cwd: repo, name: "feat-x" };
+    const reopened = await appendRunEvent(run, {
+      type: "workflow.node.retried",
+      source: "workflow",
+      nodeId: "two",
+      nodeRunId: two?.nodeRunId,
+      payload: { nodeType: "exec", attempts: 1 },
+    });
+    expect(reopened.ok).toBe(true);
+    expect(stateOf(repo).status).toBe("failed");
+
+    const retried = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
+    expect(retried.code).toBe(0);
+    expect((await workflowEventTypes(repo)).slice(-2)).toEqual([
+      "workflow.node.retried",
+      "workflow.resumed",
+    ]);
+    expect(stateOf(repo).status).toBe("running");
+    expect(parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout)).toMatchObject({
+      kind: "exec",
+      nodeId: "two",
+    });
   });
 });

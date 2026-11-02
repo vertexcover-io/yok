@@ -17,6 +17,8 @@ import { compileWorkflow } from "./compile.ts";
 import {
   type Decision,
   decideNext,
+  findRetryTargets,
+  findStuckContainer,
   type Leaf,
   type ModelInputs,
   type StartedLeaf,
@@ -1309,6 +1311,89 @@ nodes:
     const done = await advance(bad, start());
     expect(done.stop).toEqual({ kind: "finished", status: "failed" });
     expect(findRun(done.state, "sub", "say")).toBeUndefined();
+  });
+});
+
+describe("findRetryTargets", () => {
+  const retryTargetIds = (plan: WorkflowPlan, state: State): readonly string[] =>
+    findRetryTargets(plan.nodes, state.nodeRuns).map(({ node }) => node.id);
+
+  test("SC4: a leaf that failed inside a loop is listed before the loop it failed", async () => {
+    const plan = await compilePlan(loop("{{ iteration.index >= 3 }}", 5));
+    const { state } = await runLeaves(plan, start(), ["failed"]);
+    const done = await advance(plan, state);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(retryTargetIds(plan, done.state)).toEqual(["test", "fix"]);
+  });
+
+  test("SC5: an allowFailure node whose failure the run moved past is not listed, only the failure that ended the run", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    allowFailure: true\n    input: {}")}${exec("b", "\n    input: {}")}
+`);
+    const { state } = await runLeaves(plan, start(), ["failed", "failed"]);
+    const done = await advance(plan, state);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(retryTargetIds(plan, done.state)).toEqual(["b"]);
+  });
+
+  test("a retry stopped after reopening test, and again after reopening fix, still lists the reopened test so a second retry can finish", async () => {
+    const plan = await compilePlan(loop("{{ iteration.index >= 3 }}", 5));
+    const { state } = await runLeaves(plan, start(), ["failed"]);
+    const failed = (await advance(plan, state)).state;
+    const retried = (nodeId: string, current: State, parents: Record<string, JsonValue>) =>
+      apply(current, {
+        type: "workflow.node.retried",
+        source: "workflow",
+        nodeId,
+        nodeRunId: findRun(current, ...(nodeId === "test" ? ["fix", "test"] : ["fix"]))?.nodeRunId,
+        payload: { nodeType: nodeId === "test" ? "exec" : "loop", attempts: 1, ...parents },
+      });
+    const leafReopened = retried("test", failed, { parents: ["fix"] });
+    expect(leafReopened.status).toBe("failed");
+    expect(retryTargetIds(plan, leafReopened)).toEqual(["test", "fix"]);
+    const loopReopened = retried("fix", leafReopened, {});
+    expect(retryTargetIds(plan, loopReopened)).toEqual(["test"]);
+  });
+
+  // r, then a and the loop fix side by side; fix's only pass completes before a fails.
+  const besideLoop = async (closeLoopFirst: boolean) => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("r", "\n    input: {}")}${exec("a", "\n    dependsOn: [r]\n    input: {}")}
+  - id: fix
+    type: loop
+    until: "{{ false }}"
+    maxIterations: 1
+    dependsOn: [r]
+    input: {}
+    nodes:
+      - { id: test, type: exec, runtime: sh, script: "true", input: {} }
+`);
+    const root = await advance(plan, start());
+    const afterR = end(root.state, expectLeaf(root.stop).nodeRunId, "completed", { output: {} });
+    const first = await advance(plan, afterR);
+    const [a, test] = expectSteps(first.stop);
+    if (a === undefined || test === undefined) throw new Error("expected a and test");
+    const tested = end(first.state, test.nodeRunId, "completed", { output: "ok" });
+    const beforeA = closeLoopFirst ? (await advance(plan, tested)).state : tested;
+    const failedA = end(beforeA, a.nodeRunId, "failed", {
+      error: { kind: "exit", message: "exited with code 1" },
+    });
+    const done = await advance(plan, failedA);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    return { plan, state: done.state };
+  };
+
+  test("a loop that stopped only because a failed beside it is listed after a, so retry reopens both and the run can go on", async () => {
+    const { plan, state } = await besideLoop(false);
+    expect(findRun(state, "fix")?.output).toMatchObject({ kind: "drained" });
+    expect(retryTargetIds(plan, state)).toEqual(["a", "fix"]);
+    expect(findStuckContainer(plan.nodes, state.nodeRuns)).toBeUndefined();
+  });
+
+  test("a loop that ran out of passes before a failed beside it is the stuck container retry refuses on", async () => {
+    const { plan, state } = await besideLoop(true);
+    expect(findRun(state, "fix")?.output).toMatchObject({ kind: "exhausted" });
+    expect(findStuckContainer(plan.nodes, state.nodeRuns)).toBe("fix");
   });
 });
 

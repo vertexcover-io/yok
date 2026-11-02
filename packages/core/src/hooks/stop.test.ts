@@ -411,6 +411,14 @@ describe("runStopHook", () => {
       "continue",
     ],
     [
+      "yok orchestrate retry after the prompt",
+      [
+        { kind: "prompt", text: "retry feat-x" },
+        { kind: "command", command: "yok orchestrate retry --run feat-x" },
+      ],
+      "continue",
+    ],
+    [
       "SC12 — orchestrate commands only before the last prompt",
       [
         { kind: "prompt", text: "go" },

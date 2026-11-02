@@ -124,7 +124,7 @@ const createNodeRunId = (): string => `nr-${randomBytes(8).toString("hex")}`;
 type Container = Exclude<PlanNode, Leaf>;
 
 const LEAF_TYPES: ReadonlySet<PlanNode["type"]> = new Set(["exec", "wait", "agent", "context"]);
-const isLeaf = (node: PlanNode): node is Leaf => LEAF_TYPES.has(node.type);
+export const isLeaf = (node: PlanNode): node is Leaf => LEAF_TYPES.has(node.type);
 
 const findNodeRun = (state: State, node: PlanNode): NodeRun | undefined =>
   own(findNodeRuns(state.nodeRuns, node.parents), node.id);
@@ -181,7 +181,7 @@ const buildContainerOutput = (
   return result?.status === "completed" ? (result.output ?? null) : null;
 };
 
-const NeedsInputSchema = z.object({ kind: z.literal("needs-input") });
+export const NeedsInputSchema = z.object({ kind: z.literal("needs-input") });
 
 // A failure that needs a person's answer stops its scope even under allowFailure; an `always`
 // node's never does, so a retro that fails leaves the run's status alone.
@@ -399,7 +399,7 @@ const drainContainer = async (
     (child) => own(results, child.id)?.status === "running",
   );
   if (open) return walked;
-  const failure = new NodeFailure("exception", `${node.id} stopped: a node in its scope failed`);
+  const failure = new NodeFailure("drained", `${node.id} stopped: a node in its scope failed`);
   return endContainer(node, nodeRun, walk, walked.state, { attempts: 1, failure });
 };
 
@@ -811,3 +811,60 @@ export const findRunningLeaf = (
   nodeRunId: string,
 ): RunningLeaf | undefined =>
   findRunningLeaves(nodes, nodeRuns).find((leaf) => leaf.nodeRun.nodeRunId === nodeRunId);
+
+// A failed node and its record, as retry reopens it.
+export type RetryTarget = Readonly<{ node: PlanNode; nodeRun: NodeRun }>;
+
+const DrainedSchema = z.object({ kind: z.literal("drained") });
+
+// What a retry sets a failed node to; a retry that stopped halfway leaves some nodes this way.
+const isReopened = (node: PlanNode, nodeRun: NodeRun | undefined): boolean =>
+  nodeRun?.status === (isLeaf(node) ? "interrupted" : "running");
+
+// A child a retry already reopened still counts as the failure inside its container.
+const stoppedHow = (node: Container, nodeRun: NodeRun): "inside" | "drained" | "on-its-own" => {
+  const runs = nodeRun.nodes ?? {};
+  const failedInside = pickChildren(node, nodeRun).some((child) => {
+    const childRun = own(runs, child.id);
+    return blocksScope(child, childRun) || isReopened(child, childRun);
+  });
+  if (failedInside) return "inside";
+  return DrainedSchema.safeParse(nodeRun.output).success ? "drained" : "on-its-own";
+};
+
+// Every failed node retry reopens, a container after the leaves inside it, and every leaf an
+// earlier retry that stopped halfway already reopened, so a second retry can finish it. A drained
+// container is reopened too, so the scope it shares with the failed node runs on.
+export const findRetryTargets = (
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): readonly RetryTarget[] =>
+  nodes.flatMap((node): readonly RetryTarget[] => {
+    const nodeRun = own(nodeRuns, node.id);
+    if (nodeRun === undefined) return [];
+    const reopened = isReopened(node, nodeRun);
+    if (!reopened && !blocksScope(node, nodeRun)) return [];
+    if (isLeaf(node)) return [{ node, nodeRun }];
+    const inside = findRetryTargets(pickChildren(node, nodeRun), nodeRun.nodes ?? {});
+    if (reopened) return inside;
+    const how = stoppedHow(node, nodeRun);
+    if (how === "on-its-own" || (how === "inside" && inside.length === 0)) return [];
+    return [...inside, { node, nodeRun }];
+  });
+
+// The first failed container that stopped on its own (a loop out of passes, an until that threw)
+// and still stops its scope: nothing in it can be reopened, so the run would fail on it again.
+export const findStuckContainer = (
+  nodes: readonly PlanNode[],
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): string | undefined =>
+  nodes
+    .map((node): string | undefined => {
+      const nodeRun = own(nodeRuns, node.id);
+      if (isLeaf(node) || !blocksScope(node, nodeRun) || nodeRun === undefined) return undefined;
+      const how = stoppedHow(node, nodeRun);
+      if (how === "on-its-own") return node.id;
+      if (how === "drained") return undefined;
+      return findStuckContainer(pickChildren(node, nodeRun), nodeRun.nodes ?? {});
+    })
+    .find((id) => id !== undefined);
