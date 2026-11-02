@@ -93,8 +93,10 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
 
-      # The secrets go over ssh stdin as KEY=VALUE lines into deploy.sh, so none reaches a
-      # command line, a file in /tmp, or the log. An unset secret is skipped.
+      # The script lands in ~/.yok, which only the app user can enter, not in /tmp where any
+      # local user could swap it between the copy and the run. The secrets go over ssh stdin as
+      # KEY=VALUE lines into it, so none reaches a command line, a file, or the log. An unset
+      # secret is skipped.
       - name: Deploy
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -105,13 +107,13 @@ jobs:
           SLACK_MEMBER_ID: ${{ secrets.SLACK_MEMBER_ID }}
         run: |
           set -euo pipefail
-          scp -q deploy/deploy.sh "$TARGET:/tmp/yok-deploy.sh"
+          scp -q deploy/deploy.sh "$TARGET:.yok/deploy.sh"
           jq -rn '$ENV
               | {GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY, SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID}
               | with_entries(select(.value != null and .value != ""))
               | to_entries[] | "\(.key)=\(.value)"' \
-          | ssh "$TARGET" sh /tmp/yok-deploy.sh "$(printf %q "$TAG")"
-          ssh "$TARGET" rm -f /tmp/yok-deploy.sh
+          | ssh "$TARGET" sh .yok/deploy.sh "$(printf %q "$TAG")"
+          ssh "$TARGET" rm -f .yok/deploy.sh
 
       # The request a laptop makes: through the proxy, with the login, expecting the new version.
       - name: Check the server through the proxy
