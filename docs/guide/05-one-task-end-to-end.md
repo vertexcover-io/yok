@@ -161,6 +161,8 @@ yok orchestrate init add-json-flag-to-doctor
 
 It prints `{"runId":"r-1a2b3c4d","dir":"/…/.yok/add-json-flag-to-doctor"}`. The agent tells you the folder and moves to Step 2.
 
+When another run already holds the name, `init` writes nothing and exits 1 with the old run's status, the node it is at, and how to reach it (`yok attach NAME` while it runs, `yok resume NAME` once it has ended). If the agent derived the name, it picks a fresh one and runs `init` again. If you gave the name with `--name`, the run stops: start it again with another `--name`.
+
 ## Hop 4. `next`: asking what to do
 
 Step 2 is a loop. It begins with:

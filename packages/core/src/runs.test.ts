@@ -165,7 +165,7 @@ describe("initializeRun", () => {
     expect(stored.activeSessions).toEqual([session]);
   });
 
-  test("SC20: a second init, a run folder that already exists, a bad name, and an unknown run are each refused", async () => {
+  test("SC20: a second init, a bad name, and an unknown run are each refused", async () => {
     const { cwd, init, registry, workflowPath } = await savedRun();
     expect((await init("fix-login")).ok).toBe(true);
 
@@ -175,8 +175,6 @@ describe("initializeRun", () => {
     });
 
     await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
-    mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
-    expect(await init("dupe", "r-2")).toEqual({ ok: false, error: ".yok/dupe already exists" });
 
     const badName = await init("Bad Name", "r-2");
     expect(badName.ok ? "" : badName.error).toContain("Bad Name");
@@ -186,6 +184,40 @@ describe("initializeRun", () => {
       ok: false,
       error: "run r-missing not found",
     });
+  });
+
+  test("a taken name is refused with the old run's status, its node, and the command that reaches it", async () => {
+    const { cwd, init, registry, run, workflowPath } = await savedRun();
+    expect((await init("fix-login")).ok).toBe(true);
+    const old = { id: run.id, cwd, name: "fix-login" };
+    const opened = await nextStep(old, agentAdapters);
+    if (!opened.ok) throw new Error(opened.error);
+    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+
+    expect(await init("fix-login", "r-2")).toEqual({
+      ok: false,
+      error: "run fix-login already exists (running, at a); attach with `yok attach fix-login`",
+    });
+
+    const failed = await appendRunEvent(old, {
+      type: "workflow.failed",
+      payload: {},
+      source: "test",
+    });
+    if (!failed.ok) throw new Error(failed.error);
+    expect(await init("fix-login", "r-2")).toEqual({
+      ok: false,
+      error: "run fix-login already exists (failed, at a); resume it with `yok resume fix-login`",
+    });
+    expect((await registry.findRun("r-2"))?.name).toBeNull();
+  });
+
+  test("a taken name whose folder holds no run is refused without a command", async () => {
+    const { cwd, init, registry, workflowPath } = await savedRun();
+    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+    mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
+
+    expect(await init("dupe", "r-2")).toEqual({ ok: false, error: "run dupe already exists" });
   });
 
   test("SC20: a run whose repo has an invalid config is refused, leaving no run folder and no name", async () => {

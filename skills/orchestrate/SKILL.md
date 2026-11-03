@@ -28,17 +28,25 @@ Step 2's loop with that `NAME`. The reference says how a resumed session receive
 
 ## Step 1: initialize the run
 
-Use `--name` as the run name when supplied. Otherwise, derive a short kebab-case run name from
-`inputs.prompt` when it is present, or from the workflow's name (the `--workflow` file's basename
-without extension). Then run:
+1. **Pick the name.** Use `--name` when supplied. Otherwise, derive a short kebab-case name from
+   `inputs.prompt` when it is present, or from the workflow's name (the `--workflow` file's
+   basename without extension).
+2. **Run `init`.**
 
-```
-yok orchestrate init NAME
-```
+   ```
+   yok orchestrate init NAME
+   ```
 
-`init` reads `YOK_RUN_ID` from this session's environment, so no `--run-id` flag is needed.
-Every later action on the run names it by `NAME` (`--run NAME`), not by its id. On a non-zero
-exit, show the command's error output and stop — do not retry with a different name.
+   `init` reads `YOK_RUN_ID` from this session's environment, so no `--run-id` flag is needed.
+   Every later action on the run names it by `NAME` (`--run NAME`), not by its id.
+3. **Act on the reply.**
+   - JSON with `dir`: the run is initialized; go on to Step 2.
+   - An error starting `run NAME already exists`, on a name you derived: another run holds it.
+     Derive a fresh kebab-case name from the prompt that reads differently from the taken one,
+     rather than the taken name with a number added. Tell the user in one line
+     (`run NAME exists; naming this one NEW`), then go back to 2 with the new name.
+   - Any other non-zero exit, or a taken name that came from `--name`: show the command's error
+     output and stop. Never replace a name the user gave.
 
 ## Step 2: run the workflow
 
