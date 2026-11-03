@@ -49,6 +49,7 @@ Yok runs on macOS and Linux, arm64 and x64. The `yok` binary has no runtime of i
 | Bun | the scripts the `task` workflow's skills run | `brew install oven-sh/bun/bun` | `curl -fsSL https://bun.sh/install \| bash` |
 | jq, curl | shell steps inside skills | `brew install jq curl` | `sudo apt install jq curl` |
 | ffmpeg, agent-browser | the QA stage films proof of the feature | `brew install ffmpeg`, then `npm i -g agent-browser && agent-browser install` | `sudo apt install ffmpeg`, then the same npm commands |
+| agent-device (optional) | the QA stage drives iOS and Android apps | `npm i -g agent-device@latest && agent-device doctor` | same |
 
 ## Installation
 
@@ -306,6 +307,7 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok run WORKFLOW` | Start a run. `--prompt TEXT` (when the workflow takes one), `--name`, `--input KEY=VALUE` (repeatable), `--config FILE`, `--no-attach`, `--no-open` |
 | `yok attach [NAME]` | Attach to a run's agent terminal. `--run-id ID`, `--print` |
 | `yok view [NAME]` | Open a run's page in the browser. `--run-id ID`, `--print` |
+| `yok ls` | List runs, newest 20 first, across every project. `--limit N`, `--all`, `--project NAME`, `--status S1,S2`, `--json`; works with `--remote` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |

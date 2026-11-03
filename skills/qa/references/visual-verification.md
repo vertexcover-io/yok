@@ -3,18 +3,21 @@
 **Read this when:** a scenario's frames are shot and their asserts have passed, before you write the scenario up
 (Step 2). You are mid-walk with the session still open, which is what makes this cheap.
 
-**This pass drives nothing, and it runs on one scenario at a time.** That scenario is a desktop walk or a phone
-replay; its frames are shot and the session is still open, so where a frame cannot answer a question you ask the
-open page — one `eval`, no walk. **Do not re-walk, do not add a viewport, and do not invent a tablet width.** The
-replay is already a real device — `set device "iPhone 14"`, not a narrowed window, for the reason
-`driving-the-browser.md` gives: an app that branches on user-agent serves its desktop layout to a resized viewport
-and photographs a mobile pass that never happened — and it is the only second width there is.
+**This pass drives nothing, and it runs on one scenario at a time.** That scenario is a desktop walk, a phone
+replay, or a device scenario; its frames are shot and the session is still open, so where a frame cannot answer a
+question you ask the open screen — one `eval` in the browser, one `get attrs` on a device, no walk. **Read the
+frames at the width they were shot at, and the one re-shoot below is the only new capture this pass makes.** The
+phone replay is the only second width there is, and it is already a real device — `set device "iPhone 14"`, not
+a narrowed window, for the reason `driving-the-browser.md` gives: an app that branches on user-agent serves its
+desktop layout to a resized viewport and photographs a mobile pass that never happened.
 
 **The one re-shoot.** Read each frame at the width the plan's step gives it (`build to design/FILE at WIDTHpx`);
 a step that gives no width is read at the width the scenario was shot at. When the step's width differs from the
 scenario's, re-shoot that one screen in the session already open: one `set viewport`, one `screenshot` to
 `screenshots/NN_SLUG.design.png`, a name the scenario's video leaves out. Record the path as `visualMatch.build`
-and the width as `visualMatch.width`, and say in `matched` that the comparison ran at that width.
+and the width as `visualMatch.width`, and say in `matched` that the comparison ran at that width. A device has
+one width, the device's own, so a device scenario is read at that width and `matched` says so when the plan's
+width differs.
 
 **It is one pass, not two.** You look at each frame once and ask every question below of it. Some questions have
 an answer only where the plan supplies a design; the rest are asked of every screen, drawn or not. Running them
@@ -24,7 +27,7 @@ conclusions already in your head.
 It produces the scenario's `visualMatch` (shape in `writing-the-report.md`) and, for anything a user would be
 wrong-footed by, a bug that routes through Step 4.
 
-**In here:**
+**Contents:**
 
 - The baseline, and what it is authoritative about
 - The three grades
@@ -49,10 +52,10 @@ plan's acceptance criteria, not a ticket's description. A paragraph fixes no pla
 so a "match" graded against one is your taste with a number written beside it — and that number reaches the
 report looking exactly like a measured one.
 
-**A phone replay has a baseline only where one was drawn at phone width.** The mockup that defines a screen is
-almost always a desktop drawing, and a phone layout is *supposed* to differ from it. So a replay runs the *(design)*
-questions only where `## Design Frames` names an image drawn for the phone; otherwise its `baseline` is `null`
-and only the *(always)* questions run.
+**A phone replay or a device scenario has a baseline only where one was drawn at phone width.** The mockup that
+defines a screen is almost always a desktop drawing, and a phone layout is *supposed* to differ from it. So a
+replay or a device scenario runs the *(design)* questions only where `## Design Frames` names an image drawn for
+the phone; otherwise its `baseline` is `null` and only the *(always)* questions run.
 
 ## The three grades
 
@@ -85,7 +88,8 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
 - *(design)* Colour roles and the type hierarchy hold as the baseline draws them. A swapped role, or two levels
   merged or reordered, is a **BLOCKER**.
 - *(always)* Body text and interactive labels clear 4.5:1 against their real background. Compute it from
-  `getComputedStyle()`; never estimate contrast off a screenshot.
+  `getComputedStyle()`; never estimate contrast off a screenshot. A device exposes no computed style, so on a
+  device scenario write this answer as **not measurable on this surface**, never as clean.
 
 **5. Geometry** — where the baseline rule bites, so read this one whole.
 - *(always)* No two siblings overlap. No text is clipped or ellipsised where the whole string is what the user
@@ -93,7 +97,10 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   reuse it rather than writing a second one.
 - *(desktop scenarios)* `documentElement.scrollWidth - clientWidth === 0`. The phone replay already asserts this
   and already files the bug — **do not assert it twice**; ask it on desktop, where nothing does.
-- *(phone replays)* Every control the replay drove is at least 44px on its short side.
+- *(device scenarios)* Sideways scroll has no measurement on a device, so write this answer as **not measurable
+  on this surface**, never as clean.
+- *(phone replays and every device scenario)* Every control the walk drove is at least 44px on its short side.
+  On a device, read the rect from `get attrs` on the control.
 - *(design)* **A margin, padding, gap, border width, radius or element size that differs from the baseline is
   not a finding.** Two things look like one and are not, so test for both before dropping it:
   1. **It broke something above.** The overflow, the overlap, the clipped label. **The break is the finding** —

@@ -1,9 +1,10 @@
 # Writing the Proof Report
 
 **Read this when:** grading scenarios, assembling videos (Step 5), or writing the report (Step 6). Everything here
-is done once the browser is closed; the driving and capture craft is in `driving-the-browser.md`.
+is done once the driver's session is closed; the driving and capture craft is in `driving-the-browser.md` and
+`driving-the-device.md`.
 
-**In here:**
+**Contents:**
 
 - Grading — two tracks
 - Building the videos (Step 5)
@@ -49,10 +50,19 @@ the `requirements` beside it are what `coverage[]` maps to that scenario. The on
 `video`, once it has built the videos. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's
 `gap` object the same way. So a carried-over scenario reads no differently from one you drove yourself.
 
-**The one thing a ledger line cannot give you is the host.** `Base URL` is a `fields[]` row for the whole run, and the
-paths in a carried-over scenario were driven against whatever host that round had. Write the host this attempt drove,
-and where an earlier round drove a different one — a restarted stack landing on another port — say so in that row,
-because a reader reopening an old path against the new host is the one way this report misleads.
+**The surface row comes from this attempt, not from the ledger.** `fields[]` carries one row naming where the
+run drove, written once for the whole report:
+
+- **A browser walk** writes a `Base URL` row with the host this attempt drove, as Step 1 held it:
+  `{ "label": "Base URL", "value": "http://localhost:3000" }`.
+- **A device walk** writes an `App` row with the app id, the platform, and each device's name and OS version, as
+  Step 1 read them: `{ "label": "App", "value": "com.example.app on ios; iPhone 17 Pro simulator, iOS 26.3;
+  iPad Pro 13-inch (M4) simulator, iOS 26.3" }`. A replay scenario names its device in its title, so a reader
+  knows which of them a frame came from.
+
+Every scenario's `url` is a path, so the reader joins it to this row to reopen the screen. When an earlier
+round drove a different host or device, add that to the row's value in a few words, so a carried-over scenario's
+path is read against the surface it was driven on.
 
 Copy `references/proof-report-template.html` to `verification/proof-report.html` and **fill its JSON island — the
 `<script type="application/json" id="report-data">` block. Change nothing else in the file.** You write data, not
@@ -97,6 +107,8 @@ report is read and shared beyond this run, and a driven URL routinely carries a 
 `?token=`, a pre-signed `X-Amz-Signature`, an `?email=`. Keep the parameters that select what was under test
 (`?period=062026`), write the value of any auth or identity parameter as `<redacted>`, and record the path alone for a
 scenario reached through a callback or pre-signed URL. A session token is not what makes a screen reproducible.
+**On a device walk, `url` is the deep link the scenario opened, else the screen path it reached** — the screen
+names from the app's root to the one under test, joined with `/` — redacted the same way.
 
 **Write `expected` from the docs before you drive it** — one or two sentences naming the outcome and the values it
 turns on. It is the bar the run is graded against, and `reason` is the diff between it and what you saw. A scenario
@@ -211,9 +223,10 @@ or not you reached it. It is what makes an incomplete run visible instead of ari
 ```
 
 Several ids pointing at one scenario is normal and good — a single walk that proves five requirements is a better
-walk. One id proven by more than one walk — a desktop scenario and its phone replay — stays **one row** whose
-`scenario` names them both (`"01, 09"`), carrying `FAILURE` if either failed and `NOT VERIFIED` if either went
-unproven. What is not allowed is an id in the docs with no row here.
+walk. One id proven by more than one walk — a desktop scenario and its phone replay, or a device scenario and its
+replays on the other listed devices — stays **one row** whose `scenario` names them all (`"01, 09"`), carrying
+`FAILURE` if any failed and `NOT VERIFIED` if any went unproven. What is not allowed is an id in the docs with no
+row here.
 
 **Every rule in `design/spec.md` is a requirement too.** When the run has a spec, read it top to bottom, whether or
 not a plan step points at the part a rule sits in, and give each rule it states its own row, `req` set to
@@ -306,8 +319,9 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
   the `expected` and `reason` the entry leans on.
 - Every scenario carries an `expected` taken from the docs, `steps` naming the values it sent, and a `reason` that
   reads as the diff between the two.
-- `fields[]` carries a `Base URL` row; every scenario that drove a page or a request carries the `url` it opened on,
-  path and query and no host; and every step that moved the browser to another path carries that path.
+- `fields[]` carries a `Base URL` row on a browser walk, or an `App` row on a device walk; every scenario that
+  drove a page or a request carries the `url` it opened on, path and query and no host, or on a device the deep
+  link it opened, else its screen path; and every step that moved the browser to another path carries that path.
 - No `url` in the report carries a live credential: an auth or identity parameter's value reads `<redacted>`, and a
   path reached through a callback or a pre-signed URL records no query at all.
 - Every `capture` shows a request a dev could paste and the complete response it returned, inline — nothing about an
@@ -328,7 +342,7 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
 - The `report-media` script with `--inline` ran after the last edit to the report and printed `ok` for every file it names.
 - Every side-effect scenario carries the receipt Step 3 names for its sink — mail-viewer frames, the queue read, the
   captured artifact — or is `NOT VERIFIED` with that sink named.
-- Things this skill genuinely cannot reach (touch-hold gestures, real-device sensors, visual diffs against last
-  week's build) are scenarios too, marked `NOT VERIFIED`.
+- Things this skill genuinely cannot reach (a touch-hold on a browser walk, real-device sensors, visual diffs
+  against last week's build) are scenarios too, marked `NOT VERIFIED`.
 - No internal ids appear anywhere — the plain sequential `n` values are the only identifiers a reader needs. Nothing
   is said twice.

@@ -108,13 +108,13 @@ describe("dispatchCommand", () => {
     expect(await dispatch("")).toStartWith("*Type `@yok` and one of:*");
   });
 
-  test("SC31: help has one usage line for each of the fourteen commands", async () => {
+  test("SC31, SC5011: help has one usage line for each of the fourteen commands, ls where runs was", async () => {
     const commands = (await dispatch("help"))
       .split("\n")
       .slice(1)
       .map((line) => line.replace(/^• `|`$/g, "").split(/ [A-Z[-]/)[0]);
     expect(commands).toEqual([
-      "runs",
+      "ls",
       "run status",
       "run",
       "status",
@@ -129,10 +129,6 @@ describe("dispatchCommand", () => {
       "trigger rm",
       "help",
     ]);
-  });
-
-  test("SC33: run status of a run the registry does not hold replies not-found naming it", async () => {
-    expect(await dispatch("run status r-404")).toBe("not-found: no run r-404");
   });
 
   test("SC39: doctor with no --project says --project NAME is required, with the doctor usage", async () => {

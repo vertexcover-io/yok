@@ -4,7 +4,6 @@ import { type ILogger, POLICY_NAMES, type Result } from "@yok/sdk";
 import { parsePolicyFlags } from "@yok/sdk/internal";
 import * as z from "zod";
 import { apiErrorText, type YokClient } from "./client.ts";
-import { listRunSummaries, type RunSummary } from "./overview.ts";
 import { type ApiError, StartRunBodySchema } from "./protocol.ts";
 import {
   doctorReply,
@@ -12,6 +11,7 @@ import {
   fireTable,
   projectTable,
   type Reply,
+  runsReply,
   scheduleLine,
   shortTime,
   startErrorReply,
@@ -234,44 +234,27 @@ const removeTrigger = async (args: Args, _thread: ChatThread, deps: DispatchDeps
   return { text: `Removed *${ref.name}* from *${ref.project}*` };
 };
 
-const RUNS_SHOWN = 20;
-
-// A project's runs are the ones whose checkout is its folder.
-const projectRuns = async (args: Args, deps: DispatchDeps): Promise<readonly RunSummary[]> => {
-  const name = stringFlag(args, "project");
-  const runs = await listRunSummaries(deps.registry, deps.host);
-  if (name === undefined) return runs;
-  const { projects } = unwrapApi(await deps.client.projects());
-  const project = projects.find((p) => p.name === name);
-  if (project === undefined) throw new ChatError(`not-found: no project named ${name}`);
-  return runs.filter((run) => run.cwd === project.path);
-};
-
-// Filter before slicing: the list spans every project.
+// The flags go to GET /runs as typed; the route checks them, as it does for yok ls.
 const listRuns = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
-  const runs = await projectRuns(args, deps);
-  if (runs.length === 0) return { text: "No runs." };
-  const shown = runs.slice(0, RUNS_SHOWN);
-  const heading =
-    shown.length === runs.length
-      ? plural(runs.length, "run")
-      : `The newest ${shown.length} of ${runs.length} runs`;
-  const rows = shown.map((run) => [
-    run.id,
-    run.name ?? "-",
-    run.workflow,
-    run.status,
-    `${run.steps.done}/${run.steps.total ?? "?"}`,
-    shortTime(run.startedAt),
-  ]);
-  return {
-    text: heading,
-    table: { headers: ["ID", "NAME", "WORKFLOW", "STATUS", "STEPS", "STARTED (UTC)"], rows },
-  };
+  const project = stringFlag(args, "project");
+  const status = stringFlag(args, "status");
+  const limit = stringFlag(args, "limit");
+  const listed = unwrapApi(
+    await deps.client.runs({
+      ...(project === undefined ? {} : { project }),
+      ...(status === undefined ? {} : { status }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(args.values.all === true ? { all: "true" } : {}),
+    }),
+  );
+  return runsReply(listed, { project, status });
 };
 
 // An id names one run; a name can recur across projects, so a shared one is refused.
-const findRun = (runs: readonly RunSummary[], key: string): RunSummary | undefined => {
+const findRun = <T extends { id: string; name: string | null }>(
+  runs: readonly T[],
+  key: string,
+): T | undefined => {
   const byId = runs.find((run) => run.id === key);
   if (byId !== undefined) return byId;
   const named = runs.filter((run) => run.name === key);
@@ -283,7 +266,11 @@ const findRun = (runs: readonly RunSummary[], key: string): RunSummary | undefin
 const showRun = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const [key] = args.positionals;
   if (key === undefined) throw needsUsage();
-  const run = findRun(await projectRuns(args, deps), key);
+  const project = stringFlag(args, "project");
+  const { runs } = unwrapApi(
+    await deps.client.runs({ all: "true", ...(project === undefined ? {} : { project }) }),
+  );
+  const run = findRun(runs, key);
   if (run === undefined) return { text: `not-found: no run ${key}` };
   const { current, blocker, steps } = run;
   const step = current === null ? "-" : `${current} (${steps.done}/${steps.total ?? "?"})`;
@@ -305,7 +292,17 @@ const PROJECT_FLAG = { project: { type: "string" } } as const;
 
 // In the order help lists them.
 const COMMANDS: readonly ChatCommand[] = [
-  { words: ["runs"], usage: "runs [--project NAME]", options: PROJECT_FLAG, run: listRuns },
+  {
+    words: ["ls"],
+    usage: "ls [--project NAME] [--status STATUS] [--limit N] [--all]",
+    options: {
+      project: { type: "string" },
+      status: { type: "string" },
+      limit: { type: "string" },
+      all: { type: "boolean" },
+    },
+    run: listRuns,
+  },
   {
     words: ["run", "status"],
     usage: "run status RUN [--project NAME]",

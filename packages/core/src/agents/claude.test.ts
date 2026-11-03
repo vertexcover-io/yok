@@ -689,13 +689,18 @@ describe("readClaudeScreen", () => {
       { kind: "popup" },
     ],
     [
-      "an empty box left in history above a /config panel with no ❯",
-      `${PROMPT}\n▔▔▔▔▔▔\n Settings  Status  Config  Usage\n\n Version 2.1.314\n Esc to close`,
-      { kind: "unknown" },
-    ],
-    [
       "an empty box with four status lines under it",
       `${box("❯")}\n  Model: Opus\n  Ctx: 8%\n  ⏵⏵ auto mode on\n  1 shell`,
+      { kind: "ready", text: "" },
+    ],
+    [
+      "a named session's empty box with an idle sub-agent listed under it",
+      `${RULE} yok-ls-prd ─\n❯\n${RULE}\n  yok yok-ls-prd ▸ compact-after-implement [████    ] 8/15 · ...\n  ⏵⏵ auto mode on (shift+tab to cycle)\n\n  ● main\n  ○ impl-phase-1  Build phase 1 of yok ls          idle`,
+      { kind: "ready", text: "" },
+    ],
+    [
+      "an empty box with a long status area: a two-line status line, a mode line and many agents",
+      `${box("❯")}\n  Model: Opus | Ctx: 8%\n  branch main │ PR #47\n  ⏵⏵ auto mode on · 2 shells\n\n  ● main\n${Array.from({ length: 8 }, (_, i) => `  ○ worker-${i}  task ${i}  idle`).join("\n")}`,
       { kind: "ready", text: "" },
     ],
     [

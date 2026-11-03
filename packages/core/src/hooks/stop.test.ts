@@ -507,7 +507,7 @@ describe("runStopHook", () => {
     expect((await readState(runDir))?.status).toBe("running");
   });
 
-  test("SC19: with inline write open and a background task running, the first stop sends the agent back to write's done, and the next with no progress ends as background-task with no agent.stuck", async () => {
+  test("SC19: with inline write open and a background task running, both stops let the turn end as background-task at streak 0, with no message and no agent.stuck", async () => {
     const write = { ...nodeRun("write", "running"), mode: "inline" as const };
     const { deps, runDir } = await setUp({ write });
     const waiting = input(undefined, "claude", true);
@@ -515,16 +515,29 @@ describe("runStopHook", () => {
     const first = await runStopHook(waiting, deps);
     const second = await runStopHook(waiting, deps);
 
-    expect(first).toMatchObject({
-      kind: "continue",
-      message: expect.stringContaining("yok orchestrate done write --run feat-x"),
-    });
+    expect(first).toEqual({ kind: "allow" });
     expect(second).toEqual({ kind: "allow" });
     const events = await jsonlEventStore(runDir).read();
     expect(events.map((event) => [event.type, event.payload])).toEqual([
-      ["hooks.stop.called", expect.objectContaining({ reason: "node-not-done", blockStreak: 1 })],
-      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 1 })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
+  });
+
+  test("an inline agent node open with interaction off and a background task running ends as background-task, never node-not-done or unanswered-stop", async () => {
+    const create = { ...nodeRun("create", "running"), mode: "inline" as const };
+    const { deps, runDir } = await setUp({ create }, "claude", { policies: UNATTENDED });
+    const waiting = input(undefined, "claude", true);
+
+    const replies = [await runStopHook(waiting, deps), await runStopHook(waiting, deps)];
+
+    expect(replies).toEqual([{ kind: "allow" }, { kind: "allow" }]);
+    const events = await jsonlEventStore(runDir).read();
+    expect(events.map((event) => [event.type, event.payload])).toEqual([
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
+      ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
+    ]);
+    expect((await readState(runDir))?.nodeRuns.create?.status).toBe("running");
   });
 
   test("a tool call between two stops is not progress, and any other event is", async () => {

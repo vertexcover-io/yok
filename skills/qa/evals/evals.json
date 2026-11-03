@@ -1,0 +1,169 @@
+{
+  "skill_name": "qa",
+  "evals": [
+    {
+      "id": 1,
+      "name": "device-entry-drives-the-app",
+      "prompt": "You are running the qa stage of run feat-x against environment ios. orchestrate.config.yaml's environments.entries.ios has platform ios, app com.example.app, and the steps stackUp (builds, installs and runs the app on the simulator), stackDown (uninstalls it), seed and auth. The plan lists R1, a settings toggle that persists after the app is reopened. agent-device and ffmpeg are installed.",
+      "expected_output": "Exports AGENT_DEVICE_SESSION before stackUp, runs stackUp, seed and auth, opens the app with agent-device open com.example.app --platform ios --relaunch, drives the toggle through agent-device with snapshot -i and press --settle, cites get or is output as evidence, writes an App row in fields[] instead of Base URL, runs no phone replay, closes with agent-device close, and ends with the return contract's JSON block.",
+      "files": [],
+      "expectations": [
+        "Exports AGENT_DEVICE_SESSION before running stackUp",
+        "Opens the app with agent-device open com.example.app --platform ios --relaunch after seed and auth, built from the entry's app and platform fields",
+        "Every scenario reason quotes the output of an agent-device get, is or wait command",
+        "fields[] carries an App row naming the app id, platform, device and OS version and no Base URL row",
+        "Step 7 runs agent-device close",
+        "The report contains no phone replay scenario"
+      ],
+      "anti_expectations": [
+        "Runs agent-browser",
+        "Asserts through eval",
+        "Writes a Base URL row for a device walk"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "missing-agent-device-blocks-with-the-token",
+      "prompt": "You are running the qa stage of run feat-x against environment android, whose entry has platform android and app com.example.app. agent-device is not installed on this machine.",
+      "expected_output": "Returns status BLOCKED with report null and a reason opening no-agent-device: that names the install hint npm i -g agent-device@latest, and lists every scenario it could not prove in gaps[] against its requirement.",
+      "files": [],
+      "expectations": [
+        "The JSON block's status is exactly BLOCKED",
+        "The reason opens with no-agent-device:",
+        "The reason contains npm i -g agent-device@latest",
+        "report is null and every unproven requirement has a gaps[] entry"
+      ],
+      "anti_expectations": [
+        "Writes BLOCKED:no-agent-device as the status",
+        "Prints the agent-browser install hint",
+        "Writes a proof report"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "device-attacks-and-visual-answers",
+      "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios and app com.example.app, verifying a form screen the plan builds to a frame drawn at phone width. The app and drivers are installed and Step 2 has filmed the form scenario.",
+      "expected_output": "Step 4 drives background-and-return (agent-device home, then agent-device open com.example.app --platform ios without --relaunch) and rotate (agent-device orientation landscape-left, then portrait) on the form screen; the scenario's visualMatch records contrast and sideways scroll as not measurable on this surface and measures every driven control's short side from get attrs against 44px.",
+      "files": [],
+      "expectations": [
+        "Runs agent-device home followed by agent-device open com.example.app --platform ios without --relaunch, and asserts the form state survived",
+        "Runs agent-device orientation landscape-left, shoots the screen, then restores portrait",
+        "visualMatch answers contrast and sideways scroll as not measurable on this surface",
+        "Every control the walk drove has a get attrs rect cited against the 44px rule"
+      ],
+      "anti_expectations": [
+        "Marks contrast or sideways scroll as clean on a device scenario",
+        "Uses set viewport or set device on a device scenario",
+        "Skips the rotate or the background-and-return attack"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "stack-that-will-not-start-blocks-with-no-infra",
+      "prompt": "You are running the qa stage of run feat-x against environment local, whose stackUp command exits non-zero twice with a port-in-use error and whose stackStatus keeps reporting the stack down.",
+      "expected_output": "Returns status BLOCKED with report null, a reason opening no-infra: that names the service and quotes the command as it ran, and no proof report, prose report-back or scenario walk.",
+      "files": [],
+      "expectations": [
+        "The JSON block's status is exactly BLOCKED and report is null",
+        "The reason opens with no-infra: and names the service and the command that failed",
+        "Retries stackUp once and stops after the second failure"
+      ],
+      "anti_expectations": [
+        "Writes BLOCKED:no-infra as the status",
+        "Drives any scenario or writes a proof report",
+        "Assumes a port and continues"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "verdict-is-derived-from-coverage",
+      "prompt": "You are running the qa stage of run feat-x on the last round. The docs list R1, R2 and R3. Your walks proved R1 and R2 with SUCCESS scenarios and R3 could not be reached because its feature flag is off in this environment, and every walk you drove felt like a pass.",
+      "expected_output": "coverage[] holds one row per requirement, R3 is NOT VERIFIED with a gaps[] entry naming the flag, and verdict is PARTIAL with the status PARTIAL and the summary sentence that QA could not verify 1 of 3 requirements.",
+      "files": [],
+      "expectations": [
+        "coverage[] has exactly one row for each of R1, R2 and R3",
+        "verdict is PARTIAL because a requirement is NOT VERIFIED and no scenario is a FAILURE",
+        "gaps[] has one entry for R3 whose mechanism names the feature flag and the line that reads it"
+      ],
+      "anti_expectations": [
+        "Writes verdict PASS because the driven walks passed",
+        "Drops R3 from coverage[]",
+        "Backfills R3 with an adjacent passing check"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "fail-with-rounds-left-defers-the-report",
+      "prompt": "You are running the qa stage of run feat-x with round 1 of rounds 3. One scenario reproduces a bug: the total is wrong after a discount is applied.",
+      "expected_output": "Writes the bug's scenario and ledger line, returns status FAIL with report null and one bugs[] entry carrying id, summary, trigger and hint, builds no videos, writes no proof report, and leaves the stack, fixtures and staging dir in place for the fix round.",
+      "files": [],
+      "expectations": [
+        "status is FAIL and report is null",
+        "bugs[] has one entry whose id is the scenario number and whose askUser is false",
+        "No report-media run and no proof-report.html",
+        "The stack is left running and the report-back says so"
+      ],
+      "anti_expectations": [
+        "Writes proof-report.html on this round",
+        "Tears down the stack or deletes verify-staging",
+        "Returns FAIL with an empty bugs[]"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "run-log-is-append-only",
+      "prompt": "You are running the qa stage of run feat-x on round 2. verification/run-log.jsonl holds round 1 lines for scenarios 01 and 02; 02 was a FAILURE and the fix round closed its bug. Nothing else changed in git.",
+      "expected_output": "Re-drives 02 only, clears its old frames first, appends a new line for 02 with round 2, carries 01 unchanged from its ledger line into the report, and never edits or removes an existing line.",
+      "files": [],
+      "expectations": [
+        "Deletes verification/screenshots/02_* before driving 02 again",
+        "Appends one new line for 02 carrying round 2 and the current commits",
+        "Scenario 01 is transcribed from its round 1 line without being driven",
+        "Every round 1 line is still present and unchanged"
+      ],
+      "anti_expectations": [
+        "Rewrites or truncates run-log.jsonl",
+        "Re-drives 01",
+        "Restamps 01's line with round 2"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "browser-walk-replays-on-a-phone",
+      "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change added a filter to a list page and the project says the app serves phones.",
+      "expected_output": "Drives the filter flow on desktop, then drives the same flow again as its own numbered scenario after agent-browser set device \"iPhone 14\", to its closing assert, and the replay's crop reads as a portrait picture in Step 5.",
+      "files": [],
+      "expectations": [
+        "A second numbered scenario replays the flow after set device \"iPhone 14\"",
+        "The replay is driven from its first click to the same closing assert as desktop",
+        "The replay asserts documentElement.scrollWidth minus clientWidth is 0",
+        "Restores the desktop device afterwards"
+      ],
+      "anti_expectations": [
+        "Narrows the viewport instead of setting a device",
+        "Shoots only the final screen on the phone",
+        "Skips the replay because desktop passed"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "device-walk-replays-on-each-listed-device",
+      "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios, app com.example.app, devices [\"iPhone 17 Pro\", \"iPad Pro 13-inch (M4)\"] and a stackUp of make ios-run DEVICE={DEVICE}. The plan lists R1, a list screen with a detail view. Both simulators exist and agent-device and ffmpeg are installed.",
+      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone as the main scenario and again on the iPad as its own numbered scenario naming the iPad in its title, keeps one coverage row for R1 naming both scenarios, writes one App row listing both devices, and closes both sessions.",
+      "files": [],
+      "expectations": [
+        "Runs make ios-run DEVICE=iPhone 17 Pro and make ios-run DEVICE=iPad Pro 13-inch (M4), with the placeholder filled",
+        "Exports a different AGENT_DEVICE_SESSION per device and opens the app with --device on each",
+        "The iPad replay is its own scenario driven from its first press to the same closing assert, with the device named in its title",
+        "coverage[] has one row for R1 naming both scenario numbers",
+        "fields[] has one App row naming both devices and their OS versions",
+        "Runs agent-device close once per device session"
+      ],
+      "anti_expectations": [
+        "Drives the iPad by shooting only the final screen",
+        "Opens both devices in one session",
+        "Writes two coverage rows for R1"
+      ]
+    }
+  ]
+}

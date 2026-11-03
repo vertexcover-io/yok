@@ -11,6 +11,7 @@ import {
   yokHome,
 } from "@yok/sdk";
 import * as z from "zod";
+import { RunStatusSchema } from "./overview.ts";
 
 export const portPath = (home: string = yokHome()): string => join(home, "server.port");
 export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
@@ -135,6 +136,28 @@ export const folderSlug = (folder: string): string =>
 // The env the resumed session starts with, which yok resume builds the way yok run does
 export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
 export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
+
+// GET /runs. Query values arrive as text; status is one comma list.
+export const ListRunsQuerySchema = z
+  .strictObject({
+    project: NonEmptyStringSchema.optional(),
+    status: z
+      .string()
+      .transform((text) => text.split(","))
+      .pipe(z.array(RunStatusSchema))
+      .optional(),
+    limit: z
+      .string()
+      .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
+      .transform(Number)
+      .optional(),
+    all: z.enum(["true", "false"]).optional(),
+  })
+  .refine((query) => query.all !== "true" || query.limit === undefined, {
+    message: "--all and --limit cannot be used together",
+  });
+export type ListRunsQuery = z.input<typeof ListRunsQuerySchema>;
+export type RunsFilter = z.output<typeof ListRunsQuerySchema>;
 
 export type ApiError = ErrorBody["error"];
 
