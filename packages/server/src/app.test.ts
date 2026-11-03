@@ -1444,17 +1444,17 @@ describe("Slack run command", () => {
     );
   });
 
-  test("SC22: a project whose updates go to C9 is refused naming C9, launches nothing and registers no run", async () => {
+  test("SC22: a project whose .env sends updates to C9 still starts from C1, with SLACK_CHANNEL_ID=C1 and YOK_SLACK_THREAD=100.1 in the session", async () => {
     const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
 
     await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
-    const reply = replies(posts)[1];
-    expect(reply).toContain("C9");
-    expect(reply).toContain("run not started");
-    expect(launches).toEqual([]);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env?.SLACK_CHANNEL_ID).toBe("C1");
+    expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
+    expect(replies(posts)[1]).not.toContain("no updates will follow here");
+    expect(await deps.registry.listRuns()).toHaveLength(1);
   });
 
   test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {

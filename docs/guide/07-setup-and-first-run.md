@@ -231,7 +231,7 @@ You know it worked when `yok-remote server status` prints the server's version a
 
 A command is typed as on the command line, quotes included: `@yok run task --project web --prompt "fix login"`. Curly quotes, which Slack often types for you, work the same. A prompt without `--prompt` is refused. `--input KEY=VALUE` and the policy flags work as with `yok run`, except that `interaction` stays off whatever you pass: nobody sits at a Slack-started run's terminal to answer it.
 
-A run started from Slack posts its updates in the thread under the message only when its project's notifier posts to that same channel (`SLACK_CHANNEL_ID` in the project's `.env`).
+A run started from Slack posts its updates in the thread under the message, in whichever channel the message was typed, whenever the project's Slack notifier is on. The channel in the project's `.env` (`SLACK_CHANNEL_ID`) is used by runs started elsewhere.
 
 ## Useful commands
 

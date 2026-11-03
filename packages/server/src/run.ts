@@ -123,23 +123,18 @@ const resolveRunSettings = async (
 // The channel a Slack command was typed in, and the ts of its thread's first message.
 export type ChatThread = Readonly<{ channel: string; ts: string }>;
 
-// A run started from a chat thread replies in it only when its notifier posts to that channel:
-// the thread's id means nothing anywhere else. True when the session gets the thread.
-const checkThread = (
+// A run started from a chat thread replies in it: its Slack notifier posts to the thread's
+// channel, whatever channel the project's env names. Empty when the run has no thread or its
+// notifier is off, in which case no updates follow in the thread.
+const threadEnv = (
   thread: ChatThread | undefined,
   notifier: Notifier | undefined,
-  env: Readonly<Record<string, string>>,
-): Result<boolean> => {
-  if (thread === undefined || notifier?.enabled !== true) return { ok: true, value: false };
-  const channel = env.SLACK_CHANNEL_ID ?? process.env.SLACK_CHANNEL_ID;
-  if (channel === thread.channel) return { ok: true, value: true };
-  return {
-    ok: false,
-    error: `run not started: this project's updates go to Slack channel ${channel ?? "(none set)"}, not this one; start the run from that channel, or set its SLACK_CHANNEL_ID to this one`,
-  };
-};
+): Readonly<Record<string, string>> =>
+  thread === undefined || notifier?.enabled !== true
+    ? {}
+    : { SLACK_CHANNEL_ID: thread.channel, YOK_SLACK_THREAD: thread.ts };
 
-export type LaunchReply = Readonly<{
+type LaunchReply = Readonly<{
   run: WorkflowRun;
   attach: readonly string[];
   view: string;
@@ -207,8 +202,7 @@ export const launchRun = async (
     return refused(400, "bad-request", resolved.error);
   }
   const { tiers, policies, notifier } = resolved.value;
-  const threaded = checkThread(request.thread, notifier, checked.env.value);
-  if (!threaded.ok) return refused(400, "bad-request", threaded.error);
+  const threaded = threadEnv(request.thread, notifier);
 
   const provider = deps.providerFor(agent);
   const id = `r-${randomBytes(4).toString("hex")}`;
@@ -243,7 +237,7 @@ export const launchRun = async (
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
       env: {
         ...sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
-        ...(threaded.value && request.thread ? { YOK_SLACK_THREAD: request.thread.ts } : {}),
+        ...threaded,
       },
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
@@ -273,7 +267,9 @@ export const launchRun = async (
       run,
       attach: [...terminal.attachCommand()],
       view: viewUrl(deps, id),
-      ...(request.thread === undefined ? {} : { threaded: threaded.value }),
+      ...(request.thread === undefined
+        ? {}
+        : { threaded: threaded.YOK_SLACK_THREAD !== undefined }),
     },
   };
 };
