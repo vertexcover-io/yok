@@ -253,7 +253,7 @@ const holdsCheckout = async (run: WorkflowRun, host: ITerminalHost): Promise<boo
 };
 
 // The name is no project, but a remove without --purge may have left its clone folder behind.
-// A folder some project registered by path is that project's, whatever its name.
+// A folder some project registered by path, or sits inside, is that project's, whatever its name.
 const removeKeptClone = async (
   c: Context<{ Variables: Vars }>,
   home: string,
@@ -264,11 +264,14 @@ const removeKeptClone = async (
   if (!SlugSchema.safeParse(name).success || !existsSync(path)) {
     return errorResponse(c, 404, "not-found", `no project named ${name}`);
   }
-  const owner = Object.entries(projects).find(
-    ([, p]) => existsSync(p.path) && realpathSync(p.path) === realpathSync(path),
-  );
+  const real = realpathSync(path);
+  const owner = Object.entries(projects).find(([, p]) => {
+    if (!existsSync(p.path)) return false;
+    const projectPath = realpathSync(p.path);
+    return projectPath === real || projectPath.startsWith(real + sep);
+  });
   if (owner !== undefined) {
-    const message = `no project named ${name}; its folder ${path} is project ${owner[0]}, remove that instead`;
+    const message = `no project named ${name}; its folder ${path} holds project ${owner[0]}, remove that instead`;
     return errorResponse(c, 409, "conflict", message);
   }
   if (!purge) {

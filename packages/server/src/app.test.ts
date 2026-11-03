@@ -2407,21 +2407,27 @@ describe("/projects", () => {
     expect(existsSync(join(deps.home, "projects"))).toBe(true);
   });
 
-  test("SC210: purging a name that is no project but whose clone folder another project registered by path is refused 409 and keeps it", async () => {
-    const { deps } = await projectDeps();
-    const path = join(realpathSync(deps.home), "projects", "demo");
-    execFileSync("git", ["init", "-q", "-b", "main", path]);
-    addProjectEntry(deps.home, "placed", path);
-    const app = createApi(deps);
+  test.each([
+    ["is", (path: string) => path],
+    ["sits inside", (path: string) => join(path, "nested")],
+  ])(
+    "SC210: purging a name that is no project is refused 409 and keeps the folder when a project registered by path %s that folder",
+    async (_label, placedAt) => {
+      const { deps } = await projectDeps();
+      const path = join(realpathSync(deps.home), "projects", "demo");
+      execFileSync("git", ["init", "-q", "-b", "main", placedAt(path)]);
+      addProjectEntry(deps.home, "placed", placedAt(path));
+      const app = createApi(deps);
 
-    const res = await app.request("/projects/demo?purge=true", { method: "DELETE" });
+      const res = await app.request("/projects/demo?purge=true", { method: "DELETE" });
 
-    expect(res.status).toBe(409);
-    expect((await errorOf(res)).message).toBe(
-      `no project named demo; its folder ${path} is project placed, remove that instead`,
-    );
-    expect(existsSync(join(path, ".git"))).toBe(true);
-  });
+      expect(res.status).toBe(409);
+      expect((await errorOf(res)).message).toBe(
+        `no project named demo; its folder ${path} holds project placed, remove that instead`,
+      );
+      expect(existsSync(join(placedAt(path), ".git"))).toBe(true);
+    },
+  );
 
   test("SC208: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();
