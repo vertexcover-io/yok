@@ -1188,7 +1188,7 @@ const signedHook = async (
 const mention = (text: string, extra: object = {}, eventId = "Ev1") => ({
   type: "event_callback",
   event_id: eventId,
-  event: { type: "app_mention", channel: "C1", ts: "100.1", text, ...extra },
+  event: { type: "app_mention", channel: "C1", ts: "100.1", user: "U7", text, ...extra },
 });
 
 // The hook acks before it posts, so a test waits on the fake's recorded calls.
@@ -1444,7 +1444,7 @@ describe("Slack run command", () => {
     );
   });
 
-  test("SC22: a project whose .env sends updates to C9 still starts from C1, with SLACK_CHANNEL_ID=C1 and YOK_SLACK_THREAD=100.1 in the session", async () => {
+  test("SC22: a project whose .env sends updates to C9 still starts from C1, with SLACK_CHANNEL_ID=C1, SLACK_MEMBER_ID=U7 (who typed it) and YOK_SLACK_THREAD=100.1 in the session", async () => {
     const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
 
     await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
@@ -1452,6 +1452,7 @@ describe("Slack run command", () => {
     await until(() => posts.length >= 2);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.env?.SLACK_CHANNEL_ID).toBe("C1");
+    expect(launches[0]?.env?.SLACK_MEMBER_ID).toBe("U7");
     expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
     expect(replies(posts)[1]).not.toContain("no updates will follow here");
     expect(await deps.registry.listRuns()).toHaveLength(1);

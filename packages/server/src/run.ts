@@ -120,19 +120,24 @@ const resolveRunSettings = async (
   return { ok: true, value: { tiers: tiers.value, policies, notifier } };
 };
 
-// The channel a Slack command was typed in, and the ts of its thread's first message.
-export type ChatThread = Readonly<{ channel: string; ts: string }>;
+// The channel a Slack command was typed in, the ts of its thread's first message, and the
+// Slack user id of whoever typed it.
+export type ChatThread = Readonly<{ channel: string; ts: string; user?: string }>;
 
 // A run started from a chat thread replies in it: its Slack notifier posts to the thread's
-// channel, whatever channel the project's env names. Empty when the run has no thread or its
-// notifier is off, in which case no updates follow in the thread.
+// channel and addresses whoever typed the command, whatever the project's env names. Empty when
+// the run has no thread or its notifier is off, in which case no updates follow in the thread.
 const threadEnv = (
   thread: ChatThread | undefined,
   notifier: Notifier | undefined,
 ): Readonly<Record<string, string>> =>
   thread === undefined || notifier?.enabled !== true
     ? {}
-    : { SLACK_CHANNEL_ID: thread.channel, YOK_SLACK_THREAD: thread.ts };
+    : {
+        SLACK_CHANNEL_ID: thread.channel,
+        YOK_SLACK_THREAD: thread.ts,
+        ...(thread.user === undefined ? {} : { SLACK_MEMBER_ID: thread.user }),
+      };
 
 type LaunchReply = Readonly<{
   run: WorkflowRun;

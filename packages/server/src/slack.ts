@@ -63,6 +63,8 @@ const MentionSchema = z.looseObject({
   channel: z.string(),
   ts: z.string(),
   text: z.string(),
+  // who typed the mention; a run started by it addresses them
+  user: z.string().optional(),
   // set when the mention was typed inside a thread
   thread_ts: z.string().optional(),
 });
@@ -153,7 +155,11 @@ const postReply = async (config: notifierHooks.SlackConfig, ts: string, reply: R
 const commandText = (text: string): string => text.replace(/^\s*<@[A-Z0-9]+>\s*/, "");
 
 const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<void> => {
-  const thread: ChatThread = { channel: mention.channel, ts: mention.thread_ts ?? mention.ts };
+  const thread: ChatThread = {
+    channel: mention.channel,
+    ts: mention.thread_ts ?? mention.ts,
+    ...(mention.user === undefined ? {} : { user: mention.user }),
+  };
   const log = deps.log.child({ component: "slack", thread: thread.ts });
   const token = readHomeEnv(deps.home).SLACK_BOT_TOKEN;
   if (!token) {
