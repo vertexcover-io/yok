@@ -31,6 +31,7 @@ import {
   type Result,
   type RunRef,
   readPolicies,
+  readState,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -50,7 +51,9 @@ import {
   appendRunEventIf,
   createState,
   type DoneStatus,
+  findRunningLeaf as findRunningNode,
   foldModelSwitch,
+  isRunLive,
   jsonlEventStore,
   nodePath,
   type Registry,
@@ -318,6 +321,17 @@ const checkNodeTiers = async (
   return { ok: false, error: `${[...unmapped].join(", ")}; the ${plan.agent} tiers are ${names}` };
 };
 
+const takenNameMessage = async (dir: string, name: string): Promise<string> => {
+  const state = await readState(dir).catch(() => null);
+  if (state === null) return `run ${name} already exists`;
+  const node = findRunningNode(state.nodeRuns)?.path;
+  const at = node === undefined ? "" : `, at ${node}`;
+  const hint = isRunLive(state.status)
+    ? `attach with \`yok attach ${name}\``
+    : `resume it with \`yok resume ${name}\``;
+  return `run ${name} already exists (${state.status}${at}); ${hint}`;
+};
+
 const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => {
   const { registry, runId, name, git } = options;
   const parsed = SlugSchema.safeParse(name);
@@ -333,9 +347,7 @@ const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => 
     () => true,
     () => false,
   );
-  if (taken) {
-    return { ok: false, error: `.yok/${name} already exists` };
-  }
+  if (taken) return { ok: false, error: await takenNameMessage(runDirOf(run.cwd, name), name) };
   if ((await git.repoRoot(run.cwd)) === null) {
     return { ok: false, error: `${run.cwd} is not inside a git repository` };
   }
@@ -373,7 +385,7 @@ export const initializeRun = async (
     options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
     return { ok: true, value: { dir, state } };
   } catch (error) {
-    // A half-built folder would make every retry answer "already exists".
+    // A half-built folder would make every retry find its name taken.
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
