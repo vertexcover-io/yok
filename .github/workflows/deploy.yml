@@ -26,8 +26,6 @@ name: Deploy
 # The agent and Slack secrets are named one by one below: a blanket toJSON(secrets) is what
 # GitHub's workflow scanner flags as exfiltration.
 on:
-  push:
-    branches: [deploy-workflow]  # TEMP: test run before merge; removed in the next commit
   workflow_dispatch:
     inputs:
       tag:
@@ -49,7 +47,7 @@ jobs:
       name: production
       url: https://${{ vars.SERVER_DOMAIN }}
     env:
-      TAG: ${{ inputs.tag || 'v0.0.10-rc.1' }}  # TEMP default for the push test
+      TAG: ${{ inputs.tag }}
       TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
     steps:
       # Before anything reaches the server: every required value, named when missing.
