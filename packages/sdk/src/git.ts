@@ -14,6 +14,7 @@ export interface IGit {
   branchExists(cwd: string, branch: string): Promise<boolean>;
   isIgnored(cwd: string, path: string): Promise<boolean>;
   hasRemote(cwd: string, remote: string): Promise<boolean>;
+  remoteUrl(cwd: string, remote: string): Promise<string | null>;
   remoteHasBranch(cwd: string, remote: string, branch: string): Promise<Result<boolean>>;
   fetch(cwd: string, target: { remote: string; ref: string }): Promise<Result<void>>;
   // With a base, creates the branch from it; without one, checks the existing branch out.
@@ -108,6 +109,11 @@ export const createGit = (
     isIgnored: async (cwd, path) => (await run(cwd, ["check-ignore", "-q", path])).code === 0,
 
     hasRemote: async (cwd, remote) => (await run(cwd, ["remote", "get-url", remote])).code === 0,
+
+    remoteUrl: async (cwd, remote) => {
+      const { code, stdout } = await run(cwd, ["remote", "get-url", remote]);
+      return code === 0 ? stdout.trim() : null;
+    },
 
     // ls-remote --exit-code exits 2 when nothing matches; any other failure is a real error.
     remoteHasBranch: async (cwd, remote, branch) => {

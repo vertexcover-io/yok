@@ -2304,6 +2304,125 @@ describe("/projects", () => {
     expect(await listProjects(app)).toEqual([]);
   });
 
+  test("SC209: after a remove without purge, adding the same name and URL again reuses the kept clone instead of cloning afresh", async () => {
+    const url = "https://example.test/demo.git";
+    const { deps } = await projectDeps();
+    const app = createApi({ ...deps, git: gitServing(url, { "README.md": "hi\n" }) });
+    expect((await post(app, { name: "demo", git: url })).status).toBe(201);
+    const path = join(realpathSync(deps.home), "projects", "demo");
+    // The serving fake clones from a local bare repo; a real clone records the URL itself.
+    execFileSync("git", ["remote", "set-url", "origin", url], { cwd: path });
+    writeFileSync(join(path, "WORK.md"), "uncommitted\n");
+    expect((await app.request("/projects/demo", { method: "DELETE" })).status).toBe(200);
+    expect(existsSync(join(path, "WORK.md"))).toBe(true);
+
+    const again = await post(app, { name: "demo", git: url });
+
+    expect(again.status).toBe(201);
+    const { project } = (await again.json()) as { project: { path: string; git: string } };
+    expect(project).toMatchObject({ path, git: url });
+    expect(existsSync(join(path, "WORK.md"))).toBe(true);
+    expect(await listProjects(app)).toEqual([
+      expect.objectContaining({ name: "demo", path, git: url, status: "ready" }),
+    ]);
+  });
+
+  test.each([
+    ["a clone of another URL", "https://example.test/other.git"],
+    ["a folder that is no checkout", null],
+  ])(
+    "SC209: adding a name whose clone folder holds %s is refused 409, names the folder and --purge, and clones nothing",
+    async (_label, origin) => {
+      const url = "https://example.test/demo.git";
+      const { deps } = await projectDeps();
+      const path = join(realpathSync(deps.home), "projects", "demo");
+      mkdirSync(path, { recursive: true });
+      if (origin !== null) execFileSync("git", ["init", "-q", "-b", "main", path]);
+      if (origin !== null) execFileSync("git", ["remote", "add", "origin", origin], { cwd: path });
+      writeFileSync(join(path, "KEEP.md"), "kept\n");
+      const clone = (): Promise<Result<void>> => Promise.reject(new Error("must not clone"));
+      const app = createApi({ ...deps, git: { ...deps.git, clone } });
+
+      const res = await post(app, { name: "demo", git: url });
+
+      expect(res.status).toBe(409);
+      expect((await errorOf(res)).message).toBe(
+        `${path} already exists and is not a clone of ${url}; delete it with yok project remove demo --purge, or add it by path`,
+      );
+      expect(existsSync(join(path, "KEEP.md"))).toBe(true);
+      expect(await listProjects(app)).toEqual([]);
+    },
+  );
+
+  test("SC209: a reused clone that turns out to be another project's path is refused and kept, not deleted like a fresh clone", async () => {
+    const url = "https://example.test/demo.git";
+    const { deps } = await projectDeps();
+    const path = join(realpathSync(deps.home), "projects", "demo");
+    execFileSync("git", ["init", "-q", "-b", "main", path]);
+    execFileSync("git", ["remote", "add", "origin", url], { cwd: path });
+    addProjectEntry(deps.home, "placed", path);
+    const app = createApi(deps);
+
+    const res = await post(app, { name: "demo", git: url });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(`${path} is already project placed`);
+    expect(existsSync(join(path, ".git"))).toBe(true);
+  });
+
+  test("SC210: removing a name that is no project but has a kept clone folder names the folder, and --purge deletes it", async () => {
+    const { deps } = await projectDeps();
+    const path = join(realpathSync(deps.home), "projects", "demo");
+    mkdirSync(path, { recursive: true });
+    const app = createApi(deps);
+
+    const kept = await app.request("/projects/demo", { method: "DELETE" });
+    const purged = await app.request("/projects/demo?purge=true", { method: "DELETE" });
+    const gone = await app.request("/projects/demo?purge=true", { method: "DELETE" });
+
+    expect(kept.status).toBe(404);
+    expect((await errorOf(kept)).message).toBe(
+      `no project named demo, but its old clone is still at ${path}; add it again with yok project add demo --git URL, or delete it with --purge`,
+    );
+    expect(purged.status).toBe(200);
+    expect(await purged.json()).toEqual({
+      removed: "demo",
+      purged: true,
+      note: `deleted the clone an earlier remove kept at ${path}`,
+    });
+    expect(existsSync(path)).toBe(false);
+    expect(gone.status).toBe(404);
+    expect((await errorOf(gone)).message).toBe("no project named demo");
+  });
+
+  test("SC210: purging a name that is not a slug, such as an encoded a/../.., is a plain 404 and deletes nothing", async () => {
+    const { deps } = await projectDeps();
+    mkdirSync(join(deps.home, "projects"), { recursive: true });
+    const app = createApi(deps);
+
+    const res = await app.request("/projects/a%2F..%2F..?purge=true", { method: "DELETE" });
+
+    expect(res.status).toBe(404);
+    expect((await errorOf(res)).message).toBe("no project named a/../..");
+    expect(existsSync(join(deps.home, "projects"))).toBe(true);
+  });
+
+  test("SC210: purging a name that is no project but whose clone folder another project registered by path is refused 409 and keeps it", async () => {
+    const { deps } = await projectDeps();
+    const path = join(realpathSync(deps.home), "projects", "demo");
+    execFileSync("git", ["init", "-q", "-b", "main", path]);
+    addProjectEntry(deps.home, "placed", path);
+    const app = createApi(deps);
+
+    const res = await app.request("/projects/demo?purge=true", { method: "DELETE" });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      `no project named demo; its folder ${path} is project placed, remove that instead`,
+    );
+    expect(existsSync(join(path, ".git"))).toBe(true);
+  });
+
   test("SC208: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();
     const cloned = join(deps.home, "projects", "cloned");

@@ -240,7 +240,8 @@ yok-dev server status           # is the server up, pid, version
 yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
-yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
+yok-dev project remove NAME     # forget one; a clone stays and the next add of the same URL reuses it
+yok-dev project remove NAME --purge   # delete the clone too, now or after the project is forgotten
 yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended

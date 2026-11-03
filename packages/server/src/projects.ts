@@ -146,10 +146,6 @@ const isClone = (home: string, project: Project): boolean => {
   return realpathSync(project.path).startsWith(realpathSync(clones) + sep);
 };
 
-// Only a folder this add cloned is removed; a checkout the caller named is theirs.
-const removeClone = (git: string | undefined, path: string): Promise<void> =>
-  git === undefined ? Promise.resolve() : rm(path, { recursive: true, force: true });
-
 // Why the project cannot be saved beside PROJECTS, or null. The root is unknown before a clone.
 const conflictWith = (
   projects: ProjectsFile,
@@ -164,12 +160,17 @@ const conflictWith = (
 };
 
 // Making the folder first claims it: a second add of the same name finds it and clones nothing.
+// A clone that a remove without --purge kept is taken back as it is, so `cloned` is false and a
+// later refusal leaves it alone; anything else already there is a conflict.
 const claimAndClone = async (
   git: IGit,
-  { home, url, path }: Readonly<{ home: string; url: string; path: string }>,
+  { home, url, path, name }: Readonly<{ home: string; url: string; path: string; name: string }>,
   log: ILogger,
 ): Promise<
-  Result<void, Readonly<{ status: 400 | 409 | 422; code: ErrorCode; message: string }>>
+  Result<
+    Readonly<{ cloned: boolean }>,
+    Readonly<{ status: 400 | 409 | 422; code: ErrorCode; message: string }>
+  >
 > => {
   await mkdir(dirname(path), { recursive: true });
   const failed = await mkdir(path).then(
@@ -177,16 +178,16 @@ const claimAndClone = async (
     (error: unknown) => error,
   );
   if (failed instanceof Error && "code" in failed && failed.code === "EEXIST") {
-    return {
-      ok: false,
-      error: { status: 409, code: "conflict", message: `${path} already exists` },
-    };
+    if ((await git.remoteUrl(path, "origin")) === url)
+      return { ok: true, value: { cloned: false } };
+    const message = `${path} already exists and is not a clone of ${url}; delete it with yok project remove ${name} --purge, or add it by path`;
+    return { ok: false, error: { status: 409, code: "conflict", message } };
   }
   if (failed instanceof Error) {
     return { ok: false, error: { status: 400, code: "bad-request", message: failed.message } };
   }
   const cloned = await git.clone(home, url, path);
-  if (cloned.ok) return cloned;
+  if (cloned.ok) return { ok: true, value: { cloned: true } };
   await rm(path, { recursive: true, force: true });
   // git's stderr can echo the URL or the server's paths; it goes to the log, not to the caller.
   log.info({ url, err: cloned.error }, "git clone failed");
@@ -209,14 +210,14 @@ const addProject = async (
   const taken = conflictWith(projects, { name, git });
   if (taken !== null) return errorResponse(c, 409, "conflict", taken);
   const path = body.path ?? join(clonesDir(deps.home), name);
-  if (git !== undefined) {
-    const cloned = await claimAndClone(deps.git, { home: deps.home, url: git, path }, c.get("log"));
-    if (!cloned.ok) {
-      return errorResponse(c, cloned.error.status, cloned.error.code, cloned.error.message);
-    }
-  }
+  const claim =
+    git === undefined
+      ? { ok: true as const, value: { cloned: false } }
+      : await claimAndClone(deps.git, { home: deps.home, url: git, path, name }, c.get("log"));
+  if (!claim.ok) return errorResponse(c, claim.error.status, claim.error.code, claim.error.message);
+  // Only a folder this add cloned is removed; a checkout the caller named or yok kept is theirs.
   const refuse = async (status: 400 | 409, message: string) => {
-    await removeClone(git, path);
+    if (claim.value.cloned) await rm(path, { recursive: true, force: true });
     return errorResponse(c, status, status === 409 ? "conflict" : "bad-request", message);
   };
   const root = await checkoutRoot(deps.git, path);
@@ -251,6 +252,34 @@ const holdsCheckout = async (run: WorkflowRun, host: ITerminalHost): Promise<boo
   return isAgentAlive(run, host);
 };
 
+// The name is no project, but a remove without --purge may have left its clone folder behind.
+// A folder some project registered by path is that project's, whatever its name.
+const removeKeptClone = async (
+  c: Context<{ Variables: Vars }>,
+  home: string,
+  projects: ProjectsFile,
+  { name, purge }: Readonly<{ name: string; purge: boolean }>,
+) => {
+  const path = join(clonesDir(home), name);
+  if (!SlugSchema.safeParse(name).success || !existsSync(path)) {
+    return errorResponse(c, 404, "not-found", `no project named ${name}`);
+  }
+  const owner = Object.entries(projects).find(
+    ([, p]) => existsSync(p.path) && realpathSync(p.path) === realpathSync(path),
+  );
+  if (owner !== undefined) {
+    const message = `no project named ${name}; its folder ${path} is project ${owner[0]}, remove that instead`;
+    return errorResponse(c, 409, "conflict", message);
+  }
+  if (!purge) {
+    const message = `no project named ${name}, but its old clone is still at ${path}; add it again with yok project add ${name} --git URL, or delete it with --purge`;
+    return errorResponse(c, 404, "not-found", message);
+  }
+  await rm(path, { recursive: true, force: true });
+  const note = `deleted the clone an earlier remove kept at ${path}`;
+  return c.json({ removed: name, purged: true, note }, 200);
+};
+
 const removeProject = (
   c: Context<{ Variables: Vars }>,
   deps: ProjectDeps,
@@ -258,9 +287,7 @@ const removeProject = (
 ) =>
   withLock(projectsLockPath(deps.home), async () => {
     const { [name]: project, ...rest } = await readProjects(deps.home);
-    if (project === undefined) {
-      return errorResponse(c, 404, "not-found", `no project named ${name}`);
-    }
+    if (project === undefined) return removeKeptClone(c, deps.home, rest, { name, purge });
     const runs = (await deps.registry.listRuns()).filter((run) => run.cwd === project.path);
     const holding = await Promise.all(runs.map((run) => holdsCheckout(run, deps.host)));
     const live = runs.filter((_run, index) => holding[index]).map((run) => run.id);

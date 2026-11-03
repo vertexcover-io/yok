@@ -188,6 +188,16 @@ describe("createGit (integration)", () => {
     expect(await createGit(realExec).defaultBranch(clonePath)).toBe("main");
   });
 
+  test("remoteUrl is null with no origin and the clone source's path in a clone", async () => {
+    const root = makeRepo();
+    const git = createGit(realExec);
+    expect(await git.remoteUrl(root, "origin")).toBe(null);
+
+    const clonePath = join(tempDir(), "clone");
+    gitCmd(tmpdir(), "clone", "-q", root, clonePath);
+    expect(await git.remoteUrl(clonePath, "origin")).toBe(root);
+  });
+
   test("hasRemote is false with no origin and true in a clone; fetch fails once origin is gone", async () => {
     const root = makeRepo();
     const git = createGit(realExec);

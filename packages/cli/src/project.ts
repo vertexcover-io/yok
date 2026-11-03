@@ -69,9 +69,14 @@ export const projectCommand = () => {
 
   project
     .command("remove")
-    .description("Forget a project; --purge also deletes a folder yok cloned")
+    .description(
+      "Forget a project; --purge also deletes a folder yok cloned, even after the project is forgotten",
+    )
     .argument("<name>", "project name")
-    .option("--purge", "delete the folder too, when yok cloned it")
+    .option(
+      "--purge",
+      "delete the folder too, when yok cloned it; without it a clone is kept for the next add",
+    )
     .action(async (name, opts, command) => {
       const client = await resolveClient(isRemote(command));
       const removed = await client.removeProject(name, opts.purge === true);
