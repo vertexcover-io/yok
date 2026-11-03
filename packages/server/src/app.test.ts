@@ -53,6 +53,17 @@ const addProjectEntry = (home: string, name: string, path: string, git?: string)
     `${name}:\n  path: ${path}\n${git === undefined ? "" : `  git: ${git}\n`}  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
   );
 
+// A folder in the home's clones folder as a remove without --purge leaves it: a checkout whose
+// origin is ORIGIN, or a plain folder without one.
+const keptClone = (home: string, name: string, origin?: string): string => {
+  const path = join(realpathSync(home), "projects", name);
+  mkdirSync(path, { recursive: true });
+  if (origin === undefined) return path;
+  execFileSync("git", ["init", "-q", "-b", "main", path]);
+  execFileSync("git", ["remote", "add", "origin", origin], { cwd: path });
+  return path;
+};
+
 const OK_NODES = [{ id: "a", type: "exec", runtime: "sh", script: "true", input: null }];
 const okWorkflow = (extra: object = {}): string =>
   JSON.stringify({
@@ -2335,10 +2346,7 @@ describe("/projects", () => {
     async (_label, origin) => {
       const url = "https://example.test/demo.git";
       const { deps } = await projectDeps();
-      const path = join(realpathSync(deps.home), "projects", "demo");
-      mkdirSync(path, { recursive: true });
-      if (origin !== null) execFileSync("git", ["init", "-q", "-b", "main", path]);
-      if (origin !== null) execFileSync("git", ["remote", "add", "origin", origin], { cwd: path });
+      const path = keptClone(deps.home, "demo", origin ?? undefined);
       writeFileSync(join(path, "KEEP.md"), "kept\n");
       const clone = (): Promise<Result<void>> => Promise.reject(new Error("must not clone"));
       const app = createApi({ ...deps, git: { ...deps.git, clone } });
@@ -2357,9 +2365,7 @@ describe("/projects", () => {
   test("SC209: a reused clone that turns out to be another project's path is refused and kept, not deleted like a fresh clone", async () => {
     const url = "https://example.test/demo.git";
     const { deps } = await projectDeps();
-    const path = join(realpathSync(deps.home), "projects", "demo");
-    execFileSync("git", ["init", "-q", "-b", "main", path]);
-    execFileSync("git", ["remote", "add", "origin", url], { cwd: path });
+    const path = keptClone(deps.home, "demo", url);
     addProjectEntry(deps.home, "placed", path);
     const app = createApi(deps);
 
@@ -2372,8 +2378,7 @@ describe("/projects", () => {
 
   test("SC210: removing a name that is no project but has a kept clone folder names the folder, and --purge deletes it", async () => {
     const { deps } = await projectDeps();
-    const path = join(realpathSync(deps.home), "projects", "demo");
-    mkdirSync(path, { recursive: true });
+    const path = keptClone(deps.home, "demo");
     const app = createApi(deps);
 
     const kept = await app.request("/projects/demo", { method: "DELETE" });
@@ -2395,15 +2400,14 @@ describe("/projects", () => {
     expect((await errorOf(gone)).message).toBe("no project named demo");
   });
 
-  test("SC210: purging a name that is not a slug, such as an encoded a/../.., is a plain 404 and deletes nothing", async () => {
+  test("SC210: removing a name that is not a slug, such as an encoded a/../.., is 400 and deletes nothing", async () => {
     const { deps } = await projectDeps();
     mkdirSync(join(deps.home, "projects"), { recursive: true });
     const app = createApi(deps);
 
     const res = await app.request("/projects/a%2F..%2F..?purge=true", { method: "DELETE" });
 
-    expect(res.status).toBe(404);
-    expect((await errorOf(res)).message).toBe("no project named a/../..");
+    expect(res.status).toBe(400);
     expect(existsSync(join(deps.home, "projects"))).toBe(true);
   });
 
@@ -2414,7 +2418,7 @@ describe("/projects", () => {
     "SC210: purging a name that is no project is refused 409 and keeps the folder when a project registered by path %s that folder",
     async (_label, placedAt) => {
       const { deps } = await projectDeps();
-      const path = join(realpathSync(deps.home), "projects", "demo");
+      const path = keptClone(deps.home, "demo");
       execFileSync("git", ["init", "-q", "-b", "main", placedAt(path)]);
       addProjectEntry(deps.home, "placed", placedAt(path));
       const app = createApi(deps);
@@ -2428,6 +2432,24 @@ describe("/projects", () => {
       expect(existsSync(join(placedAt(path), ".git"))).toBe(true);
     },
   );
+
+  test("SC210: purging a cloned project whose folder holds another project registered by path is refused 409, and both stay", async () => {
+    const { deps } = await projectDeps();
+    const path = keptClone(deps.home, "demo", "https://example.test/demo.git");
+    execFileSync("git", ["init", "-q", "-b", "main", join(path, "nested")]);
+    addProjectEntry(deps.home, "demo", path, "https://example.test/demo.git");
+    addProjectEntry(deps.home, "placed", join(path, "nested"));
+    const app = createApi(deps);
+
+    const res = await app.request("/projects/demo?purge=true", { method: "DELETE" });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      `demo's folder ${path} holds project placed, remove that first`,
+    );
+    expect(existsSync(join(path, "nested", ".git"))).toBe(true);
+    expect((await listProjects(app)).map((p) => p.name)).toEqual(["demo", "placed"]);
+  });
 
   test("SC208: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();

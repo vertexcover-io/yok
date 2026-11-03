@@ -13,7 +13,6 @@ export interface IGit {
   isValidBranchName(cwd: string, name: string): Promise<boolean>;
   branchExists(cwd: string, branch: string): Promise<boolean>;
   isIgnored(cwd: string, path: string): Promise<boolean>;
-  hasRemote(cwd: string, remote: string): Promise<boolean>;
   remoteUrl(cwd: string, remote: string): Promise<string | null>;
   remoteHasBranch(cwd: string, remote: string, branch: string): Promise<Result<boolean>>;
   fetch(cwd: string, target: { remote: string; ref: string }): Promise<Result<void>>;
@@ -107,8 +106,6 @@ export const createGit = (
     branchExists,
 
     isIgnored: async (cwd, path) => (await run(cwd, ["check-ignore", "-q", path])).code === 0,
-
-    hasRemote: async (cwd, remote) => (await run(cwd, ["remote", "get-url", remote])).code === 0,
 
     remoteUrl: async (cwd, remote) => {
       const { code, stdout } = await run(cwd, ["remote", "get-url", remote]);
