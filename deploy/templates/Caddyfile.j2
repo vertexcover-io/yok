@@ -1,8 +1,18 @@
-# Caddy in front of the yok server: https and the login, then every request to yok on loopback.
-# Rendered by provision.py. The domain must equal SERVER_DOMAIN in ~/.yok/.env, or yok's Host
-# guard answers 403.
+# Caddy in front of the yok server: the login, then every request to yok on loopback. Rendered
+# by provision.py. With a port, an edge in front (exe.dev) does https and Caddy serves plain
+# http; otherwise Caddy serves the domain with its own certificate. Either way the domain must
+# equal SERVER_DOMAIN in ~/.yok/.env, or yok's Host guard answers 403. /api/hooks/* is open:
+# Slack posts there without a login, and the hook checks Slack's signature instead.
+{% if http_port -%}
+{
+	auto_https off
+}
+http://:{{ http_port }} {
+{%- else -%}
 {{ domain }} {
-	basic_auth {
+{%- endif %}
+	@protected not path /api/hooks/*
+	basic_auth @protected {
 		{{ yok_user }} {{ password_hash }}
 	}
 	reverse_proxy 127.0.0.1:7777

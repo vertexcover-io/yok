@@ -5,7 +5,7 @@ login. Two components put it there, and they run at different times.
 
 `provision.py` is a pyinfra script that a person runs once per machine. It installs the tools
 a run needs, creates the user that owns the runs, writes the server's config, installs the
-unit, and sets up Caddy unless the box already has a proxy.
+unit, and sets up Caddy, which asks for the login and leaves `/api/hooks/*` open for Slack.
 
 `.github/workflows/deploy.yml` is a GitHub Actions workflow that runs on every stable release.
 It logs in as that user, writes the agent tokens, installs the release with `install.sh`,
@@ -32,7 +32,8 @@ RELEASE   release.yml ──dispatch tag──► deploy.yml ── ssh as the u
 - [Prerequisites](#prerequisites)
 - [Provisioning a machine](#provisioning-a-machine)
 - [Configuration reference](#configuration-reference)
-- [Behind a platform proxy](#behind-a-platform-proxy)
+- [On exe.dev](#on-exedev)
+- [Behind a proxy that does the login](#behind-a-proxy-that-does-the-login)
 - [Connecting the workflow to the server](#connecting-the-workflow-to-the-server)
 - [What a deploy does](#what-a-deploy-does)
 - [Rotating a secret](#rotating-a-secret)
@@ -45,8 +46,7 @@ RELEASE   release.yml ──dispatch tag──► deploy.yml ── ssh as the u
    installed on it.
 2. **A domain name** with a DNS record pointing at the machine, and ports 80 and 443 open.
    Provisioning installs Caddy, which gets and renews the certificate itself, and issuance
-   fails if the domain does not resolve yet. Behind a platform proxy, whatever that platform
-   needs instead.
+   fails if the domain does not resolve yet. On exe.dev the VM's own name is the domain.
 3. **An agent credential**: `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on your
    laptop (lasts a year), or `CODEX_API_KEY`. These go to GitHub, not to provisioning.
 4. **A deploy key pair**, the ssh key the workflow logs in with:
@@ -92,27 +92,33 @@ variable is missing, provisioning stops and names it.
 | `SERVER_DOMAIN` | yes | public domain yok is served on; written to `~/.yok/.env`, and yok's Host guard answers 403 to any other `Host` |
 | `DEPLOY_PUBKEY` | yes | path to the public half of the deploy key |
 | `YOK_USER`, `YOK_PASSWORD` | with Caddy | the login Caddy asks for. Only a bcrypt hash of the password reaches the box, in the Caddyfile |
-| `PROXY` | no | `caddy` (default) installs Caddy to terminate https and ask for the login. `external` skips Caddy and the firewall, for a box that already has a proxy |
+| `PROXY` | no | `caddy` (default) installs Caddy to terminate https and ask for the login. `external` skips Caddy and the firewall, for a box whose proxy already does both |
+| `CADDY_HTTP_PORT` | no | with Caddy, behind an edge that already does https (exe.dev): Caddy serves plain http on this port and the firewall is skipped |
 | `YOK_BIND` | with `external` | the address yok listens on so the proxy can reach it. yok has no login of its own, so this must be an address only the proxy reaches: a private interface, or `0.0.0.0` only on a box whose public side is the proxy. With Caddy it is always `127.0.0.1` |
 | `APP_USER` | no | the user that owns `~/.yok`, runs the server and the runs, and that the workflow logs in as. Default `yok`, created by provisioning |
 | `ADMIN_USER` | no | user provisioning logs in as. Default `root`; any other user needs passwordless sudo |
 
-## Behind a platform proxy
+## On exe.dev
 
-Some platforms, such as exe.dev, already terminate https, ask for a login, and forward to a
-port on the machine, and route ssh through their own proxy rather than the machine's
-`authorized_keys`. Provisioning such a machine differs in four ways:
+exe.dev's edge terminates https and forwards `https://NAME.exe.xyz/` to one port on the VM. Its
+own sign-in is all or nothing for the VM, and Slack cannot sign in, so the VM is made public and
+Caddy on the box does the login instead, serving plain http on a port the edge forwards to.
+Provisioning such a VM differs in three ways:
 
 ```sh
-export PROXY=external YOK_BIND=0.0.0.0 APP_USER=exedev ADMIN_USER=exedev \
+export CADDY_HTTP_PORT=8080 APP_USER=exedev ADMIN_USER=exedev \
        DEPLOY_HOST=NAME.exe.xyz SERVER_DOMAIN=NAME.exe.xyz
 ```
 
-- `PROXY=external` skips Caddy and the firewall. `YOK_BIND=0.0.0.0` is right there because the
-  VM has only private addresses; its public side is the platform's edge. `ssh exe.dev share
-  port NAME 7777` is what makes the edge forward `https://NAME.exe.xyz/` to yok. Leave the VM
-  private: a browser then signs in at exe.dev, and `ssh exe.dev share add NAME someone@example.com`
-  admits each dashboard user.
+- `CADDY_HTTP_PORT` makes Caddy listen on that port without a certificate, and skips the
+  firewall: the VM has no public interface. yok stays on loopback behind it. After provisioning,
+  point the edge at Caddy and open it:
+  ```sh
+  ssh exe.dev share port NAME 8080
+  ssh exe.dev share set-public NAME
+  ```
+  From then on a browser gets Caddy's login box and the exe.dev share list no longer matters
+  for the dashboard. `set-private` is the way back.
 - `APP_USER=exedev ADMIN_USER=exedev`, because the exe.dev ssh proxy ignores the username and
   always lands on `exedev`. `DEPLOY_USER` in the `production` environment is `exedev` too.
 - The deploy key is registered with the platform account, scoped to this VM, not on the
@@ -120,12 +126,14 @@ export PROXY=external YOK_BIND=0.0.0.0 APP_USER=exedev ADMIN_USER=exedev \
   ```sh
   ssh exe.dev ssh-key add --vm=NAME --ssh-user=exedev "$(cat ~/.ssh/yok_deploy.pub)"
   ```
-- The login is the platform's. A browser signs in at exe.dev; a script sends a VM token as the
-  Basic auth password with any username, which is what `yok-remote` and the workflow's final
-  check do. Mint one with `ssh exe.dev ssh-key generate-api-key --vm=NAME --label=deploy` and
-  store it as `YOK_PASSWORD` in GitHub; `YOK_USER` can be anything. Each person mints their own
-  for the laptop: `YOK_SERVER_PASSWORD=<token> yok-remote login https://NAME.exe.xyz --user me`.
-- `SSH_HOST_KEY` is the proxy's key, which is RSA: `ssh-keyscan -t rsa NAME.exe.xyz`.
+  and `SSH_HOST_KEY` is the proxy's key, which is RSA: `ssh-keyscan -t rsa NAME.exe.xyz`.
+
+## Behind a proxy that does the login
+
+A box whose proxy already terminates https and asks for a login (a web panel's nginx) skips
+Caddy with `PROXY=external` and `YOK_BIND=<address only that proxy reaches>`. yok has no login
+of its own, so the bind address is required and never guessed. That proxy must pass `Host`
+through unchanged and leave `/api/hooks/*` without a login if Slack is to reach it.
 
 ## Connecting the workflow to the server
 
@@ -142,11 +150,12 @@ In the repository, create an environment named `production` and add the followin
 | variable | `YOK_USER` | the login's name, as given to provisioning |
 | secret | `SSH_PRIVATE_KEY` | contents of `~/.ssh/yok_deploy` |
 | secret | `SSH_HOST_KEY` | one line from `ssh-keyscan -t ed25519 DEPLOY_HOST` |
-| secret | `YOK_PASSWORD` | the login's password, as given to provisioning; the platform token with an external proxy |
+| secret | `YOK_PASSWORD` | the login's password, as given to provisioning |
 | secret | `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY` | at least one; the agents a run can use |
 | secret | `GH_TOKEN` | only while the repository is private: a token that can read its contents |
 | secret | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | for Slack messages; a run whose config turns the notifier on stops without them |
 | secret | `SLACK_MEMBER_ID` | the person the notifier mentions when a run needs someone |
+| secret | `SLACK_SIGNING_SECRET`, `SLACK_COMMAND_CHANNEL` | for driving yok from Slack: the app's signing secret and the one channel whose mentions are answered |
 
 The equivalent from the command line, in a checkout of the repository and with `DEPLOY_HOST`
 and `SERVER_DOMAIN` still exported from provisioning:
@@ -194,8 +203,7 @@ makes, and fails unless the version matches.
 - An agent or Slack token: change it in GitHub and run Deploy by hand with the current tag.
   Runs in progress keep their old tokens; the next run picks up the new ones.
 - `YOK_PASSWORD`, `SERVER_DOMAIN` or `YOK_BIND`: provisioning owns them. Export the new value,
-  run provisioning again, then update the GitHub variable or secret to match. On exe.dev the
-  password is a platform token, so revoke the old one with `ssh exe.dev ssh-key` instead.
+  run provisioning again, then update the GitHub variable or secret to match.
 - The deploy key: generate a new pair, run provisioning with the new `DEPLOY_PUBKEY` (or
   `ssh exe.dev ssh-key add` it), replace `SSH_PRIVATE_KEY`.
 

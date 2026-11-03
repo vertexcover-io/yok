@@ -58,6 +58,26 @@ class BuildInventory(unittest.TestCase):
         self.assertEqual(data["proxy"], "caddy")
         self.assertEqual(data["bind"], "127.0.0.1")
 
+    def test_caddy_serves_the_domain_with_https_by_default(self) -> None:
+        data = self.host()
+        self.assertIsNone(data["caddy_http_port"])
+        self.assertTrue(data["firewall"])
+
+    def test_caddy_http_port_serves_plain_http_behind_an_edge_without_a_firewall(self) -> None:
+        data = self.host(CADDY_HTTP_PORT="8080")
+        self.assertEqual(data["caddy_http_port"], 8080)
+        self.assertFalse(data["firewall"])
+        self.assertEqual(data["bind"], "127.0.0.1")
+
+    def test_caddy_http_port_must_be_a_port_number(self) -> None:
+        self.assertIn("CADDY_HTTP_PORT", self.exit_message({**self.base, "CADDY_HTTP_PORT": "web"}))
+        self.assertIn("CADDY_HTTP_PORT", self.exit_message({**self.base, "CADDY_HTTP_PORT": "70000"}))
+
+    def test_external_has_no_caddy_port_and_no_firewall(self) -> None:
+        data = self.host(PROXY="external", YOK_BIND="10.0.0.5", CADDY_HTTP_PORT="8080")
+        self.assertIsNone(data["caddy_http_port"])
+        self.assertFalse(data["firewall"])
+
     def test_caddy_needs_the_login(self) -> None:
         message = self.exit_message({**self.base, "YOK_PASSWORD": ""})
         self.assertIn("YOK_PASSWORD", message)

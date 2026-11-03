@@ -8,8 +8,10 @@ Usage, from the deploy/ directory (templates are resolved relative to the cwd):
   pip install -r requirements.txt
   export DEPLOY_HOST=... SERVER_DOMAIN=... YOK_USER=... YOK_PASSWORD=... \\
          DEPLOY_PUBKEY=~/.ssh/yok_deploy.pub
-  # behind a platform proxy such as exe.dev, add:
-  #   PROXY=external YOK_BIND=0.0.0.0 APP_USER=exedev ADMIN_USER=exedev
+  # on exe.dev, whose edge does https and forwards to one port, add:
+  #   CADDY_HTTP_PORT=8080 APP_USER=exedev ADMIN_USER=exedev
+  # behind a proxy that also does the login (a web panel's nginx), add instead:
+  #   PROXY=external YOK_BIND=<address only that proxy reaches>
   pyinfra inventory.py provision.py --dry     # show what would change
   pyinfra inventory.py provision.py -y        # apply
 """
@@ -41,7 +43,7 @@ AS_APP_USER = {"_sudo": True, "_sudo_user": APP_USER}
 apt.packages(
     name="Base packages",
     packages=["git", "tmux", "jq", "curl", "gh", "ripgrep", "ffmpeg", "nodejs", "npm"]
-    + (["ufw"] if CADDY else []),
+    + (["ufw"] if d.firewall else []),
     update=True,
     cache_time=3600,
 )
@@ -105,6 +107,7 @@ if CADDY:
         group="caddy",
         mode="640",
         domain=d.domain,
+        http_port=d.caddy_http_port,
         yok_user=d.yok_user,
         password_hash=d.password_hash,
     )
@@ -116,6 +119,8 @@ if CADDY:
         reloaded=True,
         _if=caddyfile.did_change,
     )
+
+if d.firewall:
     server.shell(
         name="Firewall: allow ssh, http, https; enable",
         commands=[

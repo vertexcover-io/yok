@@ -21,6 +21,7 @@ name: Deploy
 #            CLAUDE_CODE_OAUTH_TOKEN or CODEX_API_KEY, at least one
 #            GH_TOKEN        only while the repo is private
 #            SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID   for the notifier
+#            SLACK_SIGNING_SECRET, SLACK_COMMAND_CHANNEL         for driving yok from Slack
 #
 # The agent and Slack secrets are named one by one below: a blanket toJSON(secrets) is what
 # GitHub's workflow scanner flags as exfiltration.
@@ -105,11 +106,14 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_MEMBER_ID: ${{ secrets.SLACK_MEMBER_ID }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          SLACK_COMMAND_CHANNEL: ${{ secrets.SLACK_COMMAND_CHANNEL }}
         run: |
           set -euo pipefail
           scp -q deploy/deploy.sh "$TARGET:.yok/deploy.sh"
           jq -rn '$ENV
-              | {GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY, SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID}
+              | {GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY,
+                 SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID, SLACK_SIGNING_SECRET, SLACK_COMMAND_CHANNEL}
               | with_entries(select(.value != null and .value != ""))
               | to_entries[] | "\(.key)=\(.value)"' \
           | ssh "$TARGET" sh .yok/deploy.sh "$(printf %q "$TAG")"

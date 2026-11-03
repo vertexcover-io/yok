@@ -222,7 +222,7 @@ You know it worked when `yok-remote server status` prints the server's version a
 
 1. Create a Slack app in your workspace. Under Event Subscriptions, turn events on, set the request URL to `https://yok.example.com/api/hooks/slack`, and subscribe to the `app_mentions:read` bot event (`app_mention`). Add the `chat:write` bot scope and install the app.
 2. Create a private channel, invite the people allowed to drive yok and the app, and copy the channel's id (channel details, at the bottom).
-3. Add three lines to the server's `~/.yok/.env`; the server reads them on every request, so no restart is needed:
+3. Give the server three values. On a deployed server they are GitHub secrets, delivered by the next Deploy run (see `deploy/README.md`); on a server you run by hand, add them to `~/.yok/.env`, which is read on every request, so no restart is needed:
 
    ```sh
    SLACK_SIGNING_SECRET=…   # the app's Basic Information page
