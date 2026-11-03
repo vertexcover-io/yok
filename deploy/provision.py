@@ -16,8 +16,10 @@ Usage, from the deploy/ directory (templates are resolved relative to the cwd):
   pyinfra inventory.py provision.py -y        # apply
 """
 
+import re
 from io import StringIO
 
+import bcrypt
 from pyinfra import host
 from pyinfra.facts.files import Directory, File, FileContents, Link
 from pyinfra.facts.server import Which
@@ -63,7 +65,7 @@ if CADDY:
         src="https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt",
         dest="/etc/apt/sources.list.d/caddy-stable.list",
     )
-    apt.packages(name="Caddy", packages=["caddy"], update=True)
+    apt.packages(name="Caddy", packages=["caddy"], update=True, cache_time=3600)
 
 # One package at a time: an image may ship an agent as a plain binary, which npm would refuse
 # to overwrite, and a failure names the package.
@@ -98,6 +100,16 @@ files.put(
     mode="600",
 )
 
+# A fresh bcrypt hash differs every run; the one already in the Caddyfile is kept while it still
+# matches the password, so an unchanged password is no change.
+def current_password_hash() -> str:
+    lines = host.get_fact(FileContents, path="/etc/caddy/Caddyfile") or []
+    found = re.search(r"\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}", "\n".join(lines))
+    if found and bcrypt.checkpw(d.yok_password.encode(), found.group().encode()):
+        return found.group()
+    return d.password_hash
+
+
 if CADDY:
     caddyfile = files.template(
         name="Caddyfile",
@@ -109,7 +121,7 @@ if CADDY:
         domain=d.domain,
         http_port=d.caddy_http_port,
         yok_user=d.yok_user,
-        password_hash=d.password_hash,
+        password_hash=current_password_hash(),
     )
     systemd.service(
         name="Caddy running",

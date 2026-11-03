@@ -82,10 +82,15 @@ class BuildInventory(unittest.TestCase):
         message = self.exit_message({**self.base, "YOK_PASSWORD": ""})
         self.assertIn("YOK_PASSWORD", message)
 
-    def test_caddy_hashes_the_password_with_bcrypt(self) -> None:
+    def test_caddy_hashes_the_password_with_bcrypt_and_keeps_it_for_a_match(self) -> None:
         data = self.host()
         self.assertEqual(data["yok_user"], "yok")
         self.assertTrue(bcrypt.checkpw(b"hunter2", data["password_hash"].encode()))
+        self.assertEqual(data["yok_password"], "hunter2")
+
+    def test_external_carries_no_password(self) -> None:
+        data = self.host(PROXY="external", YOK_BIND="10.0.0.5", YOK_PASSWORD="hunter2")
+        self.assertEqual(data["yok_password"], "")
 
     def test_external_needs_an_explicit_bind(self) -> None:
         message = self.exit_message({**self.base, "PROXY": "external"})

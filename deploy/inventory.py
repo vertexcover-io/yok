@@ -96,6 +96,8 @@ def build_inventory(env: Mapping[str, str]) -> list[tuple[str, dict]]:
                 "app_user": env.get("APP_USER") or "yok",
                 "yok_user": env.get("YOK_USER") or "",
                 "password_hash": _password_hash(env, proxy),
+                # Never sent to the box: provision.py only checks it against the hash already there.
+                "yok_password": env.get("YOK_PASSWORD", "") if proxy == "caddy" else "",
                 "deploy_pubkey": _pubkey(env),
             },
         )
