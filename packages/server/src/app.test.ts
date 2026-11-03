@@ -1283,6 +1283,30 @@ describe("Slack hook", () => {
     expect(posts).toEqual([]);
   });
 
+  test("the hook's keys come from the process environment when ~/.yok/.env lacks them, so secrets.env carries them", async () => {
+    const keys = ["SLACK_SIGNING_SECRET", "SLACK_COMMAND_CHANNEL", "SLACK_BOT_TOKEN"] as const;
+    const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    Object.assign(process.env, {
+      SLACK_SIGNING_SECRET: "s3cret",
+      SLACK_COMMAND_CHANNEL: "C1",
+      SLACK_BOT_TOKEN: "xoxb-env",
+    });
+    try {
+      const { app, posts } = await slackRoot("");
+
+      const res = await signedHook(app, mention("<@UBOT> help"));
+
+      expect(res.status).toBe(200);
+      await until(() => posts.length > 0);
+      expect(posts[0]?.form.thread_ts).toBe("100.1");
+    } finally {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+
   test("a command that throws replies with internal: and the error's message", async () => {
     const { app, deps, posts } = await slackRoot();
     Object.assign(deps.registry, {

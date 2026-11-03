@@ -22,7 +22,7 @@ import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
-import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
+import { pidPath, portPath, publicOrigin, readPort, serverBind, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
 import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts";
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
@@ -97,10 +97,10 @@ export const createRoot = (deps: RootDeps) => {
 // A port the caller names must be free: a service manager or a TLS proxy points at it. The saved
 // port falls back to any free one. It answers 503 until startServer loads the app, which needs
 // the bound port. The dashboard's /stream stays open and quiet between changes: no idle limit.
-const listen = (port: number | undefined, saved: number | null) => {
+const listen = (hostname: string, port: number | undefined, saved: number | null) => {
   const serve = (at: number) =>
     Bun.serve({
-      hostname: "127.0.0.1",
+      hostname,
       port: at,
       idleTimeout: 0,
       fetch: () => new Response("starting", { status: 503 }),
@@ -149,7 +149,7 @@ export const startServer = async ({
   // Only a home this creates gets 0700; one that exists keeps the mode its owner gave it.
   await mkdir(home, { recursive: true, mode: 0o700 });
   // Bound before anything starts, so a named port that is taken leaves nothing running.
-  const server = listen(port, readPort(home));
+  const server = listen(serverBind(home), port, readPort(home));
   const boundPort = server.port as number;
   const domain = serverDomain(home, boundPort);
   const origin = publicOrigin(domain);
