@@ -40,8 +40,6 @@ describe("yok claude|codex", () => {
     expect(ran.argv).toEqual([
       "--settings",
       JSON.stringify({
-        skipAutoPermissionPrompt: true,
-        enableAllProjectMcpServers: true,
         enabledPlugins: { "yok@yok": false },
       }),
       "--plugin-dir",
