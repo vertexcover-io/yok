@@ -152,6 +152,7 @@ const fakePane = (
   calls: Call[],
   alive: boolean,
   screens: readonly string[] = [""],
+  onStart: () => void = () => undefined,
 ): ITerminal => {
   let captures = 0;
   return {
@@ -171,6 +172,7 @@ const fakePane = (
       Promise.resolve({ ok: true, value: screens[Math.min(captures++, screens.length - 1)] ?? "" }),
     rename: () => Promise.resolve(ok),
     respawn: (spec) => {
+      onStart();
       calls.push({ method: "respawn", pane, spec, at: Date.now() });
       return Promise.resolve(ok);
     },
@@ -180,7 +182,7 @@ const fakePane = (
 };
 
 const fakeHost = (
-  options: { alive?: boolean; createOk?: boolean } = {},
+  options: { alive?: boolean; createOk?: boolean; onStart?: () => void } = {},
 ): ITerminalHost & { calls: Call[] } => {
   const calls: Call[] = [];
   const alive = options.alive ?? true;
@@ -188,6 +190,7 @@ const fakeHost = (
     calls,
     checks: [],
     create: (spec) => {
+      options.onStart?.();
       calls.push({ method: "create", spec, at: Date.now() });
       return Promise.resolve(
         options.createOk === false
@@ -195,10 +198,31 @@ const fakeHost = (
           : { ok: true, value: fakePane(spec.name, calls, alive) },
       );
     },
-    find: (name) => fakePane(name, calls, alive),
+    find: (name) => fakePane(name, calls, alive, [""], options.onStart),
     list: () => Promise.resolve([]),
   };
 };
+
+const readConfig = (home: string): unknown => {
+  try {
+    return JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
+};
+
+const sixFlags = (cwd: string): unknown => ({
+  hasCompletedOnboarding: true,
+  hasSeenAutoDefaultNotice: true,
+  hasSeenAutoModeOutsideReadPrompt: true,
+  projects: {
+    [cwd]: {
+      hasTrustDialogAccepted: true,
+      hasClaudeMdExternalIncludesApproved: true,
+      hasClaudeMdExternalIncludesWarningShown: true,
+    },
+  },
+});
 
 describe("claudeProvider.prompt", () => {
   test("SC6: a session whose isAlive is false returns ok:false and sends nothing", async () => {
@@ -285,27 +309,29 @@ describe("claudeProvider.launch", () => {
   test("SC708: a launched session's Claude config holds all six flags before the pane starts, and the pane's argv carries both session keys", async () => {
     const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
-    const host = fakeHost();
+    const seen: unknown[] = [];
+    const host = fakeHost({ onStart: () => seen.push(readConfig(home)) });
     const provider = claudeProvider({ host, newId: () => "s1" });
 
     await provider.launch({ cwd, env: { CLAUDE_CONFIG_DIR: home } });
 
-    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual({
-      hasCompletedOnboarding: true,
-      hasSeenAutoDefaultNotice: true,
-      hasSeenAutoModeOutsideReadPrompt: true,
-      projects: {
-        [cwd]: {
-          hasTrustDialogAccepted: true,
-          hasClaudeMdExternalIncludesApproved: true,
-          hasClaudeMdExternalIncludesWarningShown: true,
-        },
-      },
-    });
+    expect(seen).toEqual([sixFlags(cwd)]);
     const [call] = host.calls;
     const argv = call?.method === "create" ? call.spec.argv : [];
     const settings = argv[argv.indexOf("--settings") + 1] ?? "";
     expect(JSON.parse(settings)).toMatchObject(SESSION_KEYS);
+  });
+
+  test("SC708: a relaunched session's Claude config holds all six flags before the pane respawns", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
+    const seen: unknown[] = [];
+    const host = fakeHost({ onStart: () => seen.push(readConfig(home)) });
+    const provider = claudeProvider({ host, newId: () => "unused" });
+
+    await provider.relaunch(host.find("%3"), "s-new", { cwd, env: { CLAUDE_CONFIG_DIR: home } });
+
+    expect(seen).toEqual([sixFlags(cwd)]);
   });
 });
 
