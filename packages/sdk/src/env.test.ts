@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "./config.ts";
 import { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
+import type { ChatThread } from "./registry.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "sdk-env-")));
 
@@ -253,6 +254,35 @@ describe("sessionEnv", () => {
       { PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
     ],
   ])("%s", (_label, runEnv, expected) => {
-    expect(sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(expected);
+    expect(sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc", undefined)).toEqual(expected);
+  });
+
+  const slackEnv = { SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "UCONF" };
+  const launch = (thread: ChatThread | undefined, runEnv: Record<string, string> = slackEnv) =>
+    sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc", thread);
+
+  test("SC901: a session env takes the Slack thread's channel, ts and requester over the run env's", () => {
+    const env = launch({ channel: "C1", ts: "100.1", user: "U7" }, { ...slackEnv, FOO: "1" });
+    expect(env).toMatchObject({
+      SLACK_CHANNEL_ID: "C1",
+      YOK_SLACK_THREAD: "100.1",
+      SLACK_MEMBER_ID: "U7",
+      FOO: "1",
+      YOK_RUN_ID: "run-1",
+    });
+  });
+
+  test("SC902: a thread with no requester id keeps the env's member and still sets the channel and ts", () => {
+    expect(launch({ channel: "C1", ts: "100.1" })).toMatchObject({
+      SLACK_MEMBER_ID: "UCONF",
+      SLACK_CHANNEL_ID: "C1",
+      YOK_SLACK_THREAD: "100.1",
+    });
+  });
+
+  test("SC903: a session env with no thread keeps the run env's Slack keys untouched", () => {
+    const env = launch(undefined);
+    expect(env).toMatchObject(slackEnv);
+    expect(env).not.toHaveProperty("YOK_SLACK_THREAD");
   });
 });

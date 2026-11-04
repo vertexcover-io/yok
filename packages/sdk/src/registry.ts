@@ -23,6 +23,15 @@ export const yokHome = (
 
 export const registryPath = (home: string = yokHome()): string => join(home, "registry.json");
 
+// The Slack thread a run was started from: the channel the command was typed in, the ts of the
+// thread's first message, and the Slack user id of whoever typed it, when Slack sent one.
+const ChatThreadSchema = z.strictObject({
+  channel: NonEmptyStringSchema,
+  ts: NonEmptyStringSchema,
+  user: NonEmptyStringSchema.optional(),
+});
+export type ChatThread = z.infer<typeof ChatThreadSchema>;
+
 export const WorkflowRunSchema = z.strictObject({
   id: NonEmptyStringSchema,
   workflow: SlugSchema,
@@ -43,6 +52,9 @@ export const WorkflowRunSchema = z.strictObject({
   policies: SavedPoliciesSchema.optional(),
   // set only for a trigger's run; every session the run starts later launches in it too
   permissionMode: PermissionModeSchema.optional(),
+  // set only for a run started from a Slack thread with its notifier on; every session the run
+  // starts later replies in that thread and tags whoever typed the command
+  thread: ChatThreadSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;

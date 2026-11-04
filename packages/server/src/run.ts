@@ -17,6 +17,7 @@ import {
   type WorkflowPlan,
 } from "@yok/core";
 import {
+  type ChatThread,
   type Event,
   type IAgentProvider,
   type IGit,
@@ -123,24 +124,7 @@ const resolveRunSettings = async (
   return { ok: true, value: { tiers: tiers.value, policies, notifier } };
 };
 
-// The channel a Slack command was typed in, the ts of its thread's first message, and the
-// Slack user id of whoever typed it.
-export type ChatThread = Readonly<{ channel: string; ts: string; user?: string }>;
-
-// A run started from a chat thread replies in it: its Slack notifier posts to the thread's
-// channel and addresses whoever typed the command, whatever the project's env names. Empty when
-// the run has no thread or its notifier is off, in which case no updates follow in the thread.
-const threadEnv = (
-  thread: ChatThread | undefined,
-  notifier: Notifier | undefined,
-): Readonly<Record<string, string>> =>
-  thread === undefined || notifier?.enabled !== true
-    ? {}
-    : {
-        SLACK_CHANNEL_ID: thread.channel,
-        YOK_SLACK_THREAD: thread.ts,
-        ...(thread.user === undefined ? {} : { SLACK_MEMBER_ID: thread.user }),
-      };
+export type { ChatThread };
 
 type LaunchReply = Readonly<{
   run: WorkflowRun;
@@ -210,7 +194,8 @@ export const launchRun = async (
     return refused(400, "bad-request", resolved.error);
   }
   const { tiers, policies, notifier } = resolved.value;
-  const threaded = threadEnv(request.thread, notifier);
+  // A run replies in its Slack thread only while its notifier is on; with it off no updates follow.
+  const thread = notifier?.enabled === true ? request.thread : undefined;
 
   const provider = deps.providerFor(agent);
   const id = `r-${randomBytes(4).toString("hex")}`;
@@ -229,6 +214,7 @@ export const launchRun = async (
     tiers,
     policies,
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(thread === undefined ? {} : { thread }),
     createdAt: new Date().toISOString(),
   };
   const registered = await request.register(() => deps.registry.addRun(pending));
@@ -243,10 +229,7 @@ export const launchRun = async (
     .launch({
       cwd,
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
-      env: {
-        ...sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
-        ...threaded,
-      },
+      env: sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home), thread),
       pluginDir: devPluginDir(),
       orchestrateArgv: orchestrateArgv(),
       ...tierLaunch(tiers === null ? null : (tiers.models[tiers.default] ?? null)),
@@ -275,9 +258,7 @@ export const launchRun = async (
       run,
       attach: [...terminal.attachCommand()],
       view: viewUrl(deps, id),
-      ...(request.thread === undefined
-        ? {}
-        : { threaded: threaded.YOK_SLACK_THREAD !== undefined }),
+      ...(request.thread === undefined ? {} : { threaded: thread !== undefined }),
     },
   };
 };
@@ -454,7 +435,7 @@ const relaunchRun = async (
   const launched = await provider.launch({
     cwd: run.cwd,
     prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
-    env: sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
+    env: sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home), run.thread),
     pluginDir: devPluginDir(),
     orchestrateArgv: orchestrateArgv(),
     continueSession: { id: session.sessionId, terminalName: run.terminal },

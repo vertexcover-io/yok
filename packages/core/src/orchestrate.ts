@@ -694,7 +694,13 @@ const loadHelperRun = async (
     return undefined;
   }
   const permissionMode = linked?.permissionMode;
-  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
+  return {
+    run,
+    log,
+    provider,
+    modeLaunch: permissionMode === undefined ? {} : { permissionMode },
+    thread: linked?.thread,
+  };
 };
 
 const contextCommand = () =>
@@ -709,7 +715,7 @@ const contextCommand = () =>
     .action(async (nodeRunId, opts) => {
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
-      const { run, log, provider, modeLaunch } = helper;
+      const { run, log, provider, modeLaunch, thread } = helper;
       const runDir = runDirOf(run.cwd, run.name);
       const [state, events] = await Promise.all([
         readState(runDir),
@@ -723,6 +729,7 @@ const contextCommand = () =>
         terminal: currentTerminal(process.env, log),
         registry: registry(),
         provider,
+        thread,
         launch: {
           cwd: run.cwd,
           orchestrateArgv: orchestrateArgv(),
@@ -748,13 +755,14 @@ const modelCommand = () =>
     .action(async (seq, opts) => {
       const helper = await loadHelperRun(opts, "yok-model", "model.log");
       if (helper === undefined) return;
-      const { run, log, provider, modeLaunch } = helper;
+      const { run, log, provider, modeLaunch, thread } = helper;
       await runModelStep({
         run,
         seq: Number(seq),
         sessionId: opts.sessionId,
         terminal: currentTerminal(process.env, log),
         provider,
+        thread,
         launch: {
           cwd: run.cwd,
           orchestrateArgv: orchestrateArgv(),

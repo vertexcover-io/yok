@@ -1458,13 +1458,24 @@ describe("Slack run command", () => {
     expect(await deps.registry.listRuns()).toHaveLength(1);
   });
 
-  test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
-    const { app, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
+  test("SC904: a Slack-started run with its notifier on saves the thread C1, 100.1, U7 on its registry record", async () => {
+    const { app, deps, posts } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
+
+    await until(() => posts.length >= 2);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.thread).toEqual({ channel: "C1", ts: "100.1", user: "U7" });
+  });
+
+  test("SC905: a project with its notifier off saves no thread, starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
+    const { app, deps, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
 
     await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
     expect(launches).toHaveLength(1);
+    expect((await deps.registry.listRuns())[0]).not.toHaveProperty("thread");
     expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
     expect(replies(posts)[1]?.split("\n").at(-1)).toContain("no updates will follow here");
   });
@@ -2463,6 +2474,9 @@ const resumeDeps = async () => {
   return { deps, launches };
 };
 
+const slackThread = { channel: "C1", ts: "100.1", user: "U7" };
+const cliSlackEnv = { SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "UCONF" };
+
 const resume = (deps: Parameters<typeof createApi>[0], runId: string, env = {}) =>
   createApi(deps).request(`/runs/${runId}/resume`, {
     method: "POST",
@@ -2507,6 +2521,27 @@ describe("POST /runs/:id/resume", () => {
     await resume(deps, run.id);
 
     expect<string | undefined>(launches[0]?.permissionMode).toBe(expected);
+  });
+
+  test.each([
+    [
+      "SC906: a Slack-started run resumes with its thread's channel, ts and requester over the CLI env's",
+      { thread: slackThread },
+      { SLACK_CHANNEL_ID: "C1", SLACK_MEMBER_ID: "U7", YOK_SLACK_THREAD: "100.1" },
+    ],
+    [
+      "SC908: a terminal-started run resumes with the CLI env's Slack keys",
+      {},
+      { SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "UCONF" },
+    ],
+  ])("%s", async (_label, saved, expected) => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { run: saved });
+
+    await resume(deps, run.id, cliSlackEnv);
+
+    expect(launches[0]?.env).toMatchObject(expected);
+    if (!("thread" in saved)) expect(launches[0]?.env).not.toHaveProperty("YOK_SLACK_THREAD");
   });
 
   test("a run whose last linked session s-2 never started continues s-1, the last session whose SessionStart was logged", async () => {
@@ -2849,6 +2884,19 @@ describe("POST /runs/:id/retry", () => {
     const state = stateOf(run);
     expect(state.status).toBe("running");
     expect(state.nodeRuns.two?.status).toBe("interrupted");
+  });
+
+  test("SC907: a failed Slack-started run retries with its thread's channel, ts and requester over the CLI env's", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry, { run: { thread: slackThread } });
+
+    await retry(deps, run.id, cliSlackEnv);
+
+    expect(launches[0]?.env).toMatchObject({
+      SLACK_CHANNEL_ID: "C1",
+      SLACK_MEMBER_ID: "U7",
+      YOK_SLACK_THREAD: "100.1",
+    });
   });
 
   test("a failed run the runs list already showed is listed as no longer failed once it is retried", async () => {
