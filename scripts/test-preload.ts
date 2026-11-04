@@ -1,7 +1,22 @@
 import { afterAll } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+
+// Bun 1.4.2 and older hang `bun test --parallel` (oven-sh/bun#44581) and drop process.env changes
+// from the processes a test starts, so a run on one never ends. Fail before the first test instead.
+const bunRange: string = JSON.parse(
+  readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"),
+).engines.bun;
+if (!Bun.semver.satisfies(Bun.version, bunRange)) {
+  throw new Error(
+    `Bun ${Bun.version} cannot run this suite: it needs Bun ${bunRange} (run: bun upgrade)`,
+  );
+}
+
+// `bun run` puts the repo's tool binaries (ast-grep, which the bash guard parses with) on PATH and
+// a bare `bun test` does not, so the suite finds them however it is started.
+process.env.PATH = `${join(import.meta.dir, "..", "node_modules", ".bin")}${delimiter}${process.env.PATH ?? ""}`;
 
 // Tests leave their temp folders behind, and once the system temp folder holds hundreds of
 // thousands of them every bun the e2e tests start there loads several times slower. Each run

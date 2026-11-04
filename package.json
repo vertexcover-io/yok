@@ -26,8 +26,12 @@
     "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py' && python3 -B skills/skill-audit/scripts/test_check.py"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.51.1",
     "@biomejs/biome": "^2.5.14",
     "@types/bun": "^1.4.2",
     "typescript": "^7.0.2"
-  }
+  },
+  "trustedDependencies": [
+    "@ast-grep/cli"
+  ]
 }
