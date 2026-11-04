@@ -158,7 +158,7 @@ const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<voi
   const thread: ChatThread = {
     channel: mention.channel,
     ts: mention.thread_ts ?? mention.ts,
-    ...(mention.user === undefined ? {} : { user: mention.user }),
+    ...(mention.user ? { user: mention.user } : {}),
   };
   const log = deps.log.child({ component: "slack", thread: thread.ts });
   const token = readHomeEnv(deps.home).SLACK_BOT_TOKEN;

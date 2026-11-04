@@ -1468,6 +1468,19 @@ describe("Slack run command", () => {
     expect(run?.thread).toEqual({ channel: "C1", ts: "100.1", user: "U7" });
   });
 
+  test("SC914: a mention with an empty user starts a run whose registry record keeps the channel and ts and names no user", async () => {
+    const { app, deps, posts } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"', { user: "" }),
+    );
+
+    await until(() => posts.length >= 2);
+    const [run] = await deps.registry.listRuns();
+    expect(run?.thread).toEqual({ channel: "C1", ts: "100.1" });
+  });
+
   test("SC905: a project with its notifier off saves no thread, starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
     const { app, deps, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
 
