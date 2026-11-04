@@ -39,7 +39,11 @@ describe("yok claude|codex", () => {
     expect(dirname(ran.firstPath)).toBe(join(ran.home, "shims"));
     expect(ran.argv).toEqual([
       "--settings",
-      JSON.stringify({ enabledPlugins: { "yok@yok": false } }),
+      JSON.stringify({
+        skipAutoPermissionPrompt: true,
+        enableAllProjectMcpServers: true,
+        enabledPlugins: { "yok@yok": false },
+      }),
       "--plugin-dir",
       realpathSync(REPO_ROOT),
       "--resume",
