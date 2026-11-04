@@ -157,7 +157,11 @@ export type ClaudeArgOptions = Readonly<{
 
 // A plugin folder loads as yok@inline, and Claude keeps an installed yok@yok on beside
 // it, so the installed one is turned off. Claude reads only the last --settings, hence one object.
+// The first two keys answer the auto-mode warning and the project .mcp.json prompt, since no one
+// watches the pane.
 const sessionSettings = (options: ClaudeArgOptions): Record<string, unknown> => ({
+  skipAutoPermissionPrompt: true,
+  enableAllProjectMcpServers: true,
   ...(options.orchestrateArgv !== undefined ? claudeSettings(options.orchestrateArgv) : {}),
   ...(options.pluginDir !== undefined ? { enabledPlugins: { "yok@yok": false } } : {}),
 });
@@ -170,7 +174,8 @@ export const claudeArgs = (options: ClaudeArgOptions): string[] => {
     ...(options.permissionMode !== undefined ? ["--permission-mode", options.permissionMode] : []),
     ...(options.systemPrompt !== undefined ? ["--append-system-prompt", options.systemPrompt] : []),
     ...(options.name !== undefined ? ["--name", options.name] : []),
-    ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
+    "--settings",
+    JSON.stringify(settings),
     ...(options.pluginDir !== undefined ? ["--plugin-dir", options.pluginDir] : []),
     ...(options.prompt !== undefined ? [options.prompt] : []),
   ];

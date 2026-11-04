@@ -6,8 +6,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createGit, type IGit, type ILogger, parseJson, type Result, readIfExists } from "@yok/sdk";
 import * as z from "zod";
 
-// Claude asks whether to trust a folder it has never opened, and nobody answers that in a
-// server-started run, so the folder goes into Claude's trusted list before launch.
+// Claude asks once whether to trust a folder and shows a few more one-time dialogs on a new
+// machine. Nobody answers them in a server-started run, so their flags go into Claude's config
+// before launch.
 // https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust
 // Codex needs no file: its launch argv carries the trust as a -c override (codex.ts).
 
@@ -46,22 +47,45 @@ export const trustRoot = async (cwd: string, git: IGit = createGit()): Promise<s
   return paths.some((path) => isWithin(folder, path)) ? root : folder;
 };
 
-const ClaudeConfigSchema = z.looseObject({
-  projects: z
-    .record(z.string(), z.looseObject({ hasTrustDialogAccepted: z.unknown().optional() }))
-    .optional(),
-});
+// Each flag marks one of Claude's one-time dialogs as answered. Read from Claude Code 2.1.318.
+const MACHINE_FLAGS = [
+  "hasCompletedOnboarding",
+  "hasSeenAutoDefaultNotice",
+  "hasSeenAutoModeOutsideReadPrompt",
+] as const;
+const PROJECT_FLAGS = [
+  "hasTrustDialogAccepted",
+  "hasClaudeMdExternalIncludesApproved",
+  "hasClaudeMdExternalIncludesWarningShown",
+] as const;
 
-// The new file text, or null when the folder is already trusted.
-const addClaudeTrust = (text: string | null, folder: string): Result<string | null> => {
+const ClaudeConfigSchema = z.looseObject({
+  projects: z.record(z.string(), z.looseObject({})).optional(),
+});
+type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>;
+
+const parseClaudeConfig = (text: string | null): Result<ClaudeConfig> => {
   const json = parseJson(text ?? "{}");
   const parsed = ClaudeConfigSchema.safeParse(json.ok ? json.value : undefined);
-  if (!parsed.success) return { ok: false, error: "the Claude config is not a JSON object" };
-  const config = parsed.data;
-  const project = config.projects?.[folder];
-  if (project?.hasTrustDialogAccepted === true) return { ok: true, value: null };
-  const projects = { ...config.projects, [folder]: { ...project, hasTrustDialogAccepted: true } };
-  return { ok: true, value: JSON.stringify({ ...config, projects }, null, 2) };
+  return parsed.success
+    ? { ok: true, value: parsed.data }
+    : { ok: false, error: "the Claude config is not a JSON object" };
+};
+
+const missingMachineFlags = (config: ClaudeConfig): readonly string[] =>
+  MACHINE_FLAGS.filter((flag) => !(flag in config));
+
+// A machine-wide flag the user already set keeps its value.
+const addMachineFlags = (config: ClaudeConfig): ClaudeConfig => ({
+  ...config,
+  ...Object.fromEntries(missingMachineFlags(config).map((flag) => [flag, true])),
+});
+
+// Claude writes these as false when it first opens a folder, so only true counts as answered.
+const addProjectFlags = (config: ClaudeConfig, folder: string): ClaudeConfig => {
+  const flags = Object.fromEntries(PROJECT_FLAGS.map((flag) => [flag, true]));
+  const project = { ...config.projects?.[folder], ...flags };
+  return { ...config, projects: { ...config.projects, [folder]: project } };
 };
 
 const isStale = async (lock: string): Promise<boolean> => {
@@ -84,28 +108,39 @@ const acquireLock = async (lock: string, deadline: number): Promise<boolean> => 
 
 // Under Claude's own lock, so neither writer loses the other's change. The new file goes in by
 // rename, through a symlinked config to its target, with its old mode. True when it was written.
-export const trustClaudeFolder = async (cwd: string, env: Env): Promise<Result<boolean>> => {
+const editClaudeConfig = async (
+  env: Env,
+  edit: (config: ClaudeConfig) => ClaudeConfig,
+): Promise<Result<boolean>> => {
   const path = claudeConfigPath(env);
   const lock = `${path}.lock`;
+  await mkdir(dirname(path), { recursive: true });
+  if (!(await acquireLock(lock, Date.now() + LOCK_WAIT_MS))) {
+    return { ok: false, error: `${lock} stayed locked` };
+  }
+  try {
+    const target = await realpathOr(path);
+    const config = parseClaudeConfig(await readIfExists(target));
+    if (!config.ok) return { ok: false, error: `${path}: ${config.error}` };
+    // Compared as parsed JSON, not file text, so a compact config Claude wrote isn't rewritten.
+    const text = JSON.stringify(edit(config.value), null, 2);
+    if (text === JSON.stringify(config.value, null, 2)) return { ok: true, value: false };
+    const mode = ((await stat(target).catch(() => null))?.mode ?? 0o600) & 0o777;
+    const temp = `${target}.yok-${randomUUID()}`;
+    await writeFile(temp, text, { mode });
+    await rename(temp, target);
+    return { ok: true, value: true };
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+};
+
+export const trustClaudeFolder = async (cwd: string, env: Env): Promise<Result<boolean>> => {
   try {
     const folder = await trustRoot(cwd);
-    await mkdir(dirname(path), { recursive: true });
-    if (!(await acquireLock(lock, Date.now() + LOCK_WAIT_MS))) {
-      return { ok: false, error: `${lock} stayed locked` };
-    }
-    try {
-      const target = await realpathOr(path);
-      const edited = addClaudeTrust(await readIfExists(target), folder);
-      if (!edited.ok) return { ok: false, error: `${path}: ${edited.error}` };
-      if (edited.value === null) return { ok: true, value: false };
-      const mode = ((await stat(target).catch(() => null))?.mode ?? 0o600) & 0o777;
-      const temp = `${target}.yok-${randomUUID()}`;
-      await writeFile(temp, edited.value, { mode });
-      await rename(temp, target);
-      return { ok: true, value: true };
-    } finally {
-      await rm(lock, { recursive: true, force: true });
-    }
+    return await editClaudeConfig(env, (config) =>
+      addProjectFlags(addMachineFlags(config), folder),
+    );
   } catch (error) {
     return { ok: false, error: String(error) };
   }
