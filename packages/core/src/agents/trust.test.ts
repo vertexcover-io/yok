@@ -12,7 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigPath, trustClaudeFolder, trustRoot } from "./trust.ts";
+import {
+  answerClaudeDialogs,
+  claudeConfigCheck,
+  claudeConfigPath,
+  trustClaudeFolder,
+  trustRoot,
+} from "./trust.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "yok-trust-")));
 
@@ -246,5 +252,71 @@ describe("trustClaudeFolder", () => {
       ok: true,
       value: true,
     });
+  });
+});
+
+describe("answerClaudeDialogs", () => {
+  test("SC709: answering the dialogs on a machine with no Claude config writes only the three machine-wide flags, with no projects key", async () => {
+    const home = tempDir();
+
+    expect(await answerClaudeDialogs({ CLAUDE_CONFIG_DIR: home })).toEqual({
+      ok: true,
+      value: true,
+    });
+
+    expect(readJson(join(home, ".claude.json"))).toEqual(MACHINE_FLAGS);
+  });
+});
+
+const runCheck = (env: Readonly<Record<string, string>>) =>
+  claudeConfigCheck(env).run({
+    root: "/",
+    exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+  });
+
+describe("claudeConfigCheck", () => {
+  test("SC710: a config lacking only hasSeenAutoModeOutsideReadPrompt warns naming that flag alone, with yok plugin install as the fix", async () => {
+    const home = tempDir();
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ hasCompletedOnboarding: true, hasSeenAutoDefaultNotice: true }),
+    );
+
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: home });
+
+    expect(outcome.status).toBe("warn");
+    expect(outcome.detail).toContain("hasSeenAutoModeOutsideReadPrompt");
+    expect(outcome.detail).not.toContain("hasCompletedOnboarding");
+    expect(outcome.detail).not.toContain("hasSeenAutoDefaultNotice");
+    expect(claudeConfigCheck({ CLAUDE_CONFIG_DIR: home }).fix).toEqual(["yok plugin install"]);
+  });
+
+  test("SC711: a config holding all three machine-wide flags, one of them false, passes", async () => {
+    const home = tempDir();
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ ...MACHINE_FLAGS, hasSeenAutoDefaultNotice: false }),
+    );
+
+    expect((await runCheck({ CLAUDE_CONFIG_DIR: home })).status).toBe("ok");
+  });
+
+  test("SC712: a machine with no Claude config warns, not fails, naming all three machine-wide flags", async () => {
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: tempDir() });
+
+    expect(outcome.status).toBe("warn");
+    for (const flag of Object.keys(MACHINE_FLAGS)) expect(outcome.detail).toContain(flag);
+  });
+
+  test("SC717: a config reading [1] warns, not fails, naming its path and that it is not a JSON object", async () => {
+    const home = tempDir();
+    const file = join(home, ".claude.json");
+    writeFileSync(file, "[1]");
+
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: home });
+
+    expect(outcome.status).toBe("warn");
+    expect(outcome.detail).toContain(file);
+    expect(outcome.detail).toContain("not a JSON object");
   });
 });

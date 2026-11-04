@@ -115,6 +115,12 @@ test("SC128: each agent's runtime checks carry its plugin check, run against the
   expect([agentBinary("claude", {}), agentBinary("codex", {})]).toEqual(["claude", "codex"]);
 });
 
+test("SC716: claude's runtime checks, which a run start and yok doctor run, carry claude-config beside claude-plugin", () => {
+  expect(runtimeChecks("claude").map((check) => check.name)).toEqual(
+    expect.arrayContaining(["claude-plugin", "claude-config"]),
+  );
+});
+
 test("SC106: a named port is bound or the start fails, and an unnamed start falls back from a taken saved port", async () => {
   const tempHome = () => realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
   const [a, b, c] = [tempHome(), tempHome(), tempHome()];
