@@ -28,7 +28,7 @@ import {
   summarize,
   typeLine,
 } from "./common.ts";
-import { trustLaunchFolder } from "./trust.ts";
+import { claudeConfigCheck, trustLaunchFolder } from "./trust.ts";
 
 // What Claude Code 2.1.285 shows in its pane. While it works, a spinner line (`✻ Compacting…`)
 // or the hint under a queued prompt is on screen.
@@ -346,6 +346,7 @@ export const claudeProvider = ({
         run: checkBinary(binary),
       },
       pluginCheck("claude", binary, VERSION),
+      claudeConfigCheck(process.env),
     ],
     launch,
     relaunch,

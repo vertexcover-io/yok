@@ -3,7 +3,17 @@ import { mkdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createGit, type IGit, type ILogger, parseJson, type Result, readIfExists } from "@yok/sdk";
+import {
+  type Check,
+  createGit,
+  type IGit,
+  type ILogger,
+  ok,
+  parseJson,
+  type Result,
+  readIfExists,
+  warn,
+} from "@yok/sdk";
 import * as z from "zod";
 
 // Claude asks once whether to trust a folder and shows a few more one-time dialogs on a new
@@ -145,6 +155,28 @@ export const trustClaudeFolder = async (cwd: string, env: Env): Promise<Result<b
     return { ok: false, error: String(error) };
   }
 };
+
+export const answerClaudeDialogs = async (env: Env): Promise<Result<boolean>> => {
+  try {
+    return await editClaudeConfig(env, addMachineFlags);
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+};
+
+// Only a warning: the next launch writes whatever is missing.
+export const claudeConfigCheck = (env: Env): Check => ({
+  name: "claude-config",
+  fix: ["yok plugin install"],
+  run: async () => {
+    const path = claudeConfigPath(env);
+    const config = parseClaudeConfig(await readIfExists(await realpathOr(path)));
+    if (!config.ok) return warn(`${path}: ${config.error}`);
+    const missing = missingMachineFlags(config.value);
+    if (missing.length === 0) return ok("Claude's first-run dialogs are answered");
+    return warn(`${path} lacks ${missing.join(", ")}`);
+  },
+});
 
 // A folder left untrusted only brings the prompt back, so the launch goes on either way. The
 // session's env decides which config Claude reads.
