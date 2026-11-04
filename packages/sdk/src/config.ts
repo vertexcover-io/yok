@@ -105,7 +105,7 @@ const ENVIRONMENT_FIELDS = new Set(["platform", "app", "devices"]);
 // on the named `devices` (the first is the main walk, each later one a replay) or on whichever
 // device is booted. It loads with the steps under `steps`, so the surface fields and the step
 // names never mix.
-const EnvironmentEntrySchema = z
+const EnvironmentEntryWrittenSchema = z
   .object({
     platform: z.enum(["web", ...DEVICE_PLATFORMS]).default("web"),
     app: NonEmptyStringSchema.optional(),
@@ -132,8 +132,24 @@ const EnvironmentEntrySchema = z
   .refine((entry) => entry.platform !== "web" || entry.devices === undefined, {
     path: ["devices"],
     message: "Only on ios or android",
-  })
-  .transform(({ platform, app, devices, ...steps }) => ({ platform, app, devices, steps }));
+  });
+
+// The entry as it is written in the file, spelled out: the SDK's emitted types name it. Inferred,
+// tsc prints the flattened shape, an index signature beside keys of other types, and rejects it.
+export type EnvironmentEntryWritten = {
+  platform: "web" | (typeof DEVICE_PLATFORMS)[number];
+  app?: string | undefined;
+  devices?: string[] | undefined;
+} & Record<string, z.output<typeof CommandSchema> | null>;
+
+const EnvironmentEntrySchema = EnvironmentEntryWrittenSchema.pipe(
+  z.transform(({ platform, app, devices, ...steps }: EnvironmentEntryWritten) => ({
+    platform,
+    app,
+    devices,
+    steps,
+  })),
+);
 
 const EnvironmentsSchema = z
   .strictObject({
