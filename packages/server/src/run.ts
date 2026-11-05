@@ -52,7 +52,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
-import { forgetFinishedRun, type ListedRun, listRunSummaries } from "./overview.ts";
+import { forgetFinishedRun, type ListedRun, listRunSummaries, ownerMatches } from "./overview.ts";
 import { addRunIfProjectKept, pickProject, readProjects, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
@@ -166,6 +166,9 @@ export type LaunchRequest = Readonly<{
   policies: PolicyLayer;
   permissionMode?: PermissionMode;
   thread?: ChatThread;
+  source: RunSource;
+  // the yok user who started it, when one did
+  user?: string;
   // Adds the run to the registry unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
 }>;
@@ -187,7 +190,7 @@ export const launchRun = async (
   deps: RunDeps,
   log: ILogger,
 ): Promise<Result<LaunchReply, LaunchError>> => {
-  const { plan, workflowPath, cwd, config, inputs, name, permissionMode } = request;
+  const { plan, workflowPath, cwd, config, inputs, name, permissionMode, source, user } = request;
   const workflow = plan.name;
   const agent = plan.agent;
   const checkedInputs = checkInputs(plan, inputs);
@@ -229,6 +232,8 @@ export const launchRun = async (
     tiers,
     policies,
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    source,
+    ...(user === undefined ? {} : { user }),
     createdAt: new Date().toISOString(),
   };
   const registered = await request.register(() => deps.registry.addRun(pending));
@@ -244,7 +249,7 @@ export const launchRun = async (
       cwd,
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
       env: {
-        ...sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+        ...(await sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home))),
         ...threaded,
       },
       pluginDir: devPluginDir(),
@@ -282,9 +287,13 @@ export const launchRun = async (
   };
 };
 
+export type RunSource = NonNullable<WorkflowRun["source"]>;
+
 export type StartExtra = Readonly<{
+  source: RunSource;
   permissionMode?: PermissionMode;
   thread?: ChatThread;
+  user?: string;
   // Asked just before the run is registered; false refuses the start with a conflict.
   stillWanted?: () => Promise<boolean>;
 }>;
@@ -310,7 +319,7 @@ export const startProjectRun = async (
   body: StartRunBody,
   deps: RunDeps & GitDeps,
   log: ILogger,
-  extra: StartExtra = {},
+  extra: StartExtra,
 ): Promise<Result<LaunchReply, LaunchError>> => {
   const project = await pickProject(deps.home, body.project);
   if (!project.ok) return refused(400, "bad-request", project.error);
@@ -328,7 +337,7 @@ export const startProjectRun = async (
   const config = body.config === undefined ? null : resolve(cwd, body.config);
   const compiled = await compileWorkflow(body.workflow, cwd, config);
   if (!compiled.ok) return refused(400, "bad-request", compiled.error);
-  const { permissionMode, stillWanted, thread } = extra;
+  const { permissionMode, stillWanted, thread, source, user } = extra;
   return launchRun(
     {
       ...compiled.value,
@@ -339,6 +348,8 @@ export const startProjectRun = async (
       policies: body.policies ?? {},
       ...(permissionMode === undefined ? {} : { permissionMode }),
       ...(thread === undefined ? {} : { thread }),
+      source,
+      ...(user === undefined ? {} : { user }),
       register: async (add) => {
         if (stillWanted !== undefined && !(await stillWanted())) {
           return { ok: false, error: "withdrawn while the run was being checked" };
@@ -358,7 +369,9 @@ const startRun = async (
   deps: RunDeps & GitDeps,
   body: StartRunBody,
 ) => {
-  const launched = await startProjectRun(body, deps, c.get("log").child({ component: "runs" }));
+  const launched = await startProjectRun(body, deps, c.get("log").child({ component: "runs" }), {
+    source: "api",
+  });
   if (!launched.ok) {
     const { status, code, message, details } = launched.error;
     return errorResponse(c, status, code, message, details);
@@ -454,7 +467,7 @@ const relaunchRun = async (
   const launched = await provider.launch({
     cwd: run.cwd,
     prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
-    env: sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
+    env: await sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
     pluginDir: devPluginDir(),
     orchestrateArgv: orchestrateArgv(),
     continueSession: { id: session.sessionId, terminalName: run.terminal },
@@ -500,13 +513,14 @@ const listRuns = async (c: Context<{ Variables: Vars }>, deps: RunDeps, query: R
   }
   const projectAt = (cwd: string): string | null =>
     projects.find(([, project]) => project.path === cwd)?.[0] ?? null;
-  const listed: readonly ListedRun[] = (await listRunSummaries(deps.registry, deps.host)).map(
-    (run) => ({ ...run, project: projectAt(run.cwd) }),
-  );
+  const listed: readonly ListedRun[] = (
+    await listRunSummaries(deps.registry, deps.host, deps.home)
+  ).map((run) => ({ ...run, project: projectAt(run.cwd) }));
   const matched = listed.filter(
     (run) =>
       (query.project === undefined || run.project === query.project) &&
-      (query.status === undefined || query.status.includes(run.status)),
+      (query.status === undefined || query.status.includes(run.status)) &&
+      (query.by === undefined || ownerMatches(run.startedBy, query.by)),
   );
   const runs = query.all === "true" ? matched : matched.slice(0, query.limit ?? RUNS_SHOWN);
   return c.json({ runs, total: matched.length }, 200);

@@ -30,10 +30,11 @@ import {
   type NodeRun,
   noopLogger,
   type RunRef,
+  registryPath,
   runDirOf,
   type State,
 } from "@yok/sdk";
-import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { appendRunEvent, createRegistry, jsonlEventStore, updateUsers } from "@yok/sdk/internal";
 import {
   clearDeadSwitchLocks,
   completeContextOnSessionStart,
@@ -1314,6 +1315,39 @@ const appliedEvents = async (runDir: string) =>
     .map((event) => event.payload);
 
 describe("runModelStep", () => {
+  test("SC33: the model-switch relaunch of a run owned by a connected user carries their GitHub token and noreply author", async () => {
+    const context = await setUpSwitch();
+    const home = mkdtempSync(join(tmpdir(), "yok-owned-home-"));
+    const owned = await context.registry.findRun(context.run.id);
+    if (owned === undefined) throw new Error("setUp registered no run");
+    await createRegistry(registryPath(home)).addRun({ ...owned, source: "slack", user: "u_1" });
+    const github = { id: 42, login: "ritesh-gh" };
+    await updateUsers(home, () => ({
+      u_1: {
+        name: "R",
+        email: "",
+        accounts: { github: { ...github, token: "gho_u1" } },
+      },
+    }));
+    const { provider, relaunches } = resumingProvider(context);
+
+    await runModelStep({
+      run: context.run,
+      seq: context.seq,
+      sessionId: "s-1",
+      terminal: fakeTerminal(() => IDLE).terminal,
+      provider,
+      launch: LAUNCH,
+      home,
+      log: noopLogger,
+    });
+
+    expect(relaunches[0]?.options.env).toMatchObject({
+      GH_TOKEN: "gho_u1",
+      GIT_AUTHOR_EMAIL: "42+ritesh-gh@users.noreply.github.com",
+    });
+  });
+
   test("SC25: resumes session s-1 on opus-x at high effort with the resume prompt, records the switch, and types nothing", async () => {
     const context = await setUpSwitch("high");
     const pane = fakeTerminal(() => IDLE);
