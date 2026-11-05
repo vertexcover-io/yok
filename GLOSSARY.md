@@ -33,7 +33,7 @@ _Avoid_: Request (for the fetched task)
 An issue in a tracker (Linear or Asana) that a run fetches its task from.
 
 **PR fix**:
-A run of the pr-fix workflow, started by a `@yok` comment on a pull request.
+A run of the pr-fix workflow, started by a `@yok` comment on a pull request, that works on the pull request's own branch and never force-pushes.
 
 ## Nodes
 
