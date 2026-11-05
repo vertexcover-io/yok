@@ -1387,7 +1387,7 @@ describe("the shipped pr-fix workflow", () => {
     expect(stages).not.toContain('"ref":"visual-pr"');
   });
 
-  test("SC42: pr-reply compiles as an always, allowFailure node after qa-loop that reads only the workflow's pr input", async () => {
+  test("SC42: pr-reply compiles as an always, allowFailure node after qa-loop that reads only the workflow's inputs", async () => {
     const plan = await compileWorkflow(
       join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
     );
@@ -1397,7 +1397,7 @@ describe("the shipped pr-fix workflow", () => {
       dependsOn: ["qa-loop"],
       always: true,
       allowFailure: true,
-      input: { pr: "{{ inputs.pr }}" },
+      input: { pr: "{{ inputs.pr }}", prompt: "{{ inputs.prompt }}" },
     });
   });
 });
