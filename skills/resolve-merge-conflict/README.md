@@ -4,7 +4,7 @@ Resolves git merge and rebase conflicts by recovering the intent behind each con
 
 ## When it runs
 
-Not a stage of any shipped workflow. Invoke it with `/yok:resolve-merge-conflict` in Claude Code or `$resolve-merge-conflict` in Codex. It also triggers on its own when a merge, rebase, cherry-pick or stash pop has stopped with conflicts, or when you say an open PR has conflicts.
+A stage of the `pr-fix` workflow, where it merges the pull request's base into the run's branch when the two conflict and does nothing otherwise. Invoke it by hand with `/yok:resolve-merge-conflict` in Claude Code or `$resolve-merge-conflict` in Codex. It also triggers on its own when a merge, rebase, cherry-pick or stash pop has stopped with conflicts, or when you say an open PR has conflicts.
 
 It handles conflicts only. Ordinary commits belong to `git-commit`.
 

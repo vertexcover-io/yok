@@ -36,11 +36,13 @@ import * as z from "zod";
 
 type Package = Config["packages"][string];
 
-// request is the run's prompt or ticket text; only the select-repos reference reads it.
+// request is the run's prompt or ticket text; only the select-repos reference reads it. upstream
+// is a branch on origin the run starts from and pushes to, such as a pull request's head branch.
 export const CreateWorkspaceInputSchema = z.strictObject({
   specName: SlugSchema,
   request: NonEmptyStringSchema.optional(),
   baseBranch: NonEmptyStringSchema.optional(),
+  upstream: NonEmptyStringSchema.optional(),
   repos: z.array(NameSchema).min(1).optional(),
 });
 
@@ -64,6 +66,8 @@ export type WorkspaceOptions = Readonly<{
   branch: string;
   repos?: readonly string[] | undefined;
   base?: string | undefined;
+  // a branch on origin a new branch starts from and tracks, instead of starting from base
+  upstream?: string | undefined;
   force?: boolean | undefined;
   onOutput?: ((line: OutputLine) => void) | undefined;
   log?: ILogger | undefined;
@@ -198,6 +202,12 @@ const locateWorkspace = async (options: WorkspaceOptions): Promise<Result<Locati
   if (base !== undefined && !(await git.isValidBranchName(options.root, base))) {
     const source = options.base === undefined ? "workspace.baseBranch" : "base";
     return { ok: false, error: `invalid ${source} "${base}"` };
+  }
+  if (
+    options.upstream !== undefined &&
+    !(await git.isValidBranchName(options.root, options.upstream))
+  ) {
+    return { ok: false, error: `invalid upstream "${options.upstream}"` };
   }
   const filled = fillPath(path ?? DEFAULT_PATHS[layout], options.branch);
   if (!filled.ok) return filled;
@@ -334,25 +344,34 @@ const startPoint = async (checkoutDir: string, base: string): Promise<Result<str
   return fetched.ok ? { ok: true, value: `origin/${base}` } : fetched;
 };
 
-// A rerun checks out its existing branch as is: resetting it would discard the earlier attempt's commits.
+// A rerun checks out its existing branch as is: resetting it would discard the earlier attempt's
+// commits. A new branch with an upstream starts from origin's copy of it, never a local one that
+// may be stale, and tracks it.
 const addWorktree = async (
   repo: RepoPlan,
   branch: string,
   base: string,
+  upstream: string | undefined,
 ): Promise<FailedRepo | undefined> => {
   const { checkoutDir, worktreeDir } = repo;
   if (await git.branchExists(checkoutDir, branch)) {
     const added = await git.addWorktree(checkoutDir, { path: worktreeDir, branch });
     return added.ok ? undefined : failed(repo, "add", added.error);
   }
-  const start = await startPoint(checkoutDir, base);
+  const start = await startPoint(checkoutDir, upstream ?? base);
   if (!start.ok) return failed(repo, "fetch", start.error);
+  if (upstream !== undefined && start.value !== `origin/${upstream}`) {
+    return failed(repo, "fetch", `origin has no branch "${upstream}"`);
+  }
   const added = await git.addWorktree(checkoutDir, {
     path: worktreeDir,
     branch,
     base: start.value,
   });
-  return added.ok ? undefined : failed(repo, "add", added.error);
+  if (!added.ok) return failed(repo, "add", added.error);
+  if (upstream === undefined) return undefined;
+  const tracked = await git.setUpstream(checkoutDir, branch, start.value);
+  return tracked.ok ? undefined : failed(repo, "add", tracked.error);
 };
 
 const createOne = async (
@@ -365,7 +384,7 @@ const createOne = async (
   const baseBranch =
     base === undefined ? await defaultBase(repo.checkoutDir) : { ok: true as const, value: base };
   if (!baseBranch.ok) return failed(repo, "add", baseBranch.error);
-  const addFailure = await addWorktree(repo, plan.branch, baseBranch.value);
+  const addFailure = await addWorktree(repo, plan.branch, baseBranch.value, options.upstream);
   if (addFailure !== undefined) {
     log.error(
       { repo: repo.name, err: addFailure.error },
@@ -654,6 +673,8 @@ project's setup and teardown.
   --repos A,B       multi layout: comma-separated packages to branch (remove default: all)
   --base BRANCH     branch a new branch starts from, fetched from origin first
                     (default: origin's default branch)
+  --upstream BRANCH create: a branch on origin the new branch starts from and tracks, such as a
+                    pull request's head branch; base stays the branch it merges into
   --force           remove: remove worktrees with uncommitted or untracked files
 `;
 
@@ -662,6 +683,7 @@ const FLAGS = {
   "run-id": { type: "string" },
   repos: { type: "string" },
   base: { type: "string" },
+  upstream: { type: "string" },
   force: { type: "boolean" },
 } as const;
 
@@ -669,7 +691,7 @@ const CommandSchema = z.enum(["info", "create", "add", "remove"]);
 
 const COMMAND_FLAGS: Readonly<Record<z.infer<typeof CommandSchema>, readonly string[]>> = {
   info: ["run", "run-id"],
-  create: ["run", "run-id", "repos", "base"],
+  create: ["run", "run-id", "repos", "base", "upstream"],
   add: ["run", "run-id", "repos", "base"],
   remove: ["run", "run-id", "repos", "force"],
 };
@@ -762,8 +784,8 @@ const changeWorkspace = async (
     process.stderr.write(`[${line.repo}] ${line.text}\n`);
   };
   const repos = flags.repos === undefined ? undefined : splitList(flags.repos);
-  const { base, force } = flags;
-  const result = await change({ ...target, branch, repos, base, force, onOutput, log });
+  const { base, upstream, force } = flags;
+  const result = await change({ ...target, branch, repos, base, upstream, force, onOutput, log });
   if (!result.ok) return fail(result.error);
   const { eventError: unrecorded, ...report } = result.value;
   printJson(report);

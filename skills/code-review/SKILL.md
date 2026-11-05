@@ -113,7 +113,8 @@ names are flags: `/yok:code-review [--plan PATH] [--pr NUMBER] [--commits RANGE]
 
 **Scope** (first match wins): `pr` → the PR diff · `commits` → that range, three-dot against its
 start ref · in a run, `round` above 1 → the fix commits, as "A later pass" says · in a run → the run's branch against its
-merge-base with the base branch · none → the working tree (`git diff HEAD`, staged and unstaged).
+start commit, `workspace.repositories.NAME.git.startSha` in `.yok/RUN/state.json` · none → the
+working tree (`git diff HEAD`, staged and unstaged).
 
 ## Step 1 — Preflight
 

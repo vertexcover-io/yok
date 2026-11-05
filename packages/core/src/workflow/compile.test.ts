@@ -1370,6 +1370,38 @@ describe("the shipped task workflow", () => {
   });
 });
 
+describe("the shipped pr-fix workflow", () => {
+  test("SC31: requires pr and prompt, checks bun and gh, and design depends on an unconditional resolve-conflicts, with no git-commit or visual-pr stage", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
+    );
+
+    expect(plan.inputs).toMatchObject({ pr: { required: true }, prompt: { required: true } });
+    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual(["binary:bun", "binary:gh"]);
+    expect(plan.nodes.find((node) => node.id === "design")?.dependsOn).toEqual([
+      "resolve-conflicts",
+    ]);
+    expect(plan.nodes.find((node) => node.id === "resolve-conflicts")).not.toHaveProperty("when");
+    const stages = JSON.stringify(plan.nodes);
+    expect(stages).not.toContain('"ref":"git-commit"');
+    expect(stages).not.toContain('"ref":"visual-pr"');
+  });
+
+  test("SC42: pr-reply compiles as an always, allowFailure node after qa-loop that reads only the workflow's pr input", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
+    );
+
+    expect(plan.nodes.find((node) => node.id === "pr-reply")).toMatchObject({
+      stage: { ref: "pr-reply" },
+      dependsOn: ["qa-loop"],
+      always: true,
+      allowFailure: true,
+      input: { pr: "{{ inputs.pr }}" },
+    });
+  });
+});
+
 describe("the shipped regression workflow", () => {
   const REGRESSION_WORKFLOW = join(
     import.meta.dir,

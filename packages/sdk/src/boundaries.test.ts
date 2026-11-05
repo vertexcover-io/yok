@@ -231,7 +231,7 @@ describe("source boundaries", () => {
     expect(objects.length).toBeGreaterThan(0);
     const invalid = objects.filter(
       (object) =>
-        !ArtifactRefSchema.safeParse(JSON.parse(object.replace("PR_URL", "https://pr.example")))
+        !ArtifactRefSchema.safeParse(JSON.parse(object.replace(/[A-Z]+_URL/, "https://pr.example")))
           .success,
     );
     expect(invalid).toEqual([]);

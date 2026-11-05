@@ -1048,6 +1048,7 @@ describe("orchestrate workflows", () => {
     const workflows = list(tempRepo());
 
     expect(workflows.map((workflow) => workflow.name)).toEqual([
+      "pr-fix",
       "quick",
       "regression",
       "skill",
@@ -1072,6 +1073,7 @@ describe("orchestrate workflows", () => {
     const workflows = list(repo);
 
     expect(workflows.map((workflow) => workflow.name)).toEqual([
+      "pr-fix",
       "quick",
       "regression",
       "skill",

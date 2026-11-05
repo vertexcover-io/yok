@@ -101,7 +101,7 @@ packages/core         config, workflows, run events and state, the orchestrate c
 packages/server       the local server and the run viewer
 packages/sdk          shared primitives and the public @yok/sdk
 skills/               one folder per stage or slash command, each with a README.md and SKILL.md
-workflows/            shipped workflows: task.yaml, quick.yaml and regression.yaml
+workflows/            shipped workflows: task.yaml, quick.yaml, regression.yaml, skill.yaml and pr-fix.yaml
 demo-workflows/       small workflows that exercise each node type
 scripts/              repo scripts: the check summary, SDK types, release versioning and smoke tests
 references/           Codex config snippet and tool-name mapping

@@ -182,7 +182,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships four, `task`, `quick`, `regression` and `skill`. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
+A workflow is a YAML file of nodes. Yok ships five, `task`, `quick`, `regression`, `skill` and `pr-fix`. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
 
 ### task: the full pipeline
 
@@ -242,6 +242,14 @@ To edit, pass `skill` as the skill's folder or name, or name the skill in the pr
 With `yok=true`, or a prompt that asks for it, the skill becomes a yok stage: `skill-author` works out its contract (`outputs`, `produces`, `consumes`, `verifiers` and the rest) from what the skill does, writes the schema and verifier modules with their tests, and runs `yok verify` on a one-node workflow until the contract loads. A skill that already is a stage stays one, and the audit checks its contract too.
 
 A new skill with no `path` goes to `FOLDER/skills/NAME` in the repo (`scope=project`) or in your home folder (`scope=user`), where `FOLDER` is `.agents` or `.claude`. Whatever you leave out, `skill-author` asks in the same question as the plan. A `path` overrides both. The workflow writes evals but never runs them.
+
+### pr-fix: pick up an open pull request
+
+[workflows/pr-fix.yaml](./workflows/pr-fix.yaml) runs `pr-triage → create-workspace → resolve-merge-conflict → design → planning → implement → review loop → qa loop → pr-reply` on the pull request's own branch. It never opens a branch of its own and never force-pushes. Start it from a terminal, or with a `@yok` comment on the pull request once the repo has the Action in [.github/workflows/yok.yml](./.github/workflows/yok.yml) (see the setup guide).
+
+```bash
+yok run pr-fix --input pr=42 --prompt "fix the review comments and the conflict"
+```
 
 ### Write your own
 
@@ -335,7 +343,9 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [qa](./skills/qa/README.md) | Drives the feature, films the proof, writes the proof report |
 | [git-commit](./skills/git-commit/README.md) | Groups a dirty tree into conventional commits with hunk-level staging |
 | [visual-pr](./skills/visual-pr/README.md) | Creates or updates a PR with a visual change outline and validation evidence |
-| [resolve-merge-conflict](./skills/resolve-merge-conflict/README.md) | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent |
+| [resolve-merge-conflict](./skills/resolve-merge-conflict/README.md) | Resolves a stopped merge or rebase, or a conflicting PR, by recovering each side's intent; pr-fix's merge stage |
+| [pr-triage](./skills/pr-triage/README.md) | Reads an open pull request and turns the prompt into the work list pr-fix builds from |
+| [pr-reply](./skills/pr-reply/README.md) | Posts pr-fix's one free-text reply on the pull request: what was done, or which step failed |
 | [test-audit](./skills/test-audit/README.md) | Finds broken, flaky, slow and redundant tests, then proposes and applies a cleanup plan |
 | [learn](./skills/learn/README.md) | Turns a correction into a short learning in `docs/learnings/` after you pick between fixes, and logs every proposal |
 | [adr](./skills/adr/README.md) | Records one architecture decision in `docs/adr/` and adds it to the index |

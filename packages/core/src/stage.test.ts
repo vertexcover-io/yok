@@ -561,6 +561,8 @@ describe("the shipped skills", () => {
       result.ok ? [] : [result.error],
     );
     expect(names).toContain("ticket-fetcher");
+    expect(names).toContain("pr-triage");
+    expect(names).toContain("resolve-merge-conflict");
     expect(failures).toEqual([]);
   });
 

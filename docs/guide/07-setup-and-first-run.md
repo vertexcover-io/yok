@@ -244,6 +244,14 @@ A command is typed as on the command line, quotes included: `@yok run task --pro
 
 A run started from Slack posts its updates in the thread under the message, in whichever channel the message was typed, whenever the project's Slack notifier is on. The channel in the project's `.env` (`SLACK_CHANNEL_ID`) is used by runs started elsewhere.
 
+### Start runs from pull request comments
+
+1. Register the repo on the server: `yok --remote project add web --git git@github.com:ORG/web.git`.
+2. Copy [.github/workflows/yok.yml](../../.github/workflows/yok.yml) from this repo to the same path in the repo, on its default branch. The yok repo runs the same file on its own pull requests.
+3. Under the repo's Settings > Secrets and variables > Actions, add the variables `YOK_SERVER_URL` and `YOK_PROJECT` (`web`) and the secrets `YOK_USER` and `YOK_PASSWORD` (Caddy's login).
+
+Comment `@yok fix the review comments` on a pull request. The comment can be in the conversation, in a review thread, where the prompt carries the comment's link so `@yok fix this` works, or in a review's summary. A review starts one run for its summary and one for each line comment that starts with `@yok`, so put `@yok` in one place. The job's log prints the run's link. Only the repo's owner, its organization's members and its collaborators start runs, with `interaction` off. The run pushes and replies with the server's own `gh` login.
+
 ## Useful commands
 
 ```bash
