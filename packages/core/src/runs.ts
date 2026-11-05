@@ -123,8 +123,21 @@ export type InitOptions = Readonly<{
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
   // the Slack thread the run's updates reply in
-  notifyThread?: string | undefined;
+  notifyThread?: NotifyThread | undefined;
 }>;
+
+type NotifyThread = Readonly<{ threadId: string; channel?: string; user?: string }>;
+
+// The Slack thread a run started from chat replies in. The server hands it to the run's first
+// session as YOK_SLACK_THREAD, with the thread's channel and the requester laid over SLACK_CHANNEL_ID
+// and SLACK_MEMBER_ID; init keeps all three in the run's events, which every later session reads.
+export const notifyThreadFromEnv = (
+  env: Readonly<Record<string, string | undefined>>,
+): NotifyThread | undefined => {
+  const { YOK_SLACK_THREAD: threadId, SLACK_CHANNEL_ID: channel, SLACK_MEMBER_ID: user } = env;
+  if (!threadId) return undefined;
+  return { threadId, ...(channel ? { channel } : {}), ...(user ? { user } : {}) };
+};
 
 export const terminalName = (agent: string, runName: string, runId: string): string =>
   `${agent}-${runName}-${runId.slice(-4)}`;
@@ -264,7 +277,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     const seeded = await appendRunEvent(ref, {
       type: "notification.thread.started",
       source: "orchestrate",
-      payload: { provider: "slack", threadId: options.notifyThread },
+      payload: { provider: "slack", ...options.notifyThread },
     });
     if (!seeded.ok) throw new Error(seeded.error);
   }

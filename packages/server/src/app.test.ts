@@ -1458,6 +1458,20 @@ describe("Slack run command", () => {
     expect(await deps.registry.listRuns()).toHaveLength(1);
   });
 
+  test("SC914: a mention whose user is empty sets no SLACK_MEMBER_ID, so the env's member stays the one tagged", async () => {
+    const { app, posts, launches } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --prompt "go"', { user: "" }),
+    );
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env).not.toHaveProperty("SLACK_MEMBER_ID");
+    expect(launches[0]?.env?.SLACK_CHANNEL_ID).toBe("C1");
+  });
+
   test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
     const { app, posts, launches } = await slackRunRoot({ notifier: "{ enabled: false }" });
 

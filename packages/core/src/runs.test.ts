@@ -31,7 +31,14 @@ import corePackage from "../package.json";
 import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
-import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
+import {
+  type InitOptions,
+  initializeRun,
+  linkRunSession,
+  nextStep,
+  notifyThreadFromEnv,
+  terminalName,
+} from "./runs.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
@@ -131,7 +138,7 @@ describe("initializeRun", () => {
   test("SC18: init given notifyThread 100.1 stores notification.thread.started before workflow.started, so state.notification.threadId is 100.1", async () => {
     const { cwd, init } = await savedRun();
 
-    const result = await init("fix-login", undefined, { notifyThread: "100.1" });
+    const result = await init("fix-login", undefined, { notifyThread: { threadId: "100.1" } });
 
     if (!result.ok) throw new Error(result.error);
     const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
@@ -140,6 +147,42 @@ describe("initializeRun", () => {
       "workflow.started",
     ]);
     expect(result.value.state.notification).toEqual({ provider: "slack", threadId: "100.1" });
+  });
+
+  test("SC915: init given a Slack thread with channel C1 and requester U7 stores both beside the thread id, so state.notification names them", async () => {
+    const { init } = await savedRun();
+
+    const result = await init("fix-login", undefined, {
+      notifyThread: { threadId: "100.1", channel: "C1", user: "U7" },
+    });
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.notification).toEqual({
+      provider: "slack",
+      threadId: "100.1",
+      channel: "C1",
+      user: "U7",
+    });
+  });
+
+  test.each([
+    [
+      "the thread ts, its channel and the requester",
+      { YOK_SLACK_THREAD: "100.1", SLACK_CHANNEL_ID: "C1", SLACK_MEMBER_ID: "U7" },
+      { threadId: "100.1", channel: "C1", user: "U7" },
+    ],
+    [
+      "only the thread ts when the channel and member are empty",
+      { YOK_SLACK_THREAD: "100.1", SLACK_CHANNEL_ID: "", SLACK_MEMBER_ID: "" },
+      { threadId: "100.1" },
+    ],
+    [
+      "no thread without YOK_SLACK_THREAD",
+      { SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "U9" },
+      undefined,
+    ],
+  ])("SC916: the thread init stores from a session env holds %s", (_case, env, expected) => {
+    expect(notifyThreadFromEnv(env)).toEqual(expected);
   });
 
   test("SC19 (regression): init without notifyThread stores no thread event and leaves state.notification unset", async () => {

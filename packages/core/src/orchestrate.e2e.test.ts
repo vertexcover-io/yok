@@ -58,6 +58,24 @@ describe("SC26: orchestrate init", () => {
     expect(threadOf(repo)).toBe("100.1");
   });
 
+  test("SC921: init in a session the server started from a Slack thread keeps the thread's channel C1 and requester U7 in the run's state", () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    writeRegistry(home, [savedRun(repo)]);
+
+    const init = orchestrate(repo, home, ["init", "fix-login"], {
+      YOK_RUN_ID: "r-1",
+      YOK_SLACK_THREAD: "100.1",
+      SLACK_CHANNEL_ID: "C1",
+      SLACK_MEMBER_ID: "U7",
+    });
+
+    expect(init.code).toBe(0);
+    expect(
+      JSON.parse(readFileSync(join(repo, ".yok", "fix-login", "state.json"), "utf8")).notification,
+    ).toEqual({ provider: "slack", threadId: "100.1", channel: "C1", user: "U7" });
+  });
+
   test("SC24: init with no --run-id and no YOK_RUN_ID exits 1 with the no-run message", () => {
     const init = orchestrate(tempRepo(), tempDir(), ["init", "fix-login"]);
 

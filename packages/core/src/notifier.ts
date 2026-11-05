@@ -427,6 +427,16 @@ const withLargeFiles = (notice: Notice, large: readonly string[]): Notice => {
   return { ...notice, body: [notice.body, ...lines].filter((line) => line !== "").join("\n") };
 };
 
+// A run started from a chat thread posts to that thread's channel and tags whoever typed the
+// command, both kept in its events, over the channel and member its session's env names.
+const threadEnv = (state: State): Readonly<Record<string, string>> => {
+  const { channel, user } = state.notification ?? {};
+  return {
+    ...(typeof channel === "string" ? { SLACK_CHANNEL_ID: channel } : {}),
+    ...(typeof user === "string" ? { SLACK_MEMBER_ID: user } : {}),
+  };
+};
+
 // Posts the event's message into the run's thread and uploads its files. The first post opens the
 // thread, recorded as notification.thread.started so later posts reply in it. A failure throws,
 // so the SDK records a failed call.
@@ -438,7 +448,7 @@ export const notify = async (
 ): Promise<{ threadId: string } | undefined> => {
   const described = describeEvent(event, state);
   if (described === undefined) return undefined;
-  const opened = open(type);
+  const opened = open(type, { ...process.env, ...threadEnv(state) });
   if (!opened.ok) throw new Error(opened.error);
   const files = await realPathsInArtifacts(state.runDir, described.files);
   const { small, large } = await splitBySize(files);

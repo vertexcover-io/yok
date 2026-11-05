@@ -62,6 +62,7 @@ import {
   interruptOpenSteps,
   linkRunSession,
   nextStep,
+  notifyThreadFromEnv,
   requestApproval,
   retryFailedSteps,
 } from "./runs.ts";
@@ -164,7 +165,7 @@ const initCommand = () =>
           terminal: currentTerminal(),
           provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
-          notifyThread: process.env.YOK_SLACK_THREAD || undefined,
+          notifyThread: notifyThreadFromEnv(process.env),
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
       });
