@@ -203,6 +203,38 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(run.stderr).toContain("installing");
   });
 
+  test("SC22 — create takes --upstream, add refuses it, and a bad name is refused", () => {
+    const root = tempRepo();
+    const origin = join(tempDir(), "origin.git");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
+    git(root, "init", "-q", "--bare", "-b", "main", origin);
+    git(root, "remote", "add", "origin", origin);
+    git(root, "push", "-q", "origin", "main");
+    git(root, "checkout", "-q", "-b", "feat-sync");
+    git(root, "commit", "-q", "--allow-empty", "-m", "pr work");
+    git(root, "push", "-q", "origin", "feat-sync");
+    git(root, "checkout", "-q", "main");
+    git(root, "branch", "-q", "-D", "feat-sync");
+
+    const created = workspace(root, tempDir(), ["create", "run-a", "--upstream", "feat-sync"]);
+    expect(created.code).toBe(0);
+    expect(JSON.parse(created.stdout).repos[0].status).toBe("ready");
+    const tracked = execFileSync("git", ["rev-parse", "--abbrev-ref", "run-a@{upstream}"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(tracked.trim()).toBe("origin/feat-sync");
+
+    const added = workspace(root, tempDir(), ["add", "run-a", "--repos", "x", "--upstream", "y"]);
+    expect(added.code).toBe(1);
+    expect(added.stderr).toContain("add does not take --upstream");
+
+    const bad = workspace(root, tempDir(), ["create", "run-b", "--upstream", "bad..name"]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('invalid upstream "bad..name"');
+  });
+
   test("a failed setup exits 1 and still prints the report", () => {
     const root = tempRepo();
     const home = tempDir();

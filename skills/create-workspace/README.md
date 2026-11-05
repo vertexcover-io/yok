@@ -16,7 +16,7 @@ Both shipped workflows run it as the second stage, right after `ticket-fetcher`.
 
 ## Inputs and outputs
 
-- Reads: `specName`, and optionally `request`, `baseBranch` and `repos` (schema `create-workspace.input.v1`).
+- Reads: `specName`, and optionally `request`, `baseBranch`, `upstream` and `repos` (schema `create-workspace.input.v1`). With `upstream`, the run's branch starts from that branch on origin and tracks it.
 - Produces: a `create-workspace.output.v1` object with `layout`, `branch`, `workspaceDir` and `repos`, each repo with its `name` and `worktreeDir`. Later stages receive this as their `workspace` input. No artifact.
 
 ## Files

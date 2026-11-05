@@ -68,6 +68,13 @@ const CASES: Case[] = [
     expected: [{ command: "git", args: ["fetch", "origin", "--", "main"], cwd: "/cwd" }],
   },
   {
+    name: "SC16: setUpstream runs one git branch --set-upstream-to",
+    run: (git) => git.setUpstream("/cwd", "run-a", "origin/feat"),
+    expected: [
+      { command: "git", args: ["branch", "--set-upstream-to=origin/feat", "run-a"], cwd: "/cwd" },
+    ],
+  },
+  {
     name: "removeWorktree",
     run: (git) => git.removeWorktree("/cwd", "/wt"),
     expected: [{ command: "git", args: ["worktree", "remove", "/wt"], cwd: "/cwd" }],

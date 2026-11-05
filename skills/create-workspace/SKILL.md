@@ -27,10 +27,12 @@ references:
 # Create Workspace
 
 Give the run its own branch and working folder, so no agent writes in the main checkout. The
-workspace holds one git worktree per repo, each on the branch `SPEC_NAME`.
+workspace holds one git worktree per repo, each on the branch `SPEC_NAME`. With an `upstream`,
+that branch starts from the upstream branch on origin and tracks it, so pushes land there.
 
 The input is a `create-workspace.input.v1` object: `specName`, and optionally `request` (the text
-of what the run should do), `baseBranch` and `repos`.
+of what the run should do), `baseBranch`, `upstream` (a branch on origin to start from and push
+to) and `repos`.
 
 This is a pipeline stage for yok. It reads its extension and reference, and makes the
 worktrees with this skill's `workspace` script.
@@ -47,7 +49,8 @@ If `yok` is not found, stop and report that; do not create worktrees by hand.
      from `packages`.
 3. **Create the workspace with a 5-minute timeout.** Run the `workspace` script with
    `create SPEC_NAME --run SPEC_NAME`, adding `--base BASE_BRANCH` when the input has
-   `baseBranch`, and `--repos NAME1,NAME2` in multi layout. `--run SPEC_NAME` names the run, so
+   `baseBranch`, `--upstream UPSTREAM` when it has `upstream`, and `--repos NAME1,NAME2` in
+   multi layout. `--run SPEC_NAME` names the run, so
    its event log records the workspace; always pass it. `create` also runs the project's
    `workspace.setup`, which can take minutes, so run it through the Bash tool with an explicit
    `timeout: 300000` (5 minutes).

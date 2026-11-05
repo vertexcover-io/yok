@@ -1,0 +1,94 @@
+# Starts a yok run from a pull request comment.
+#
+# The yok repo runs this file on its own pull requests. To use it in another repo, copy it to
+# the same path there, then set these under that repo's Settings > Secrets and variables > Actions:
+#   variable  YOK_SERVER_URL  the yok server's address, such as https://yok.example.com
+#   variable  YOK_PROJECT     the repo's project name on that server
+#                             (yok --remote project add NAME --git URL)
+#   secret    YOK_USER, YOK_PASSWORD   the login Caddy asks for in front of the server
+#
+# Comment `@yok WHAT TO DO` on a pull request to run pr-fix on it, or
+# `@yok --workflow NAME WHAT TO DO` for another workflow that takes `pr` and `prompt`. The comment
+# can be in the conversation, in a review thread, or in a review's summary; the prompt ends with
+# the comment's link, so the run knows which thread "this" means. A review starts one run for its summary and one for each of its line
+# comments that starts with @yok, so put @yok in the summary or on the lines, not both.
+# Only the repo's owner, its organization's members and its collaborators start runs. The run
+# pushes and replies with the yok server's own GitHub login.
+name: yok
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  start:
+    if: >-
+      startsWith(github.event.comment.body || github.event.review.body, '@yok')
+      && (github.event_name != 'issue_comment' || github.event.issue.pull_request)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start a yok run
+        env:
+          BODY: ${{ github.event.comment.body || github.event.review.body }}
+          ASSOCIATION: ${{ github.event.comment.author_association || github.event.review.author_association }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+          LINK: ${{ github.event.comment.html_url || github.event.review.html_url }}
+          YOK_SERVER_URL: ${{ vars.YOK_SERVER_URL }}
+          YOK_PROJECT: ${{ vars.YOK_PROJECT }}
+          YOK_USER: ${{ secrets.YOK_USER }}
+          YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
+        run: |
+          set -euo pipefail
+          case "$ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *) echo "Ignored: a commenter whose association is $ASSOCIATION cannot start yok runs."; exit 0 ;;
+          esac
+          if [[ ! "$BODY" =~ ^@yok([[:space:]]|$) ]]; then
+            echo "Ignored: the comment does not start with @yok."
+            exit 0
+          fi
+          for name in YOK_SERVER_URL YOK_PROJECT YOK_USER YOK_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not set: add it under Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+          done
+          trim() { local text="$1"; printf '%s' "${text#"${text%%[![:space:]]*}"}"; }
+          text=$(trim "${BODY#@yok}")
+          workflow=pr-fix
+          if [[ "$text" =~ ^--workflow([[:space:]]|$) ]]; then
+            text=$(trim "${text#--workflow}")
+            workflow="${text%%[[:space:]]*}"
+            text=$(trim "${text#"$workflow"}")
+            if [ -z "$workflow" ]; then
+              echo "::error::--workflow needs a workflow name."
+              exit 1
+            fi
+          fi
+          if [ -z "$text" ]; then
+            echo "::error::Say what to do after @yok."
+            exit 1
+          fi
+          if [ -n "${LINK:-}" ]; then
+            text="$text"$'\n\n'"Asked in $LINK"
+          fi
+          body=$(jq -n --arg project "$YOK_PROJECT" --arg workflow "$workflow" --arg pr "$PR" \
+            --arg prompt "$text" \
+            '{project: $project, workflow: $workflow, inputs: {pr: $pr, prompt: $prompt},
+              policies: {interaction: false}}')
+          reply=$(mktemp)
+          status=$(curl -sS -o "$reply" -w '%{http_code}' -u "$YOK_USER:$YOK_PASSWORD" \
+            -H 'Content-Type: application/json' --data "$body" "${YOK_SERVER_URL%/}/api/runs")
+          if [ "$status" = 201 ]; then
+            echo "Started: $(jq -r .view "$reply")"
+            exit 0
+          fi
+          message=$(jq -r '.error | "\(.code): \(.message)"' "$reply" 2>/dev/null || cat "$reply")
+          echo "::error::yok did not start the run (HTTP $status): $message"
+          exit 1

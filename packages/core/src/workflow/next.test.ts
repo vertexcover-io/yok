@@ -2234,3 +2234,81 @@ nodes:${stage("s", "plain", "\n    mode: subagent\n    input: {}")}
     expect(findRun(state, "s")?.mode).toBe("inline");
   });
 });
+
+describe("the shipped pr-fix workflow", () => {
+  const PR_FIX = join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml");
+  const workspace = { path: "/work/ws" };
+  const OUTPUTS: Readonly<Record<string, JsonObject>> = {
+    "pr-triage": {
+      task: "fix PR 42",
+      pr: {
+        repo: "o/r",
+        number: 42,
+        url: "https://github.com/o/r/pull/42",
+        branch: "feat",
+        base: "main",
+        head: "a".repeat(40),
+      },
+      hasConflicts: false,
+      items: [],
+      leftOut: [],
+    },
+    "create-workspace": workspace,
+  };
+
+  test("SC37: with no conflict, resolve-conflicts finishes at once and design is the next step, no node dependency-skipped", async () => {
+    const plan = await compileWorkflow(PR_FIX);
+    let state = start({ pr: "42", prompt: "p" });
+    const ids: string[] = [];
+    for (let guard = 0; guard < 6; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      ids.push(leaf.node.id);
+      if (leaf.node.id === "design") {
+        expect(leaf.input).toMatchObject({ task: "fix PR 42" });
+        state = next.state;
+        break;
+      }
+      const output =
+        leaf.node.id === "resolve-conflicts"
+          ? "No conflict with main; nothing merged."
+          : (OUTPUTS[leaf.node.id] ?? {});
+      state = end(next.state, leaf.nodeRunId, "completed", { nodeType: "agent", output });
+    }
+
+    expect(ids).toEqual(["pr-triage", "create-workspace", "resolve-conflicts", "design"]);
+    expect(JSON.stringify(state.nodeRuns)).not.toContain("dependency-skipped");
+  });
+
+  test("SC43: with planning failed, pr-reply is the next step handed out and no other node starts", async () => {
+    const plan = await compileWorkflow(PR_FIX);
+    let state = start({ pr: "42", prompt: "p" });
+    for (let guard = 0; guard < 8; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      if (leaf.node.id === "planning") {
+        state = end(next.state, leaf.nodeRunId, "failed", {
+          nodeType: "agent",
+          error: { kind: "exit", message: "planning failed" },
+        });
+        break;
+      }
+      const output =
+        leaf.node.id === "resolve-conflicts" ? "nothing merged." : (OUTPUTS[leaf.node.id] ?? {});
+      const artifacts =
+        leaf.node.id === "design"
+          ? [{ type: "design", name: "design", path: "artifacts/design.md" }]
+          : [];
+      state = end(next.state, leaf.nodeRunId, "completed", {
+        nodeType: "agent",
+        output,
+        artifacts,
+      });
+    }
+
+    const after = await advance(plan, state);
+    expect(stepIds(after.stop)).toEqual(["pr-reply"]);
+  });
+});

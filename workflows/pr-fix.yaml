@@ -1,0 +1,169 @@
+name: pr-fix
+description: >-
+  Pick up an open pull request: read it, work out what the prompt asks, do it on the pull
+  request's own branch, check it, push, and reply on the pull request.
+inputs:
+  # the pull request's number in the project's repo, or its URL
+  pr:
+    type: string
+    required: true
+  prompt:
+    type: string
+    required: true
+  # Which entry of the config's environments block qa verifies against.
+  environment:
+    type: string
+    default: default
+doctor:
+  - check: binary
+    key: bun
+    fix: Install Bun
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
+nodes:
+  - id: pr-triage
+    type: agent
+    stage: pr-triage
+    input:
+      pr: "{{ inputs.pr }}"
+      prompt: "{{ inputs.prompt }}"
+
+  # The run's own branch starts from the pull request's branch and pushes back to it, so two
+  # runs on one pull request never share a checkout.
+  - id: create-workspace
+    type: agent
+    stage: create-workspace
+    notify: false
+    dependsOn: [pr-triage]
+    input:
+      request: "{{ nodes.pr-triage.output.task }}"
+      baseBranch: "{{ nodes.pr-triage.output.pr.base }}"
+      upstream: "{{ nodes.pr-triage.output.pr.branch }}"
+
+  # Always runs, so design can depend on it: with no conflict it finishes at once.
+  - id: resolve-conflicts
+    type: agent
+    stage: resolve-merge-conflict
+    notify: false
+    dependsOn: [create-workspace]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      base: "{{ nodes.pr-triage.output.pr.base }}"
+      hasConflicts: "{{ nodes.pr-triage.output.hasConflicts }}"
+
+  - id: design
+    type: agent
+    stage: design
+    dependsOn: [resolve-conflicts]
+    input:
+      task: "{{ nodes.pr-triage.output.task }}"
+
+  - id: planning
+    type: agent
+    stage: planning
+    dependsOn: [design]
+    input:
+      task: "{{ nodes.pr-triage.output.task }}"
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: compact-after-planning
+    type: context
+    action: compact
+    prompt: "Keep the approved plan, the work list, the workspace path, and the run name."
+    dependsOn: [planning]
+
+  - id: implement
+    type: agent
+    stage: implement
+    dependsOn: [compact-after-planning]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+
+  - id: compact-after-implement
+    type: context
+    action: compact
+    prompt: "Keep what was implemented, the files touched, and the workspace path."
+    dependsOn: [implement]
+
+  # As in task.yaml: pass 1 reviews the run's commits; a later pass fixes, then reviews the fix.
+  - id: review-loop
+    type: loop
+    dependsOn: [compact-after-implement]
+    until: "{{ iteration.nodes.code-review.output.verdict == 'APPROVED' or iteration.index == iteration.max }}"
+    maxIterations: 2
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+    nodes:
+      - id: compact-before-fix
+        type: context
+        action: compact
+        when: "{{ iteration.index > 1 }}"
+        prompt: "Keep the workspace path and the run name."
+
+      - id: fix
+        type: agent
+        stage: fix
+        dependsOn: [compact-before-fix]
+        input:
+          workspace: "{{ inputs.workspace }}"
+          fixes: "{{ iteration.previous.findings }}"
+          source: review
+          round: "{{ iteration.index }}"
+
+      - id: code-review
+        type: agent
+        stage: code-review
+        input:
+          workspace: "{{ inputs.workspace }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+          previous: "{{ iteration.previous }}"
+
+  - id: compact-after-review
+    type: context
+    action: compact
+    prompt: "Keep the review findings and the workspace path."
+    dependsOn: [review-loop]
+
+  - id: qa-loop
+    type: loop
+    dependsOn: [compact-after-review]
+    until: "{{ iteration.nodes.qa.output.status != 'FAIL' }}"
+    maxIterations: 4
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      task: "{{ nodes.pr-triage.output.task }}"
+      environment: "{{ inputs.environment }}"
+    nodes:
+      - id: fix
+        type: agent
+        stage: fix
+        when: "{{ iteration.index > 1 }}"
+        input:
+          workspace: "{{ inputs.workspace }}"
+          fixes: "{{ iteration.previous.bugs }}"
+          source: qa
+          round: "{{ iteration.index }}"
+
+      - id: qa
+        type: agent
+        stage: qa
+        variables:
+          environment: "{{ inputs.environment }}"
+        input:
+          workspace: "{{ inputs.workspace }}"
+          task: "{{ inputs.task }}"
+          round: "{{ iteration.index }}"
+          rounds: "{{ iteration.max }}"
+
+  # always: a failed run still says on the pull request which step failed. allowFailure: a
+  # failed reply never changes the run's status.
+  - id: pr-reply
+    type: agent
+    stage: pr-reply
+    dependsOn: [qa-loop]
+    always: true
+    allowFailure: true
+    input:
+      pr: "{{ inputs.pr }}"
