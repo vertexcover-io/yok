@@ -32,6 +32,9 @@ _Avoid_: Request (for the fetched task)
 **Ticket**:
 An issue in a tracker (Linear or Asana) that a run fetches its task from.
 
+**PR fix**:
+A run of the pr-fix workflow, started by a `@yok` comment on a pull request.
+
 ## Nodes
 
 **Node**:
