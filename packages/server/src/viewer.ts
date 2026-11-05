@@ -26,7 +26,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
-import { CommentDraftSchema, type Registry } from "@yok/sdk/internal";
+import { CommentDraftSchema, type Registry, readUsers } from "@yok/sdk/internal";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
@@ -64,6 +64,7 @@ export type ViewerDeps = Readonly<{
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   now: () => Date;
+  home: string;
 }>;
 export type FileType = "md" | "html" | "image" | "text" | "binary";
 export type ArtifactEntry = Readonly<{
@@ -433,7 +434,12 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
       stamps = now;
       await sendChanged(stream, sent, "steps", stepsBody(runFiles));
     }
-    await sendChanged(stream, sent, "summary", summarizeRun(page.run, runFiles, agentAlive));
+    await sendChanged(
+      stream,
+      sent,
+      "summary",
+      summarizeRun(page.run, runFiles, agentAlive, await readUsers(deps.home)),
+    );
     await sendChanged(stream, sent, "agent", agentStatus(page.run.id, agentAlive));
     const comments = await commentsBody(page);
     if (comments !== null) await sendChanged(stream, sent, "comments", comments);
@@ -444,7 +450,9 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
 const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<void> => {
   let sent = "";
   while (!stream.aborted) {
-    const json = JSON.stringify({ runs: await listRunSummaries(deps.registry, deps.host) });
+    const json = JSON.stringify({
+      runs: await listRunSummaries(deps.registry, deps.host, deps.home),
+    });
     if (json !== sent) {
       sent = json;
       await stream.writeSSE({ event: "runs", data: json });
@@ -457,7 +465,9 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
     .get("/", (c) => c.html(RUNS_HTML as unknown as string))
-    .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.registry, deps.host) }))
+    .get("/runs", async (c) =>
+      c.json({ runs: await listRunSummaries(deps.registry, deps.host, deps.home) }),
+    )
     .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
     .get("/runs/:id", (c) => c.html(VIEWER_PAGE))
     .get("/assets/anchor.js", (c) =>

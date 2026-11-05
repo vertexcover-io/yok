@@ -9,7 +9,12 @@ import type { ApiError, ProjectView } from "./protocol.ts";
 export type Table = Readonly<{ headers: readonly string[]; rows: readonly (readonly string[])[] }>;
 
 // A chat reply: Slack-style text (*bold*, `code`), and a table under it.
-export type Reply = Readonly<{ text: string; table?: Table }>;
+export type Reply = Readonly<{
+  text: string;
+  table?: Table;
+  // shown only to the person who typed the command
+  private?: boolean;
+}>;
 
 const columnWidths = (
   headers: readonly string[],

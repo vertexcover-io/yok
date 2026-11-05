@@ -75,4 +75,20 @@ export {
   triggerFiresPath,
   triggersPath,
 } from "./triggers.ts";
+export {
+  type Accounts,
+  findUserByGitHub,
+  findUserBySlack,
+  linkSlack,
+  readUsers,
+  setAccountToken,
+  type User,
+  type UserEntry,
+  UserSchema,
+  type UsersFile,
+  UsersFileSchema,
+  unlinkSlack,
+  updateUsers,
+  usersPath,
+} from "./users.ts";
 export { VERSION } from "./version.ts";

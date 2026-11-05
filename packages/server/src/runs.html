@@ -48,6 +48,8 @@ a { color: inherit; }
 .note { font-size: 12.5px; color: var(--muted); }
 .search { margin-left: auto; flex: 0 1 280px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; background: var(--bg); font-size: 13px; }
 .search::placeholder { color: var(--muted); }
+.nav { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.nav:hover { color: var(--fg); }
 
 .tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
 .tab { border: 0; background: transparent; padding: 8px 12px; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
@@ -78,6 +80,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
 .line1 { display: flex; gap: 6px 10px; align-items: baseline; flex-wrap: wrap; }
 .line1 .right { margin-left: auto; display: flex; gap: 10px; align-items: baseline; }
 .dim { color: var(--muted); }
+.owner { overflow-wrap: anywhere; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .prompt { color: var(--muted); font-style: italic; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .now { margin-top: 4px; }
@@ -92,7 +95,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
 [data-tone="muted"] { color: var(--muted); }
 
 .rows { border-top: 1px solid var(--line); }
-.row { display: grid; grid-template-columns: 22px minmax(0, 1.8fr) minmax(0, .8fr) 56px 64px minmax(0, .9fr) minmax(0, 1fr) auto; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; align-items: center; }
+.row { display: grid; grid-template-columns: 22px minmax(0, 1.8fr) minmax(0, .8fr) 56px 64px minmax(0, .9fr) minmax(0, .8fr) minmax(0, 1fr) auto; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; align-items: center; }
 .row.head { color: var(--muted); font-family: var(--ui); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .row.head:hover { background: transparent; }
 .row .name { font-family: var(--ui); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -112,7 +115,9 @@ main { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
 <header class="bar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>yok runs</div>
   <span class="note" id="conn" role="status" hidden>reconnecting…</span>
-  <input class="search" id="search" type="search" placeholder="/ search name, prompt, folder" aria-label="Search runs" autocomplete="off">
+  <input class="search" id="search" type="search" placeholder="/ search name, prompt, folder, person" aria-label="Search runs" autocomplete="off">
+  <select class="search" id="who" aria-label="Started by"><option value="">Anyone</option></select>
+  <a class="nav" href="/settings">Settings</a>
 </header>
 <div class="tabs" id="tabs" role="tablist" aria-label="Run status"></div>
 <main id="list" aria-live="polite"><p class="empty">Loading runs…</p></main>
@@ -136,7 +141,7 @@ const STATUS = {
 const UNKNOWN = { section: "recent", tab: "other", tone: "muted", glyph: "·" };
 const TABS = [["all", "All"], ["active", "Active"], ["needs", "Needs you"], ["failed", "Failed"], ["done", "Done"], ["other", "Other"]];
 
-const view = { runs: null, tab: "all", query: "" };
+const view = { runs: null, tab: "all", query: "", who: "" };
 const $ = (id) => document.getElementById(id);
 
 const statusOf = (run) => ({ ...(STATUS[run.status] ?? UNKNOWN), label: RUN_STATUS_WORDS[run.status] ?? run.status });
@@ -165,8 +170,14 @@ const startedText = (run) =>
 const stepsText = (run) => `${run.steps.done}/${run.steps.total ?? "?"}`;
 const displayName = (run) => run.name ?? run.id;
 
+// startedBy is null for a run no one owns; an unlinked Slack member has no yok user id.
+const ownerKey = (run) => run.startedBy === null ? "" : (run.startedBy.user ?? "unlinked");
+const ownerLabel = ({ startedBy: by }) =>
+  by === null ? "—" : by.login === null ? by.name : `${by.name} (${by.login})`;
+
 const matches = (run, query) =>
-  [run.name, run.id, run.workflow, run.folder, run.prompt]
+  [run.name, run.id, run.workflow, run.folder, run.prompt,
+    run.startedBy?.name, run.startedBy?.login, run.startedBy?.email, run.startedBy?.githubId?.toString()]
     .some((field) => typeof field === "string" && field.toLowerCase().includes(query));
 
 // A finished run's session is usually closed, so it is brought back with resume, not attach.
@@ -239,7 +250,8 @@ const card = (run, now) => {
   right.title = `started ${startedText(run)}`;
   const node = el("article", { className: "card item" }, [
     el("div", { className: "line1" }, [
-      statusMark(run), openLink(run), span("dim", run.workflow), span("mono dim", run.id), folder, right,
+      statusMark(run), openLink(run), span("dim", run.workflow), span("mono dim", run.id), folder,
+      span("dim owner", run.startedBy === null ? "" : ownerLabel(run)), right,
     ]),
   ]);
   node.dataset.status = run.status;
@@ -269,13 +281,13 @@ const row = (run, now) => {
   folder.title = run.cwd;
   return el("div", { className: "row item" }, [
     glyph, name, folder, span("", stepsText(run)), span("wide", duration(run, now)),
-    span("wide", startedText(run)), resultCell(run), el("span", {}, [copyButton(run)]),
+    span("wide", startedText(run)), span("wide owner", ownerLabel(run)), resultCell(run), el("span", {}, [copyButton(run)]),
   ]);
 };
 
-const HEAD = ["", "run", "folder", "steps", "took", "started", "result", ""];
+const HEAD = ["", "run", "folder", "steps", "took", "started", "by", "result", ""];
 const headRow = () => {
-  const head = el("div", { className: "row head" }, HEAD.map((text, i) => span([0, 1, 3, 7].includes(i) ? "" : "wide", text)));
+  const head = el("div", { className: "row head" }, HEAD.map((text, i) => span([0, 1, 3, 8].includes(i) ? "" : "wide", text)));
   head.setAttribute("aria-hidden", "true");
   return head;
 };
@@ -295,14 +307,29 @@ const emptyState = () => {
   return el("p", { className: "empty" }, ["No runs yet. Start one with ", el("code", { textContent: "yok run task" }), "."]);
 };
 
+// One entry per person in the current runs, keyed by yok user id so two people with one display
+// name stay apart; a picked person stays picked while they have runs.
+const renderWho = () => {
+  const people = new Map(view.runs.filter((run) => run.startedBy !== null).map((run) => [ownerKey(run), ownerLabel(run)]));
+  if (!people.has(view.who)) view.who = "";
+  const sorted = [...people].sort(([, a], [, b]) => a.localeCompare(b));
+  $("who").replaceChildren(
+    el("option", { value: "", textContent: "Anyone" }),
+    ...sorted.map(([key, label]) => el("option", { value: key, textContent: label, selected: key === view.who })),
+  );
+};
+
 const render = () => {
   if (view.runs === null) return;
   const now = Date.now();
   const query = view.query.trim().toLowerCase();
-  const filtered = view.runs.filter((run) => query === "" || matches(run, query));
+  renderWho();
+  const filtered = view.runs.filter((run) =>
+    (query === "" || matches(run, query)) && (view.who === "" || ownerKey(run) === view.who));
   renderTabs(filtered);
   const shown = filtered.filter((run) => inTab(run, view.tab));
-  // Banners ignore the tab and the search: a run that needs the person never drops out of sight.
+  // Banners ignore the tab, the search and Started by: a run that needs the person never drops out
+  // of sight.
   const banners = view.runs.filter((run) => run.status === "blocked" && run.blocker !== null).map(banner);
   const active = shown.filter((run) => statusOf(run).section === "active");
   const recent = shown.filter((run) => statusOf(run).section !== "active");
@@ -332,6 +359,7 @@ const load = () => {
 };
 
 $("search").addEventListener("input", (event) => { view.query = event.target.value; render(); });
+$("who").addEventListener("change", (event) => { view.who = event.target.value; render(); });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "/" || document.activeElement === $("search")) return;
   event.preventDefault();

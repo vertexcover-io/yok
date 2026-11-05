@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { type Workflow, WorkflowSchema } from "@yok/core";
 import type { Blocker, NodeRun, SavedPolicies, State, WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
-import { listSteps, readRunFiles, summarizeRun } from "./overview.ts";
+import type { UsersFile } from "@yok/sdk/internal";
+import { listSteps, ownerMatches, readRunFiles, summarizeRun } from "./overview.ts";
 
 const runRecord = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   id: "r-1",
@@ -87,6 +88,7 @@ describe("summarizeRun", () => {
         hasRunDir: true,
       },
       false,
+      {},
     );
     expect(summary).toMatchObject({
       status: "completed",
@@ -101,6 +103,52 @@ describe("summarizeRun", () => {
   });
 });
 
+const ritesh: UsersFile = {
+  u_1: {
+    name: "Ritesh",
+    email: "ritesh@example.com",
+    accounts: { github: { id: 8675309, login: "ritesh-gh" } },
+  },
+};
+
+const startedByOf = (started: Partial<Pick<WorkflowRun, "source" | "user">>) =>
+  summarizeRun(runRecord(started), { state: null, workflow: null, hasRunDir: false }, null, ritesh)
+    .startedBy;
+
+describe("summarizeRun startedBy", () => {
+  test("SC37: an API run is null, a Slack run with no user is an unlinked Slack member, u_1 carries GitHub login, id and email, and a removed user keeps its id", () => {
+    const runs = [
+      { source: "api" },
+      { source: "slack" },
+      { source: "slack", user: "u_1" },
+      { source: "slack", user: "u_gone" },
+    ] as const;
+    expect(runs.map(startedByOf)).toEqual([
+      null,
+      { user: null, name: "unlinked Slack member", login: null, githubId: null, email: null },
+      {
+        user: "u_1",
+        name: "Ritesh",
+        login: "ritesh-gh",
+        githubId: 8675309,
+        email: "ritesh@example.com",
+      },
+      { user: "u_gone", name: "u_gone", login: null, githubId: null, email: null },
+    ]);
+  });
+});
+
+describe("ownerMatches", () => {
+  test("SC38: u_1 matches by yok id, GitHub login, GitHub id and email in any case; someone-else and a null owner do not", () => {
+    const owner = startedByOf({ source: "slack", user: "u_1" }) ?? null;
+    const byKey = ["u_1", "Ritesh-GH", "8675309", "RITESH@example.com", "someone-else"].map((by) =>
+      ownerMatches(owner, by),
+    );
+    expect(byKey).toEqual([true, true, true, true, false]);
+    expect(ownerMatches(null, "ritesh-gh")).toBe(false);
+  });
+});
+
 describe("summarizeRun on a running run", () => {
   test("SC102: qa-loop running with fix done and qa running reads current step qa-loop.qa and 1 step finished", () => {
     const state = stateOf({
@@ -111,7 +159,7 @@ describe("summarizeRun on a running run", () => {
         }),
       },
     });
-    const summary = summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true);
+    const summary = summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true, {});
     expect(summary).toMatchObject({ current: "qa-loop.qa", steps: { done: 1 } });
   });
 });
@@ -161,15 +209,17 @@ describe("summarizeRun PR link", () => {
     },
     { given: "no PR anywhere", state: stateOf(), pr: null },
   ])("SC103: $given → pr is $pr", ({ state, pr }) => {
-    expect(summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true).pr).toBe(pr);
+    expect(summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true, {}).pr).toBe(
+      pr,
+    );
   });
 });
 
 describe("summarizeRun before or without a state", () => {
   test("SC104: an unnamed run is starting and a named run with no readable files is missing, both with no step total and the registry's start", () => {
     const none = { state: null, workflow: null, hasRunDir: false };
-    const starting = summarizeRun(runRecord({ name: null }), none, null);
-    const missing = summarizeRun(runRecord(), none, null);
+    const starting = summarizeRun(runRecord({ name: null }), none, null, {});
+    const missing = summarizeRun(runRecord(), none, null, {});
     expect([starting, missing]).toMatchObject([
       { status: "starting", steps: { total: null }, startedAt: "2026-01-01T00:00:00.000Z" },
       { status: "missing", steps: { total: null }, startedAt: "2026-01-01T00:00:00.000Z" },
@@ -183,7 +233,9 @@ describe("summarizeRun before or without a state", () => {
     writeFileSync(join(runDir, "state.json"), "{not json");
     const absent = runRecord({ cwd: mkdtempSync(join(tmpdir(), "yok-overview-")) });
     const statuses = await Promise.all(
-      [corrupt, absent].map(async (run) => summarizeRun(run, await readRunFiles(run), null).status),
+      [corrupt, absent].map(
+        async (run) => summarizeRun(run, await readRunFiles(run), null, {}).status,
+      ),
     );
     expect(statuses).toEqual(["unreadable", "missing"]);
   });
@@ -214,7 +266,7 @@ describe("summarizeRun on a blocked run", () => {
     const blocked = stateOf({ status: "blocked", blocker: question, nodeRuns: planningRunning });
     const running = stateOf({ nodeRuns: planningRunning });
     const summaries = [blocked, running].map((state) =>
-      summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true),
+      summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true, {}),
     );
     expect(summaries).toMatchObject([
       { status: "blocked", blocker: question, current: "planning", ...onPlanning },
@@ -257,7 +309,7 @@ describe("summarizeRun with a dead terminal", () => {
     "SC112: a $given state whose terminal is $terminal reads $status with no blocker",
     ({ state, alive, status }) => {
       expect(
-        summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, alive),
+        summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, alive, {}),
       ).toMatchObject({
         status,
         blocker: null,
@@ -284,7 +336,7 @@ describe("summarizeRun policies", () => {
       policies: { values: { interaction: true }, sources: { interaction: "default" } },
     },
   ])("SC529: $given gives those policies with their sources", ({ state, policies }) => {
-    const summary = summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true);
+    const summary = summarizeRun(runRecord(), { state, workflow: null, hasRunDir: true }, true, {});
     expect(summary.policies).toEqual(policies);
   });
 });

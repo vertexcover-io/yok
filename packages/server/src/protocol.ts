@@ -8,6 +8,7 @@ import {
   NonEmptyStringSchema,
   PolicyLayerSchema,
   SlugSchema,
+  withLock,
   yokHome,
 } from "@yok/sdk";
 import * as z from "zod";
@@ -51,23 +52,31 @@ export const publicOrigin = (domain: string): string =>
 
 const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
 
-// Replaces the named keys' lines and drops the ones set to null; every other line stays.
+type EnvValues = Record<string, string | null>;
+
+// Replaces the named keys' lines and drops the ones set to null; every other line stays. Given a
+// function, the values are worked out from the file as it is once the lock is held.
 export const updateHomeEnv = async (
   home: string,
-  values: Record<string, string | null>,
+  values: EnvValues | ((env: Record<string, string | undefined>) => EnvValues),
 ): Promise<void> => {
-  const kept = readHomeFile(homeEnvPath(home))
-    .split("\n")
-    .filter((line) => line.trim() !== "" && !(envLineKey(line) in values));
-  const added = Object.entries(values).flatMap(([key, value]) =>
-    value === null ? [] : [`${key}=${value}`],
-  );
+  // before the lock, which would otherwise create the home with the umask's permissions
   await mkdir(home, { recursive: true, mode: 0o700 });
-  await writeFile(homeEnvPath(home), [...kept, ...added].map((line) => `${line}\n`).join(""), {
-    mode: 0o600,
+  await withLock(`${homeEnvPath(home)}.lock`, async () => {
+    const text = readHomeFile(homeEnvPath(home));
+    const changes = typeof values === "function" ? values(parseEnv(text)) : values;
+    const kept = text
+      .split("\n")
+      .filter((line) => line.trim() !== "" && !(envLineKey(line) in changes));
+    const added = Object.entries(changes).flatMap(([key, value]) =>
+      value === null ? [] : [`${key}=${value}`],
+    );
+    await writeFile(homeEnvPath(home), [...kept, ...added].map((line) => `${line}\n`).join(""), {
+      mode: 0o600,
+    });
+    // writeFile's mode applies only when it creates the file.
+    await chmod(homeEnvPath(home), 0o600);
   });
-  // writeFile's mode applies only when it creates the file.
-  await chmod(homeEnvPath(home), 0o600);
 };
 
 export const ErrorBodySchema = z.strictObject({
@@ -156,6 +165,8 @@ export const ListRunsQuerySchema = z
       .transform(Number)
       .optional(),
     all: z.enum(["true", "false"]).optional(),
+    // a yok user id, GitHub login, GitHub id or email
+    by: NonEmptyStringSchema.optional(),
   })
   .refine((query) => query.all !== "true" || query.limit === undefined, {
     message: "--all and --limit cannot be used together",

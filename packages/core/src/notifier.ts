@@ -321,6 +321,11 @@ export type SlackConfig = Readonly<{
 
 const SlackReplySchema = z.looseObject({ ok: z.boolean(), error: z.string().optional() });
 
+// GitHub's token formats: gho_ (OAuth), ghp_, ghu_, ghs_, ghr_, and fine-grained github_pat_.
+const GITHUB_TOKEN = /\b(?:gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+
+export const redactTokens = (text: string): string => text.replace(GITHUB_TOKEN, "[redacted]");
+
 export const callSlack = async (
   config: SlackConfig,
   method: string,
@@ -332,7 +337,10 @@ export const callSlack = async (
       Authorization: `Bearer ${config.token}`,
       "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     },
-    body: new URLSearchParams(form).toString(),
+    // every message yok sends to Slack passes here, so an agent echoing its env cannot leak a token
+    body: new URLSearchParams(
+      Object.fromEntries(Object.entries(form).map(([key, value]) => [key, redactTokens(value)])),
+    ).toString(),
   });
   const reply = SlackReplySchema.safeParse(await res.json()).data;
   if (reply?.ok !== true) {

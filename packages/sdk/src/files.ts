@@ -126,13 +126,15 @@ export const updateJsonFile = <T>(
   path: string,
   read: (path: string) => Promise<T>,
   change: (current: T) => T,
+  // the file's permissions, for a file that holds secrets; the default leaves them to the umask
+  mode?: number,
 ): Promise<Readonly<{ before: T; after: T }>> =>
   withLock(`${path}.lock`, async () => {
     const before = await read(path);
     const after = change(before);
     if (after === before) return { before, after };
     const tempPath = `${path}.tmp-${randomUUID()}`;
-    await writeFile(tempPath, JSON.stringify(after, null, 2));
+    await writeFile(tempPath, JSON.stringify(after, null, 2), mode === undefined ? {} : { mode });
     await rename(tempPath, path);
     return { before, after };
   });

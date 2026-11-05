@@ -11,7 +11,14 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { runDirOf, SkipOutputSchema, StateSchema } from "@yok/sdk";
-import { findRunningLeaf, isRunLive, type Registry, resolvePolicies } from "@yok/sdk/internal";
+import {
+  findRunningLeaf,
+  isRunLive,
+  type Registry,
+  readUsers,
+  resolvePolicies,
+  type UsersFile,
+} from "@yok/sdk/internal";
 import * as z from "zod";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
 
@@ -43,6 +50,17 @@ export type RunSummary = Readonly<{
   pr: string | null;
   // each policy's value and where it came from
   policies: SavedPolicies;
+  // who started the run; null for a run with no owner (API, trigger)
+  startedBy: StartedBy | null;
+}>;
+
+// user is null for a Slack member linked to no yok user.
+export type StartedBy = Readonly<{
+  user: string | null;
+  name: string;
+  login: string | null;
+  githubId: number | null;
+  email: string | null;
 }>;
 
 // A summary as GET /runs lists it: the registered project whose path is the run's folder.
@@ -82,11 +100,44 @@ const findPr = (state: State): string | null => {
   return found ?? null;
 };
 
+const UNLINKED: StartedBy = {
+  user: null,
+  name: "unlinked Slack member",
+  login: null,
+  githubId: null,
+  email: null,
+};
+
+// A user removed from users.json since still shows by id, so the run keeps an owner.
+const resolveStartedBy = (run: WorkflowRun, users: UsersFile): StartedBy | null => {
+  const { user } = run;
+  if (user === undefined) return run.source === "slack" ? UNLINKED : null;
+  const found = users[user];
+  if (found === undefined) return { ...UNLINKED, user, name: user };
+  return {
+    user,
+    name: found.name,
+    login: found.accounts.github?.login ?? null,
+    githubId: found.accounts.github?.id ?? null,
+    email: found.email === "" ? null : found.email,
+  };
+};
+
+// by is a yok user id, GitHub login, GitHub id or email, compared without case.
+export const ownerMatches = (owner: StartedBy | null, by: string): boolean => {
+  if (owner === null) return false;
+  const wanted = by.toLowerCase();
+  return [owner.user, owner.login, owner.email, owner.githubId?.toString()].some(
+    (key) => key?.toLowerCase() === wanted,
+  );
+};
+
 // agentAlive is null when tmux was not asked, as for a run that is no longer live.
 export const summarizeRun = (
   run: WorkflowRun,
   files: RunFiles,
   agentAlive: boolean | null,
+  users: UsersFile,
 ): RunSummary => {
   const base = {
     id: run.id,
@@ -105,6 +156,7 @@ export const summarizeRun = (
     completedAt: null,
     pr: null,
     policies: run.policies ?? resolvePolicies({}),
+    startedBy: resolveStartedBy(run, users),
   };
   if (run.name === null) return { ...base, status: "starting" };
   const { state } = files;
@@ -164,20 +216,26 @@ export const readRunFiles = async (run: WorkflowRun): Promise<RunFiles> => {
 };
 
 // Only a live run asks tmux, so a long history costs no terminal calls.
-const summarizeLive = async (run: WorkflowRun, host: ITerminalHost): Promise<RunSummary> => {
+const summarizeLive = async (
+  run: WorkflowRun,
+  host: ITerminalHost,
+  users: UsersFile,
+): Promise<RunSummary> => {
   const files = await readRunFiles(run);
   const live = files.state !== null && isRunLive(files.state.status);
-  return summarizeRun(run, files, live ? await isAgentAlive(run, host) : null);
+  return summarizeRun(run, files, live ? await isAgentAlive(run, host) : null, users);
 };
 
 export const listRunSummaries = async (
   registry: Registry,
   host: ITerminalHost,
+  home: string,
 ): Promise<readonly RunSummary[]> => {
   const runs = [...(await registry.listRuns())].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
-  return Promise.all(runs.map((run) => summarizeLive(run, host)));
+  const users = await readUsers(home);
+  return Promise.all(runs.map((run) => summarizeLive(run, host, users)));
 };
 
 export type Step = Readonly<{
