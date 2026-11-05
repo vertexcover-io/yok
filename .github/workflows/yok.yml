@@ -12,8 +12,9 @@
 # can be in the conversation, in a review thread, or in a review's summary; the prompt ends with
 # the comment's link, so the run knows which thread "this" means. A review starts one run for its summary and one for each of its line
 # comments that starts with @yok, so put @yok in the summary or on the lines, not both.
-# Only the repo's owner, its organization's members and its collaborators start runs. The run
-# pushes and replies with the yok server's own GitHub login.
+# Only people with write access to the repo start runs: the job asks GitHub for the commenter's
+# permission, because the event labels a member whose org membership is private CONTRIBUTOR. The
+# run pushes and replies with the yok server's own GitHub login.
 name: yok
 
 on:
@@ -24,7 +25,9 @@ on:
   pull_request_review:
     types: [submitted]
 
-permissions: {}
+# Read access lets the job's token look up the commenter's permission on the repo.
+permissions:
+  contents: read
 
 jobs:
   start:
@@ -36,7 +39,9 @@ jobs:
       - name: Start a yok run
         env:
           BODY: ${{ github.event.comment.body || github.event.review.body }}
-          ASSOCIATION: ${{ github.event.comment.author_association || github.event.review.author_association }}
+          COMMENTER: ${{ github.event.comment.user.login || github.event.review.user.login }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.issue.number || github.event.pull_request.number }}
           LINK: ${{ github.event.comment.html_url || github.event.review.html_url }}
           YOK_SERVER_URL: ${{ vars.YOK_SERVER_URL }}
@@ -45,9 +50,10 @@ jobs:
           YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
         run: |
           set -euo pipefail
-          case "$ASSOCIATION" in
-            OWNER|MEMBER|COLLABORATOR) ;;
-            *) echo "Ignored: a commenter whose association is $ASSOCIATION cannot start yok runs."; exit 0 ;;
+          permission=$(gh api "repos/$REPO/collaborators/$COMMENTER/permission" --jq .permission 2>/dev/null) || permission=none
+          case "$permission" in
+            admin|write) ;;
+            *) echo "Ignored: $COMMENTER has $permission access to $REPO and cannot start yok runs."; exit 0 ;;
           esac
           if [[ ! "$BODY" =~ ^@yok([[:space:]]|$) ]]; then
             echo "Ignored: the comment does not start with @yok."
