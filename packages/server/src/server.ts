@@ -21,6 +21,7 @@ import prettyFactory from "pino-pretty";
 import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
+import { identityRoutes } from "./identity.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
@@ -73,7 +74,12 @@ const checkCheckout: CheckCheckout = (input) =>
 
 export type RootDeps = ApiDeps &
   ViewerDeps &
-  Readonly<{ port: number; domain: string; slackFetch?: notifierHooks.Fetch }>;
+  Readonly<{
+    port: number;
+    domain: string;
+    slackFetch?: notifierHooks.Fetch;
+    githubFetch?: notifierHooks.Fetch;
+  }>;
 
 // The API sits under /api so its routes never shadow a dashboard page: the API's GET /runs/view
 // once also matched the dashboard's GET /runs/:id. The Slack hook is added before the API, whose
@@ -91,6 +97,14 @@ export const createRoot = (deps: RootDeps) => {
     .use("*", hostGuard(deps.port, deps.domain))
     .route("/api/hooks/slack", slackHookRoutes({ ...deps, client }))
     .route("/api", api)
+    .route(
+      "/",
+      identityRoutes({
+        ...deps,
+        publicOrigin: publicOrigin(deps.domain),
+        log: deps.log.child({ component: "identity" }),
+      }),
+    )
     .route("/", viewerRoutes({ ...deps, log: deps.log.child({ component: "viewer" }) }));
 };
 

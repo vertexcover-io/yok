@@ -5,7 +5,9 @@ import type { EnvLayer } from "./config.ts";
 import type { Result } from "./contracts.ts";
 import { readIfExists, readText } from "./files.ts";
 import { prependPath } from "./process.ts";
+import { createRegistryReader, registryPath } from "./registry.ts";
 import { type CheckoutConfig, findConfigRoot, findRoot } from "./runs.ts";
+import { ownerEnv, readUsers } from "./users.ts";
 
 // The checkout's own .env if it has one, else the main checkout's; the two are never merged.
 // A repo inside a meta repo looks in the folder findConfigRoot picks.
@@ -85,15 +87,29 @@ export const loadEnv = async (
   return { ok: true, value: { ...projectEnv, ...config.value, ...own.value } };
 };
 
+// A Slack run gets its starter's GitHub env, read afresh so a token connected mid-run is used, or
+// none when no yok user started it. A run started any other way keeps the server's own login.
+const runEnv = async (
+  env: Readonly<Record<string, string>>,
+  runId: string,
+  home: string,
+): Promise<Readonly<Record<string, string>>> => {
+  const run = await createRegistryReader(registryPath(home)).findRun(runId);
+  if (run?.source !== "slack") return env;
+  if (run.user === undefined) return ownerEnv(env, home, undefined);
+  const users = await readUsers(home);
+  return ownerEnv(env, home, users[run.user]);
+};
+
 // What a run's agent session starts with: the run's env, under yok's own variables, with the
 // shim folder first on PATH so the session's `yok` is the program that started the run.
-export const sessionEnv = (
+export const sessionEnv = async (
   env: Readonly<Record<string, string>>,
   runId: string,
   home: string,
   shimDir: string,
-): Record<string, string> => ({
-  ...env,
+): Promise<Record<string, string>> => ({
+  ...(await runEnv(env, runId, home)),
   PATH: prependPath(shimDir, env.PATH ?? process.env.PATH),
   YOK_RUN_ID: runId,
   YOK_HOME: home,

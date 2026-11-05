@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
 import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, type Registry } from "@yok/sdk/internal";
+import { createRegistry, type Registry, updateUsers } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -133,6 +133,7 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
     providerFor: () => claudeOver(host),
     host,
     now,
+    home: tempDir("viewer-home"),
     openInEditor: (target) => {
       opened.push(target);
       return { ok: true, value: null };
@@ -169,6 +170,14 @@ const statusesOf = async (runDir: string): Promise<readonly string[]> => {
 };
 
 describe("viewer routes", () => {
+  test("the dashboard's header links to the person's settings", async () => {
+    const { get } = await setup();
+    const page = await (await get("/")).text();
+    expect(page).toMatch(
+      /<header class="bar">[\s\S]*<a class="nav" href="\/settings">Settings<\/a>[\s\S]*<\/header>/,
+    );
+  });
+
   test("SC6: the file list shows every artifact with type and draft flag, top-level first", async () => {
     const { get, runDir } = await setup();
     put(runDir, "artifacts/design.md", "# d");
@@ -807,6 +816,7 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
     providerFor: () => claudeOver(host),
     host,
     now: () => new Date(),
+    home: tempDir("viewer-home"),
     openInEditor: () => ({ ok: true, value: null }),
   });
 };
@@ -1056,6 +1066,34 @@ describe("summary on the run stream", () => {
       const summary = await sse.waitFor(statusIs("blocked"));
       expect(summary.data).toMatchObject({ id: "r-named", blocker: QUESTION_BLOCKER });
       expect(sse.seen.filter((e) => e.event === "steps")).toHaveLength(1);
+    } finally {
+      await sse.close();
+    }
+  }, 10000);
+
+  test("the run stream's summary names the yok user who started the run, not just their id", async () => {
+    const cwd = tempDir("viewer-cwd");
+    const home = tempDir("viewer-home");
+    const registry = createRegistry(join(tempDir("viewer-reg"), "registry.json"), noopLogger);
+    await registry.addRun({ ...runRecord("r-owned", cwd, "demo"), source: "slack", user: "u_1" });
+    await updateUsers(home, () => ({ u_1: { name: "Ritesh", email: "", accounts: {} } }));
+    const { host } = fakeHost("");
+    const app = viewerRoutes({
+      registry,
+      log: noopLogger,
+      providerFor: () => claudeOver(host),
+      host,
+      now: () => new Date(),
+      home,
+      openInEditor: () => ({ ok: true, value: null }),
+    });
+
+    const sse = sseReader(
+      await app.request("/runs/r-owned/stream", { headers: { host: "localhost:4000" } }),
+    );
+    try {
+      const summary = await sse.waitFor((e) => e.event === "summary", 1000);
+      expect(summary.data).toMatchObject({ startedBy: { user: "u_1", name: "Ritesh" } });
     } finally {
       await sse.close();
     }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { EmitInput, Event, emitRunEvent, JsonValue, NodeRun, RunRef, State } from "@yok/sdk";
 import {
+  callSlack,
   createSlackNotifier,
   describeEvent,
   findMissingNotifierKeys,
@@ -732,5 +733,24 @@ describe("notify", () => {
 
     expect(result).toBeUndefined();
     expect(calls.opened).toEqual([]);
+  });
+});
+
+describe("callSlack", () => {
+  test("SC35: a GitHub token in the text reaches Slack as [redacted], and in no recorded call", async () => {
+    const token = `gho_${"a1B2".repeat(9)}`;
+    const calls: string[] = [];
+    const fetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      calls.push(`${String(url)} ${String(init?.body)}`);
+      return Response.json({ ok: true });
+    };
+    const config = { token: "xoxb-t", channel: "C1", memberId: undefined, fetch };
+
+    await callSlack(config, "chat.postMessage", { channel: "C1", text: `push failed: ${token}` });
+
+    expect(new URLSearchParams(calls[0]?.split(" ")[1]).get("text")).toBe(
+      "push failed: [redacted]",
+    );
+    expect(calls.join("\n")).not.toContain(token);
   });
 });

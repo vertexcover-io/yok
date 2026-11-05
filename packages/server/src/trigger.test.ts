@@ -278,6 +278,7 @@ describe("tick", () => {
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired?.status).toBe("started");
       const run = await registry.findRun(fired?.runId ?? "");
+      expect(run?.source).toBe("trigger");
       expect(run?.policies?.values.interaction).toBe(false);
       expect(run?.policies?.sources.interaction).toBe("cli");
     },

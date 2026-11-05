@@ -1,9 +1,17 @@
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
-import { DoctorReportSchema } from "@yok/core";
+import { DoctorReportSchema, type notifierHooks } from "@yok/core";
 import { type ILogger, POLICY_NAMES, type Result } from "@yok/sdk";
-import { parsePolicyFlags } from "@yok/sdk/internal";
+import {
+  findUserBySlack,
+  parsePolicyFlags,
+  readUsers,
+  setAccountToken,
+  unlinkSlack,
+  updateUsers,
+} from "@yok/sdk/internal";
 import * as z from "zod";
 import { apiErrorText, type YokClient } from "./client.ts";
+import { sessionSecret, signValue, tokenAlive } from "./identity.ts";
 import { type ApiError, StartRunBodySchema } from "./protocol.ts";
 import {
   doctorReply,
@@ -28,6 +36,8 @@ export type DispatchDeps = RunDeps &
     // the server's own API, answered in memory: a chat command runs the route yok --remote calls
     client: YokClient;
     log: ILogger;
+    now: () => Date;
+    githubFetch?: notifierHooks.Fetch | undefined;
   }>;
 
 type Args = Readonly<{
@@ -99,6 +109,32 @@ const runInputs = (pairs: readonly string[]): Readonly<Record<string, string>> =
     }),
   );
 
+type Owner = Readonly<{ user?: string; note: string | null }>;
+
+// The Slack member's yok user, with the line the thread gets when the run will not be able to push.
+// A token GitHub no longer accepts is dropped here, so the run starts as not connected.
+const runOwner = async (thread: ChatThread, deps: DispatchDeps): Promise<Owner> => {
+  const linked =
+    thread.user === undefined
+      ? undefined
+      : findUserBySlack(await readUsers(deps.home), thread.user);
+  if (linked === undefined) {
+    return {
+      note: "this Slack account is not linked to a yok user, so the run cannot push or open a pull request; type `@yok login` to link it",
+    };
+  }
+  const [id, user] = linked;
+  const token = user.accounts.github?.token;
+  if (token !== undefined && (await tokenAlive(deps, token))) return { user: id, note: null };
+  if (token !== undefined) {
+    await updateUsers(deps.home, (users) => setAccountToken(users, id, "github", undefined));
+  }
+  return {
+    user: id,
+    note: `GitHub is not connected for ${user.name}, so the run will stop at push; connect it at ${deps.publicOrigin}/settings`,
+  };
+};
+
 // Flags as yok run takes them: the prompt in --prompt, inputs and policies as --NAME VALUE.
 // Nobody sits at the run's terminal, so interaction is off whatever the flag says.
 const startRun = async (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => {
@@ -129,10 +165,16 @@ const startRun = async (args: Args, thread: ChatThread, deps: DispatchDeps, say:
   if (!body.success) return { text: `bad-request: ${z.prettifyError(body.error)}` };
   await say({ text: `Starting \`${workflow}\` on *${project}*…` });
   const log = deps.log.child({ component: "slack" });
-  const started = await startProjectRun(body.data, deps, log, { thread });
+  const owner = await runOwner(thread, deps);
+  const started = await startProjectRun(body.data, deps, log, {
+    source: "slack",
+    thread,
+    ...(owner.user === undefined ? {} : { user: owner.user }),
+  });
   if (!started.ok) return startErrorReply(started.error);
   const { run, view, threaded } = started.value;
   const notes = [
+    ...(owner.note === null ? [] : [owner.note]),
     ...(threaded === true ? [] : [SILENT_NOTIFIER]),
     ...(policies.value.interaction === true ? [QUESTIONS_OFF] : []),
   ];
@@ -239,10 +281,12 @@ const listRuns = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => 
   const project = stringFlag(args, "project");
   const status = stringFlag(args, "status");
   const limit = stringFlag(args, "limit");
+  const by = stringFlag(args, "by");
   const listed = unwrapApi(
     await deps.client.runs({
       ...(project === undefined ? {} : { project }),
       ...(status === undefined ? {} : { status }),
+      ...(by === undefined ? {} : { by }),
       ...(limit === undefined ? {} : { limit }),
       ...(args.values.all === true ? { all: "true" } : {}),
     }),
@@ -288,16 +332,57 @@ const showRun = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   };
 };
 
+const LINK_TTL_MS = 10 * 60 * 1000;
+const NOT_LINKED = "This Slack account is not linked to a yok user. Type `@yok login` to link it.";
+
+const memberOf = (thread: ChatThread): string => {
+  if (thread.user === undefined) throw new ChatError("Slack did not say who typed this command.");
+  return thread.user;
+};
+
+const linkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
+  const member = memberOf(thread);
+  const linked = findUserBySlack(await readUsers(deps.home), member);
+  if (linked !== undefined) return { text: `Already linked to yok user *${linked[1].name}*.` };
+  const exp = deps.now().getTime() + LINK_TTL_MS;
+  const state = signValue(await sessionSecret(deps.home), { sub: member, purpose: "link", exp });
+  const url = `${deps.publicOrigin}/link/slack?state=${encodeURIComponent(state)}`;
+  return {
+    text: `Sign in to yok to link this Slack account (the link works for 10 minutes):\n${url}`,
+    private: true,
+  };
+};
+
+const whoAmI = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
+  const linked = findUserBySlack(await readUsers(deps.home), memberOf(thread));
+  if (linked === undefined) return { text: NOT_LINKED };
+  const [, user] = linked;
+  const account = user.accounts.github;
+  const github =
+    account?.token === undefined
+      ? `GitHub not connected; connect it at ${deps.publicOrigin}/settings`
+      : `GitHub connected as \`${account.login}\``;
+  return { text: `You are *${user.name}* · ${github}` };
+};
+
+const unlinkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
+  const linked = findUserBySlack(await readUsers(deps.home), memberOf(thread));
+  if (linked === undefined) return { text: NOT_LINKED };
+  await updateUsers(deps.home, (users) => unlinkSlack(users, linked[0]));
+  return { text: `Unlinked this Slack account from yok user *${linked[1].name}*.` };
+};
+
 const PROJECT_FLAG = { project: { type: "string" } } as const;
 
 // In the order help lists them.
 const COMMANDS: readonly ChatCommand[] = [
   {
     words: ["ls"],
-    usage: "ls [--project NAME] [--status STATUS] [--limit N] [--all]",
+    usage: "ls [--project NAME] [--status STATUS] [--by WHO] [--limit N] [--all]",
     options: {
       project: { type: "string" },
       status: { type: "string" },
+      by: { type: "string" },
       limit: { type: "string" },
       all: { type: "boolean" },
     },
@@ -373,6 +458,9 @@ const COMMANDS: readonly ChatCommand[] = [
     options: PROJECT_FLAG,
     run: removeTrigger,
   },
+  { words: ["login"], usage: "login", options: {}, run: linkLogin },
+  { words: ["whoami"], usage: "whoami", options: {}, run: whoAmI },
+  { words: ["logout"], usage: "logout", options: {}, run: unlinkLogin },
   { words: ["help"], usage: "help", options: {}, run: async () => ({ text: helpText() }) },
 ];
 

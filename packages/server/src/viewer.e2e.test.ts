@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { createRegistry, updateUsers } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
 import { viewerRoutes } from "./viewer.ts";
@@ -269,6 +269,7 @@ describe("viewer in a browser", () => {
         host,
         log: noopLogger,
         now: () => new Date(),
+        home,
         openInEditor: (target) => {
           opened.push(target);
           return { ok: true, value: null };
@@ -863,4 +864,157 @@ describe("viewer in a browser", () => {
       rmSync(join(runDir, "state.json"), { force: true });
     }
   }, 30000);
+});
+
+// The runs page reads the run list from /stream, so this suite seeds a registry and users.json
+// and drives that page.
+describe("runs page in a browser", () => {
+  let viewer: Readonly<{ origin: string; stop: () => Promise<void> }>;
+  let home: string;
+
+  beforeAll(async () => {
+    home = tempDir();
+    const cwd = tempDir();
+    await updateUsers(home, () => ({
+      u_1: {
+        name: "ritesh-gh",
+        email: "ritesh@example.com",
+        accounts: { github: { id: 8675309, login: "ritesh-gh" } },
+      },
+      u_2: {
+        name: "Asha",
+        email: "asha@example.com",
+        accounts: { github: { id: 42, login: "asha-gh" } },
+      },
+    }));
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    const base = {
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [],
+      name: null,
+      terminal: null,
+      config: null,
+      tiers: null,
+    };
+    const owners = [
+      ["r-1", "u_1"],
+      ["r-2", "u_2"],
+      ["r-3", "u_1"],
+      ["r-4", undefined],
+    ] as const;
+    for (const [n, [id, user]] of owners.entries()) {
+      const createdAt = `2026-10-29T10:0${n}:00.000Z`;
+      // u_1's runs are named with no run folder, so they read missing and land in the Recent table.
+      const name = user === "u_1" ? id : null;
+      await registry.addRun({
+        ...base,
+        id,
+        name,
+        createdAt,
+        ...(user === undefined ? {} : { user }),
+      });
+    }
+    const runDir = join(cwd, ".yok", "stuck");
+    mkdirSync(runDir, { recursive: true });
+    const blocker = {
+      reason: "question",
+      node: "planning",
+      since: "2026-10-29T10:06:00.000Z",
+      details: { questions: [{ question: "Which store for Asha?", options: ["a", "b"] }] },
+    };
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), runName: "stuck", status: "blocked", blocker }),
+    );
+    await registry.addRun({
+      ...base,
+      id: "r-5",
+      name: "stuck",
+      terminal: "s1",
+      user: "u_2",
+      createdAt: "2026-10-29T10:05:00.000Z",
+    });
+    const { host } = fakeHost(EMPTY_BOX);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: viewerRoutes({
+        registry,
+        providerFor: () => claudeOver(host),
+        host,
+        log: noopLogger,
+        now: () => new Date(),
+        home,
+        openInEditor: () => ({ ok: true, value: null }),
+      }).fetch,
+    });
+    viewer = { origin: `http://localhost:${server.port}`, stop: () => server.stop(true) };
+  });
+
+  beforeEach(() => browser("tab", "new"), 30000);
+  afterEach(() => browser("tab", "close"), 30000);
+
+  afterAll(async () => {
+    spawnSync("agent-browser", ["close"], {
+      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+    await viewer.stop();
+  });
+
+  const allCount = "document.querySelector('#tabs .tab .n').textContent";
+  const shownIds =
+    "[...document.querySelectorAll('#list .item a.open')].map((a) => a.getAttribute('href').split('/').pop())";
+  const byCells =
+    "[...document.querySelectorAll('#list .row.item .owner')].map((s) => s.textContent)";
+  const bannerShown =
+    "[...document.querySelectorAll('#list .banner')].map((b) => b.textContent.includes('Which store for Asha?'))";
+
+  test("SC41: picking ritesh-gh in Started by, or searching ritesh@, narrows All to u_1's 2 runs, and u_2's blocked run keeps its banner", async () => {
+    await browser("open", viewer.origin);
+    await until("document.querySelectorAll('#who option').length === 3");
+    expect(
+      await evaluate("[...document.querySelectorAll('#who option')].map((o) => o.textContent)"),
+    ).toEqual(["Anyone", "Asha (asha-gh)", "ritesh-gh (ritesh-gh)"]);
+
+    await browser("select", "#who", "ritesh-gh (ritesh-gh)");
+    await until(`${allCount} === "2"`);
+    expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
+    expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
+    expect(await evaluate(bannerShown)).toEqual([true]);
+
+    await browser("select", "#who", "Anyone");
+    await until(`${allCount} === "5"`);
+    await browser("fill", "#search", "ritesh@");
+    await until(`${allCount} === "2"`);
+    expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
+    expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
+    expect(await evaluate(bannerShown)).toEqual([true]);
+  }, 60000);
+
+  test("a starter's name that is one long word wraps inside its card on a phone, so the page never scrolls sideways", async () => {
+    const rename = (name: string) =>
+      updateUsers(home, (users) => (users.u_2 ? { ...users, u_2: { ...users.u_2, name } } : users));
+    const long = "A".repeat(80);
+    await rename(long);
+    try {
+      await browser("set", "viewport", "393", "852");
+      await browser("open", viewer.origin);
+      await until(
+        `[...document.querySelectorAll('.card .owner')].some((s) => s.textContent.startsWith(${JSON.stringify(long)}))`,
+      );
+      expect(
+        await evaluate(
+          "document.documentElement.scrollWidth - document.documentElement.clientWidth",
+        ),
+      ).toBe(0);
+    } finally {
+      await rename("Asha");
+    }
+  }, 60000);
 });

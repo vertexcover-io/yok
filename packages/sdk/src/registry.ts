@@ -43,6 +43,12 @@ export const WorkflowRunSchema = z.strictObject({
   policies: SavedPoliciesSchema.optional(),
   // set only for a trigger's run; every session the run starts later launches in it too
   permissionMode: PermissionModeSchema.optional(),
+  // where it was started; absent on runs saved before this field, which all came through the API.
+  // Only a Slack run is held to its starter's GitHub access; any other keeps the server's login.
+  source: z.enum(["api", "slack", "trigger"]).optional(),
+  // the yok user who started it; absent when no yok user did (yok run, a trigger, an unlinked
+  // Slack member)
+  user: NonEmptyStringSchema.optional(),
   createdAt: z.iso.datetime(),
 });
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;

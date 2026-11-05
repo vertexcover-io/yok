@@ -357,7 +357,7 @@ const startNewSession = async (options: ContextStepOptions, terminal: ITerminal)
   await recordStarted(options, "new", sessionId);
   const launch = {
     ...options.launch,
-    env: sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home)),
+    env: await sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home)),
     prompt: resumePrompt(run),
     name: run.name,
   };
@@ -408,7 +408,7 @@ const compact = async (
     await provider.relaunch(target.terminal, target.sessionId, {
       ...options.launch,
       resume: true,
-      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
+      env: await sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
       prompt: command,
       name: run.name,
     }),
@@ -622,7 +622,7 @@ const resumeOnModel = async (
       ...launch,
       ...tierLaunch(target),
       resume: true,
-      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
+      env: await sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
       prompt: resumePrompt(run),
       name: run.name,
     }),

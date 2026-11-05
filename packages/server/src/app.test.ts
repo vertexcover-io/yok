@@ -32,6 +32,10 @@ import {
   createTriggerStore,
   jsonlEventStore,
   type Registry,
+  readUsers,
+  type UsersFile,
+  updateUsers,
+  usersPath,
 } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import * as z from "zod";
@@ -86,9 +90,10 @@ const buildDeps = async (
   ) => Promise<Result<{ terminalName: string; terminal: ITerminal }>>,
   log = noopLogger,
 ) => {
-  const registryPath = join(mkdtempSync(join(tmpdir(), "yok-registry-")), "registry.json");
-  const registry = createRegistry(registryPath, log);
+  // in the home, as the server keeps it: sessionEnv looks a run's owner up there
   const home = mkdtempSync(join(tmpdir(), "yok-home-"));
+  const registryPath = join(home, "registry.json");
+  const registry = createRegistry(registryPath, log);
   const asked: string[] = [];
   return {
     registryPath,
@@ -189,6 +194,23 @@ const errorOf = async (res: Response) =>
   ((await res.json()) as { error: { code: string; message: string } }).error;
 
 describe("POST /runs", () => {
+  test("SC32 (regression): a run started through POST /runs records no owner and keeps the project's GH_TOKEN and the server's gh config", async () => {
+    const launches: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      launches.push(options);
+      return launchesOk();
+    });
+    const { cwd } = tempWorkspace(deps.home);
+    writeFileSync(join(cwd, ".env"), "GH_TOKEN=server\n");
+
+    expect((await postRun(createApi(deps))).status).toBe(201);
+
+    const [run] = await deps.registry.listRuns();
+    expect(run).not.toHaveProperty("user");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("server");
+    expect(launches[0]?.env).not.toHaveProperty("GH_CONFIG_DIR");
+  });
+
   test.each([
     ["a body that is not JSON", "{not json"],
     ["an invalid supplied name", runBody({ name: "Bad/Name" })],
@@ -246,6 +268,7 @@ describe("POST /runs", () => {
       workflowPath,
       cwd,
       terminal: "session-xyz",
+      source: "api",
     });
   });
 
@@ -802,7 +825,7 @@ describe("startProjectRun", () => {
       { project: "demo", workflow: "ok.yaml", inputs: {} },
       deps,
       noopLogger,
-      { stillWanted },
+      { source: "api", stillWanted },
     );
 
     expect(started.ok ? null : started.error.status).toBe(409);
@@ -823,7 +846,7 @@ describe("startProjectRun", () => {
       { project: "demo", workflow: "ok.yaml", inputs: {} },
       deps,
       noopLogger,
-      { permissionMode: "bypassPermissions" },
+      { source: "api", permissionMode: "bypassPermissions" },
     );
 
     expect(started.ok).toBe(true);
@@ -1071,6 +1094,17 @@ describe("createRoot guard", () => {
     }
   });
 
+  test("SC4 mount: the root app serves /login and /settings from the identity routes, behind the host guard", async () => {
+    const { app } = await rootApp("yok.example.com");
+    const headers = { host: "yok.example.com" };
+
+    const login = await send(app, "GET", "/login", headers);
+    expect(login.status).toBe(200);
+    expect(await login.text()).toContain("Sign in with GitHub");
+    expect((await send(app, "GET", "/settings", headers)).status).toBe(302);
+    expect((await send(app, "GET", "/login", { host: "evil.example.com" })).status).toBe(403);
+  });
+
   test("SC1005: a foreign Host gets 403 naming it on API and dashboard paths, and nothing is written", async () => {
     const { app, deps, launched } = await rootApp("yok.example.com");
     const headers = { host: "evil.example:4000" };
@@ -1197,6 +1231,20 @@ const until = async (check: () => boolean): Promise<void> => {
 };
 
 describe("Slack hook", () => {
+  test("SC17: @yok login from U7 in thread 100.1 posts ephemeral to U7 in that thread, while help still posts to everyone", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> login"));
+    await until(() => posts.length > 0);
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev2"));
+    await until(() => posts.length > 1);
+
+    expect(posts[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+    expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1", user: "U7" });
+    expect(posts[1]?.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(posts[1]?.form.user).toBeUndefined();
+  });
+
   test("SC8: @yok help from the command channel gets one reply in its thread, as blocks with a text fallback", async () => {
     const { app, posts } = await slackRoot();
 
@@ -1424,7 +1472,10 @@ describe("Slack run command", () => {
     expect(run?.policies?.values.interaction).toBe(false);
     const [starting, started] = replies(posts);
     expect(starting).toBe("Starting `ok.yaml` on *demo*…");
-    expect(started).toBe(`*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`);
+    // the member is linked to no yok user, so a not-linked line follows (SC29)
+    expect(started?.split("\n")[0]).toBe(
+      `*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`,
+    );
     expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
   });
 
@@ -1575,7 +1626,7 @@ const chatDeps = async () => {
     url: "http://yok.internal",
     send: async (input, init) => api.request(input, init),
   });
-  return { deps: { ...deps, client }, launches };
+  return { deps: { ...deps, client, now: () => new Date() }, launches };
 };
 
 const chatReply = (deps: DispatchDeps, text: string): Promise<Reply> =>
@@ -1591,7 +1642,7 @@ const firstCells = async (deps: DispatchDeps, text: string): Promise<readonly st
 // Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
 const addRunAt = (
   registry: Registry,
-  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name">>,
+  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name" | "user">>,
 ) =>
   registry.addRun({
     workflow: "ok",
@@ -1611,6 +1662,112 @@ const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
   if (!listed.ok) throw new Error(listed.error.message);
   return { ids: listed.value.runs.map((run) => run.id), total: listed.value.total };
 };
+
+const ritesh = { id: 7, login: "ritesh-gh" };
+const linkedU7 = (token: string | undefined): UsersFile => ({
+  u_1: {
+    name: "Ritesh",
+    email: "",
+    accounts: { github: token === undefined ? ritesh : { ...ritesh, token } },
+    slack: "U7",
+  },
+});
+const CONNECTED = "gho_u1";
+
+// Project demo, USERS in the home, and a GitHub whose /user answers with STATUS or throws;
+// from(MEMBER) runs `@yok run` as that Slack member.
+const ownedRunSetup = async (users: UsersFile, github: number | "down" = 200) => {
+  const { deps, launches } = await chatDeps();
+  tempWorkspace(deps.home);
+  await updateUsers(deps.home, () => users);
+  const githubFetch = async (): Promise<Response> => {
+    if (github === "down") throw new Error("ECONNREFUSED");
+    return new Response("{}", { status: github });
+  };
+  const owned = { ...deps, githubFetch };
+  const from = async (member: string) =>
+    replyText(
+      await dispatchCommand(
+        'run ok.yaml --project demo --prompt "x"',
+        { channel: "C1", ts: "100.1", user: member },
+        owned,
+        async () => undefined,
+      ),
+    );
+  return { deps, launches, from };
+};
+
+describe("Slack run owner", () => {
+  test("SC28: @yok run from U7, linked to u_1 with a live token, records u_1 as owner, launches with u_1's token, and warns about nothing", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await from("U7");
+
+    expect((await deps.registry.listRuns())[0]).toMatchObject({ source: "slack", user: "u_1" });
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+    expect(reply).not.toContain("not linked");
+    expect(reply).not.toContain("not connected");
+  });
+
+  test("SC29: @yok run from unlinked U8 starts as a Slack run with no user, with no GitHub token, and says to @yok login", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await from("U8");
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.source).toBe("slack");
+    expect(run?.user).toBeUndefined();
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(launches[0]?.env?.GH_CONFIG_DIR).toBe(join(deps.home, "gh-owned"));
+    expect(reply).toContain("`@yok login`");
+  });
+
+  test("SC30: a token GitHub answers 401 for is dropped, the account kept, and the run starts as u_1 with no token and the settings link", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), 401);
+
+    const reply = await from("U7");
+
+    const [user] = Object.values(await readUsers(deps.home));
+    expect(user?.accounts.github).toEqual(ritesh);
+    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(reply).toContain("GitHub is not connected for Ritesh");
+    expect(reply).toContain("http://localhost:1/settings");
+  });
+
+  test("@yok run from U7, linked to u_1 with no GitHub token, starts as u_1 with no token and the settings link, and leaves users.json alone", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(undefined), "down");
+    const before = readFileSync(usersPath(deps.home), "utf8");
+
+    const reply = await from("U7");
+
+    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(reply).toContain("GitHub is not connected for Ritesh");
+    expect(reply).toContain("http://localhost:1/settings");
+    expect(readFileSync(usersPath(deps.home), "utf8")).toBe(before);
+  });
+
+  test("@yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user, told to @yok login", async () => {
+    const { deps } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await chat(deps, 'run ok.yaml --project demo --prompt "x"');
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.source).toBe("slack");
+    expect(run?.user).toBeUndefined();
+    expect(reply).toContain("`@yok login`");
+  });
+
+  test("SC31: when GitHub cannot be reached the token is kept and the run launches with it", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), "down");
+
+    await from("U7");
+
+    expect((await readUsers(deps.home)).u_1?.accounts.github?.token).toBe(CONNECTED);
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+  });
+});
 
 describe("GET /runs", () => {
   const minute = (n: number): string => new Date(Date.UTC(2026, 9, 29, 10, n)).toISOString();
@@ -1706,6 +1863,57 @@ describe("GET /runs", () => {
     for (const valid of ["running", "blocked", "unreadable"]) {
       expect(!bogus.ok && bogus.error.message).toContain(valid);
     }
+  });
+});
+
+// Two runs by u_1 (ritesh-gh, GitHub id 8675309), one by u_2 and one with no owner.
+const ownedRunsDeps = async () => {
+  const { deps } = await chatDeps();
+  await updateUsers(deps.home, () => ({
+    u_1: {
+      name: "Ritesh",
+      email: "ritesh@example.com",
+      accounts: { github: { id: 8675309, login: "ritesh-gh" } },
+    },
+    u_2: {
+      name: "Asha",
+      email: "asha@example.com",
+      accounts: { github: { id: 42, login: "asha-gh" } },
+    },
+  }));
+  const cwd = gitRepo();
+  const owners = [
+    ["r-1", "u_1"],
+    ["r-2", "u_2"],
+    ["r-3", "u_1"],
+    ["r-4", undefined],
+  ] as const;
+  for (const [n, [id, user]] of owners.entries()) {
+    const createdAt = `2026-10-29T10:0${n}:00.000Z`;
+    await addRunAt(deps.registry, { id, cwd, createdAt, ...(user === undefined ? {} : { user }) });
+  }
+  return deps;
+};
+
+describe("GET /runs by", () => {
+  test("SC39: by=ritesh-gh, by=8675309 and by=ritesh@example.com each list u_1's two runs, and by=nobody is an empty 200", async () => {
+    const deps = await ownedRunsDeps();
+
+    for (const by of ["ritesh-gh", "8675309", "ritesh@example.com"]) {
+      const listed = await deps.client.runs({ by });
+      expect(listed.ok && listed.value.total).toBe(2);
+      expect(listed.ok && listed.value.runs.map((run) => [run.id, run.startedBy?.login])).toEqual([
+        ["r-3", "ritesh-gh"],
+        ["r-1", "ritesh-gh"],
+      ]);
+    }
+    expect(await listIds(deps, { by: "nobody" })).toEqual({ ids: [], total: 0 });
+  });
+
+  test("SC40: @yok ls --by ritesh-gh lists u_1's two runs and no others", async () => {
+    const deps = await ownedRunsDeps();
+
+    expect(await firstCells(deps, "ls --by ritesh-gh")).toEqual(["r-3", "r-1"]);
   });
 });
 
@@ -2485,6 +2693,26 @@ const resume = (deps: Parameters<typeof createApi>[0], runId: string, env = {}) 
   });
 
 describe("POST /runs/:id/resume", () => {
+  test("SC34: resuming a run owned by a connected user, with an empty body env, launches with their GitHub token", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { run: { source: "slack", user: "u_1" } });
+    const github = { id: 1, login: "ritesh-gh" };
+    await updateUsers(
+      deps.home,
+      (): UsersFile => ({
+        u_1: {
+          name: "R",
+          email: "",
+          accounts: { github: { ...github, token: "gho_u1" } },
+        },
+      }),
+    );
+
+    expect((await resume(deps, run.id)).status).toBe(200);
+
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+  });
+
   test("SC602: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal", async () => {
     const { deps, launches } = await resumeDeps();
     const run = await seedRun(deps.registry);
