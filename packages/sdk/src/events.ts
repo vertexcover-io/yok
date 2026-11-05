@@ -345,9 +345,16 @@ export const WorkflowBlockedEvent = z.object({
   }),
 });
 
-// The notifier opened the run's conversation; its later posts reply in this thread.
+// The notifier opened the run's conversation; its later posts reply in this thread. A run started
+// from a chat thread also keeps the thread's channel and whoever typed the command, so every later
+// post goes to that channel and tags them, whatever the session's env names.
 export const NotificationThreadStartedEvent = z.object({
-  payload: z.strictObject({ provider: NonEmptyStringSchema, threadId: NonEmptyStringSchema }),
+  payload: z.strictObject({
+    provider: NonEmptyStringSchema,
+    threadId: NonEmptyStringSchema,
+    channel: NonEmptyStringSchema.optional(),
+    user: NonEmptyStringSchema.optional(),
+  }),
 });
 
 // Values a subscriber or skill keeps between calls. Each top-level key replaces the one in state.custom,
@@ -941,7 +948,14 @@ const onSessionReplaced: EventHandler = (state, event) => {
 const onThreadStarted: EventHandler = (state, event) => {
   const parsed = NotificationThreadStartedEvent.safeParse(event);
   if (!parsed.success) return state;
-  return { ...state, notification: { ...state.notification, ...parsed.data.payload } };
+  const { provider, threadId, channel, user } = parsed.data.payload;
+  const thread = {
+    provider,
+    threadId,
+    ...(channel === undefined ? {} : { channel }),
+    ...(user === undefined ? {} : { user }),
+  };
+  return { ...state, notification: { ...state.notification, ...thread } };
 };
 
 const onCustomStateUpdated: EventHandler = (state, event) => {

@@ -247,7 +247,6 @@ export {
   stopRunningOnSignal,
 } from "./process.ts";
 export {
-  type ChatThread,
   createRegistryReader,
   type RegistryReader,
   registryPath,

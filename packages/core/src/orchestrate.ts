@@ -62,6 +62,7 @@ import {
   interruptOpenSteps,
   linkRunSession,
   nextStep,
+  notifyThreadFromEnv,
   requestApproval,
   retryFailedSteps,
 } from "./runs.ts";
@@ -164,7 +165,7 @@ const initCommand = () =>
           terminal: currentTerminal(),
           provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
-          notifyThread: process.env.YOK_SLACK_THREAD || undefined,
+          notifyThread: notifyThreadFromEnv(process.env),
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
       });
@@ -694,13 +695,7 @@ const loadHelperRun = async (
     return undefined;
   }
   const permissionMode = linked?.permissionMode;
-  return {
-    run,
-    log,
-    provider,
-    modeLaunch: permissionMode === undefined ? {} : { permissionMode },
-    thread: linked?.thread,
-  };
+  return { run, log, provider, modeLaunch: permissionMode === undefined ? {} : { permissionMode } };
 };
 
 const contextCommand = () =>
@@ -715,7 +710,7 @@ const contextCommand = () =>
     .action(async (nodeRunId, opts) => {
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
-      const { run, log, provider, modeLaunch, thread } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       const runDir = runDirOf(run.cwd, run.name);
       const [state, events] = await Promise.all([
         readState(runDir),
@@ -729,7 +724,6 @@ const contextCommand = () =>
         terminal: currentTerminal(process.env, log),
         registry: registry(),
         provider,
-        thread,
         launch: {
           cwd: run.cwd,
           orchestrateArgv: orchestrateArgv(),
@@ -755,14 +749,13 @@ const modelCommand = () =>
     .action(async (seq, opts) => {
       const helper = await loadHelperRun(opts, "yok-model", "model.log");
       if (helper === undefined) return;
-      const { run, log, provider, modeLaunch, thread } = helper;
+      const { run, log, provider, modeLaunch } = helper;
       await runModelStep({
         run,
         seq: Number(seq),
         sessionId: opts.sessionId,
         terminal: currentTerminal(process.env, log),
         provider,
-        thread,
         launch: {
           cwd: run.cwd,
           orchestrateArgv: orchestrateArgv(),

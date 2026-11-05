@@ -5,7 +5,6 @@ import type { EnvLayer } from "./config.ts";
 import type { Result } from "./contracts.ts";
 import { readIfExists, readText } from "./files.ts";
 import { prependPath } from "./process.ts";
-import type { ChatThread } from "./registry.ts";
 import { type CheckoutConfig, findConfigRoot, findRoot } from "./runs.ts";
 
 // The checkout's own .env if it has one, else the main checkout's; the two are never merged.
@@ -86,29 +85,15 @@ export const loadEnv = async (
   return { ok: true, value: { ...projectEnv, ...config.value, ...own.value } };
 };
 
-// A run started from a Slack thread replies in it and tags whoever typed the command, whatever
-// the project's env names. With no user id, the env's SLACK_MEMBER_ID stays the one tagged.
-const threadEnv = (thread: ChatThread | undefined): Readonly<Record<string, string>> =>
-  thread === undefined
-    ? {}
-    : {
-        SLACK_CHANNEL_ID: thread.channel,
-        YOK_SLACK_THREAD: thread.ts,
-        ...(thread.user === undefined ? {} : { SLACK_MEMBER_ID: thread.user }),
-      };
-
-// What a run's agent session starts with: the run's env, then its Slack thread, under yok's own
-// variables, with the shim folder first on PATH so the session's `yok` is the program that
-// started the run.
+// What a run's agent session starts with: the run's env, under yok's own variables, with the
+// shim folder first on PATH so the session's `yok` is the program that started the run.
 export const sessionEnv = (
   env: Readonly<Record<string, string>>,
   runId: string,
   home: string,
   shimDir: string,
-  thread: ChatThread | undefined,
 ): Record<string, string> => ({
   ...env,
-  ...threadEnv(thread),
   PATH: prependPath(shimDir, env.PATH ?? process.env.PATH),
   YOK_RUN_ID: runId,
   YOK_HOME: home,

@@ -3,7 +3,6 @@ import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  type ChatThread,
   type ContextOutput,
   ContextStartedEvent,
   type Event,
@@ -81,8 +80,6 @@ export type ContextStepOptions = Readonly<{
   terminal: ITerminal | undefined;
   registry: Registry;
   provider: IAgentProvider;
-  // the Slack thread the run was started from, laid over every relaunched session's env
-  thread: ChatThread | undefined;
   // how the agent was launched; relaunching adds the session's env, the resume prompt and the
   // run's name
   launch: Omit<LaunchOptions, "prompt" | "env" | "name">;
@@ -360,7 +357,7 @@ const startNewSession = async (options: ContextStepOptions, terminal: ITerminal)
   await recordStarted(options, "new", sessionId);
   const launch = {
     ...options.launch,
-    env: sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home), options.thread),
+    env: sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home)),
     prompt: resumePrompt(run),
     name: run.name,
   };
@@ -411,7 +408,7 @@ const compact = async (
     await provider.relaunch(target.terminal, target.sessionId, {
       ...options.launch,
       resume: true,
-      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home), options.thread),
+      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
       prompt: command,
       name: run.name,
     }),
@@ -601,8 +598,6 @@ export type ModelStepOptions = Readonly<{
   sessionId: string;
   terminal: ITerminal | undefined;
   provider: IAgentProvider;
-  // the Slack thread the run was started from, laid over the resumed session's env
-  thread: ChatThread | undefined;
   // how the agent was launched; the relaunch adds the model, the session's env, the resume prompt
   // and the run's name
   launch: Omit<LaunchOptions, "prompt" | "env" | "model" | "effort" | "resume" | "name">;
@@ -617,7 +612,7 @@ const resumeOnModel = async (
   terminal: ITerminal,
   target: TierModel,
 ): Promise<void> => {
-  const { run, provider, sessionId, launch, home, thread } = options;
+  const { run, provider, sessionId, launch, home } = options;
   const env = unwrap(await loadSessionEnv(run, provider.type));
   await waitForIdle(terminal);
   const store = jsonlEventStore(runDirOf(run.cwd, run.name));
@@ -627,7 +622,7 @@ const resumeOnModel = async (
       ...launch,
       ...tierLaunch(target),
       resume: true,
-      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home), thread),
+      env: sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
       prompt: resumePrompt(run),
       name: run.name,
     }),

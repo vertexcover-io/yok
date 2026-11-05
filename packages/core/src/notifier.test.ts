@@ -564,6 +564,7 @@ describe("the notifier's Slack variables", () => {
 // An opener whose notifier records what it was asked to do and starts thread 171.1.
 const fakeOpener = () => {
   const opened: string[] = [];
+  const envs: Readonly<Record<string, string | undefined>>[] = [];
   const posts: (string | undefined)[] = [];
   const notices: Notice[] = [];
   const uploads: (readonly [string, string])[] = [];
@@ -577,11 +578,12 @@ const fakeOpener = () => {
       uploads.push([file, threadId]);
     },
   };
-  const open: OpenNotifier = (type) => {
+  const open: OpenNotifier = (type, env = {}) => {
     opened.push(type);
+    envs.push(env);
     return { ok: true, value: notifier };
   };
-  return { calls: { opened, posts, notices, uploads }, open };
+  return { calls: { opened, envs, posts, notices, uploads }, open };
 };
 
 const inThread171: State = { ...state, notification: { provider: "slack", threadId: "171.1" } };
@@ -631,6 +633,35 @@ describe("notify", () => {
         payload: { provider: "slack", threadId: "171.1" },
       },
     ]);
+  });
+
+  test("SC917: a run whose thread names channel C1 and requester U7 opens the notifier with them over the env's channel and member", async () => {
+    const { calls, open } = fakeOpener();
+    const inRequesterThread: State = {
+      ...state,
+      notification: { provider: "slack", threadId: "100.1", channel: "C1", user: "U7" },
+    };
+    const started = event("workflow.node.started", { nodeType: "agent", notify: true }, "design");
+
+    await notify(
+      "slack",
+      { event: started, state: inRequesterThread, run },
+      open,
+      fakeRecorder().record,
+    );
+
+    expect(calls.posts).toEqual(["100.1"]);
+    expect(calls.envs[0]).toMatchObject({ SLACK_CHANNEL_ID: "C1", SLACK_MEMBER_ID: "U7" });
+  });
+
+  test("SC918 (regression): a run whose thread names no channel or requester opens the notifier with the env's own", async () => {
+    const { calls, open } = fakeOpener();
+    const started = event("workflow.node.started", { nodeType: "agent", notify: true }, "design");
+
+    await notify("slack", { event: started, state: inThread171, run }, open, fakeRecorder().record);
+
+    expect(calls.envs[0]?.SLACK_CHANNEL_ID).toBe(process.env.SLACK_CHANNEL_ID);
+    expect(calls.envs[0]?.SLACK_MEMBER_ID).toBe(process.env.SLACK_MEMBER_ID);
   });
 
   // A run folder holding artifacts/design.md, a 2 MB artifacts/page.html, artifacts/big.html over

@@ -643,26 +643,6 @@ describe("SC26: context node through a real tmux pane", () => {
     }
   }, 30_000);
 
-  test("SC912: new: the restarted agent runs with the requester the registry record names, not the .env member", async () => {
-    const socket = `yok-e2e-${crypto.randomUUID()}`;
-    try {
-      const thread = { channel: "C1", ts: "100.1", user: "U7" };
-      const flow = await runToContextNode("action: new", socket, { thread });
-      writeFileSync(join(flow.run.repo, ".env"), "SLACK_CHANNEL_ID=C9\nSLACK_MEMBER_ID=UCONF\n");
-
-      expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.launches().length === 2);
-
-      expect(flow.launches()[1]?.env).toMatchObject({
-        SLACK_CHANNEL_ID: "C1",
-        SLACK_MEMBER_ID: "U7",
-        YOK_SLACK_THREAD: "100.1",
-      });
-    } finally {
-      spawnSync("tmux", ["-L", socket, "kill-server"]);
-    }
-  }, 30_000);
-
   test.each([
     [
       "with no switch made, on the default tier's model and effort, and no permission mode",
@@ -761,42 +741,6 @@ nodes:
         applied: true,
       });
       expect(flow.next()).toMatchObject({ kind: "stage", nodeId: "think" });
-    } finally {
-      spawnSync("tmux", ["-L", socket, "kill-server"]);
-    }
-  }, 30_000);
-
-  test("SC913: model: the resumed agent runs with the requester the registry record names, not the .env member", async () => {
-    const socket = `yok-e2e-${crypto.randomUUID()}`;
-    try {
-      const flow = await runInPane(
-        `name: tiered
-inputs:
-  prompt: { type: string, required: true }
-nodes:
-  - { id: think, type: agent, stage: thinker, input: {} }
-`,
-        socket,
-        {
-          tiers: {
-            default: "fast",
-            models: { fast: { model: "sonnet-x" }, deep: { model: "opus-x" } },
-          },
-          thread: { channel: "C1", ts: "100.1", user: "U7" },
-        },
-        { YOK_SKILLS_DIR: stageSkills() },
-      );
-      writeFileSync(join(flow.run.repo, ".env"), "SLACK_CHANNEL_ID=C9\nSLACK_MEMBER_ID=UCONF\n");
-      expect(flow.next()).toMatchObject({ kind: "model", nodeId: "think" });
-
-      expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.launches().length === 2);
-
-      expect(flow.launches()[1]?.env).toMatchObject({
-        SLACK_CHANNEL_ID: "C1",
-        SLACK_MEMBER_ID: "U7",
-        YOK_SLACK_THREAD: "100.1",
-      });
     } finally {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
     }

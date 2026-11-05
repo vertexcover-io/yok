@@ -23,7 +23,6 @@ import { type FileHandle, open } from "node:fs/promises";
 import { tmpdir, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  type ChatThread,
   type IAgentProvider,
   type ILogger,
   type ITerminal,
@@ -201,7 +200,6 @@ const helper = async (
   terminal: ITerminal | undefined,
   provider: IAgentProvider = fakeProvider().provider,
   log: ILogger = noopLogger,
-  thread: ChatThread | undefined = undefined,
 ) =>
   runContextStep({
     run: context.run,
@@ -210,7 +208,6 @@ const helper = async (
     terminal,
     registry: context.registry,
     provider,
-    thread,
     launch: LAUNCH,
     home: HOME,
     log,
@@ -270,14 +267,6 @@ const resumingTerminal = (run: RunRef) =>
       if (text === RESUME) await resumed(run);
     },
   );
-
-const SLACK_THREAD: ChatThread = { channel: "C1", ts: "100.1", user: "U7" };
-const SLACK_DOTENV = "SLACK_CHANNEL_ID=C9\nSLACK_MEMBER_ID=UCONF\n";
-const SLACK_FROM_THREAD = {
-  SLACK_CHANNEL_ID: "C1",
-  SLACK_MEMBER_ID: "U7",
-  YOK_SLACK_THREAD: "100.1",
-};
 
 describe("runContextStep: new", () => {
   test("records the start, relaunches Claude on a new session, and the new session's SessionStart completes the node", async () => {
@@ -352,22 +341,6 @@ describe("runContextStep: new", () => {
       YOK_RUN_ID: "r-1",
       YOK_HOME: HOME,
     });
-  });
-
-  test("SC910: the new session launches with the Slack thread's channel, requester and ts over the run's .env", async () => {
-    const context = await setUp("type: context, action: new");
-    writeFileSync(join(context.run.cwd, ".env"), SLACK_DOTENV);
-    const starting = startingProvider(context);
-
-    await helper(
-      context,
-      fakeTerminal(() => IDLE).terminal,
-      starting.provider,
-      noopLogger,
-      SLACK_THREAD,
-    );
-
-    expect(starting.relaunches[0]?.options.env).toMatchObject(SLACK_FROM_THREAD);
   });
 
   test("a run env that fails to load completes unapplied and resumes the old session, launching nothing", async () => {
@@ -820,17 +793,6 @@ describe("runContextStep: compact", () => {
     expect(unread).toHaveLength(1);
     expect(unread[0]?.message).toContain("not read");
     expect(relaunches).toHaveLength(1);
-  });
-
-  test("SC911: the /compact relaunch carries the Slack thread's channel, requester and ts over the run's .env", async () => {
-    const context = await setUp("type: context, action: compact");
-    writeFileSync(join(context.run.cwd, ".env"), SLACK_DOTENV);
-    const fake = resumingTerminal(context.run);
-    const { provider, relaunches } = compactingProvider(context);
-
-    await helper(context, fake.terminal, provider, noopLogger, SLACK_THREAD);
-
-    expect(relaunches[0]?.options.env).toMatchObject(SLACK_FROM_THREAD);
   });
 
   test("a run env that fails to load leaves the compact unapplied with no relaunch, and only the resume line is typed", async () => {
@@ -1313,7 +1275,6 @@ const modelHelper = (
   terminal: ITerminal | undefined,
   provider: IAgentProvider = fakeProvider().provider,
   seq = context.seq,
-  thread: ChatThread | undefined = undefined,
 ) =>
   runModelStep({
     run: context.run,
@@ -1321,7 +1282,6 @@ const modelHelper = (
     sessionId: "s-1",
     terminal,
     provider,
-    thread,
     launch: LAUNCH,
     home: HOME,
     log: noopLogger,
@@ -1374,22 +1334,6 @@ describe("runModelStep", () => {
       { requestSeq: context.seq, node: "think", model: "opus-x", effort: "high", applied: true },
     ]);
     expect(pane.typed).toEqual([]);
-  });
-
-  test("SC909: the model switch relaunches with the Slack thread's channel, requester and ts over the run's .env", async () => {
-    const context = await setUpSwitch();
-    writeFileSync(join(context.run.cwd, ".env"), SLACK_DOTENV);
-    const { provider, relaunches } = resumingProvider(context);
-
-    await modelHelper(
-      context,
-      fakeTerminal(() => IDLE).terminal,
-      provider,
-      context.seq,
-      SLACK_THREAD,
-    );
-
-    expect(relaunches[0]?.options.env).toMatchObject(SLACK_FROM_THREAD);
   });
 
   test("SC26: a request for opus-x with no effort relaunches with no effort key", async () => {
