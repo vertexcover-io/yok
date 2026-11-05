@@ -167,3 +167,5 @@ nodes:
     allowFailure: true
     input:
       pr: "{{ inputs.pr }}"
+      # ends with "Asked in LINK" when a comment started the run; a thread link gets the reply in that thread
+      prompt: "{{ inputs.prompt }}"

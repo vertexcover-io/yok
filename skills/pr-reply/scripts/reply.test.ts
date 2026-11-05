@@ -12,14 +12,26 @@ afterEach(() => {
   process.exitCode = 0;
 });
 
-// A gh that records its arguments and the body file, then prints a URL or fails.
+// A gh that records its arguments and the body file (after --body-file, or a body=@FILE field),
+// then prints a URL or fails.
 const fakeGh = (fail?: string): { calls: () => string; body: () => string } => {
   const dir = mkdtempSync(join(tmpdir(), "reply-test-"));
   const args = join(dir, "args");
   const body = join(dir, "body");
   const script = fail
     ? `#!/bin/sh\necho x >> "${args}"\necho "${fail}" >&2\nexit 1\n`
-    : `#!/bin/sh\necho "$@" >> "${args}"\ncp "$4" "${body}"\necho https://github.com/o/r/pull/42#issuecomment-1\n`;
+    : [
+        "#!/bin/sh",
+        `echo "$@" >> "${args}"`,
+        'prev=""',
+        "for a in \"$@\"; do",
+        `  [ "$prev" = "--body-file" ] && cp "$a" "${body}"`,
+        `  case "$a" in body=@*) cp "${"$"}{a#body=@}" "${body}" ;; esac`,
+        '  prev="$a"',
+        "done",
+        "echo https://github.com/o/r/pull/42#issuecomment-1",
+        "",
+      ].join("\n");
   writeFileSync(join(dir, "gh"), script);
   chmodSync(join(dir, "gh"), 0o755);
   process.env.PATH = `${dir}${delimiter}${realPath}`;
@@ -69,6 +81,31 @@ describe("main", () => {
     expect(gh.body()).toBe(`${MARKER}\nReady for another look.`);
     expect(out).toBe("https://github.com/o/r/pull/42#issuecomment-1\n");
     expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  test("SC54: a review-thread --link replies inside that thread through the replies API", async () => {
+    const gh = fakeGh();
+    const link = "https://github.com/vertexcover-io/web/pull/42#discussion_r7";
+    await capture(() => main(["--pr", "42", "--link", link, "--comment", "Fixed in abc123."]));
+
+    expect(gh.calls().trim().split("\n")).toHaveLength(1);
+    expect(gh.calls()).toMatch(
+      /^api repos\/vertexcover-io\/web\/pulls\/42\/comments\/7\/replies -F body=@\S+ --jq \.html_url$/m,
+    );
+    expect(gh.body()).toBe(`${MARKER}\nFixed in abc123.`);
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  test.each([
+    ["a conversation comment", "https://github.com/vertexcover-io/web/pull/42#issuecomment-5"],
+    ["a review summary", "https://github.com/vertexcover-io/web/pull/42#pullrequestreview-9"],
+    ["an empty link", ""],
+  ])("SC55: --link to %s posts on the conversation with gh pr comment", async (_name, link) => {
+    const gh = fakeGh();
+    await capture(() => main(["--pr", "42", "--link", link, "--comment", "Done."]));
+
+    expect(gh.calls()).toMatch(/^pr comment --body-file \S+ -- 42$/m);
+    expect(gh.body()).toBe(`${MARKER}\nDone.`);
   });
 
   test("SC40: --comment - posts the stdin text unchanged under the marker", async () => {
