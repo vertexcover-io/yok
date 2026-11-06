@@ -6,28 +6,10 @@ import { main, replyBody } from "./reply.ts";
 
 const MARKER = "<!-- yok:pr-reply -->";
 const realPath = process.env.PATH ?? "";
-const realHome = process.env.YOK_HOME;
-const realRunId = process.env.YOK_RUN_ID;
-
-const restore = (key: string, value: string | undefined): void => {
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
-};
-
 afterEach(() => {
   process.env.PATH = realPath;
-  restore("YOK_HOME", realHome);
-  restore("YOK_RUN_ID", realRunId);
   process.exitCode = 0;
 });
-
-// A yok home holding the given files, set as YOK_HOME with run id r-1.
-const yokHome = (files: Record<string, string>): void => {
-  const home = mkdtempSync(join(tmpdir(), "reply-home-"));
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(home, name), text);
-  process.env.YOK_HOME = home;
-  process.env.YOK_RUN_ID = "r-1";
-};
 
 // A gh that records its arguments and the body file (after --body-file, or a body=@FILE field),
 // then prints a URL or fails.
@@ -123,36 +105,6 @@ describe("main", () => {
 
     expect(gh.calls()).toMatch(/^pr comment --body-file \S+ -- 42$/m);
     expect(gh.body()).toBe(`${MARKER}\nDone.`);
-  });
-
-  test("SC56: --started posts the run's page, from SERVER_DOMAIN in the yok home, in the thread it was asked from", async () => {
-    const gh = fakeGh();
-    yokHome({ ".env": "SERVER_DOMAIN=https://Yok.Example.com/\n" });
-    const link = "https://github.com/vertexcover-io/web/pull/42#discussion_r7";
-    await capture(() => main(["--pr", "42", "--link", link, "--started"]));
-
-    expect(gh.calls()).toMatch(/^api repos\/vertexcover-io\/web\/pulls\/42\/comments\/7\/replies /m);
-    expect(gh.body()).toBe(`${MARKER}\nStarted a yok run on this: https://yok.example.com/runs/r-1`);
-    expect(process.exitCode ?? 0).toBe(0);
-  });
-
-  test("SC57: --started with no SERVER_DOMAIN links this machine's own port over http", async () => {
-    const gh = fakeGh();
-    yokHome({ "server.port": "7777\n" });
-    await capture(() => main(["--pr", "42", "--started"]));
-
-    expect(gh.calls()).toMatch(/^pr comment --body-file \S+ -- 42$/m);
-    expect(gh.body()).toBe(`${MARKER}\nStarted a yok run on this: http://localhost:7777/runs/r-1`);
-  });
-
-  test("SC58: --started outside a run exits 1 and posts nothing", async () => {
-    const gh = fakeGh();
-    delete process.env.YOK_RUN_ID;
-    const { err } = await capture(() => main(["--pr", "42", "--started"]));
-
-    expect(process.exitCode).toBe(1);
-    expect(err).toContain("YOK_RUN_ID");
-    expect(gh.calls()).toBe("");
   });
 
   test("SC40: --comment - posts the stdin text unchanged under the marker", async () => {

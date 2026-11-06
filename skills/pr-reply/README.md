@@ -1,6 +1,6 @@
 # pr-reply
 
-Posts the one comment a `pr-fix` run leaves on its pull request: inside the review thread the run was asked from, else on the conversation. Its script also posts the run's page link when the run starts (`--started`), which pr-triage calls first.
+Posts the one comment a `pr-fix` run leaves on its pull request: inside the review thread the run was asked from, else on the conversation.
 
 ## When it runs
 

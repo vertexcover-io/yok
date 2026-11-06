@@ -16,8 +16,9 @@
 # the summary or on the lines, not both. @yok matches in any case, and a prompt wrapped whole in
 # quotes, such as @yok "fix CI", loses the quotes.
 # Only people with write access to the repo start runs: the job asks GitHub for the commenter's
-# permission, because the event labels a member whose org membership is private CONTRIBUTOR. The
-# run pushes and replies with the yok server's own GitHub login.
+# permission, because the event labels a member whose org membership is private CONTRIBUTOR.
+# Once the run starts, the job replies where @yok was typed with a link to the run's page, as
+# github-actions[bot]; the run itself pushes and replies with the yok server's own GitHub login.
 name: yok
 
 on:
@@ -28,9 +29,12 @@ on:
   pull_request_review:
     types: [submitted]
 
-# Read access lets the job's token look up the commenter's permission on the repo.
+# contents: read lets the job's token look up the commenter's permission; issues and
+# pull-requests: write let it post the run's link on the conversation or in a review thread.
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   start:
@@ -109,7 +113,18 @@ jobs:
           status=$(curl -sS -o "$reply" -w '%{http_code}' -u "$YOK_USER:$YOK_PASSWORD" \
             -H 'Content-Type: application/json' --data "$body" "${YOK_SERVER_URL%/}/api/runs")
           if [ "$status" = 201 ]; then
-            echo "Started: $(jq -r .view "$reply")"
+            view=$(jq -r .view "$reply")
+            echo "Started: $view"
+            # The marker is the line pr-triage reads to leave yok's own replies out of the work.
+            note=$(printf '<!-- yok:pr-reply -->\nStarted a yok run on this: %s' "$view")
+            if [[ "${LINK:-}" =~ \#discussion_r([0-9]+)$ ]]; then
+              gh api "repos/$REPO/pulls/${PR_URL##*/}/comments/${BASH_REMATCH[1]}/replies" \
+                -f body="$note" --silent ||
+                echo "::warning::The run started, but its link could not be posted in the thread."
+            else
+              gh pr comment "$PR_URL" --body "$note" ||
+                echo "::warning::The run started, but its link could not be posted on the pull request."
+            fi
             exit 0
           fi
           message=$(jq -r '.error | "\(.code): \(.message)"' "$reply" 2>/dev/null || cat "$reply")
