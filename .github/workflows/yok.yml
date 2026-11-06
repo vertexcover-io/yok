@@ -13,7 +13,8 @@
 # "Asked in URL" line with the comment's link, so it knows which thread "this" means. The comment
 # can be in the conversation, in a review thread, or in a review's summary. A review starts one
 # run for its summary and one for each of its line comments that starts with @yok, so put @yok in
-# the summary or on the lines, not both.
+# the summary or on the lines, not both. @yok matches in any case, and a prompt wrapped whole in
+# quotes, such as @yok "fix CI", loses the quotes.
 # Only people with write access to the repo start runs: the job asks GitHub for the commenter's
 # permission, because the event labels a member whose org membership is private CONTRIBUTOR. The
 # run pushes and replies with the yok server's own GitHub login.
@@ -57,7 +58,8 @@ jobs:
             admin|write) ;;
             *) echo "Ignored: $COMMENTER has $permission access to $REPO and cannot start yok runs."; exit 0 ;;
           esac
-          if [[ ! "$BODY" =~ ^@yok([[:space:]]|$) ]]; then
+          # @yok in any case: GitHub's startsWith in the job's if: ignores case too.
+          if [[ ! "${BODY,,}" =~ ^@yok([[:space:]]|$) ]]; then
             echo "Ignored: the comment does not start with @yok."
             exit 0
           fi
@@ -67,8 +69,12 @@ jobs:
               exit 1
             fi
           done
-          trim() { local text="$1"; printf '%s' "${text#"${text%%[![:space:]]*}"}"; }
-          text=$(trim "${BODY#@yok}")
+          trim() {
+            local text="$1"
+            text="${text#"${text%%[![:space:]]*}"}"
+            printf '%s' "${text%"${text##*[![:space:]]}"}"
+          }
+          text=$(trim "${BODY:4}")
           workflow=pr-fix
           if [[ "$text" =~ ^--workflow([[:space:]]|$) ]]; then
             text=$(trim "${text#--workflow}")
@@ -77,6 +83,15 @@ jobs:
             if [ -z "$workflow" ]; then
               echo "::error::--workflow needs a workflow name."
               exit 1
+            fi
+          fi
+          # A prompt wrapped whole in one pair of "…" or '…' loses that pair. "a" and "b" is not
+          # one pair, so it stays as typed, and so do quotes inside the prompt.
+          first="${text:0:1}"
+          if [ ${#text} -ge 2 ] && [[ "$first" == '"' || "$first" == "'" ]]; then
+            inner="${text:1:${#text}-2}"
+            if [ "${text: -1}" = "$first" ] && [[ "$inner" != *"$first"* ]]; then
+              text=$(trim "$inner")
             fi
           fi
           if [ -z "$text" ]; then
