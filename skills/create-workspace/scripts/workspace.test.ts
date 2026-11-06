@@ -937,9 +937,10 @@ describe("--pr: starting from a pull request's branch", () => {
       [
         "pr",
         "view",
-        "https://github.com/o/r/pull/86",
         "--json",
         "headRefName,baseRefName,isCrossRepository",
+        "--",
+        "https://github.com/o/r/pull/86",
       ],
     ]);
   });
@@ -951,6 +952,22 @@ describe("--pr: starting from a pull request's branch", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("fork");
   });
+
+  test.each(["--repo other/x", "42", "https://github.com/o/r/issues/5", "https://evil.example/o/r/pull/1"])(
+    "SC64: %j is not a pull request URL and gh is never called",
+    (url) => {
+      const seen: string[][] = [];
+      const gh = (args: readonly string[]) => {
+        seen.push([...args]);
+        return { ok: true as const, value: {} };
+      };
+      const result = prBranches(url, gh);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("not a GitHub pull request URL");
+      expect(seen).toEqual([]);
+    },
+  );
 
   test("SC62: a failed lookup is reported with gh's reason", () => {
     const gh = () => ({ ok: false as const, error: "no pull requests found" });

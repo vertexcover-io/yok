@@ -691,6 +691,8 @@ const PrViewSchema = z.looseObject({
 
 export type Gh = (args: readonly string[]) => Result<unknown>;
 
+const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+
 const runGh: Gh = (args) => {
   const ran = spawnSync("gh", args, { encoding: "utf8" });
   if (ran.error !== undefined) return { ok: false, error: ran.error.message };
@@ -702,7 +704,10 @@ export const prBranches = (
   url: string,
   gh: Gh = runGh,
 ): Result<{ upstream: string; base: string }> => {
-  const viewed = gh(["pr", "view", url, "--json", "headRefName,baseRefName,isCrossRepository"]);
+  // The URL comes from prompt text, so only a pull request link reaches gh, after --.
+  if (!PR_URL.test(url)) return { ok: false, error: `not a GitHub pull request URL: ${url}` };
+  const fields = "headRefName,baseRefName,isCrossRepository";
+  const viewed = gh(["pr", "view", "--json", fields, "--", url]);
   if (!viewed.ok)
     return { ok: false, error: `could not read pull request ${url}: ${viewed.error}` };
   const pr = PrViewSchema.safeParse(viewed.value);
