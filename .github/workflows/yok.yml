@@ -8,10 +8,12 @@
 #   secret    YOK_USER, YOK_PASSWORD   the login Caddy asks for in front of the server
 #
 # Comment `@yok WHAT TO DO` on a pull request to run pr-fix on it, or
-# `@yok --workflow NAME WHAT TO DO` for another workflow that takes `pr` and `prompt`. The comment
-# can be in the conversation, in a review thread, or in a review's summary; the prompt ends with
-# the comment's link, so the run knows which thread "this" means. A review starts one run for its summary and one for each of its line
-# comments that starts with @yok, so put @yok in the summary or on the lines, not both.
+# `@yok --workflow NAME WHAT TO DO` for any workflow that takes a prompt. The prompt ends with a
+# "Pull request: URL" line, so the run works on that pull request's own branch, and an
+# "Asked in URL" line with the comment's link, so it knows which thread "this" means. The comment
+# can be in the conversation, in a review thread, or in a review's summary. A review starts one
+# run for its summary and one for each of its line comments that starts with @yok, so put @yok in
+# the summary or on the lines, not both.
 # Only people with write access to the repo start runs: the job asks GitHub for the commenter's
 # permission, because the event labels a member whose org membership is private CONTRIBUTOR. The
 # run pushes and replies with the yok server's own GitHub login.
@@ -42,7 +44,7 @@ jobs:
           COMMENTER: ${{ github.event.comment.user.login || github.event.review.user.login }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_URL: ${{ github.event.issue.pull_request.html_url || github.event.pull_request.html_url }}
           LINK: ${{ github.event.comment.html_url || github.event.review.html_url }}
           YOK_SERVER_URL: ${{ vars.YOK_SERVER_URL }}
           YOK_PROJECT: ${{ vars.YOK_PROJECT }}
@@ -81,12 +83,12 @@ jobs:
             echo "::error::Say what to do after @yok."
             exit 1
           fi
+          text="$text"$'\n\n'"Pull request: $PR_URL"
           if [ -n "${LINK:-}" ]; then
-            text="$text"$'\n\n'"Asked in $LINK"
+            text="$text"$'\n'"Asked in $LINK"
           fi
-          body=$(jq -n --arg project "$YOK_PROJECT" --arg workflow "$workflow" --arg pr "$PR" \
-            --arg prompt "$text" \
-            '{project: $project, workflow: $workflow, inputs: {pr: $pr, prompt: $prompt},
+          body=$(jq -n --arg project "$YOK_PROJECT" --arg workflow "$workflow" --arg prompt "$text" \
+            '{project: $project, workflow: $workflow, inputs: {prompt: $prompt},
               policies: {interaction: false}}')
           reply=$(mktemp)
           status=$(curl -sS -o "$reply" -w '%{http_code}' -u "$YOK_USER:$YOK_PASSWORD" \

@@ -7,8 +7,8 @@ import * as z from "zod";
 export const REPLY_MARKER = "<!-- yok:pr-reply -->";
 
 export const PrTriageInputSchema = z.strictObject({
-  // a pull request number in the project's repo, or its URL
-  pr: NonEmptyStringSchema,
+  // a pull request number in the project's repo, or its URL; empty when the prompt names it
+  pr: z.string(),
   prompt: NonEmptyStringSchema,
 });
 

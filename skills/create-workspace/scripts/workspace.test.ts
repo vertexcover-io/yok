@@ -22,6 +22,7 @@ import {
   addRepositories as addWith,
   createWorkspace as createWith,
   type OutputLine,
+  prBranches,
   type RepoOutcome,
   removeWorkspace as removeWith,
   type WorkspaceOptions,
@@ -915,5 +916,48 @@ describe("remove events", () => {
     const result = await removeWorkspace({ run, root, branch: "b" });
     expect(result.ok).toBe(false);
     expect(await eventsOf(run)).toEqual([]);
+  });
+});
+
+describe("--pr: starting from a pull request's branch", () => {
+  const view = (fields: Record<string, unknown>) => () => ({ ok: true as const, value: fields });
+
+  test("SC60: a same-repo pull request gives its head branch as the upstream and its base as the base", () => {
+    const seen: string[][] = [];
+    const gh = (args: readonly string[]) => {
+      seen.push([...args]);
+      return view({ headRefName: "fix-footer", baseRefName: "master", isCrossRepository: false })();
+    };
+
+    expect(prBranches("https://github.com/o/r/pull/86", gh)).toEqual({
+      ok: true,
+      value: { upstream: "fix-footer", base: "master" },
+    });
+    expect(seen).toEqual([
+      [
+        "pr",
+        "view",
+        "https://github.com/o/r/pull/86",
+        "--json",
+        "headRefName,baseRefName,isCrossRepository",
+      ],
+    ]);
+  });
+
+  test("SC61: a pull request from a fork is refused", () => {
+    const gh = view({ headRefName: "main", baseRefName: "main", isCrossRepository: true });
+    const result = prBranches("https://github.com/o/r/pull/9", gh);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("fork");
+  });
+
+  test("SC62: a failed lookup is reported with gh's reason", () => {
+    const gh = () => ({ ok: false as const, error: "no pull requests found" });
+
+    expect(prBranches("https://github.com/o/r/pull/1", gh)).toEqual({
+      ok: false,
+      error: "could not read pull request https://github.com/o/r/pull/1: no pull requests found",
+    });
   });
 });
