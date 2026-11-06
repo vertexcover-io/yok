@@ -130,7 +130,7 @@ describe("GitHub sign-in", () => {
     const s = setup();
     const { authorize, done } = await signIn(s);
 
-    expect(authorize.searchParams.get("scope")).toBe("repo read:user user:email");
+    expect(authorize.searchParams.get("scope")).toBe("repo workflow read:user user:email");
     expect(authorize.searchParams.get("redirect_uri")).toBe(
       "http://localhost:4000/auth/github/callback",
     );
