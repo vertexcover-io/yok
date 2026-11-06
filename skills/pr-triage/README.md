@@ -4,7 +4,7 @@ Reads an open pull request and turns the run's prompt into the work list the res
 
 ## When it runs
 
-First stage of the `pr-fix` workflow.
+First stage of the `pr-fix` workflow. It first posts a link to the run's page on the pull request, through pr-reply's script.
 
 ## Inputs and outputs
 
