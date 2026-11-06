@@ -252,6 +252,8 @@ A run started from Slack posts its updates in the thread under the message, in w
 
 Comment `@yok fix the review comments` on a pull request. The comment can be in the conversation, in a review thread, where the prompt carries the comment's link so `@yok fix this` works, or in a review's summary. A review starts one run for its summary and one for each line comment that starts with `@yok`, so put `@yok` in one place. The job's log prints the run's link. Only people with write access to the repo start runs, with `interaction` off; the job checks the commenter's permission with GitHub. The run pushes and replies with the server's own `gh` login.
 
+`@yok --workflow NAME …` starts any workflow that takes a prompt, such as `@yok --workflow quick fix the failing test`. The prompt the Action sends ends with a `Pull request: URL` line, so the workflow's workspace starts from the pull request's own branch, its commits land there with no force push, and it replies on the pull request instead of opening another.
+
 ## Useful commands
 
 ```bash

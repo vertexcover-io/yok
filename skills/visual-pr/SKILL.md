@@ -41,8 +41,25 @@ it could not verify, each with `req` and `mechanism` (what blocked it). Do every
 inside its `worktreeDir`, and skip a repo whose branch has no commit past its base. The base
 branch is `workspace.repositories.NAME.git.baseBranch` in `.yok/RUN/state.json`.
 
-Push the branch before step 1. The commit stage may have rewritten commits that were already
-pushed, so the push may need force. Force only over commits this checkout is known to hold:
+**A run on a pull request's branch.** When the branch tracks a branch other than its own
+(`git rev-parse --abbrev-ref @{upstream}` prints `origin/NAME` and NAME is not the branch), the
+run was started on that pull request and works on its branch. Do this instead of the steps below:
+
+1. Push with `git push origin HEAD:NAME`, never with force. If it is refused, stop and finish the
+   stage with `--error -` naming the commits on origin this checkout lacks.
+2. Find the open pull request whose head is NAME with `gh pr list --head NAME --state open --json
+   number,url`. Open no pull request and leave its title and description as the author wrote them.
+3. Reply on it with `yok orchestrate skill run pr-reply.reply --pr NUMBER --comment -`, adding
+   `--link URL` when the task has an `Asked in URL` line, so a request made in a review thread is
+   answered there. Write the reply as plain prose: what was done and the commits that did it,
+   QA's verdict from `qa` with each gap, and that the pull request is ready for another look only
+   when QA passed. Name people by login without `@`.
+4. Finish with `PR_ACTION` `updated`, the pull request's URL and number, and the artifacts
+   `{"type":"pull-request","name":"REPO","url":"PR_URL"}` and
+   `{"type":"pr-comment","name":"REPO","url":"COMMENT_URL"}`, with no description file.
+
+Otherwise, push the branch before step 1. The commit stage may have rewritten commits that were
+already pushed, so the push may need force. Force only over commits this checkout is known to hold:
 
 ```bash
 BRANCH=$(git branch --show-current)

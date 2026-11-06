@@ -3,7 +3,15 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { replyBody } from "../../pr-reply/scripts/reply.ts";
-import { collect, type Gh, main, PrTriageOutputSchema, REPLY_MARKER, toFacts } from "./pr.ts";
+import {
+  collect,
+  type Gh,
+  main,
+  PrTriageInputSchema,
+  PrTriageOutputSchema,
+  REPLY_MARKER,
+  toFacts,
+} from "./pr.ts";
 
 const HEAD = "a".repeat(40);
 
@@ -374,5 +382,13 @@ describe("main with a gh on PATH", () => {
     expect(calls).toContain("owner=vertexcover-io");
     expect(calls).toContain("name=web");
     expect(calls).toContain("number=42");
+  });
+});
+
+describe("PrTriageInputSchema", () => {
+  test("SC63: pr may be empty, when the prompt names the pull request instead", () => {
+    expect(PrTriageInputSchema.safeParse({ pr: "", prompt: "fix CI\n\nPull request: u" }).success).toBe(true);
+    expect(PrTriageInputSchema.safeParse({ pr: "42", prompt: "fix CI" }).success).toBe(true);
+    expect(PrTriageInputSchema.safeParse({ pr: "42", prompt: "" }).success).toBe(false);
   });
 });

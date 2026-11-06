@@ -49,8 +49,9 @@ If `yok` is not found, stop and report that; do not create worktrees by hand.
      from `packages`.
 3. **Create the workspace with a 5-minute timeout.** Run the `workspace` script with
    `create SPEC_NAME --run SPEC_NAME`, adding `--base BASE_BRANCH` when the input has
-   `baseBranch`, `--upstream UPSTREAM` when it has `upstream`, and `--repos NAME1,NAME2` in
-   multi layout. `--run SPEC_NAME` names the run, so
+   `baseBranch`, `--upstream UPSTREAM` when it has `upstream`, `--pr URL` when it has no
+   `upstream` and its `request` holds a line `Pull request: URL` (the run then works on that pull
+   request's own branch), and `--repos NAME1,NAME2` in multi layout. `--run SPEC_NAME` names the run, so
    its event log records the workspace; always pass it. `create` also runs the project's
    `workspace.setup`, which can take minutes, so run it through the Bash tool with an explicit
    `timeout: 300000` (5 minutes).

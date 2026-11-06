@@ -1371,12 +1371,13 @@ describe("the shipped task workflow", () => {
 });
 
 describe("the shipped pr-fix workflow", () => {
-  test("SC31: requires pr and prompt, checks bun and gh, and design depends on an unconditional resolve-conflicts, with no git-commit or visual-pr stage", async () => {
+  test("SC31: requires the prompt, takes pr optionally (else from the prompt's Pull request line), checks bun and gh, and design depends on an unconditional resolve-conflicts, with no git-commit or visual-pr stage", async () => {
     const plan = await compileWorkflow(
       join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
     );
 
-    expect(plan.inputs).toMatchObject({ pr: { required: true }, prompt: { required: true } });
+    expect(plan.inputs).toMatchObject({ pr: { default: "" }, prompt: { required: true } });
+    expect(plan.inputs.pr).not.toHaveProperty("required", true);
     expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual(["binary:bun", "binary:gh"]);
     expect(plan.nodes.find((node) => node.id === "design")?.dependsOn).toEqual([
       "resolve-conflicts",

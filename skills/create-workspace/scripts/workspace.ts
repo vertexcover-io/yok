@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { rmdir } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
@@ -675,8 +676,45 @@ project's setup and teardown.
                     (default: origin's default branch)
   --upstream BRANCH create: a branch on origin the new branch starts from and tracks, such as a
                     pull request's head branch; base stays the branch it merges into
+  --pr URL          create: start from this pull request's head branch, as --upstream, with its
+                    base as --base unless --base is given; refused for a fork's pull request
   --force           remove: remove worktrees with uncommitted or untracked files
 `;
+
+// A pull request's head branch is the run's upstream and its base the base, read through gh. A
+// fork's head branch is not on origin, so pushing to that name would hit someone else's branch.
+const PrViewSchema = z.looseObject({
+  headRefName: NonEmptyStringSchema,
+  baseRefName: NonEmptyStringSchema,
+  isCrossRepository: z.boolean(),
+});
+
+export type Gh = (args: readonly string[]) => Result<unknown>;
+
+const runGh: Gh = (args) => {
+  const ran = spawnSync("gh", args, { encoding: "utf8" });
+  if (ran.error !== undefined) return { ok: false, error: ran.error.message };
+  if (ran.status !== 0) return { ok: false, error: ran.stderr.trim() || `gh exited ${ran.status}` };
+  return { ok: true, value: JSON.parse(ran.stdout) };
+};
+
+export const prBranches = (
+  url: string,
+  gh: Gh = runGh,
+): Result<{ upstream: string; base: string }> => {
+  const viewed = gh(["pr", "view", url, "--json", "headRefName,baseRefName,isCrossRepository"]);
+  if (!viewed.ok)
+    return { ok: false, error: `could not read pull request ${url}: ${viewed.error}` };
+  const pr = PrViewSchema.safeParse(viewed.value);
+  if (!pr.success) return { ok: false, error: `gh returned no branches for pull request ${url}` };
+  if (pr.data.isCrossRepository) {
+    return {
+      ok: false,
+      error: `pull request ${url} comes from a fork; yok works only on same-repo pull requests`,
+    };
+  }
+  return { ok: true, value: { upstream: pr.data.headRefName, base: pr.data.baseRefName } };
+};
 
 const FLAGS = {
   run: { type: "string" },
@@ -684,6 +722,7 @@ const FLAGS = {
   repos: { type: "string" },
   base: { type: "string" },
   upstream: { type: "string" },
+  pr: { type: "string" },
   force: { type: "boolean" },
 } as const;
 
@@ -691,7 +730,7 @@ const CommandSchema = z.enum(["info", "create", "add", "remove"]);
 
 const COMMAND_FLAGS: Readonly<Record<z.infer<typeof CommandSchema>, readonly string[]>> = {
   info: ["run", "run-id"],
-  create: ["run", "run-id", "repos", "base", "upstream"],
+  create: ["run", "run-id", "repos", "base", "upstream", "pr"],
   add: ["run", "run-id", "repos", "base"],
   remove: ["run", "run-id", "repos", "force"],
 };
@@ -737,6 +776,9 @@ const parseCommandLine = (argv: readonly string[]): Result<CommandLine> => {
   if (branch === undefined) return usageError(`${command.data} needs a branch`);
   if (extra.length > 0) return usageError(`${command.data} takes one branch`);
   if (command.data === "add" && flags.repos === undefined) return usageError("add needs --repos");
+  if (flags.pr !== undefined && flags.upstream !== undefined) {
+    return usageError("give --pr or --upstream, not both");
+  }
   return { ok: true, value: { command: command.data, branch, flags } };
 };
 
@@ -784,7 +826,11 @@ const changeWorkspace = async (
     process.stderr.write(`[${line.repo}] ${line.text}\n`);
   };
   const repos = flags.repos === undefined ? undefined : splitList(flags.repos);
-  const { base, upstream, force } = flags;
+  const fromPr = flags.pr === undefined ? undefined : prBranches(flags.pr);
+  if (fromPr !== undefined && !fromPr.ok) return fail(fromPr.error);
+  const upstream = fromPr?.value.upstream ?? flags.upstream;
+  const base = flags.base ?? fromPr?.value.base;
+  const { force } = flags;
   const result = await change({ ...target, branch, repos, base, upstream, force, onOutput, log });
   if (!result.ok) return fail(result.error);
   const { eventError: unrecorded, ...report } = result.value;
