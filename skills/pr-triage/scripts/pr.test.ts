@@ -203,6 +203,20 @@ describe("toFacts", () => {
     expect(facts.fromOthers.comments.map((item) => item.body)).toEqual(["hi"]);
   });
 
+  test("SC59: yok's own replies inside a thread are left out of the thread", () => {
+    const asked = {
+      ...thread(false, "a.ts"),
+      comments: {
+        nodes: [note("rename x"), note("@yok fix this"), note(replyBody("Started a yok run on this: u"))],
+      },
+    };
+    const facts = toFacts(view(), threadsReply(asked));
+
+    expect(facts.threads.map((item) => item.comments.map((c) => c.body))).toEqual([
+      ["rename x", "@yok fix this"],
+    ]);
+  });
+
   test("SC51: a thread a @yok trigger started is left out, and a thread with a @yok reply is kept", () => {
     const started = { ...thread(false, "a.ts"), comments: { nodes: [note("@yok add a doc comment")] } };
     const replied = {

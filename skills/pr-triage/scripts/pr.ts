@@ -137,7 +137,7 @@ export const toFacts = (view: unknown, threads: unknown) => {
       line: thread.line,
       outdated: thread.isOutdated,
       writer: thread.comments.nodes.some(canWrite),
-      comments: thread.comments.nodes.map(note),
+      comments: thread.comments.nodes.filter((item) => !item.body.includes(REPLY_MARKER)).map(note),
     }));
   const comments = pr.comments.filter((item) => isWork(item.body));
   const reviews = pr.reviews.filter((review) => review.body.trim() !== "" && isWork(review.body));
