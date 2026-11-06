@@ -23,8 +23,9 @@ const SESSION_COOKIE = "yok_session";
 const NONCE_COOKIE = "yok_login_nonce";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-// One grant: who the person is, and push and pull on every repo they can reach (ADR 0041).
-const GITHUB_SCOPE = "repo read:user user:email";
+// One grant: who the person is, push and pull on every repo they can reach, and pushes that
+// change workflow files, which GitHub refuses without `workflow` (ADR 0041).
+const GITHUB_SCOPE = "repo workflow read:user user:email";
 
 export type IdentityDeps = Readonly<{
   home: string;

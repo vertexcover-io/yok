@@ -13,7 +13,7 @@ A run must push and open PRs as the person who started it, with no token pasted 
 
 ## Considered Options
 
-- One plain OAuth app and one step: Sign in with GitHub asks for `repo read:user user:email` and stores the token on the person's GitHub account
+- One plain OAuth app and one step: Sign in with GitHub asks for `repo workflow read:user user:email` and stores the token on the person's GitHub account
 - The same app in two steps: sign-in asks only for identity and keeps no token, then Connect GitHub asks for `repo`
 - A GitHub App installed per account or org, with each person authorizing it
 
@@ -23,4 +23,4 @@ Chosen: one OAuth app in one step, because nothing has to be installed and every
 
 ## Consequences
 
-Moving to a GitHub App later means a new app and every person signing in again. Disconnect revokes the token on GitHub; signing in again reconnects.
+Moving to a GitHub App later means a new app and every person signing in again. Disconnect revokes the token on GitHub; signing in again reconnects. Adding a scope later, as `workflow` was on 2026-11-06 when pushes that touched `.github/workflows` were refused, widens no stored token: every connected person signs in again to get it.
