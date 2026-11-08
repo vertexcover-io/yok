@@ -260,6 +260,7 @@ export {
   closingLine,
   findConfigRoot,
   findRoot,
+  findRunPane,
   loadCheckoutConfig,
   loadNamedConfig,
   loadPickedConfig,
