@@ -1184,6 +1184,23 @@ describe("terminal tab in a browser", () => {
     }
   }, 60000);
 
+  test("SC13: when the CDN cannot be reached it says so, and opening the tab again retries", async () => {
+    await browser("network", "route", addonUrl, "--abort");
+    try {
+      await browser("open", url);
+      await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+      await browser("click", "#tabTerminal");
+      await until(couldNotLoad, 20_000);
+    } finally {
+      await browser("network", "unroute", addonUrl);
+    }
+
+    await browser("click", "#tabTerminal");
+
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
   test("SC20: a program in the pane can copy to the browser's clipboard but not read it", async () => {
     await openTerminal();
     await evaluate(`(() => {
