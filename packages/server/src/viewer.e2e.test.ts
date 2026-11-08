@@ -1221,6 +1221,21 @@ describe("terminal tab in a browser", () => {
     expect(await evaluate("window.copied")).toEqual(["copied-out"]);
   }, 60000);
 
+  // tmux leaves the selection field of its OSC 52 empty, as a mouse-drag copy does.
+  test("SC20: a tmux copy reaches the browser's clipboard", async () => {
+    await openTerminal();
+    await evaluate(`(() => {
+      window.copied = [];
+      Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "", writeText: async (text) => { window.copied.push(text); } } });
+      return true;
+    })()`);
+    const client = tmux("list-clients", "-t", `=${pane}:`, "-F", "#{client_name}").stdout.trim();
+
+    tmux("set-buffer", "-w", "-t", client, "copied-by-tmux");
+
+    await until(`window.copied.includes("copied-by-tmux")`);
+  }, 60000);
+
   test("SC14: keys typed in the terminal reach the session", async () => {
     await openTerminal();
 

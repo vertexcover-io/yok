@@ -1495,7 +1495,8 @@ function createTerminal() {
   const clipboard = {
     readText: async () => "",
     writeText: async (selection, text) => {
-      if (selection === "c") await navigator.clipboard.writeText(text);
+      // tmux sends an empty selection; it means the clipboard too.
+      if (selection === "c" || selection === "") await navigator.clipboard.writeText(text);
     },
   };
   t.loadAddon(new window.ClipboardAddon.ClipboardAddon(undefined, clipboard));
