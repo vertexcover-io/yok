@@ -139,14 +139,18 @@ describe("the run's terminal websocket", () => {
     ["?cols=2&rows=2", "2x2"],
     ["?cols=1000&rows=500", "1000x500"],
     ["?cols=1001&rows=501", "80x24"],
-  ])("SC5: a starting size of %p attaches at %s", async (query, size) => {
-    const setup = await setUp();
+  ])(
+    "SC5: a starting size of %p attaches at %s",
+    async (query, size) => {
+      const setup = await setUp();
 
-    connect(setup.port, "r-1", query);
+      connect(setup.port, "r-1", query);
 
-    await until(() => clients(setup.socket) !== "");
-    await until(() => windowSize(setup.socket) === size);
-  }, 20_000);
+      await until(() => clients(setup.socket) !== "");
+      await until(() => windowSize(setup.socket) === size);
+    },
+    20_000,
+  );
 
   test("SC6: typed input reaches the session", async () => {
     const setup = await setUp();

@@ -1169,7 +1169,8 @@ describe("terminal tab in a browser", () => {
   }, 60000);
 
   const couldNotLoad = `${stateText}.startsWith("Could not load the terminal")`;
-  const addonUrl = "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.9.0/lib/addon-unicode11.js";
+  const addonUrl =
+    "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.9.0/lib/addon-unicode11.js";
 
   test("SC13: a CDN file that is not the pinned one is refused", async () => {
     await browser("network", "route", addonUrl, "--body", JSON.stringify("tampered"));
