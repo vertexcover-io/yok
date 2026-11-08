@@ -226,7 +226,7 @@ A remote run prints its id and dashboard link, and does not attach. Nobody sits 
 
 The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same login and the same Host and Origin check as the rest of the page. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
 
-The browser keeps a few keys for itself: Ctrl-W, Ctrl-T and Cmd-W close or open tabs instead of reaching the agent. Install the page as an app (Chrome's "Install page as app") or use fullscreen to get them back.
+On Linux and Windows the browser keeps Ctrl-W and Ctrl-T for itself: they close or open a tab instead of reaching the agent. Install the page as an app (Chrome's "Install page as app") to get them back. On macOS those keys reach the agent, and Cmd-W closes the window either way.
 
 You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
 
