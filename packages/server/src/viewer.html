@@ -1485,7 +1485,14 @@ function createTerminal() {
   fitAddon = new window.FitAddon.FitAddon();
   t.loadAddon(fitAddon);
   t.loadAddon(new window.WebLinksAddon.WebLinksAddon((_event, uri) => openInTab(uri)));
-  t.loadAddon(new window.ClipboardAddon.ClipboardAddon());
+  // Write-only: the default provider answers an OSC 52 read with the clipboard, typed into the pane.
+  const clipboard = {
+    readText: async () => "",
+    writeText: async (selection, text) => {
+      if (selection === "c") await navigator.clipboard.writeText(text);
+    },
+  };
+  t.loadAddon(new window.ClipboardAddon.ClipboardAddon(undefined, clipboard));
   t.loadAddon(new window.Unicode11Addon.Unicode11Addon());
   t.unicode.activeVersion = "11";
   t.open($("#termHost"));

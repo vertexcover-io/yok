@@ -1163,6 +1163,25 @@ describe("terminal tab in a browser", () => {
     expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(1);
   }, 60000);
 
+  test("SC20: a program in the pane can copy to the browser's clipboard but not read it", async () => {
+    await openTerminal();
+    await evaluate(`(() => {
+      window.copied = [];
+      Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "secret-clip", writeText: async (text) => { window.copied.push(text); } } });
+      window.sentFrames = [];
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) { window.sentFrames.push(String(data)); return send.call(this, data); };
+      window.yokTerminal.write("\\x1b]52;c;?\\x07");
+      window.yokTerminal.write("\\x1b]52;c;${btoa("copied-out")}\\x07");
+      return true;
+    })()`);
+    await Bun.sleep(500);
+
+    const sent = (await evaluate("window.sentFrames.join('\\n')")) as string;
+    expect(sent).not.toContain(btoa("secret-clip"));
+    expect(await evaluate("window.copied")).toEqual(["copied-out"]);
+  }, 60000);
+
   test("SC14: keys typed in the terminal reach the session", async () => {
     await openTerminal();
 
