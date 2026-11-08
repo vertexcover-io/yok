@@ -1148,6 +1148,11 @@ describe("terminal tab in a browser", () => {
     expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(false);
     expect(await evaluate(`${screen}.includes("pane-ready")`)).toBe(true);
     expect(await evaluate(stateHidden)).toBe(true);
+    expect(
+      await evaluate(
+        "[...document.styleSheets].some((s) => s.href?.endsWith('xterm.css') && s.cssRules.length > 0)",
+      ),
+    ).toBe(true);
   }, 60000);
 
   test("SC13: two clicks while xterm.js loads open one terminal", async () => {
@@ -1161,6 +1166,22 @@ describe("terminal tab in a browser", () => {
     await waitFor(() => clientCount() === 1);
 
     expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(1);
+  }, 60000);
+
+  const couldNotLoad = `${stateText}.startsWith("Could not load the terminal")`;
+  const addonUrl = "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.9.0/lib/addon-unicode11.js";
+
+  test("SC13: a CDN file that is not the pinned one is refused", async () => {
+    await browser("network", "route", addonUrl, "--body", JSON.stringify("tampered"));
+    try {
+      await browser("open", url);
+      await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+      await browser("click", "#tabTerminal");
+
+      await until(couldNotLoad, 20_000);
+    } finally {
+      await browser("network", "unroute", addonUrl);
+    }
   }, 60000);
 
   test("SC20: a program in the pane can copy to the browser's clipboard but not read it", async () => {

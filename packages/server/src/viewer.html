@@ -1416,15 +1416,16 @@ function applyAgent({ state, reason }) {
 /* ---------- terminal ---------- */
 
 const XTERM = "https://cdn.jsdelivr.net/npm/@xterm";
-const XTERM_CSS = `${XTERM}/xterm@6.0.0/css/xterm.css`;
+// Each file is pinned by its hash: this page opens a shell, so a changed CDN file must not run.
+const XTERM_CSS = ["xterm@6.0.0/css/xterm.css", "sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"];
 // Loaded in this order: every addon needs xterm.js first.
 const XTERM_SCRIPTS = [
-  "xterm@6.0.0/lib/xterm.js",
-  "addon-fit@0.11.0/lib/addon-fit.js",
-  "addon-web-links@0.12.0/lib/addon-web-links.js",
-  "addon-clipboard@0.2.0/lib/addon-clipboard.js",
-  "addon-unicode11@0.9.0/lib/addon-unicode11.js",
-  "addon-webgl@0.19.0/lib/addon-webgl.js",
+  ["xterm@6.0.0/lib/xterm.js", "sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4"],
+  ["addon-fit@0.11.0/lib/addon-fit.js", "sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"],
+  ["addon-web-links@0.12.0/lib/addon-web-links.js", "sha384-0IIwkXq0LAkIxEVKxlOxWbje2g/VT+5CzVTZiEukyiZ02pOl/O+M0fkpEKAYqto9"],
+  ["addon-clipboard@0.2.0/lib/addon-clipboard.js", "sha384-w58/aoMoWyj3vL47sXkN/bnchsdCAHHUQslw59i9Ei276OIuUCZgAO5y07Db60Bg"],
+  ["addon-unicode11@0.9.0/lib/addon-unicode11.js", "sha384-s7G1tpQVHxwemnFdH7ZEOPEAMxRSbFGsvrhaHpxYuMssFdike2DQuIBzg43+p5/3"],
+  ["addon-webgl@0.19.0/lib/addon-webgl.js", "sha384-8/2DNT7OeuMQVc7wBPoMHAQ+NmEoYSx27k7IdbsItiomGC5D9+LTrbo8jtY6YZv8"],
 ];
 // Close codes from the server (terminal.ts): Ctrl-\ detached, or the run has no session.
 const DETACHED = 4000;
@@ -1441,9 +1442,12 @@ let retryMs = 1000;
 let retryTimer = null;
 let xtermLoading = null;
 
-const loadScript = (src) => new Promise((resolve, reject) => {
+const loadScript = ([file, integrity]) => new Promise((resolve, reject) => {
+  const src = `${XTERM}/${file}`;
   const script = document.createElement("script");
   script.src = src;
+  script.integrity = integrity;
+  script.crossOrigin = "anonymous";
   script.onload = resolve;
   script.onerror = () => reject(new Error(`could not load ${src}`));
   document.head.append(script);
@@ -1453,9 +1457,11 @@ function loadXterm() {
   xtermLoading ??= (async () => {
     const css = document.createElement("link");
     css.rel = "stylesheet";
-    css.href = XTERM_CSS;
+    css.href = `${XTERM}/${XTERM_CSS[0]}`;
+    css.integrity = XTERM_CSS[1];
+    css.crossOrigin = "anonymous";
     document.head.append(css);
-    for (const file of XTERM_SCRIPTS) await loadScript(`${XTERM}/${file}`);
+    for (const file of XTERM_SCRIPTS) await loadScript(file);
   })();
   return xtermLoading;
 }
