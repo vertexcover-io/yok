@@ -1236,20 +1236,32 @@ describe("terminal tab in a browser", () => {
     await until(`window.copied.includes("copied-by-tmux")`);
   }, 60000);
 
+  // The fitted terminal must fit the window both ways: a row or column too many hides Claude's
+  // mode line or scrolls the page sideways.
   test.each([
     ["1280", "800"],
     ["900", "700"],
+    ["600", "700"],
   ])(
-    "SC15: at %sx%s the terminal's last row is inside the window",
+    "SC15: at %sx%s the fitted terminal stays inside the window",
     async (width, height) => {
       await browser("set", "viewport", width, height);
       await openTerminal();
+      const deadline = Date.now() + 10_000;
+      while ((await evaluate("window.yokTerminal.cols")) !== windowWidth()) {
+        if (Date.now() > deadline) throw new Error("tmux never matched the terminal's width");
+        await Bun.sleep(100);
+      }
 
-      const bottom = await evaluate(
-        "document.querySelector('#termHost .xterm-screen').getBoundingClientRect().bottom",
-      );
-      expect(bottom as number).toBeLessThanOrEqual(Number(height));
-      expect(await evaluate("document.documentElement.scrollHeight")).toBe(Number(height));
+      const fit = (await evaluate(`(() => {
+        const s = document.querySelector('#termHost .xterm-screen').getBoundingClientRect();
+        const d = document.documentElement;
+        return { bottom: s.bottom, right: s.right, tall: d.scrollHeight - innerHeight, wide: d.scrollWidth - d.clientWidth };
+      })()`)) as { bottom: number; right: number; tall: number; wide: number };
+      expect(fit.bottom).toBeLessThanOrEqual(Number(height));
+      expect(fit.right).toBeLessThanOrEqual(Number(width));
+      expect(fit.tall).toBeLessThanOrEqual(0);
+      expect(fit.wide).toBe(0);
     },
     60000,
   );
