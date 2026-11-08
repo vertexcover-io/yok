@@ -1418,7 +1418,7 @@ function applyAgent({ state, reason }) {
 const XTERM = "https://cdn.jsdelivr.net/npm/@xterm";
 // Each file is pinned by its hash: this page opens a shell, so a changed CDN file must not run.
 const XTERM_CSS = ["xterm@6.0.0/css/xterm.css", "sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"];
-// Loaded in this order: every addon needs xterm.js first.
+// Loaded all at once: an addon reads xterm.js only when it is loaded into a terminal.
 const XTERM_SCRIPTS = [
   ["xterm@6.0.0/lib/xterm.js", "sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4"],
   ["addon-fit@0.11.0/lib/addon-fit.js", "sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"],
@@ -1461,7 +1461,7 @@ function loadXterm() {
     css.integrity = XTERM_CSS[1];
     css.crossOrigin = "anonymous";
     document.head.append(css);
-    for (const file of XTERM_SCRIPTS) await loadScript(file);
+    await Promise.all(XTERM_SCRIPTS.map(loadScript));
   })();
   return xtermLoading;
 }
