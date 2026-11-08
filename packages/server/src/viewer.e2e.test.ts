@@ -1,13 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { yokTerminalHost } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 import { createRegistry, updateUsers } from "@yok/sdk/internal";
+import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
+import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
 
 const ORCHESTRATE = [
@@ -1016,5 +1021,213 @@ describe("runs page in a browser", () => {
     } finally {
       await rename("Asha");
     }
+  }, 60000);
+});
+
+describe("terminal tab in a browser", () => {
+  const pane = "term-e2e";
+  const socket = `yok-test-${randomUUID()}`;
+  let serve: (() => void) | null = null;
+  let stop: () => Promise<void> = async () => {};
+  let url: string;
+  let upgrades = 0;
+
+  const tmux = (...args: string[]) =>
+    spawnSync("tmux", ["-L", socket, ...args], { encoding: "utf8" });
+  const clientCount = (): number =>
+    tmux("list-clients", "-t", `=${pane}:`, "-F", "#{client_name}")
+      .stdout.split("\n")
+      .filter((line) => line !== "").length;
+  const windowWidth = (): number =>
+    Number(tmux("display", "-p", "-t", `=${pane}:`, "#{window_width}").stdout.trim());
+  const waitFor = async (check: () => boolean, ms = 10_000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error("timed out waiting");
+      await Bun.sleep(100);
+    }
+  };
+
+  const screen = `(() => {
+    const b = window.yokTerminal?.buffer.active;
+    if (!b) return "";
+    return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true) ?? "").join("\\n");
+  })()`;
+  const stateText = "document.querySelector('#termStateText').textContent";
+  const stateHidden = "document.querySelector('#termState').hidden";
+
+  const openTerminal = async (): Promise<void> => {
+    await browser("open", url);
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+    await browser("click", "#tabTerminal");
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+  };
+
+  beforeAll(async () => {
+    const home = tempDir();
+    const cwd = tempDir();
+    mkdirSync(join(cwd, ".yok", "demo", "artifacts"), { recursive: true });
+    writeFileSync(join(cwd, ".yok", "demo", "artifacts", "design.md"), DESIGN);
+    const host = yokTerminalHost({ YOK_HOME: home, YOK_TMUX_SOCKET: socket });
+    const created = await host.create({
+      name: pane,
+      cwd,
+      argv: ["sh", "-c", "echo pane-ready; exec sh"],
+      env: { PS1: "$ " },
+    });
+    if (!created.ok) throw new Error(created.error);
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    await registry.addRun({
+      id: "r1",
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [{ agent: "claude", sessionId: "s1" }],
+      name: "demo",
+      terminal: pane,
+      config: null,
+      tiers: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const app = new Hono()
+      .use("/api/runs/*", async (_c, next) => {
+        upgrades++;
+        await next();
+      })
+      .route("/api/runs", terminalRoutes({ registry, host, log: noopLogger }))
+      .route(
+        "/",
+        viewerRoutes({
+          registry,
+          providerFor: () => claudeOver(host),
+          host,
+          log: noopLogger,
+          now: () => new Date(),
+          home,
+          openInEditor: () => ({ ok: true, value: null }),
+        }),
+      );
+    let port = 0;
+    serve = () => {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port,
+        idleTimeout: 0,
+        fetch: app.fetch,
+        websocket,
+      });
+      port = server.port as number;
+      stop = () => server.stop(true);
+    };
+    serve();
+    url = `http://localhost:${port}/runs/r1`;
+    // An earlier block may have closed the browser; a relaunched one has a single tab, which
+    // afterEach could not close, leaving its terminal attached into the next test.
+    await browser("open", "about:blank");
+  }, 30000);
+
+  beforeEach(() => browser("tab", "new"), 30000);
+  afterEach(() => browser("tab", "close"), 30000);
+
+  afterAll(async () => {
+    stopDeliveries();
+    spawnSync("agent-browser", ["close"], {
+      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+    await stop();
+    tmux("kill-server");
+  });
+
+  test("SC13: the Terminal tab opens the live session's screen", async () => {
+    await openTerminal();
+
+    expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(false);
+    expect(await evaluate(`${screen}.includes("pane-ready")`)).toBe(true);
+    expect(await evaluate(stateHidden)).toBe(true);
+  }, 60000);
+
+  test("SC14: keys typed in the terminal reach the session", async () => {
+    await openTerminal();
+
+    await browser("keyboard", "type", "echo typed-$((40+2))");
+    await browser("press", "Enter");
+
+    await waitFor(() =>
+      tmux("capture-pane", "-p", "-t", `=${pane}:`).stdout.split("\n").includes("typed-42"),
+    );
+    await until(`${screen}.split("\\n").includes("typed-42")`);
+  }, 60000);
+
+  test("SC15: the terminal follows the window's size", async () => {
+    await browser("set", "viewport", "1280", "800");
+    await openTerminal();
+    const sameWidth = async (): Promise<number> => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const cols = await evaluate("window.yokTerminal.cols");
+        if (cols === windowWidth()) return cols as number;
+        await Bun.sleep(100);
+      }
+      throw new Error("tmux never matched the terminal's width");
+    };
+    const wide = await sameWidth();
+
+    await browser("set", "viewport", "900", "700");
+    await until(`window.yokTerminal.cols < ${wide}`);
+    const narrow = await sameWidth();
+
+    expect(narrow).toBeLessThan(wide);
+  }, 60000);
+
+  test("SC16: Ctrl-\\ detaches to a Reattach button, and Reattach comes back", async () => {
+    await openTerminal();
+
+    // agent-browser sends "Backslash" as a key with no keyCode; the "\\" name sends keyCode 220.
+    await browser("press", "Control+\\");
+    await until(`${stateText} === "Detached from the run's session."`);
+    expect(await evaluate("!document.querySelector('#reattachBtn').hidden")).toBe(true);
+    const seen: number[] = [];
+    for (let i = 0; i < 30; i++) {
+      seen.push(clientCount());
+      await Bun.sleep(100);
+    }
+    expect(Math.max(...seen)).toBe(0);
+
+    await browser("click", "#reattachBtn");
+    await until(stateHidden);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
+  test("SC17: a dropped connection reconnects by itself", async () => {
+    await openTerminal();
+
+    await stop();
+    await until(`${stateText}.startsWith("Connection lost. Reconnecting")`);
+    serve?.();
+
+    await until(stateHidden, 15_000);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
+  // Last: it ends the session the other tests attach to.
+  test("SC18: a session that ends shows the attach wording, with no reconnect loop, and the tab hides", async () => {
+    await openTerminal();
+
+    tmux("kill-session", "-t", `=${pane}`);
+    await until(`${stateText} === "Detached from the run's session."`);
+    await browser("click", "#reattachBtn");
+    await until(
+      `${stateText} === "Run demo has no running session. Resume it with: yok resume demo"`,
+    );
+    const before = upgrades;
+    await Bun.sleep(3000);
+
+    expect(upgrades).toBe(before);
+    await until("document.querySelector('#pillText').textContent === 'Agent not running'", 10_000);
+    expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(true);
   }, 60000);
 });
