@@ -10,6 +10,9 @@
 /* Layout: three working panes (files | rendered artifact | comment threads) over a live tmux strip. */
 /* {{DOC_STYLES}} */
 
+/* The app fills the window exactly, so the terminal's last row is not pushed below it. */
+body { margin: 0; }
+
 .app {
   height: 100%;
   display: grid;

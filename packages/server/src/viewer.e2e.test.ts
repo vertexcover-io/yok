@@ -1236,6 +1236,24 @@ describe("terminal tab in a browser", () => {
     await until(`window.copied.includes("copied-by-tmux")`);
   }, 60000);
 
+  test.each([
+    ["1280", "800"],
+    ["900", "700"],
+  ])(
+    "SC15: at %sx%s the terminal's last row is inside the window",
+    async (width, height) => {
+      await browser("set", "viewport", width, height);
+      await openTerminal();
+
+      const bottom = await evaluate(
+        "document.querySelector('#termHost .xterm-screen').getBoundingClientRect().bottom",
+      );
+      expect(bottom as number).toBeLessThanOrEqual(Number(height));
+      expect(await evaluate("document.documentElement.scrollHeight")).toBe(Number(height));
+    },
+    60000,
+  );
+
   test("SC14: keys typed in the terminal reach the session", async () => {
     await openTerminal();
 
