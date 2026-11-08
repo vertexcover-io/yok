@@ -1150,6 +1150,19 @@ describe("terminal tab in a browser", () => {
     expect(await evaluate(stateHidden)).toBe(true);
   }, 60000);
 
+  test("SC13: two clicks while xterm.js loads open one terminal", async () => {
+    await browser("open", url);
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+
+    await evaluate(
+      "(() => { const tab = document.querySelector('#tabTerminal'); tab.click(); tab.click(); return true; })()",
+    );
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+
+    expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(1);
+  }, 60000);
+
   test("SC14: keys typed in the terminal reach the session", async () => {
     await openTerminal();
 

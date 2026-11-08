@@ -1558,7 +1558,9 @@ async function openTerminal() {
       showTermState("Could not load the terminal from cdn.jsdelivr.net. Open the tab again to retry.");
       return;
     }
-    term = createTerminal();
+    // A second click during the load waits on the same load; only the first one builds the terminal.
+    term ??= createTerminal();
+    if ($("#terminalPane").hidden) return;
   }
   fitAddon.fit();
   if (socket === null && !detached) attach();
