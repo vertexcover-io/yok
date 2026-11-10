@@ -1,13 +1,13 @@
 # Writing the Proof Report
 
-**Read this when:** grading scenarios, assembling videos (Step 5), or writing the report (Step 6). Everything here
+**Read this when:** grading scenarios, completing the videos (Step 5), or writing the report (Step 6). Everything here
 is done once the driver's session is closed; the driving and capture craft is in `driving-the-browser.md` and
 `driving-the-device.md`.
 
 **Contents:**
 
 - Grading — two tracks
-- Building the videos (Step 5)
+- The videos (Step 5)
 - The report format
 - Completion checklist — the report is done when all of these hold
 
@@ -25,19 +25,22 @@ overlap, a broken empty state, copy issues. Run it on every scenario, including 
 find here is a bug, and Step 4 owns it. `visual-verification.md` is the one pass that runs it — against the
 design where the plan supplies one, and against the screen's own coherence always. This file renders its result.
 
-## Building the videos (Step 5)
+## The videos (Step 5)
 
-The videos are **assembled, not captured**: ffmpeg builds each one from the promoted frames in `screenshots/`. One
-video per scenario, grouped by the `NN_<slug>` prefix before the `__`, written beside the report. `SKILL.md`'s Step 5
-carries the command that builds them and prints the per-scenario `ok` line.
+Every scenario has one video, `NN_<slug>.mp4`, beside the report. It comes from one of two places:
 
-The script builds every scenario's video and reports one line each. **A `FAILED` line fails the step** — including
-one that names a **stretched** frame, which the script catches itself by comparing each source frame's aspect ratio
-with the crop window cropdetect found in the video it built. The settings and the reasons for them live in the
-script.
+- **Recorded.** A browser scenario's video is its take, filmed by the round that drove it as
+  `driving-the-browser.md` says. Step 5 checks that it plays and keeps it.
+- **Assembled.** A device scenario, and a browser scenario whose recorder failed, gets its video built by ffmpeg
+  from its promoted frames in `screenshots/`, grouped by the `NN_<slug>` prefix before the `__`.
+
+`SKILL.md`'s Step 5 carries the command, which reports one line per scenario. **A `FAILED` line fails the step**: a
+recording that does not play, a build ffmpeg could not finish, or a **stretched** frame, which the script catches
+itself by comparing each source frame's aspect ratio with the crop window cropdetect found in the video it built.
+The settings and the reasons for them live in the script.
 
 **Keep the frames** — they are the only machine-readable evidence, and a re-grade or second look needs the PNGs. If
-a merge fails, name the scenario and move on; its frames still prove it.
+a video cannot be had, name the scenario and move on; its frames still prove it.
 
 ## The report format
 
@@ -47,7 +50,7 @@ is all there is of them. It carries the finished write-up rather than a summary 
 the `scenarios[]` element itself, so a carried-over scenario is transcribed into the report rather than reconstructed.
 Its `url`, `expected`, `steps`, `reason`, `proofs`, frames and labels are the ones the round that drove it wrote, and
 the `requirements` beside it are what `coverage[]` maps to that scenario. The one field the terminal round fills in is
-`video`, once it has built the videos. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's
+`video`, and only for a scenario whose video Step 5 built: a recorded take's `video` is already on its line. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's
 `gap` object the same way. So a carried-over scenario reads no differently from one you drove yourself.
 
 **The surface row comes from this attempt, not from the ledger.** `fields[]` carries one row naming where the

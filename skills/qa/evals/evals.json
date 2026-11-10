@@ -164,6 +164,26 @@
         "Opens both devices in one session",
         "Writes two coverage rows for R1"
       ]
+    },
+    {
+      "id": 10,
+      "name": "browser-scenario-is-scouted-then-filmed-in-one-take",
+      "prompt": "You are running the qa stage of run feat-x, the only attempt, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
+      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, then record stop as its own command. Promotes the take's frames after reading them, names the video on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it.",
+      "files": [],
+      "expectations": [
+        "The recorder starts only after the flow has been driven once without it",
+        "The take is one batch, and record stop runs as a separate command after it",
+        "Every click in the take is written as click with --human, and the recording is started with --cursor",
+        "Each step in the take waits on a condition before its assert and screenshot",
+        "The scenario's ledger line names NN_SLUG.mp4 as its video before Step 5 runs"
+      ],
+      "anti_expectations": [
+        "Starts the recorder before the flow is known, so retries and dead ends are in the video",
+        "Uses snapshot refs as targets inside the take",
+        "Keeps the video of a take in which a step failed or an assert returned an unexpected value",
+        "Builds the browser scenario's video from its screenshots while its recorder works"
+      ]
     }
   ]
 }

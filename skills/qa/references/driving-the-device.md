@@ -102,11 +102,12 @@ Re-takes, dead ends and missed presses stay in staging and are discarded at clea
 **Re-driving a scenario an earlier round filmed? Delete its old evidence first, then capture:**
 
 ```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_*
+rm .yok/RUN/artifacts/verification/screenshots/NN_* .yok/RUN/artifacts/verification/NN_*
 ```
 
-Step 5 builds each video by globbing every frame still under that prefix, so a frame from a walk that no longer
-exists ends up in the video nobody can tell apart from a fresh one.
+Step 5 builds each video from every frame still under that prefix, and keeps any `NN_SLUG.mp4` it finds beside the
+report. So a frame or a video from a walk that no longer exists passes for a fresh one, and nobody can tell them
+apart.
 
 For every action, in this order:
 

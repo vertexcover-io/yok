@@ -232,6 +232,49 @@ test("SC51, SC8: a scenario ffmpeg cannot build is FAILED, and the run exits non
   assert.match(r.stdout, /^FAILED 02_broken — ffmpeg: .+/m);
 });
 
+const recording = (dir: string, name: string): string => {
+  const path = join(dir, name);
+  spawnSync(
+    "ffmpeg",
+    ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=1", path],
+    { stdio: "ignore" },
+  );
+  return path;
+};
+
+test("SC52: a scenario that already has its recorded video keeps it, and the rest are built", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("recorded");
+  frame(dir, "01_recorded__01_open.png", 1280, 800);
+  frame(dir, "02_built__01_open.png", 1280, 800);
+  const before = readFileSync(recording(dir, "01_recorded.mp4"));
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_recorded\.mp4 recorded$/m);
+  assert.match(r.stdout, /^ok 02_built\.mp4 crop=\d+:\d+:\d+:\d+$/m);
+  assert.ok(readFileSync(join(dir, "01_recorded.mp4")).equals(before));
+});
+
+test("SC53: a recorded video that does not play is FAILED and left as it is", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("unplayable");
+  frame(dir, "01_cut_short__01_open.png", 1280, 800);
+  writeFileSync(join(dir, "01_cut_short.mp4"), "a recording the recorder never closed");
+
+  const r = run(dir);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^FAILED 01_cut_short — 01_cut_short\.mp4 does not play$/m);
+  assert.equal(
+    readFileSync(join(dir, "01_cut_short.mp4"), "utf8"),
+    "a recording the recorder never closed",
+  );
+});
+
 const island = (id: string, json: string): string =>
   `<script type="application/json" id="${id}">${json}</script>`;
 

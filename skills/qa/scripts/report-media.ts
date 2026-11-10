@@ -1,16 +1,19 @@
 #!/usr/bin/env bun
-// Builds one video per verification scenario from its promoted frames, then cropdetects each video
-// and fails the scenario unless the window it reports still carries the source frame's aspect
+// Leaves every verification scenario with one video. A scenario whose take was recorded already
+// has its NN_<slug>.mp4 beside the report: that file is kept once it is shown to play. Every other
+// scenario gets a video built from its promoted frames, which is then cropdetected, and the
+// scenario fails unless the window cropdetect reports still carries the source frame's aspect
 // ratio — a frame stretched to fill the canvas shows a geometry that was never on screen.
 // With --inline it instead writes every file the finished report names into the report itself,
 // as data URIs in a `report-media` island the template resolves paths through, so the one html
 // file carries its own videos and frames wherever it is moved.
 // Usage: report-media.ts [--inline] VERIFICATION_DIR
-// Building prints one line per scenario — "ok NN_<slug>.mp4 crop=<window>", or
-// "FAILED NN_<slug> — <reason>" — and writes each NN_<slug>.mp4 beside the report.
+// Building prints one line per scenario — "ok NN_<slug>.mp4 recorded" for a kept recording,
+// "ok NN_<slug>.mp4 crop=<window>" for a built one, or "FAILED NN_<slug> — <reason>" — and
+// writes each built NN_<slug>.mp4 beside the report.
 // Inlining prints one line per file — "ok <path> <bytes>B", or "FAILED <path> — <reason>" — and
 // a path that failed shows as missing in the report, which loads nothing from disk.
-// Exits 0 when every scenario built or every file inlined, and when there are no frames at all;
+// Exits 0 when every scenario has its video or every file inlined, and when there are no frames at all;
 // 1 when any scenario or file failed; 2 when the arguments, the directory, a missing ffmpeg or a
 // missing report makes the run impossible.
 
@@ -221,6 +224,17 @@ function buildVideo(dir: string, prefix: string): string | null {
   }
 }
 
+// A recording whose recorder never closed it has no index, and ffmpeg cannot open it.
+const plays = (dir: string, video: string): boolean =>
+  spawnSync(
+    "ffmpeg",
+    ["-nostdin", "-v", "error", "-i", video, "-frames:v", "1", "-f", "null", "-"],
+    {
+      cwd: dir,
+      stdio: "ignore",
+    },
+  ).status === 0;
+
 function cropWindow(dir: string, prefix: string): string | null {
   // cropdetect writes its report to stderr, which only spawnSync hands back on a zero exit.
   // Default loglevel, since -v error silences cropdetect itself.
@@ -258,6 +272,12 @@ function firstFrameSize(screenshotsDir: string, prefix: string): FrameSize | nul
 export function buildScenarios(dir: string): readonly ScenarioResult[] {
   const screenshots = join(dir, "screenshots");
   return scenarioPrefixes(screenshots).map((prefix) => {
+    const video = `${prefix}.mp4`;
+    if (existsSync(join(dir, video))) {
+      const failure = plays(dir, video) ? null : `${video} does not play`;
+      return { prefix, crop: null, failure, note: null };
+    }
+
     const failure = buildVideo(dir, prefix);
     if (failure !== null) {
       return { prefix, crop: null, failure: `ffmpeg: ${failure}`, note: null };
@@ -278,7 +298,7 @@ export function buildScenarios(dir: string): readonly ScenarioResult[] {
 export const formatResult = (result: ScenarioResult): string =>
   result.failure !== null
     ? `FAILED ${result.prefix} — ${result.failure}`
-    : `ok ${result.prefix}.mp4 ${result.crop}${result.note === null ? "" : ` — ${result.note}`}`;
+    : `ok ${result.prefix}.mp4 ${result.crop ?? "recorded"}${result.note === null ? "" : ` — ${result.note}`}`;
 
 const hasFfmpeg = (): boolean =>
   spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;

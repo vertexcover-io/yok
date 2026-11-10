@@ -8,7 +8,7 @@ with a browser open; grading, videos, and the report are in `writing-the-report.
 - Setup
 - The rules
 - Catching a self-dismissing element
-- The capture loop — act, assert, capture to staging, promote
+- Scout, then film — one take per scenario
 - The frame that proves it
 - Replaying the scenario on a phone
 
@@ -48,9 +48,10 @@ agent-browser skills get core --full   # ~2400 lines (~19k tokens). A lookup sur
   batch entry**.
 - **Wrap every `eval` in an IIFE** — `eval` runs in one persistent global scope, so a top-level `const` throws
   `Identifier already declared` on the second call. `eval --stdin` fixes quoting, not scope.
-- **Return a value from asserts and read it from `--json`.** Keep `--bail` on the setup batch (`open → auth →
-  navigate`) only: an assert that *returns false* is a success and doesn't bail, but an assert that *throws* is an
-  error and takes the screenshot after it down with it — losing the picture exactly when you needed it.
+- **Return a value from asserts and read it from `--json`.** Pass `--bail` on the setup batch (`open → auth →
+  navigate`) and on the take, where a failed step ends the run. A scouting batch runs without it: an assert that
+  *returns false* is a success either way, but one that *throws* is an error, and with `--bail` it takes the
+  screenshot after it down with it — losing the picture exactly when you needed it.
 - **Return the count beside the verdict and treat `n: 0` as a failed lookup.** `[].every(f)` is `true`, so
   `nodes.every(n => n.checked)` reports success over a selector that matched nothing and reads exactly like the real
   thing. `{n: nodes.length, ok: nodes.every(...)}`.
@@ -103,57 +104,111 @@ The order inside the eval is load-bearing: **observe → arm the timeout → cli
 after the click is the race you came here to close. When it resolves `{appeared: false}`, record the element
 `NOT VERIFIED` with the `ms` lifetime you measured.
 
-## The capture loop — act, assert, capture to staging, promote
+## Scout, then film — one take per scenario
+
+**The video is a recording of the scenario from its first step to its last, and of nothing else.** So each
+scenario is driven twice: a scout that works the flow out with the recorder off, then one take that replays the
+whole flow as a single command with the recorder on. The take is the evidence. Its asserts decide the verdict, its
+screenshots are the frames and its recording is the video, so all three come from one run.
 
 **Film the whole life of the scenario, not a checklist of its steps.** Every step earns at least one frame, many earn
 more — a scenario with more *promoted* frames than steps is doing it right.
 
-**Capture to staging, promote only what you verified.** Shoot into `.yok/RUN/verify-staging/` — scratch,
-a sibling of `verification/` and never part of it — and move a frame into `screenshots/` only once it earns its
-place. Re-takes, dead ends, and missed clicks stay in staging and are discarded at cleanup.
+### 1. Scout the flow, recorder off
 
-**Re-driving a scenario an earlier round filmed? Delete its old evidence first, then capture.**
+Drive the scenario one step at a time until you hold four things for every step:
+
+- **The target**, as a selector that survives a reload: CSS, or `xpath=…` where only its text tells the element
+  apart. A snapshot ref belongs to the page that issued it, so refs are for scouting and selectors are for the take.
+- **The condition** that shows the step landed — the `wait` that returns the moment the state holds.
+- **The assert**, and the value it returns when the behaviour is right.
+- **The way to the target.** A target outside the viewport, or under another element, needs a step of its own that
+  scrolls it into view before the click.
+
+Screenshots taken while scouting go to staging and serve your own reading. Retries, dead ends and missed clicks
+all happen here, where nothing is filmed.
+
+### 2. Clear the evidence of an earlier round
+
+A scenario an earlier round filmed keeps its frames, its video and its produced files until you delete them:
 
 ```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_*
+rm .yok/RUN/artifacts/verification/screenshots/NN_* .yok/RUN/artifacts/verification/NN_*
 ```
 
-Delete what that walk produced beside the report too — the `verification/NN_<slug>.<ext>` download or webhook body
-its `artifacts[]` named.
-
-Step 5 runs once, on the final attempt, and builds each video by globbing every frame still under that prefix — so
-that video is the only one anybody sees. A five-step walk re-driven in three leaves `__SS_04` and `__SS_05` behind,
-and the video shows three real steps and then two from a version of the feature that no longer exists. A produced
-file left behind fails the same way, more quietly: the scenario lists it again, and last round's download stands as
-this round's evidence.
-
-Nothing downstream catches either one. The builder cannot tell a stale frame from a fresh one, and the report cites
-whatever it is handed.
+That covers the frames, the `NN_<slug>.mp4`, and the `NN_<slug>.<ext>` download or webhook body its `artifacts[]`
+named. Each one left behind is cited as this round's evidence: a frame from a step the walk no longer has, a video
+of a version of the feature that no longer exists, a download this round never produced. Nothing downstream can
+tell a stale file from a fresh one, and the report cites whatever it is handed.
 
 Staging needs no clearing — nothing leaves it unverified.
 
-For every action, run one batch that acts, asserts, and captures **to staging**:
+### 3. Return to the scenario's opening state
+
+Scouting moves the page and may have written data. Before the take, open the scenario's first path again, restore
+every control the scout changed, and re-seed, the Step 1 way, every fixture the scout used up. The take starts
+where a user starting this scenario would start.
+
+### 4. Film the take
+
+Three commands, in this order: start the recorder, run the whole flow as one batch, stop the recorder.
 
 ```bash
-cat <<'EOF' | agent-browser batch --json
-[["eval","(()=>document.querySelector('[data-testid=add-more]').click())()"],
- ["eval","(()=>({n: document.querySelectorAll('[data-testid^=row-]').length}))()"],
- ["screenshot","/abs/path/to/.yok/RUN/verify-staging/02_half_rupee_gap_matches__03_rows_added.png"]]
+agent-browser record start /abs/path/to/.yok/RUN/artifacts/verification/NN_SLUG.mp4 --cursor
+cat <<'EOF' | agent-browser batch --json --bail
+[["mouse","move","X","Y"],
+ ["click","SELECTOR","--human"],
+ ["wait","CONDITION"],
+ ["eval","(()=>({ASSERT}))()"],
+ ["screenshot","/abs/path/to/.yok/RUN/verify-staging/NN_SLUG__SS_STEP.png"],
+ ["wait","1000"]]
 EOF
+agent-browser record stop
 ```
 
-**Write the screenshot path absolute** — the heredoc is quoted and your shell's cwd resets between calls.
+**Write every path absolute** — the heredoc is quoted and your shell's cwd resets between calls.
 
-Then **open the staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the assert
-passed and your eyes confirmed the frame, **promote it**: `mv` it into `verification/screenshots/` under its
+The batch opens by moving the pointer to the middle of the page, so its first journey starts in view. Then every
+step of the flow is the same five entries, in this order:
+
+1. **Act.** Write a click as `click SELECTOR --human`: `--cursor` draws the pointer into the recording, and
+   `--human` on `click` makes it travel to the target, so the viewer follows one pointer from the first step to the
+   last and sees where each click lands. `click` is the form that takes `--human`.
+2. **Wait on the condition** you scouted for that step.
+3. **Assert**, returning the value and the path as *The rules* say.
+4. **Screenshot to staging.** A frame shot during the take carries the pointer, which shows the reader what was
+   just clicked.
+5. **Pause about a second**, so a person watching can read the screen before it changes. The pause paces the
+   video; the wait in entry 2 is what makes the step reliable.
+
+`--bail` ends the batch at the first step that fails, so nothing after it is filmed on the wrong screen. `record
+stop` is a command of its own, run after the batch whatever the batch returned, because it is what closes the file.
+
+### 5. Judge the take
+
+**A take counts when the batch exited 0, every entry reports success, and every assert returned the value the scout
+recorded.** Any other take is discarded whole: delete its video and its staged frames, correct the step that
+failed, return to the opening state, and film again. A clean-looking video of a take that failed a step shows
+something other than the scenario.
+
+- **An assert that held in the scout and fails in the take is a finding about the feature.** Drive it once more to
+  learn which state the behaviour depends on, then grade the scenario on what you found.
+- **A recorder that fails three takes running** — the feature behaving, the recording not — hands the scenario to
+  the stitched path: run the same batch with the recorder off, promote its frames as below, and leave the scenario
+  without an `.mp4`. Step 5 builds its video from those frames.
+
+### 6. Confirm the frames and promote them
+
+**Open every staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the take
+counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
 `NN_<slug>__SS_<step>.png` name, and record the assert's deciding value (the returned `{n: …}`, the measured rect,
 the quoted string) for the scenario's `reason`.
 
 You need both checks. **The assert answers whether the state took hold** — a click that silently no-ops looks
 identical to one that worked until you ask the DOM. **The look answers whether the frame shows it.** When they
-disagree, re-drive rather than promote: the frame usually lags the render (`wait` on the condition and re-shoot),
-but check the assert against *The rules* above too, where its ways of lying are listed. Settle it by asking the page
-a second way.
+disagree, the frame usually lags the render: film the take again with the wait on that step's real condition. Check
+the assert against *The rules* above too, where its ways of lying are listed, and settle it by asking the page a
+second way.
 
 **A file the scenario downloads is evidence — keep it** beside the report as `verification/NN_<slug>.<ext>`, the
 same prefix as its video, and list it in the scenario's `artifacts[]`.
@@ -194,10 +249,11 @@ identifiable in that same frame.**
 touch rather than width serves its desktop layout to a resized window, and you photograph a mobile pass that never
 happened.
 
-**Drive the whole scenario again on the phone.** Set the device, then walk it from its first click — the same
-batches and the same asserts as the desktop run, under the replay's own `NN_<slug>`. A phone breaks on the way to
-the final screen rather than on it, so a frame shot at the end proves nothing. Restore the desktop device
-afterwards, as with any setting you changed.
+**Film the whole scenario again on the phone, as a take of its own.** Set the device, then run the six steps above
+under the replay's own `NN_<slug>`: the same steps and the same asserts as the desktop take, scouted again
+wherever the phone presents a control differently or puts a target off screen. A phone breaks on the way to the
+final screen rather than on it, so the take runs from the first click. The recording keeps the phone's own
+portrait shape. Restore the desktop device afterwards, as with any setting you changed.
 
 The replay carries a verdict, so the walk answers the same question it answered on desktop:
 

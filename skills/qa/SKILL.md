@@ -36,7 +36,7 @@ verifiers:
 references:
   driving-the-browser:
     path: references/driving-the-browser.md
-    description: How to drive agent-browser, capture and promote frames, and replay a flow on a phone.
+    description: How to drive agent-browser, scout a flow, film it in one recorded take, promote its frames, and replay it on a phone.
   driving-the-device:
     path: references/driving-the-device.md
     description: How to drive agent-device on an iOS or Android app, assert without eval, batch, and capture and promote frames.
@@ -54,7 +54,7 @@ references:
     description: The proof report page whose JSON island the report fills.
   report-media:
     path: scripts/report-media.ts
-    description: The script that builds the scenario videos and inlines the media into the report.
+    description: The script that checks each recorded video, builds the videos no take recorded, and inlines the media into the report.
   stack-up:
     path: references/stack-up.md
     description: How to bring up, wait for, reach and tear down the stack an environment entry declares, its command placeholders filled.
@@ -181,7 +181,7 @@ Everything this skill produces lives in the feature's `verification/` folder, fl
 .yok/RUN/artifacts/verification/
 ├── proof-report.html                        the deliverable
 ├── run-log.jsonl                            the run's memory across rounds (Step 0)
-├── NN_SLUG.mp4                              one video per scenario (Step 5)
+├── NN_SLUG.mp4                              one video per scenario: recorded in Step 2, else built in Step 5
 ├── NN_SLUG.EXT                              files the product produced: webhook bodies, downloads
 └── screenshots/
     └── NN_SLUG__SS_STEP.png                 every promoted frame, flat
@@ -276,8 +276,9 @@ last line per scenario winning.
   report — written only by the round that drove it, never a summary.
 - `verdict` is one of `SUCCESS`, `FAILURE`, `NOT VERIFIED` or `INVALID`.
 - `requirements` sits outside the scenario object: the report's scenario element carries no requirement ids.
-- `artifacts` lists the files that exist as the line is appended — the promoted frames at first, the `.mp4` once
-  Step 5 has built it and appended its own line.
+- `artifacts` lists the files that exist as the line is appended: the promoted frames, and the `.mp4` from the
+  moment there is one — on the line Step 2 appends where the take was recorded, on the line Step 5 appends where
+  the video was built.
 - `gap` rides with a `NOT VERIFIED` scenario so its `mechanism`, `attempted` and `wouldClose` survive an attempt that
   is blocked before it reaches that scenario again.
 - Bugs get no ledger home of their own: a bug's scenario is never `SUCCESS`, so it is always re-driven.
@@ -370,15 +371,15 @@ you tried — and nothing else: no report, no prose report-back.
 Every behaviour reachable through a screen is proven here, by driving the surface the environment entry declares
 and filming what it did: a real browser through the `agent-browser` CLI on a browser walk, or the app on a
 simulator, emulator or phone through the `agent-device` CLI on a device walk. The craft is in one reference per
-surface — `driving-the-browser` (batching, the `eval` laws, the capture loop, the phone device) or
+surface — `driving-the-browser` (batching, the `eval` laws, the scout and the take, the phone device) or
 `driving-the-device` (the snapshot loop, asserts without `eval`, batches, the capture loop) — so read the one for
 this entry before your first `open`. This step is the order things happen in.
 
 **Before the first walk**
 
 - **Check both binaries no UI scenario can finish without**: the entry's driver — `agent-browser` on a browser
-  walk, `agent-device` on a device walk — and `ffmpeg`, which Step 5 needs on whichever attempt turns out to be the
-  last, so check it even on a round that will skip Step 5. Either one missing stops the run on *The Return
+  walk, `agent-device` on a device walk — and `ffmpeg`, which records every take on a browser walk and builds the
+  remaining videos in Step 5, so check it on every round. Either one missing stops the run on *The Return
   Contract*'s block: `"status": "BLOCKED"`, `report` as `null`, a `reason` opening `no-agent-browser:`,
   `no-agent-device:` or `no-ffmpeg:` with the driver's install hint from that section, and every scenario you could
   not prove in `gaps[]` against the requirement it carried.
@@ -393,22 +394,27 @@ this entry before your first `open`. This step is the order things happen in.
 
 **Each scenario, in this order**
 
-1. **Re-driving one Step 0 put back in the set? Clear last round's artifacts first** — its promoted frames, and the
-   files it produced (a download, a webhook body, its `NN_SLUG.EXT`) — or last round's artifact survives and
-   gets cited as this round's evidence. What leaks into the rebuilt video without this sits beside the capture loop
-   in the `driving-the-browser` reference.
-2. **Drive it, recording its paths.** The driver proves the behaviour under test, not the setup that reached it —
-   a fixture you find missing mid-walk is seeded the Step 1 way and the walk re-driven. Record the path the
-   scenario opened on and any path a step moved to: query kept, host dropped, auth and identity values redacted
-   (shape and reasons in the `writing-the-report` reference). On a browser walk a path reached by clicking comes
-   back in the assert batch you already run, never a batch of its own; on a device walk the path is the deep link
-   the scenario opened, else the screen path it reached.
-3. **Confirm every frame.** A frame is evidence only once its assert passed **and** your own eyes confirmed it shows
-   what you think — read it at the moment you shoot, since frames lag renders.
-4. **Read the frames.** The `visual-verification` reference is the one pass that does it, and the scenario's
+1. **Re-driving one Step 0 put back in the set? Clear last round's artifacts first** — its promoted frames, its
+   video, and the files it produced (a download, a webhook body, its `NN_SLUG.EXT`) — or last round's artifact
+   survives and gets cited as this round's evidence. The surface's reference says what each leftover turns into.
+2. **Work the flow out before it is filmed.** On a browser walk, scout it with the recorder off, as the
+   `driving-the-browser` reference says, until every step's target, condition and assert is known. A device walk
+   works the flow out inside its capture loop. The driver proves the behaviour under test, not the setup that
+   reached it — a fixture you find missing mid-walk is seeded the Step 1 way and the walk re-driven.
+3. **Film it, recording its paths.** On a browser walk, return the scenario to its opening state and replay the
+   whole flow as one recorded take: the take's asserts, its frames and its `NN_SLUG.mp4` are the scenario's
+   evidence, and the reference says when a take counts. On a device walk, drive the capture loop of the
+   `driving-the-device` reference; its frames are the evidence, and Step 5 builds its video from them. Record the
+   path the scenario opened on and any path a step moved to: query kept, host dropped, auth and identity values
+   redacted (shape and reasons in the `writing-the-report` reference). On a browser walk a path reached by
+   clicking comes back in an assert the take already runs, never a batch of its own; on a device walk the path is
+   the deep link the scenario opened, else the screen path it reached.
+4. **Confirm every frame.** A frame is evidence only once its assert passed **and** your own eyes confirmed it shows
+   what you think. Frames lag renders, so read each one before it is promoted.
+5. **Read the frames.** The `visual-verification` reference is the one pass that does it, and the scenario's
    `visualMatch` is what it produces. It drives nothing: the frames are shot and the session is still open.
-5. **Write it up and append its ledger line**, in Step 0's shape, whatever the verdict — one line per scenario per
-   round, appended and never edited.
+6. **Write it up and append its ledger line**, in Step 0's shape, whatever the verdict — one line per scenario per
+   round, appended and never edited. A scenario whose take was recorded names its `video` on this line.
 
 **A replay is a scenario.** On a browser walk, every flow on the surface the change landed on is driven again on a
 phone, as its own numbered scenario in the same session, through steps 1–5 like any other; whether this app is
@@ -422,6 +428,8 @@ device walk with one device, or none listed, drives each flow once.
 - every behaviour the docs claim is reached by some flow, driven this round or carried from the ledger;
 - every UI scenario names the path it opened on;
 - every UI scenario's `NN_SLUG` frames in `screenshots/` tell its whole story;
+- every scenario driven on a browser walk has the `NN_SLUG.mp4` its take recorded beside the report, or is one its
+  reference handed to Step 5;
 - every UI scenario carries a `visualMatch` — a derived fidelity, or the named absence of a baseline — with each of
   the seven questions evidenced or called clean, and every frame the plan builds is some scenario's baseline, read at
   the width the plan gives it, or named in the `mechanism` of the gap of the scenario that could not reach it;
@@ -544,36 +552,41 @@ is written up and appended as its own ledger line, in Step 0's shape.
 - every `NOT VERIFIED` names the line, condition or absent datum that blocks it;
 - the best-attack sentence is written, and each screen the frame pass called clean names the divergence it ruled out.
 
-## Step 5 — Build the Videos
+## Step 5 — Complete the Videos
 
 **Only the attempt that writes the report runs this step, and it runs before Step 6.** The one attempt that defers
-its report — Step 6's case, a derived `FAIL` with rounds left above zero — stops after Step 4: no ffmpeg runs, and
-the promoted frames stay in `screenshots/` for the round that will build from them. Every other attempt builds every
-scenario in one pass, the carried-over ones included: the videos are assembled from the promoted frames, not
-captured, and the `writing-the-report` reference owns what the settings do and what a hand-run rebuild has to keep.
+its report — Step 6's case, a derived `FAIL` with rounds left above zero — stops after Step 4: its takes are already
+recorded beside the report, and its promoted frames stay in `screenshots/` for the round that will finish from them.
+Every other attempt leaves every scenario with its video in one pass, the carried-over ones included. A browser
+scenario's video is the take the round that drove it recorded. Every scenario without one — each scenario of a
+device walk, and any whose recorder failed — gets a video assembled from its promoted frames. The
+`writing-the-report` reference owns what the settings do and what a hand-run rebuild has to keep.
 
 1. **Run the `report-media` script over the verification directory**, passing it
-   `/abs/path/to/.yok/RUN/artifacts/verification`. It globs every `NN_SLUG` prefix under
-   `screenshots/` and writes one `NN_SLUG.mp4` beside the report.
+   `/abs/path/to/.yok/RUN/artifacts/verification`. It globs every `NN_SLUG` prefix under `screenshots/`. Where
+   `NN_SLUG.mp4` is already beside the report it checks that the file plays and keeps it; where there is none it
+   builds one from the frames.
 
-2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 crop=…` or `FAILED NN_SLUG — REASON`, and
-   the exit is non-zero if any failed. A scenario with no `ok` line has no video: its `video` stays unset, and its
-   frames still prove it.
-3. **Check every portrait scenario's `crop` yourself** — each phone replay, and on a device walk every scenario.
-   The value has to read as a portrait picture inside the bars (`crop=320:720:478:0`-shaped); the full canvas width
-   on a portrait frame means the frame was stretched, which is a failure whatever the script printed — the
-   `writing-the-report` reference has the numbers.
-4. **Append a ledger line per scenario that built**, in Step 0's shape: the `.mp4` now in `video` and in `artifacts`,
-   every other field as the line it supersedes had it, **`round` and `commits` copied across, never restamped** — the
-   line records which round drove the scenario, not which round encoded it.
+2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 recorded`, `ok NN_SLUG.mp4 crop=…` or
+   `FAILED NN_SLUG — REASON`, and the exit is non-zero if any failed. A recording that does not play is a take
+   the recorder never closed: film that scenario's take again, or delete the file and run the script again to
+   build from its frames. A scenario with no `ok` line has no video: its `video` stays unset, and its frames still
+   prove it.
+3. **Check the `crop` of every portrait scenario the script built** — on a device walk every scenario, on a browser
+   walk a phone replay that went to the stitched path. The value has to read as a portrait picture inside the bars
+   (`crop=320:720:478:0`-shaped); the full canvas width on a portrait frame means the frame was stretched, which is
+   a failure whatever the script printed — the `writing-the-report` reference has the numbers.
+4. **Append a ledger line per scenario the script built**, in Step 0's shape: the `.mp4` now in `video` and in
+   `artifacts`, every other field as the line it supersedes had it, **`round` and `commits` copied across, never
+   restamped** — the line records which round drove the scenario, not which round encoded it.
 
 **Done when:**
 
 - every scenario the script printed `ok` for has its `.mp4` beside the report, and no scenario names a video it does
   not have;
-- every portrait scenario's `crop` shows a portrait picture, not the canvas width;
-- the last ledger line per built scenario names its `video`, with the `round` and `commits` of the round that drove
-  it.
+- every recorded video plays, and every built portrait scenario's `crop` shows a portrait picture, not the canvas
+  width;
+- the last ledger line per scenario names its `video`, with the `round` and `commits` of the round that drove it.
 
 ## Step 6 — Write the Proof Report, Then Report Back
 
@@ -583,8 +596,8 @@ the `writing-the-report` reference). Map every requirement id to its scenario in
 by the rule there: derived, never chosen.
 
 **One case defers the report: rounds left above zero *and* a derived `FAIL`.** It is the same decision Step 5
-already turned on, so on that attempt nothing is written here — the promoted frames and ledger lines Step 5 left are
-the round's whole output. Every other attempt writes the report, a terminal `FAIL` included.
+already turned on, so on that attempt nothing is written here — the frames, the recorded takes and the ledger lines
+Steps 2 to 4 left are the round's whole output. Every other attempt writes the report, a terminal `FAIL` included.
 
 **Writing it:**
 
