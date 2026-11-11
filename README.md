@@ -245,7 +245,7 @@ A new skill with no `path` goes to `FOLDER/skills/NAME` in the repo (`scope=proj
 
 ### pr-fix: pick up an open pull request
 
-[workflows/pr-fix.yaml](./workflows/pr-fix.yaml) runs `pr-triage → create-workspace → resolve-merge-conflict → design → planning → implement → review loop → qa loop → pr-reply` on the pull request's own branch. It never opens a branch of its own and never force-pushes. Start it from a terminal, or with a `@yok` comment on the pull request once the repo has the Action in [.github/workflows/yok.yml](./.github/workflows/yok.yml) (see the setup guide).
+[workflows/pr-fix.yaml](./workflows/pr-fix.yaml) runs `pr-triage → create-workspace → resolve-merge-conflict → design → planning → implement → review loop → qa loop → pr-reply` on the pull request's own branch. It never opens a branch of its own and never force-pushes. Start it from a terminal, or with a `/yok` comment on the pull request once the repo has the Action in [.github/workflows/yok.yml](./.github/workflows/yok.yml) (see the setup guide).
 
 ```bash
 yok run pr-fix --input pr=42 --prompt "fix the review comments and the conflict"

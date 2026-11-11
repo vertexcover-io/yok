@@ -98,8 +98,9 @@ const ThreadsReplySchema = z.looseObject({
 });
 type Thread = z.infer<typeof ThreadSchema>;
 
-// A comment that starts a run, matched as the GitHub Action template matches it.
-const TRIGGER = /^@yok(\s|$)/;
+// A comment that starts a run, matched in any case as the GitHub Action template matches it.
+// @yok is the trigger the Action took before /yok, still on pull requests opened back then.
+const TRIGGER = /^[/@]yok(\s|$)/i;
 
 const isWork = (body: string): boolean => !body.includes(REPLY_MARKER) && !TRIGGER.test(body);
 
@@ -122,7 +123,7 @@ const repoOf = (url: string): string => {
   return match[1];
 };
 
-// What triage reads: open threads only, yok's own replies and @yok triggers left out, reviews
+// What triage reads: open threads only, yok's own replies and /yok triggers left out, reviews
 // that say something. A trigger is another run's request, so a thread one started and a review
 // summary that is one are left out too. Only someone who can start a run sets its work: a thread
 // counts once one of them has commented in it, and everything else goes to fromOthers.
