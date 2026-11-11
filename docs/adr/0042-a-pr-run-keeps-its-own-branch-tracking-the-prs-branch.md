@@ -9,7 +9,7 @@ tags: [create-workspace-stage, implement-stage, shipped-workflows, sdk]
 
 ## Context and Problem Statement
 
-Every run used to create a fresh branch off base, named after the run; `pr-fix` must instead add commits to a pull request's existing branch. Git checks a branch out in one worktree at a time, and two `@yok` comments on one PR are allowed to run side by side.
+Every run used to create a fresh branch off base, named after the run; `pr-fix` must instead add commits to a pull request's existing branch. Git checks a branch out in one worktree at a time, and two `/yok` comments on one PR are allowed to run side by side.
 
 ## Considered Options
 

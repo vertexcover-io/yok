@@ -98,9 +98,9 @@ const ThreadsReplySchema = z.looseObject({
 });
 type Thread = z.infer<typeof ThreadSchema>;
 
-// A comment that starts a run, matched as the GitHub Action template matches it. @yok is the
-// trigger the Action took before /yok, still on pull requests opened back then.
-const TRIGGER = /^[/@]yok(\s|$)/;
+// A comment that starts a run, matched in any case as the GitHub Action template matches it.
+// @yok is the trigger the Action took before /yok, still on pull requests opened back then.
+const TRIGGER = /^[/@]yok(\s|$)/i;
 
 const isWork = (body: string): boolean => !body.includes(REPLY_MARKER) && !TRIGGER.test(body);
 

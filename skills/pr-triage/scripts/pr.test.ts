@@ -137,6 +137,8 @@ describe("toFacts", () => {
           note("/yok fix the review comments"),
           note("/yok\nrename it"),
           note("@yok fix the review comments"),
+          note("/YOK fix the review comments"),
+          note("@Yok fix the review comments"),
           note("/yokbot hi"),
           note("why did /yok rename this?"),
         ],
