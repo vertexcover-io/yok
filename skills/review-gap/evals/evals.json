@@ -1,0 +1,84 @@
+{
+  "skill_name": "review-gap",
+  "evals": [
+    {
+      "id": 1,
+      "name": "bundles-a-fetched-pr-without-calling-github",
+      "prompt": "The raw GitHub files for acme/widgets PR 7 are already fetched in skills/review-gap/evals/files/pr-one (pr.json, inline.json, reviews.json, issue.json, commits.json, diff.patch). Build the bundle for it with the review-gap skill's gap script and tell me what it holds.",
+      "expected_output": "Runs `gap bundle skills/review-gap/evals/files/pr-one --repo acme/widgets`, which writes bundle.json and prints `2 findings, 3 dropped, 4 diff lines`. The reply names the two findings: xhawk's high correctness finding on src/publish.ts:12 at commit aaa111 (with the human reply 'Fixed in bbb222' attached) and the human's rm -rf finding on src/uninstall.ts:20.",
+      "files": [
+        "skills/review-gap/evals/files/pr-one/pr.json",
+        "skills/review-gap/evals/files/pr-one/inline.json",
+        "skills/review-gap/evals/files/pr-one/reviews.json",
+        "skills/review-gap/evals/files/pr-one/issue.json",
+        "skills/review-gap/evals/files/pr-one/commits.json",
+        "skills/review-gap/evals/files/pr-one/diff.patch"
+      ],
+      "expectations": [
+        "Runs the gap script's bundle command on the fixture folder with --repo acme/widgets",
+        "Reports two findings: comment 101 (severity high, src/publish.ts line 12, commit aaa111) and comment 105 (severity unknown, src/uninstall.ts line 20)",
+        "Reports that the reply from kgritesh is attached to finding 101 as its human reply, not listed as a finding",
+        "Reports three dropped comments with their reasons"
+      ],
+      "anti_expectations": [
+        "Calls gh or the GitHub API",
+        "Counts the reply (comment 102) as a finding",
+        "Parses the JSON files by hand instead of running the script"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "drops-a-style-comment-and-a-drift-bot-note",
+      "prompt": "Bundle skills/review-gap/evals/files/pr-one for acme/widgets with the review-gap gap script and list exactly which review comments were dropped and why.",
+      "expected_output": "After `gap bundle`, bundle.json's dropped list holds comment 103 (reason style: xhawk's readability category), comment 104 (reason drift-bot: the 8090-software-factory blueprint note) and comment 106 (reason praise: 'LGTM, nice write-up.'). The reply says these three were dropped before any judgement and that style and naming are out of scope for now.",
+      "files": [
+        "skills/review-gap/evals/files/pr-one/pr.json",
+        "skills/review-gap/evals/files/pr-one/inline.json",
+        "skills/review-gap/evals/files/pr-one/reviews.json",
+        "skills/review-gap/evals/files/pr-one/issue.json",
+        "skills/review-gap/evals/files/pr-one/commits.json",
+        "skills/review-gap/evals/files/pr-one/diff.patch"
+      ],
+      "expectations": [
+        "Lists comment 103 as dropped with reason style",
+        "Lists comment 104 as dropped with reason drift-bot",
+        "Lists comment 106 as dropped with reason praise",
+        "Says style and naming findings are out of scope for now rather than silently omitting them"
+      ],
+      "anti_expectations": [
+        "Drops comment 105, the human's rm -rf finding, as style or praise",
+        "Treats the drift-bot note as a finding to judge"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "ranks-a-two-pr-cluster-above-a-one-pr-cluster",
+      "prompt": "The analyses and replays for three acme/widgets PRs are in skills/review-gap/evals/files/aggregate, with the clusters in skills/review-gap/evals/files/aggregate/clusters.json. Aggregate them with the review-gap gap script into review-gap.md and findings.jsonl in a scratch folder, and tell me which cluster ranks first and why.",
+      "expected_output": "Runs `gap aggregate --out skills/review-gap/evals/files/aggregate --report SCRATCH/review-gap.md --findings SCRATCH/findings.jsonl --clusters skills/review-gap/evals/files/aggregate/clusters.json` (no --ledger, or a ledger in the scratch folder). The report ranks 'Same fact decided in two places' first with score 6 (high severity, weight 3, across 2 PRs) above 'Catch-all before an irreversible step' with score 3 (high, 1 PR), although both hold a high finding. Precision for xhawk-ai[bot] is 3 real of 4 judged (75%). findings.jsonl has four rows.",
+      "files": [
+        "skills/review-gap/evals/files/aggregate/clusters.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/7/bundle.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/7/analysis.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/7/replay.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/8/bundle.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/8/analysis.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/8/replay.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/9/bundle.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/9/analysis.json",
+        "skills/review-gap/evals/files/aggregate/acme/widgets/9/replay.json"
+      ],
+      "expectations": [
+        "Runs the gap script's aggregate command with --clusters pointing at the fixture's clusters.json",
+        "Says the two-PR cluster 'Same fact decided in two places' ranks first with score 6",
+        "Explains the score as worst severity times distinct PRs, not the number of findings",
+        "Reports xhawk-ai[bot] precision as 3 real of 4 judged",
+        "Reports the spec miss on acme/widgets#7 as a prompt-gap and the defects miss on acme/widgets#9 as an agent-miss"
+      ],
+      "anti_expectations": [
+        "Writes the report or findings.jsonl into the fixture folder",
+        "Appends to a ledger inside the repository's .yok folder",
+        "Ranks the catch-all cluster first because its finding is high severity"
+      ]
+    }
+  ]
+}

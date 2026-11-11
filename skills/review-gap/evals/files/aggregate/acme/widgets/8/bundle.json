@@ -1,0 +1,37 @@
+{
+  "repo": "acme/widgets",
+  "number": 8,
+  "title": "feat: version channel",
+  "prBody": "",
+  "state": "closed",
+  "mergedAt": "2026-10-01T00:00:00Z",
+  "baseRef": "main",
+  "baseSha": "base000",
+  "headSha": "head8",
+  "diffLines": 40,
+  "findings": [
+    {
+      "id": "acme/widgets#8:801",
+      "commentId": 801,
+      "reviewer": "xhawk-ai[bot]",
+      "severity": "medium",
+      "category": "correctness",
+      "title": "Release channel computed in install.ts and release.yml with different rules",
+      "path": "src/channel.ts",
+      "line": 22,
+      "commitSha": "sha8",
+      "body": "Release channel computed in install.ts and release.yml with different rules",
+      "replies": [],
+      "humanReply": ""
+    }
+  ],
+  "dropped": [],
+  "reviews": [],
+  "issueComments": [],
+  "commits": [
+    {
+      "sha": "sha8",
+      "message": "change"
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+# Measures where the code-review skill misses what outside reviewers found on real PRs.
+# Edits nothing, so there is no create-workspace stage: it runs in the checkout it starts in and
+# collects that checkout's origin, or the config's packages, unless `repos` names them.
+name: review-gap
+inputs:
+  prompt:
+    type: string
+    required: true
+  # Comma-separated OWNER/NAME; empty means the workspace's repos, else the checkout's origin.
+  repos:
+    type: string
+    default: ""
+  days:
+    type: string
+    default: "30"
+  # merged, or all for closed PRs too
+  state:
+    type: string
+    default: merged
+  # Comma-separated PR numbers; set, it replaces the window.
+  prs:
+    type: string
+    default: ""
+  maxPrs:
+    type: string
+    default: "30"
+  # A PR whose diff changes more lines is logged as diff-too-large and not analysed.
+  maxDiffLines:
+    type: string
+    default: "3000"
+  # Replay only the top N real findings by severity; all replays every one.
+  replayTop:
+    type: string
+    default: all
+doctor:
+  - check: binary
+    key: bun
+    fix: Install Bun
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
+nodes:
+  - id: collect
+    type: agent
+    stage: review-gap
+    variables:
+      phase: collect
+    input:
+      prompt: "{{ inputs.prompt }}"
+      repos: "{{ inputs.repos }}"
+      days: "{{ inputs.days }}"
+      state: "{{ inputs.state }}"
+      prs: "{{ inputs.prs }}"
+      maxPrs: "{{ inputs.maxPrs }}"
+      maxDiffLines: "{{ inputs.maxDiffLines }}"
+
+  - id: analyse
+    type: agent
+    stage: review-gap
+    dependsOn: [collect]
+    variables:
+      phase: analyse
+    input:
+      replayTop: "{{ inputs.replayTop }}"
+
+  # The analyse phase carries every sub-agent's report; the report phase starts from the files.
+  - id: fresh
+    type: context
+    action: compact
+    dependsOn: [analyse]
+    prompt: Keep the run name, the DATA folder and the analyse phase's counts; drop the rest.
+
+  - id: report
+    type: agent
+    stage: review-gap
+    dependsOn: [fresh]
+    variables:
+      phase: report
+    input: {}

@@ -1,0 +1,13 @@
+{
+  "repo": "acme/widgets",
+  "number": 8,
+  "sha": "sha8",
+  "results": [
+    {
+      "id": "acme/widgets#8:801",
+      "persona": "spec",
+      "result": "caught",
+      "evidence": "finding 2 names both files"
+    }
+  ]
+}

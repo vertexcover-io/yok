@@ -1,0 +1,26 @@
+{
+  "repo": "acme/widgets",
+  "number": 7,
+  "sha": "sha7",
+  "mergeBase": "base000",
+  "plan": "none",
+  "findings": [
+    {
+      "id": "acme/widgets#7:701",
+      "verdict": "real",
+      "evidence": "src/deploy.ts:10 picks staging when TARGET is unset; .github/workflows/deploy.yml:14 picks production",
+      "fixedAfterReview": true,
+      "lens": "B",
+      "mechanism": "same fact decided in two places",
+      "personas": [
+        {
+          "name": "spec",
+          "promptCoverage": "implicit",
+          "quote": "Every requirement, acceptance criterion, and called-out edge case: is it delivered, or only its easy half?",
+          "why": "the target rule is a requirement kept in one layer"
+        }
+      ],
+      "matchHint": "must say the CLI and the workflow disagree on the target"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "repo": "acme/widgets",
+  "number": 8,
+  "sha": "sha8",
+  "mergeBase": "base000",
+  "plan": "none",
+  "findings": [
+    {
+      "id": "acme/widgets#8:801",
+      "verdict": "real",
+      "evidence": "install.ts:22 vs release.yml:30",
+      "fixedAfterReview": true,
+      "lens": "B",
+      "mechanism": "same fact decided in two places",
+      "personas": [
+        {
+          "name": "spec",
+          "promptCoverage": "explicit",
+          "quote": "trace each requirement through every layer it crosses",
+          "why": "two layers"
+        }
+      ],
+      "matchHint": "must say install.ts and release.yml compute the channel differently"
+    }
+  ]
+}
