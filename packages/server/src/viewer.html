@@ -10,6 +10,9 @@
 /* Layout: three working panes (files | rendered artifact | comment threads) over a live tmux strip. */
 /* {{DOC_STYLES}} */
 
+/* The app fills the window exactly, so the terminal's last row is not pushed below it. */
+body { margin: 0; }
+
 .app {
   height: 100%;
   display: grid;
@@ -185,6 +188,15 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
 .app[data-view="workflow"] .files { display: none; }
 .app[data-view="workflow"] .doc-pane { display: none; }
 .app[data-view="workflow"] .threads { display: none; }
+
+/* terminal: the run's tmux session, attached over /api/runs/RUN_ID/terminal */
+.app[data-view="terminal"] :is(.files, .doc-pane, .threads) { display: none; }
+.terminal-pane { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; min-height: 0; background: #0b0d10; }
+.terminal-pane[hidden], .tab[hidden] { display: none; }
+.term-state { display: flex; align-items: center; gap: 10px; padding: 8px 16px; font-size: 13px; color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--line); }
+.term-state[hidden] { display: none; }
+/* content-box: the fit addon sizes the terminal from this box's height and width, so they must exclude the padding. */
+.term-host { flex: 1; min-height: 0; padding: 6px 8px; box-sizing: content-box; }
 .run-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px 16px; padding: 4px 6px 14px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .run-summary .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .run-summary .v { font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -219,6 +231,7 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
 @media (max-width: 860px) {
   .app { display: flex; flex-direction: column; height: auto; }
   .workflow-pane { padding: 12px 16px; }
+  .terminal-pane { height: 75vh; }
   .step { grid-template-columns: 18px minmax(0, 1fr) minmax(0, .6fr); }
   .step > :nth-child(n+4) { display: none; }
   .files { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
@@ -245,6 +258,7 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
     <nav class="tabs" aria-label="Run views">
       <button class="tab" type="button" id="tabArtifacts" aria-current="page">Artifacts</button>
       <button class="tab" type="button" id="tabWorkflow">Workflow <small id="stepCount"></small></button>
+      <button class="tab" type="button" id="tabTerminal" title="Open the agent's terminal" hidden>Terminal</button>
     </nav>
     <div class="spacer"></div>
     <span class="pill" id="agentPill" data-state="starting" role="status" hidden><span class="dot"></span><span id="pillText">Agent starting</span></span>
@@ -277,6 +291,14 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
   <main class="workflow-pane" id="workflowPane" hidden>
     <div class="run-summary" id="runSummary"></div>
     <ol class="steps" id="stepList"></ol>
+  </main>
+
+  <main class="terminal-pane" id="terminalPane" hidden>
+    <div class="term-state" id="termState" role="status" hidden>
+      <span id="termStateText"></span>
+      <button class="btn" type="button" id="reattachBtn" hidden>Reattach</button>
+    </div>
+    <div class="term-host" id="termHost"></div>
   </main>
 
   <aside class="threads" aria-label="Comments">
@@ -1391,6 +1413,175 @@ function applyAgent({ state, reason }) {
   pill.dataset.state = state;
   $("#pillText").textContent = state === "waiting" ? `Waiting: ${reason}` : AGENT_LABELS[state];
   pill.hidden = false;
+  agentLive = state === "running" || state === "waiting";
+  $("#tabTerminal").hidden = !agentLive;
+}
+
+/* ---------- terminal ---------- */
+
+const XTERM = "https://cdn.jsdelivr.net/npm/@xterm";
+// Each file is pinned by its hash: this page opens a shell, so a changed CDN file must not run.
+const XTERM_CSS = ["xterm@6.0.0/css/xterm.css", "sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"];
+// Loaded all at once: an addon reads xterm.js only when it is loaded into a terminal.
+const XTERM_SCRIPTS = [
+  ["xterm@6.0.0/lib/xterm.js", "sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4"],
+  ["addon-fit@0.11.0/lib/addon-fit.js", "sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"],
+  ["addon-web-links@0.12.0/lib/addon-web-links.js", "sha384-0IIwkXq0LAkIxEVKxlOxWbje2g/VT+5CzVTZiEukyiZ02pOl/O+M0fkpEKAYqto9"],
+  ["addon-clipboard@0.2.0/lib/addon-clipboard.js", "sha384-w58/aoMoWyj3vL47sXkN/bnchsdCAHHUQslw59i9Ei276OIuUCZgAO5y07Db60Bg"],
+  ["addon-unicode11@0.9.0/lib/addon-unicode11.js", "sha384-s7G1tpQVHxwemnFdH7ZEOPEAMxRSbFGsvrhaHpxYuMssFdike2DQuIBzg43+p5/3"],
+  ["addon-webgl@0.19.0/lib/addon-webgl.js", "sha384-8/2DNT7OeuMQVc7wBPoMHAQ+NmEoYSx27k7IdbsItiomGC5D9+LTrbo8jtY6YZv8"],
+];
+// Close codes from the server (terminal.ts): Ctrl-\ detached, or the run has no session.
+const DETACHED = 4000;
+const REFUSED = 4001;
+// Under Cloudflare's 100 s idle limit, so a quiet socket is not closed on the way.
+const PING_MS = 30000;
+
+let agentLive = false;
+let term = null;
+let fitAddon = null;
+let socket = null;
+let detached = false;
+let retryMs = 1000;
+let retryTimer = null;
+let xtermLoading = null;
+
+const loadScript = ([file, integrity]) => new Promise((resolve, reject) => {
+  const src = `${XTERM}/${file}`;
+  const script = document.createElement("script");
+  script.src = src;
+  script.integrity = integrity;
+  script.crossOrigin = "anonymous";
+  script.onload = resolve;
+  script.onerror = () => reject(new Error(`could not load ${src}`));
+  document.head.append(script);
+});
+
+function loadXterm() {
+  xtermLoading ??= (async () => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = `${XTERM}/${XTERM_CSS[0]}`;
+    css.integrity = XTERM_CSS[1];
+    css.crossOrigin = "anonymous";
+    document.head.append(css);
+    await Promise.all(XTERM_SCRIPTS.map(loadScript));
+  })();
+  return xtermLoading;
+}
+
+const openInTab = (uri) => window.open(uri, "_blank", "noopener");
+
+function showTermState(text, reattach = false) {
+  $("#termState").hidden = text === null;
+  $("#termStateText").textContent = text ?? "";
+  $("#reattachBtn").hidden = !reattach;
+}
+
+function sendTerm(message) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+function createTerminal() {
+  const t = new window.Terminal({
+    allowProposedApi: true,
+    scrollback: 0,
+    macOptionIsMeta: true,
+    fontFamily: 'Menlo, "JetBrains Mono", monospace',
+    fontSize: 13,
+    cursorBlink: true,
+    linkHandler: { activate: (_event, uri) => openInTab(uri) },
+  });
+  fitAddon = new window.FitAddon.FitAddon();
+  t.loadAddon(fitAddon);
+  t.loadAddon(new window.WebLinksAddon.WebLinksAddon((_event, uri) => openInTab(uri)));
+  // Write-only: the default provider answers an OSC 52 read with the clipboard, typed into the pane.
+  const clipboard = {
+    readText: async () => "",
+    writeText: async (selection, text) => {
+      // tmux sends an empty selection; it means the clipboard too.
+      if (selection === "c" || selection === "") await navigator.clipboard.writeText(text);
+    },
+  };
+  t.loadAddon(new window.ClipboardAddon.ClipboardAddon(undefined, clipboard));
+  t.loadAddon(new window.Unicode11Addon.Unicode11Addon());
+  t.unicode.activeVersion = "11";
+  t.open($("#termHost"));
+  try {
+    const webgl = new window.WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    t.loadAddon(webgl);
+  } catch {
+    // No WebGL here: xterm keeps its default DOM renderer.
+  }
+  t.onData((data) => sendTerm({ type: "input", data }));
+  t.onResize(({ cols, rows }) => sendTerm({ type: "resize", cols, rows }));
+  new ResizeObserver(() => {
+    if (!$("#terminalPane").hidden) fitAddon.fit();
+  }).observe($("#termHost"));
+  setInterval(() => sendTerm({ type: "ping" }), PING_MS);
+  // The e2e test reads the screen through this: a WebGL canvas has no text in the DOM.
+  window.yokTerminal = t;
+  return t;
+}
+
+function attach() {
+  clearTimeout(retryTimer);
+  detached = false;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/api/runs/${runId}/terminal?cols=${term.cols}&rows=${term.rows}`);
+  ws.binaryType = "arraybuffer";
+  socket = ws;
+  showTermState("Attaching…");
+  ws.onopen = () => {
+    retryMs = 1000;
+    showTermState(null);
+    term.focus();
+  };
+  ws.onmessage = (e) => {
+    if (typeof e.data !== "string") {
+      term.write(new Uint8Array(e.data));
+      return;
+    }
+    const message = JSON.parse(e.data);
+    if (message.type === "refused") showTermState(message.message);
+  };
+  ws.onclose = (e) => {
+    if (socket !== ws) return;
+    socket = null;
+    if (e.code === REFUSED) return;
+    if (e.code === DETACHED) {
+      detached = true;
+      showTermState("Detached from the run's session.", true);
+      return;
+    }
+    if (!agentLive) {
+      showTermState("The agent is not running.");
+      return;
+    }
+    showTermState(`Connection lost. Reconnecting in ${retryMs / 1000}s…`);
+    retryTimer = setTimeout(attach, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  };
+}
+
+async function openTerminal() {
+  showView("terminal");
+  if (term === null) {
+    showTermState("Loading the terminal…");
+    try {
+      await loadXterm();
+    } catch {
+      xtermLoading = null;
+      showTermState("Could not load the terminal from cdn.jsdelivr.net. Open the tab again to retry.");
+      return;
+    }
+    // A second click during the load waits on the same load; only the first one builds the terminal.
+    term ??= createTerminal();
+    if ($("#terminalPane").hidden) return;
+  }
+  fitAddon.fit();
+  if (socket === null && !detached) attach();
 }
 
 /* ---------- workflow ---------- */
@@ -1401,11 +1592,12 @@ const openSteps = new Set();
 
 function showView(name) {
   $(".app").dataset.view = name;
-  for (const [tab, view] of [["#tabArtifacts", "artifacts"], ["#tabWorkflow", "workflow"]]) {
+  for (const [tab, view] of [["#tabArtifacts", "artifacts"], ["#tabWorkflow", "workflow"], ["#tabTerminal", "terminal"]]) {
     if (view === name) $(tab).setAttribute("aria-current", "page");
     else $(tab).removeAttribute("aria-current");
   }
   $("#workflowPane").hidden = name !== "workflow";
+  $("#terminalPane").hidden = name !== "terminal";
 }
 
 const GLYPHS = { completed: "✓", failed: "✗", running: "●", skipped: "–", pending: "○", cancelled: "■", interrupted: "■" };
@@ -1555,6 +1747,8 @@ function applySteps(body) {
 
 $("#tabArtifacts").addEventListener("click", () => showView("artifacts"));
 $("#tabWorkflow").addEventListener("click", () => showView("workflow"));
+$("#tabTerminal").addEventListener("click", () => openTerminal());
+$("#reattachBtn").addEventListener("click", () => attach());
 
 function connect() {
   const source = new EventSource(`/runs/${runId}/stream`);

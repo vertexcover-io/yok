@@ -6,6 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
 import { doctorRoutes, runRoutes } from "./run.ts";
+import { terminalRoutes } from "./terminal.ts";
 import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 const requestLogger =
@@ -50,6 +51,7 @@ export const createApi = (deps: ApiDeps) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
     .route("/runs", runRoutes(deps))
+    .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))
     .route("/triggers", triggerRoutes(deps))
     .route("/doctor", doctorRoutes(deps));
