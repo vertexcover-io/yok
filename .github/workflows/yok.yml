@@ -7,17 +7,17 @@
 #                             (yok --remote project add NAME --git URL)
 #   secret    YOK_USER, YOK_PASSWORD   the login Caddy asks for in front of the server
 #
-# Comment `@yok WHAT TO DO` on a pull request to run pr-fix on it, or
-# `@yok --workflow NAME WHAT TO DO` for any workflow that takes a prompt. The prompt ends with a
+# Comment `/yok WHAT TO DO` on a pull request to run pr-fix on it, or
+# `/yok --workflow NAME WHAT TO DO` for any workflow that takes a prompt. The prompt ends with a
 # "Pull request: URL" line, so the run works on that pull request's own branch, and an
 # "Asked in URL" line with the comment's link, so it knows which thread "this" means. The comment
 # can be in the conversation, in a review thread, or in a review's summary. A review starts one
-# run for its summary and one for each of its line comments that starts with @yok, so put @yok in
-# the summary or on the lines, not both. @yok matches in any case, and a prompt wrapped whole in
-# quotes, such as @yok "fix CI", loses the quotes.
+# run for its summary and one for each of its line comments that starts with /yok, so put /yok in
+# the summary or on the lines, not both. /yok matches in any case, and a prompt wrapped whole in
+# quotes, such as /yok "fix CI", loses the quotes.
 # Only people with write access to the repo start runs: the job asks GitHub for the commenter's
 # permission, because the event labels a member whose org membership is private CONTRIBUTOR.
-# Once the run starts, the job replies where @yok was typed with a link to the run's page, as
+# Once the run starts, the job replies where /yok was typed with a link to the run's page, as
 # github-actions[bot]; the run itself pushes and replies with the yok server's own GitHub login.
 name: yok
 
@@ -39,7 +39,7 @@ permissions:
 jobs:
   start:
     if: >-
-      startsWith(github.event.comment.body || github.event.review.body, '@yok')
+      startsWith(github.event.comment.body || github.event.review.body, '/yok')
       && (github.event_name != 'issue_comment' || github.event.issue.pull_request)
     runs-on: ubuntu-latest
     steps:
@@ -62,9 +62,9 @@ jobs:
             admin|write) ;;
             *) echo "Ignored: $COMMENTER has $permission access to $REPO and cannot start yok runs."; exit 0 ;;
           esac
-          # @yok in any case: GitHub's startsWith in the job's if: ignores case too.
-          if [[ ! "${BODY,,}" =~ ^@yok([[:space:]]|$) ]]; then
-            echo "Ignored: the comment does not start with @yok."
+          # /yok in any case: GitHub's startsWith in the job's if: ignores case too.
+          if [[ ! "${BODY,,}" =~ ^/yok([[:space:]]|$) ]]; then
+            echo "Ignored: the comment does not start with /yok."
             exit 0
           fi
           for name in YOK_SERVER_URL YOK_PROJECT YOK_USER YOK_PASSWORD; do
@@ -99,7 +99,7 @@ jobs:
             fi
           fi
           if [ -z "$text" ]; then
-            echo "::error::Say what to do after @yok."
+            echo "::error::Say what to do after /yok."
             exit 1
           fi
           text="$text"$'\n\n'"Pull request: $PR_URL"

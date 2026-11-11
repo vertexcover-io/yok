@@ -4,7 +4,7 @@ description: >-
   request's own branch, check it, push, and reply on the pull request.
 inputs:
   # The pull request's number in the project's repo, or its URL. Empty takes it from the prompt's
-  # "Pull request: URL" line, which a @yok comment always adds.
+  # "Pull request: URL" line, which a /yok comment always adds.
   pr:
     type: string
     default: ""

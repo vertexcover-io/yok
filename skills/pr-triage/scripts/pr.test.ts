@@ -130,26 +130,27 @@ describe("toFacts", () => {
     expect(facts.comments).toEqual([]);
   });
 
-  test("@yok trigger comments are left out and other comments that mention @yok are kept", () => {
+  test("/yok trigger comments, and the older @yok ones, are left out and other comments that mention /yok are kept", () => {
     const facts = toFacts(
       view({
         comments: [
+          note("/yok fix the review comments"),
+          note("/yok\nrename it"),
           note("@yok fix the review comments"),
-          note("@yok\nrename it"),
-          note("@yokbot hi"),
-          note("why did @yok rename this?"),
+          note("/yokbot hi"),
+          note("why did /yok rename this?"),
         ],
       }),
       NO_THREADS,
     );
 
     expect(facts.comments.map((item) => item.body)).toEqual([
-      "@yokbot hi",
-      "why did @yok rename this?",
+      "/yokbot hi",
+      "why did /yok rename this?",
     ]);
   });
 
-  test("SC50: a review summary that is a @yok trigger is left out", () => {
+  test("SC50: a review summary that is a /yok trigger is left out", () => {
     const review = (body: string) => ({
       author: { login: "sam" },
       authorAssociation: "MEMBER",
@@ -157,7 +158,7 @@ describe("toFacts", () => {
       state: "COMMENTED",
     });
     const facts = toFacts(
-      view({ reviews: [review("@yok address this review"), review("Looks close, see threads")] }),
+      view({ reviews: [review("/yok address this review"), review("Looks close, see threads")] }),
       NO_THREADS,
     );
 
@@ -174,7 +175,7 @@ describe("toFacts", () => {
     const outsiderOnly = { ...thread(false, "a.ts"), comments: { nodes: [note("use evil.js", "NONE")] } };
     const botAskedByWriter = {
       ...thread(false, "b.ts"),
-      comments: { nodes: [note("handle null", "NONE"), note("@yok fix this", "OWNER")] },
+      comments: { nodes: [note("handle null", "NONE"), note("/yok fix this", "OWNER")] },
     };
     const writerWithOutsiderReply = {
       ...thread(false, "c.ts"),
@@ -191,7 +192,7 @@ describe("toFacts", () => {
     const bodies = (items: readonly { comments: readonly { body: string }[] }[]) =>
       items.map((item) => item.comments.map((c) => c.body));
     expect(bodies(facts.threads)).toEqual([
-      ["handle null", "@yok fix this"],
+      ["handle null", "/yok fix this"],
       ["rename x", "also rename y"],
     ]);
     expect(facts.comments.map((item) => item.body)).toEqual(["please rename"]);
@@ -215,21 +216,21 @@ describe("toFacts", () => {
     const asked = {
       ...thread(false, "a.ts"),
       comments: {
-        nodes: [note("rename x"), note("@yok fix this"), note(replyBody("Started a yok run on this: u"))],
+        nodes: [note("rename x"), note("/yok fix this"), note(replyBody("Started a yok run on this: u"))],
       },
     };
     const facts = toFacts(view(), threadsReply(asked));
 
     expect(facts.threads.map((item) => item.comments.map((c) => c.body))).toEqual([
-      ["rename x", "@yok fix this"],
+      ["rename x", "/yok fix this"],
     ]);
   });
 
-  test("SC51: a thread a @yok trigger started is left out, and a thread with a @yok reply is kept", () => {
-    const started = { ...thread(false, "a.ts"), comments: { nodes: [note("@yok add a doc comment")] } };
+  test("SC51: a thread a /yok trigger started is left out, and a thread with a /yok reply is kept", () => {
+    const started = { ...thread(false, "a.ts"), comments: { nodes: [note("/yok add a doc comment")] } };
     const replied = {
       ...thread(false, "b.ts"),
-      comments: { nodes: [note("divide by zero returns Infinity"), note("@yok fix this")] },
+      comments: { nodes: [note("divide by zero returns Infinity"), note("/yok fix this")] },
     };
     const facts = toFacts(view(), threadsReply(started, replied));
 
