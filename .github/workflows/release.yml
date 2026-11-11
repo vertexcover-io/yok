@@ -324,3 +324,20 @@ jobs:
       # The README's plain curl | sh: with no variables set it must install this stable release.
       - if: ${{ !contains(env.TAG, '-') }}
         run: sh install.sh && test "$("$HOME/.yok/bin/yok" --version)" = "${TAG#v}"
+
+  # A stable release puts itself on the server; an rc is deployed by hand from Actions, Deploy.
+  # The run's own token may fire workflow_dispatch, the one event it is allowed to start, and
+  # --ref is the tag, so the Deploy that runs is the one at that release.
+  deploy:
+    needs: [cut, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(needs.cut.outputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: gh workflow run deploy.yml --ref "$TAG" -f tag="$TAG"

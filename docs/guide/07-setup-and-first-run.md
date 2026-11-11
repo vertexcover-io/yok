@@ -146,6 +146,8 @@ This takes about an hour. The doctor runs first and names anything the run is mi
 
 To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1` and has no login of its own. Caddy does https and the login, then forwards each request to yok. On the server itself, nothing asks for a login.
 
+The `Deploy` workflow does all of this from the repository secrets: see [deploy/README.md](../../deploy/README.md). The steps below are what it does, for a server you set up by hand.
+
 On the server, as the user who will own the runs:
 
 1. Install yok, tmux, git, claude (or codex) and Caddy. Log in to claude once: every run uses that login.
@@ -156,6 +158,8 @@ On the server, as the user who will own the runs:
    ```
 
    yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+
+   The server listens on loopback. When the proxy is not on this machine, such as a hosting provider's edge, add `YOK_BIND=<address>` to the same file so the proxy can reach it. yok asks nobody for a login, so pick an address only the proxy reaches.
 
 3. Write `~/.config/systemd/user/yok.service`:
 
@@ -230,7 +234,7 @@ You know it worked when `yok-remote server status` prints the server's version a
 
 1. Create a Slack app in your workspace. Under Event Subscriptions, turn events on, set the request URL to `https://yok.example.com/api/hooks/slack`, and subscribe to the `app_mentions:read` bot event (`app_mention`). Add the `chat:write` bot scope and install the app.
 2. Create a private channel, invite the people allowed to drive yok and the app, and copy the channel's id (channel details, at the bottom).
-3. Add three lines to the server's `~/.yok/.env`; the server reads them on every request, so no restart is needed:
+3. Give the server three values. On a deployed server they are GitHub secrets, delivered by the next Deploy run (see `deploy/README.md`); on a server you run by hand, add them to `~/.yok/.env`, which is read on every request, so no restart is needed:
 
    ```sh
    SLACK_SIGNING_SECRET=…   # the app's Basic Information page

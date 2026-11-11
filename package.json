@@ -1,6 +1,6 @@
 {
   "name": "harness-engineering",
-  "version": "0.0.9",
+  "version": "0.0.10-rc.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -23,7 +23,7 @@
     "test:scripts": "node --test scripts/*.test.ts",
     "test:scripts:bun": "bun test ./scripts/",
     "test:hooks": "node --test hooks/*.test.mjs",
-    "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py' && python3 -B skills/skill-audit/scripts/test_check.py"
+    "test:python": "python3 -B -m unittest discover -s skills/test-audit/scripts -p 'test_*.py' && python3 -B skills/skill-audit/scripts/test_check.py && python3 -B deploy/test_inventory.py"
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.51.1",
