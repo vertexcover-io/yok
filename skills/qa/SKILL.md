@@ -48,7 +48,7 @@ references:
     description: How to read the frames against a design baseline and derive visualMatch.
   writing-the-report:
     path: references/writing-the-report.md
-    description: The proof report field contract, the derived verdict, and the completion checklist.
+    description: A scenario's Given, When, Then and Output blocks, the proof report field contract, the derived verdict, and the completion checklist.
   report-template:
     path: references/proof-report-template.html
     description: The proof report page whose JSON island the report fills.
@@ -86,8 +86,11 @@ entirely in Step 3, at full scope**: "backend-only" describes where the evidence
 feature you verify. You produce **one file**, `verification/proof-report.html`, and the evidence beside it — except
 where a fix round defers that file, in Step 6.
 
-- **The report is for a QA reader.** A scenario answers four questions in plain English — what was tested, what went
-  in, what should have happened, what did. One behaviour per scenario, so its expectation fits in the sentences.
+- **The report is for Product and QA readers who have never seen the code**, so everything it shows them is in
+  plain language, told from the user's side. A scenario reads as four blocks — **Given**, the state the
+  user starts in; **When**, what they do; **Then**, what should happen; **Output**, what the system gave back. Given
+  and Then are written from the docs before the scenario is driven; When and Output are written from the run that
+  proved it, so the steps a reader follows are the steps the video shows.
 - **One subject, one place** — a scenario, bug, or gap is written once and referenced elsewhere; evidence lives with
   the scenario it proves.
 
@@ -267,8 +270,8 @@ last line per scenario winning.
 
 ```json
 {"ts":"ISO8601","round":1,"commits":{"REPO_PATH":"SHA"},"requirements":["R2","EC1"],
- "scenario":{ the report's scenarios[] element verbatim — n, slug, short, title, verdict, url, expected, steps,
-              reason, proofs, frames, video, visualMatch, artifacts, extra },
+ "scenario":{ the report's scenarios[] element verbatim — n, slug, short, title, verdict, url, given, when, then,
+              output, reason, proofs, frames, video, visualMatch, artifacts, extra },
  "gap":{ the report's gaps[] element, present only when verdict is NOT VERIFIED }}
 ```
 
@@ -388,9 +391,12 @@ this entry before your first `open`. This step is the order things happen in.
   own scenario.
 - **Name and number every scenario** as in *Output Layout* before you capture anything — or keep the `NN_SLUG`
   the ledger already gave it, where Step 0 found one.
-- **Hold one session for every scenario in the run**: open the stack's UI URL on a browser walk, or resume the
-  session Step 1's `open` started on a device walk — the first device's for the main walk, each later device's
-  for its replays.
+- **Set every scenario's bar from the docs**: write its `given` and its `then`, shaped as the `writing-the-report`
+  reference says, while its result is still unknown.
+- **Hold one session per device**: on a browser walk, open the stack's UI URL in the desktop session, which
+  serves every desktop scenario and Steps 3 and 4, and open the phone's own session once the desktop scenarios are
+  filmed; on a device walk, resume the session Step 1's `open` started — the first device's for the main walk,
+  each later device's for its replays.
 
 **Each scenario, in this order**
 
@@ -402,8 +408,9 @@ this entry before your first `open`. This step is the order things happen in.
    works the flow out inside its capture loop. The driver proves the behaviour under test, not the setup that
    reached it — a fixture you find missing mid-walk is seeded the Step 1 way and the walk re-driven.
 3. **Film it, recording its paths.** On a browser walk, return the scenario to its opening state and replay the
-   whole flow as one recorded take: the take's asserts, its frames and its `NN_SLUG.mp4` are the scenario's
-   evidence, and the reference says when a take counts. On a device walk, drive the capture loop of the
+   whole flow as one continuous recorded take, driven the way a person would — the pointer travels to each control
+   before it is used — and holding on its opening state and on its final state long enough to read: the take's asserts, its frames and its `NN_SLUG.mp4` are the scenario's evidence, and the reference
+   says when a take counts. On a device walk, drive the capture loop of the
    `driving-the-device` reference; its frames are the evidence, and Step 5 builds its video from them. Record the
    path the scenario opened on and any path a step moved to: query kept, host dropped, auth and identity values
    redacted (shape and reasons in the `writing-the-report` reference). On a browser walk a path reached by
@@ -412,13 +419,18 @@ this entry before your first `open`. This step is the order things happen in.
 4. **Confirm every frame.** A frame is evidence only once its assert passed **and** your own eyes confirmed it shows
    what you think. Frames lag renders, so read each one before it is promoted.
 5. **Read the frames.** The `visual-verification` reference is the one pass that does it, and the scenario's
-   `visualMatch` is what it produces. It drives nothing: the frames are shot and the session is still open.
-6. **Write it up and append its ledger line**, in Step 0's shape, whatever the verdict — one line per scenario per
-   round, appended and never edited. A scenario whose take was recorded names its `video` on this line.
+   `visualMatch` is what it produces. It reads the frames already shot, in the session still open, and re-shoots
+   one screen only where the plan draws it at another width.
+6. **Write it up from the run you just filmed, and append its ledger line.** `when` tells the actions of that run
+   in the order they ran, and `output` tells what the system gave back, each one short paragraph in the reader's
+   plain language; the `writing-the-report` reference has the shape. The line is in Step 0's shape, whatever the verdict — one line per
+   scenario per round, appended and never edited. A scenario whose take was recorded names its `video` on this
+   line.
 
 **A replay is a scenario.** On a browser walk, every flow on the surface the change landed on is driven again on a
-phone, as its own numbered scenario in the same session, through steps 1–5 like any other; whether this app is
-meant to work on a phone at all is a project fact like any other. On a device walk, every flow is driven on the
+phone, as its own numbered scenario, through steps 1–5 like any other: the replays come after every desktop
+scenario, in the phone's own session. Whether this app is meant to work on a phone at all is a project fact like
+any other. On a device walk, every flow is driven on the
 first device, then again on each later device the entry lists, as its own numbered scenario in that device's
 session, through the same steps; the `driving-the-device` reference says how a replay is driven and graded. A
 device walk with one device, or none listed, drives each flow once.
@@ -427,6 +439,8 @@ device walk with one device, or none listed, drives each flow once.
 
 - every behaviour the docs claim is reached by some flow, driven this round or carried from the ledger;
 - every UI scenario names the path it opened on;
+- every scenario driven this round has a `when` that narrates its video in order and an `output` that answers
+  its `then`, each one short paragraph;
 - every UI scenario's `NN_SLUG` frames in `screenshots/` tell its whole story;
 - every scenario driven on a browser walk has the `NN_SLUG.mp4` its take recorded beside the report, or is one its
   reference handed to Step 5;
@@ -445,9 +459,10 @@ your first request. This step is the order things happen in.
 
 **Before the first request**
 
-- **Plan and name the scenarios as Step 2's *Before the first walk* does** — the fewest complete walks that reach
-  every behaviour, each named `NN_SLUG` or keeping the one the ledger gave it. A feature with no UI never enters
-  Step 2, so that planning happens here.
+- **Plan and name the scenarios, and set their bar, as Step 2's *Before the first walk* does** — the fewest
+  complete walks that reach every behaviour, each named `NN_SLUG` or keeping the one the ledger gave it, each with
+  its `given` and `then` written from the docs. A feature with no UI never enters Step 2, so that planning happens
+  here.
 - **Know where each effect lands before a walk fires it.** Step 1 answered which sink every out-of-band effect
   reaches and how to read it; a walk that discovers its sink halfway through is a walk you drive twice.
 
@@ -456,13 +471,13 @@ your first request. This step is the order things happen in.
 1. **Re-driving one Step 0 put back in the set? Clear the files it produced last round** — its `NN_SLUG.EXT`
    webhook body or download — as Step 2 clears a UI scenario's frames, and for the same reason.
 2. **Fire the trigger and keep the exchange whole.** The request path it drove is the scenario's `url`, written as
-   the `writing-the-report` reference says. The exact command, status and body go **inline and whole** into one
-   `proofs[]` entry (shape there too), never into a file.
+   the `writing-the-report` reference says. The exact command, status and body go **inline and whole** into the
+   `raw` of one `proofs[]` entry (shape there too), never into a file.
 3. **Read the written state back** the reference's way: through the product's own API, quoting the fields, and where
    the datastore is directly reachable (an MCP tool, else the connection string the stack exposes) the stored row too.
-   That read-back is a `proofs[]` entry of the same kind.
-4. **Name the guard.** Say in the proof which of the reference's three — a discriminating value, a negative control,
-   a branch trace — proved the code under test ran, and show it.
+   That read-back is a proof of its own.
+4. **Show the guard.** Give the reference's guard — a discriminating value, a negative control or a branch trace —
+   a proof of its own, whose `found` says in plain words why it shows the code under test ran.
 5. **Prove every effect the walk fired at its sink, polling to a hard deadline:**
    - **Email** — open the mail viewer and screenshot the received message: the same filmable evidence Step 2
      produces, frames and all.
@@ -474,16 +489,19 @@ your first request. This step is the order things happen in.
    Where the project says the effect is deliberately neutralized in this stack, prove the enqueue instead and say so.
    Where the stack has no sink for an effect the feature clearly produces, the scenario is `NOT VERIFIED` naming that
    sink.
-6. **Record the verdict** by exact-matching what came back against the response the design or plan describes.
-7. **Write it up and append its ledger line**, in Step 0's shape with `proofs[]` included, whatever the verdict.
+6. **Record the verdict** by exact-matching what came back against the scenario's `then`.
+7. **Write it up from the exchange, and append its ledger line.** `when` tells what was asked of the system in
+   the order it was asked, and `output` tells what came back, each one short paragraph in the reader's plain
+   language, with the exchange itself in a proof's `raw`. The line is in Step 0's shape with
+   `proofs[]` included, whatever the verdict.
 
 **Done when:**
 
 - every requirement this step carries is named by some headless scenario, driven this round or carried from the
   ledger;
-- every headless scenario names the path it drove as its `url` and holds its trigger and read-back whole in
-  `proofs[]`;
-- every headless scenario names which of the three guards proved the code under test ran;
+- every headless scenario names the path it drove as its `url` and holds its trigger and read-back whole in the
+  `raw` of its proofs;
+- every headless scenario carries a proof of the guard that shows the code under test ran;
 - every out-of-band effect a walk fired is quoted at its sink or `NOT VERIFIED` naming that sink.
 
 ## Step 4 — Adversarial Pass (MANDATORY — Role Swap)
@@ -521,7 +539,7 @@ your first request. This step is the order things happen in.
    - **rotate** — `agent-device orientation landscape-left`, assert and shoot the screen, then
      `agent-device orientation portrait` before the next probe.
 
-**Drive each probe as in Step 2** — same session, same `NN_SLUG` prefix; a probe with no screen follows Step 3.
+**Drive each probe as in Step 2** — in the session of the scenario it probes, under the same `NN_SLUG` prefix; a probe with no screen follows Step 3.
 Route what it returns by provenance:
 
 - **It probed a behaviour the docs describe** — a boundary on a validation rule, an error path, a rejection you
@@ -564,11 +582,12 @@ device walk, and any whose recorder failed — gets a video assembled from its p
 
 1. **Run the `report-media` script over the verification directory**, passing it
    `/abs/path/to/.yok/RUN/artifacts/verification`. It globs every `NN_SLUG` prefix under `screenshots/`. Where
-   `NN_SLUG.mp4` is already beside the report it checks that the file plays and keeps it; where there is none it
-   builds one from the frames.
+   `NN_SLUG.mp4` is already beside the report it checks that the file plays and compresses it in place for the
+   report; where there is none it builds one from the frames.
 
-2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 recorded`, `ok NN_SLUG.mp4 crop=…` or
-   `FAILED NN_SLUG — REASON`, and the exit is non-zero if any failed. A recording that does not play is a take
+2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 recorded`, with the sizes where the
+   recording was compressed, `ok NN_SLUG.mp4 crop=…` or `FAILED NN_SLUG — REASON`, and the exit is non-zero if any
+   failed. A recording that does not play is a take
    the recorder never closed: film that scenario's take again, or delete the file and run the script again to
    build from its frames. A scenario with no `ok` line has no video: its `video` stays unset, and its frames still
    prove it.
@@ -640,10 +659,11 @@ act on rather than an account of your afternoon:
 
 ## Step 7 — Clean Up
 
-Close the driver's session on every attempt, naming the session the run exported before its first `open`:
+Close every session the run opened, on every attempt, each by the name it was opened under:
 
-- **a browser walk**: `agent-browser --session "$AGENT_BROWSER_SESSION" close`; the `driving-the-browser`
-  reference says why a close naming any other session exits 0 and releases nothing;
+- **a browser walk**: `agent-browser --session NAME close`, once for the desktop session and once for the phone
+  session; the `driving-the-browser` reference says why a close naming any other session exits 0 and releases
+  nothing;
 - **a device walk**: `agent-device close` once per device, with that device's `AGENT_DEVICE_SESSION` exported.
 
 **The one deferred attempt** — Step 6's case, a `FAIL` with rounds left above zero — **leaves the stack up, the

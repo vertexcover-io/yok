@@ -10,7 +10,7 @@
       "expectations": [
         "Exports AGENT_DEVICE_SESSION before running stackUp",
         "Opens the app with agent-device open com.example.app --platform ios --relaunch after seed and auth, built from the entry's app and platform fields",
-        "Every scenario reason quotes the output of an agent-device get, is or wait command",
+        "Every scenario's output quotes the output of an agent-device get, is or wait command",
         "fields[] carries an App row naming the app id, platform, device and OS version and no Base URL row",
         "Step 7 runs agent-device close",
         "The report contains no phone replay scenario"
@@ -131,18 +131,20 @@
       "id": 8,
       "name": "browser-walk-replays-on-a-phone",
       "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change added a filter to a list page and the project says the app serves phones.",
-      "expected_output": "Drives the filter flow on desktop, then drives the same flow again as its own numbered scenario after agent-browser set device \"iPhone 14\", to its closing assert, and the replay's crop reads as a portrait picture in Step 5.",
+      "expected_output": "Drives the filter flow on desktop, then, once every desktop scenario is filmed, opens a second named session, sets it to agent-browser set device \"iPhone 14\" and signs in again there, and drives the same flow as its own numbered scenario to its closing assert. The replay's crop reads as a portrait picture in Step 5, and Step 7 closes both sessions by name.",
       "files": [],
       "expectations": [
         "A second numbered scenario replays the flow after set device \"iPhone 14\"",
+        "The replay runs after every desktop scenario, in a named session of its own that ran its own setup",
         "The replay is driven from its first click to the same closing assert as desktop",
         "The replay asserts documentElement.scrollWidth minus clientWidth is 0",
-        "Restores the desktop device afterwards"
+        "Step 7 closes the desktop session and the phone session, each by name"
       ],
       "anti_expectations": [
         "Narrows the viewport instead of setting a device",
         "Shoots only the final screen on the phone",
-        "Skips the replay because desktop passed"
+        "Skips the replay because desktop passed",
+        "Sets the phone device in the desktop session and tries to restore it afterwards"
       ]
     },
     {
@@ -169,20 +171,37 @@
       "id": 10,
       "name": "browser-scenario-is-scouted-then-filmed-in-one-take",
       "prompt": "You are running the qa stage of run feat-x, the only attempt, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
-      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, then record stop as its own command. Promotes the take's frames after reading them, names the video on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it.",
+      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail that holds the opening state for about a second and a half, in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, a closing hold of about a second and a half on the final state, then record stop as its own command. Promotes the take's frames after reading them, writes the scenario's when as a short paragraph narrating the take's actions in order and its output as a short paragraph quoting the values the take's asserts returned, names the video on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it, with the sizes where it compressed the recording.",
       "files": [],
       "expectations": [
         "The recorder starts only after the flow has been driven once without it",
         "The take is one batch, and record stop runs as a separate command after it",
         "Every click in the take is written as click with --human, and the recording is started with --cursor",
         "Each step in the take waits on a condition before its assert and screenshot",
-        "The scenario's ledger line names NN_SLUG.mp4 as its video before Step 5 runs"
+        "The scenario's ledger line names NN_SLUG.mp4 as its video before Step 5 runs",
+        "The scenario's given and then are written from the docs before the flow is driven",
+        "The scenario's when narrates the take's user actions in the order the take ran them, written after the take counted",
+        "The scenario's output quotes what the take's asserts returned for the outcomes then promises",
+        "Each of given, when, then and output is one short paragraph of two or three sentences",
+        "The take holds on the opening state before its first action and on the final state after its last, about a second and a half each",
+        "A design drawn at another width for a state the take passed through is re-shot after the take, recorder off, by replaying the scouted steps to that state",
+        "Every sentence in the scenario reads to a Product or QA person who has never seen the code: told from the user's side, naming controls by their on-screen labels",
+        "Each proof's found tells the reviewer what the proof is for: what it confirms about the scenario and why that matters",
+        "Before any text is typed in the take, the pointer travels to the field and clicks it, and the text arrives a few words at a time",
+        "A target off screen is brought into view by a smooth scroll before the pointer travels to it"
       ],
       "anti_expectations": [
         "Starts the recorder before the flow is known, so retries and dead ends are in the video",
         "Uses snapshot refs as targets inside the take",
         "Keeps the video of a take in which a step failed or an assert returned an unexpected value",
-        "Builds the browser scenario's video from its screenshots while its recorder works"
+        "Builds the browser scenario's video from its screenshots while its recorder works",
+        "Writes the scenario's steps before the take, or as a summary that does not follow the video",
+        "Writes an interpretation in output instead of what the system returned",
+        "Writes given, when, then or output as a bulleted or numbered list",
+        "Starts or ends the video mid-motion, with no time to read the first or the last state",
+        "Changes the take, or cuts the video, to get the design re-shoot",
+        "Puts field names, status codes, selectors, identifiers or an assert's raw return in given, when, then, output, claim or found",
+        "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take"
       ]
     }
   ]

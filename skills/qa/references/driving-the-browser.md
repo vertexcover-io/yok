@@ -24,9 +24,13 @@ sandbox!` and every later command reports a dead session. Export two variables b
 command in the run and Step 7's cleanup agree on them:
 
 ```bash
-export AGENT_BROWSER_SESSION=RUN               # one named session for the whole run, so Step 7 closes the browser it actually drove
+export AGENT_BROWSER_SESSION=RUN               # the desktop session, named, so Step 7 closes the browser it actually drove
 export AGENT_BROWSER_DEFAULT_TIMEOUT=2000      # fail a doomed wait fast instead of at the 25s default
 ```
+
+**A session keeps the device it opened as for its whole life**, so the run holds one named session per device: the
+desktop session for every desktop scenario and for Steps 3 and 4, and a phone session of its own, opened where
+*Replaying the scenario on a phone* says. Each is an isolated browser with its own sign-in.
 
 Without `AGENT_BROWSER_SESSION` every command drives the session named `default`, and a cleanup naming anything else
 reports success while releasing nothing. Raise the timeout where the stack is across a network, since a budget tuned
@@ -109,7 +113,8 @@ after the click is the race you came here to close. When it resolves `{appeared:
 **The video is a recording of the scenario from its first step to its last, and of nothing else.** So each
 scenario is driven twice: a scout that works the flow out with the recorder off, then one take that replays the
 whole flow as a single command with the recorder on. The take is the evidence. Its asserts decide the verdict, its
-screenshots are the frames and its recording is the video, so all three come from one run.
+screenshots are the frames, its recording is the video and its actions are the report's `when`, so all four come
+from one run.
 
 **Film the whole life of the scenario, not a checklist of its steps.** Every step earns at least one frame, many earn
 more — a scenario with more *promoted* frames than steps is doing it right.
@@ -122,8 +127,9 @@ Drive the scenario one step at a time until you hold four things for every step:
   apart. A snapshot ref belongs to the page that issued it, so refs are for scouting and selectors are for the take.
 - **The condition** that shows the step landed — the `wait` that returns the moment the state holds.
 - **The assert**, and the value it returns when the behaviour is right.
-- **The way to the target.** A target outside the viewport, or under another element, needs a step of its own that
-  scrolls it into view before the click.
+- **The way to the target**, as a person would get there: the scroll that brings a target outside the viewport
+  into view, the field to click before typing into it, the option to click once a list is open, the centre of an
+  element the user only points at.
 
 Screenshots taken while scouting go to staging and serve your own reading. Retries, dead ends and missed clicks
 all happen here, where nothing is filmed.
@@ -147,7 +153,8 @@ Staging needs no clearing — nothing leaves it unverified.
 
 Scouting moves the page and may have written data. Before the take, open the scenario's first path again, restore
 every control the scout changed, and re-seed, the Step 1 way, every fixture the scout used up. The take starts
-where a user starting this scenario would start.
+where a user starting this scenario would start: the state its `given` describes. The recording opens on that
+state, settled and in view.
 
 ### 4. Film the take
 
@@ -157,23 +164,42 @@ Three commands, in this order: start the recorder, run the whole flow as one bat
 agent-browser record start /abs/path/to/.yok/RUN/artifacts/verification/NN_SLUG.mp4 --cursor
 cat <<'EOF' | agent-browser batch --json --bail
 [["mouse","move","X","Y"],
+ ["wait","1500"],
  ["click","SELECTOR","--human"],
  ["wait","CONDITION"],
  ["eval","(()=>({ASSERT}))()"],
  ["screenshot","/abs/path/to/.yok/RUN/verify-staging/NN_SLUG__SS_STEP.png"],
- ["wait","1000"]]
+ ["wait","1500"]]
 EOF
 agent-browser record stop
 ```
 
 **Write every path absolute** — the heredoc is quoted and your shell's cwd resets between calls.
 
-The batch opens by moving the pointer to the middle of the page, so its first journey starts in view. Then every
-step of the flow is the same five entries, in this order:
+The take is one continuous recording with three parts: an opening hold, the steps, a closing hold.
 
-1. **Act.** Write a click as `click SELECTOR --human`: `--cursor` draws the pointer into the recording, and
-   `--human` on `click` makes it travel to the target, so the viewer follows one pointer from the first step to the
-   last and sees where each click lands. `click` is the form that takes `--human`.
+**The opening hold.** The batch opens by moving the pointer to the middle of the page, so its first journey starts
+in view, then holds the opening state for about a second and a half, so a person watching reads where the scenario
+starts before anything moves.
+
+**The steps.** Every step of the flow is the same five entries, in this order:
+
+1. **Act the way a person would: the pointer travels to the target, lands on it, then the action happens.**
+   `--cursor` draws the pointer into the recording and `--human` makes it travel on a smooth path from where it
+   last was, so the viewer follows one pointer from the first frame to the last and sees every action coming. Each
+   kind of action has its filmed form:
+
+   | The user | Filmed as |
+   | --- | --- |
+   | clicks | `click SELECTOR --human` |
+   | types | `click SELECTOR --human` on the field, then `keyboard type` a few words at a time with a `wait` of about 300 between, so the text is seen arriving; a field that already holds text gets `press Control+a` after the click |
+   | picks from a list | `click SELECTOR --human` on the list, then `click SELECTOR --human` on the option; a list the browser draws itself takes `select` after the click |
+   | points at an element | `mouse move X Y --human` to the element's centre |
+   | reaches a target off screen | an `eval` that calls `scrollIntoView({behavior:'smooth',block:'center'})` on it, a `wait` of about a second while the page glides, then the action |
+   | presses a key | `press KEY`, once the pointer has clicked the place the key acts on |
+
+   The instant forms — `fill`, `hover`, `scrollintoview`, a bare `mouse move` — belong to the scout and the setup
+   batch, where speed is what counts.
 2. **Wait on the condition** you scouted for that step.
 3. **Assert**, returning the value and the path as *The rules* say.
 4. **Screenshot to staging.** A frame shot during the take carries the pointer, which shows the reader what was
@@ -181,13 +207,16 @@ step of the flow is the same five entries, in this order:
 5. **Pause about a second**, so a person watching can read the screen before it changes. The pause paces the
    video; the wait in entry 2 is what makes the step reliable.
 
+**The closing hold.** The last step's pause runs about a second and a half, so the video rests on the final state
+— the outcome the scenario's `then` promises — long enough to read.
+
 `--bail` ends the batch at the first step that fails, so nothing after it is filmed on the wrong screen. `record
 stop` is a command of its own, run after the batch whatever the batch returned, because it is what closes the file.
 
 ### 5. Judge the take
 
-**A take counts when the batch exited 0, every entry reports success, and every assert returned the value the scout
-recorded.** Any other take is discarded whole: delete its video and its staged frames, correct the step that
+**A take counts when the batch exited 0, every entry reports success, every assert returned the value the scout
+recorded, and every action was filmed in its human form.** Any other take is discarded whole: delete its video and its staged frames, correct the step that
 failed, return to the opening state, and film again. A clean-looking video of a take that failed a step shows
 something other than the scenario.
 
@@ -201,8 +230,8 @@ something other than the scenario.
 
 **Open every staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the take
 counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
-`NN_<slug>__SS_<step>.png` name, and record the assert's deciding value (the returned `{n: …}`, the measured rect,
-the quoted string) for the scenario's `reason`.
+`NN_<slug>__SS_<step>.png` name, and keep the assert's deciding value (the returned `{n: …}`, the measured rect,
+the quoted string) for the scenario's `output`.
 
 You need both checks. **The assert answers whether the state took hold** — a click that silently no-ops looks
 identical to one that worked until you ask the DOM. **The look answers whether the frame shows it.** When they
@@ -218,6 +247,21 @@ a sticky bar landing mid-page, orphaned actions, and a header misaligned once th
 wider shot catches. Read the page's expected top-level section ordering from the project's skills or layout — that
 ordering is a layout invariant your frames must uphold. Prefer a cropped or clipped shot over full-page: it keeps
 the frame readable at video size.
+
+### 7. Write When and Output from the take
+
+**The take that counted is the source of the scenario's account.** Read its batch from top to bottom, with its
+`--json` result beside it, and write two short paragraphs:
+
+- **`when` narrates the user's actions** in the order the batch ran them, naming each control by its label on
+  screen and each value entered.
+  Pointer placement, scrolling into view, waits and pauses are the take's own mechanics and stay in the batch.
+- **`output` tells what the page gave back in that take** for each outcome `then` promises, stating the deciding
+  values the way the page shows them. What an assert returned goes in a proof's `raw` where a reviewer gains from
+  seeing it.
+
+Written this way, the video and the report describe one run. A scenario the stitched path filmed is written from
+the batch that produced its promoted frames.
 
 ## The frame that proves it
 
@@ -245,20 +289,29 @@ identifiable in that same frame.**
 
 ## Replaying the scenario on a phone
 
-`agent-browser set device "iPhone 14"` — a **device**, not a narrow viewport. An app that branches on user-agent or
-touch rather than width serves its desktop layout to a resized window, and you photograph a mobile pass that never
-happened.
+**The replays run last, in the phone's own session.** Once every desktop scenario is filmed, open a second named
+session and make it the phone before the app loads:
 
-**Film the whole scenario again on the phone, as a take of its own.** Set the device, then run the six steps above
-under the replay's own `NN_<slug>`: the same steps and the same asserts as the desktop take, scouted again
-wherever the phone presents a control differently or puts a target off screen. A phone breaks on the way to the
-final screen rather than on it, so the take runs from the first click. The recording keeps the phone's own
-portrait shape. Restore the desktop device afterwards, as with any setting you changed.
+```bash
+export AGENT_BROWSER_SESSION=RUN-phone         # on every phone command; the desktop session keeps its own name
+agent-browser set device "iPhone 14"
+```
+
+A **device**, not a narrow viewport: an app that branches on user-agent or touch rather than width serves its
+desktop layout to a resized window, and you photograph a mobile pass that never happened. The session is that
+phone from here to its close, so every replay runs in it and every desktop command keeps naming the desktop
+session. The phone session starts signed out and empty: run the setup batch in it from the first `open`, the way
+the desktop session began.
+
+**Film the whole scenario again on the phone, as a take of its own.** Run the seven steps above under the replay's
+own `NN_<slug>`: the same steps and the same asserts as the desktop take, scouted again wherever the phone presents
+a control differently or puts a target off screen. A phone breaks on the way to the final screen rather than on
+it, so the take runs from the first click. The recording keeps the phone's own portrait shape.
 
 The replay carries a verdict, so the walk answers the same question it answered on desktop:
 
 - **The closing assert returns the value it returned on desktop** — the outcome, not a similar-looking screen. This
-  is what the scenario's `expected` already claims, now claimed at phone width.
+  is what the scenario's `then` already claims, now claimed at phone width.
 - **Nothing scrolls sideways** — `(()=>({over: document.documentElement.scrollWidth -
   document.documentElement.clientWidth}))()` returns `0`. Anything above zero is a bug with its measurement already
   attached.

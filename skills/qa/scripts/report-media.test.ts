@@ -253,9 +253,75 @@ test("SC52: a scenario that already has its recorded video keeps it, and the res
   const r = run(dir);
 
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /^ok 01_recorded\.mp4 recorded$/m);
+  assert.match(r.stdout, /^ok 01_recorded\.mp4 recorded/m);
   assert.match(r.stdout, /^ok 02_built\.mp4 crop=\d+:\d+:\d+:\d+$/m);
-  assert.ok(readFileSync(join(dir, "01_recorded.mp4")).equals(before));
+  assert.ok(readFileSync(join(dir, "01_recorded.mp4")).length <= before.length);
+});
+
+const heavyRecording = (dir: string, name: string): string => {
+  const path = join(dir, name);
+  spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=s=640x480:d=2",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "5",
+      path,
+    ],
+    { stdio: "ignore" },
+  );
+  return path;
+};
+
+const playsBack = (path: string): boolean =>
+  spawnSync("ffmpeg", ["-v", "error", "-i", path, "-frames:v", "1", "-f", "null", "-"], {
+    stdio: "ignore",
+  }).status === 0;
+
+test("SC54: a recorded video is compressed in place, and the smaller file still plays", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("heavy");
+  frame(dir, "01_heavy__01_open.png", 640, 480);
+  const path = heavyRecording(dir, "01_heavy.mp4");
+  const before = readFileSync(path).length;
+
+  const r = run(dir);
+
+  const after = readFileSync(path).length;
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(after < before, `${after} is not below ${before}`);
+  assert.match(
+    r.stdout,
+    new RegExp(`^ok 01_heavy\\.mp4 recorded — compressed ${before}B to ${after}B$`, "m"),
+  );
+  assert.ok(playsBack(path));
+});
+
+test("SC55: a video the script already compressed is kept as it is on the next run", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("twice");
+  frame(dir, "01_twice__01_open.png", 640, 480);
+  const path = heavyRecording(dir, "01_twice.mp4");
+  run(dir);
+  const once = readFileSync(path);
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_twice\.mp4 recorded$/m);
+  assert.ok(readFileSync(path).equals(once));
 });
 
 test("SC53: a recorded video that does not play is FAILED and left as it is", {

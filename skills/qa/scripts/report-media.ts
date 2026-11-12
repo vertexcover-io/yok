@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Leaves every verification scenario with one video. A scenario whose take was recorded already
-// has its NN_<slug>.mp4 beside the report: that file is kept once it is shown to play. Every other
+// has its NN_<slug>.mp4 beside the report: that file is shown to play, then compressed in place
+// where that makes it smaller, since the report carries every video inline. Every other
 // scenario gets a video built from its promoted frames, which is then cropdetected, and the
 // scenario fails unless the window cropdetect reports still carries the source frame's aspect
 // ratio — a frame stretched to fill the canvas shows a geometry that was never on screen.
@@ -8,10 +9,12 @@
 // as data URIs in a `report-media` island the template resolves paths through, so the one html
 // file carries its own videos and frames wherever it is moved.
 // Usage: report-media.ts [--inline] VERIFICATION_DIR
-// Building prints one line per scenario — "ok NN_<slug>.mp4 recorded" for a kept recording,
+// Building prints one line per scenario — "ok NN_<slug>.mp4 recorded" for a kept recording, with
+// "— compressed <bytes>B to <bytes>B" where it was made smaller,
 // "ok NN_<slug>.mp4 crop=<window>" for a built one, or "FAILED NN_<slug> — <reason>" — and
 // writes each built NN_<slug>.mp4 beside the report.
-// Inlining prints one line per file — "ok <path> <bytes>B", or "FAILED <path> — <reason>" — and
+// Inlining prints one line per file — "ok <path> <bytes>B", or "FAILED <path> — <reason>" — then
+// the finished report's own size as "report <bytes>B", and
 // a path that failed shows as missing in the report, which loads nothing from disk.
 // Exits 0 when every scenario has its video or every file inlined, and when there are no frames at all;
 // 1 when any scenario or file failed; 2 when the arguments, the directory, a missing ffmpeg or a
@@ -25,6 +28,8 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -235,6 +240,55 @@ const plays = (dir: string, video: string): boolean =>
     },
   ).status === 0;
 
+// The comment a compressed recording carries, so a later run keeps it as it is.
+const COMPRESSED_MARK = "report-media-compressed";
+
+const isCompressed = (dir: string, video: string): boolean =>
+  (
+    spawnSync("ffmpeg", ["-nostdin", "-hide_banner", "-i", video], { cwd: dir, encoding: "utf8" })
+      .stderr ?? ""
+  ).includes(COMPRESSED_MARK);
+
+/** Re-encodes a recorded take for the report and keeps whichever file is smaller. */
+function compressRecording(dir: string, video: string): string | null {
+  if (isCompressed(dir, video)) return null;
+  const smaller = `${video}.compressed.mp4`;
+  const encoded = spawnSync(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-v",
+      "error",
+      "-y",
+      "-i",
+      video,
+      "-c:v",
+      "libx264",
+      "-crf",
+      "28",
+      "-preset",
+      "slow",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-an",
+      "-metadata",
+      `comment=${COMPRESSED_MARK}`,
+      smaller,
+    ],
+    { cwd: dir, stdio: "ignore" },
+  );
+  const before = statSync(join(dir, video)).size;
+  const after = existsSync(join(dir, smaller)) ? statSync(join(dir, smaller)).size : before;
+  if (encoded.status !== 0 || after >= before || !plays(dir, smaller)) {
+    rmSync(join(dir, smaller), { force: true });
+    return null;
+  }
+  renameSync(join(dir, smaller), join(dir, video));
+  return `compressed ${before}B to ${after}B`;
+}
+
 function cropWindow(dir: string, prefix: string): string | null {
   // cropdetect writes its report to stderr, which only spawnSync hands back on a zero exit.
   // Default loglevel, since -v error silences cropdetect itself.
@@ -274,8 +328,10 @@ export function buildScenarios(dir: string): readonly ScenarioResult[] {
   return scenarioPrefixes(screenshots).map((prefix) => {
     const video = `${prefix}.mp4`;
     if (existsSync(join(dir, video))) {
-      const failure = plays(dir, video) ? null : `${video} does not play`;
-      return { prefix, crop: null, failure, note: null };
+      if (!plays(dir, video)) {
+        return { prefix, crop: null, failure: `${video} does not play`, note: null };
+      }
+      return { prefix, crop: null, failure: null, note: compressRecording(dir, video) };
     }
 
     const failure = buildVideo(dir, prefix);
@@ -401,6 +457,7 @@ function inlineMain(dir: string): number {
   }
 
   for (const result of results) console.log(formatInline(result));
+  console.log(`report ${statSync(join(dir, REPORT_NAME)).size}B`);
   return results.some((result) => result.failure !== null) ? 1 : 0;
 }
 
