@@ -59,7 +59,7 @@ agent-device help COMMAND         # one command's exact shape
 ## Asserts — the quoted output is the evidence
 
 There is no `eval` on a device: nothing runs inside the app. Every claim is settled by one of these read-only
-commands, and **the command's printed output, quoted verbatim, is the evidence** the scenario's `reason` cites:
+commands, and **the command's printed output, quoted verbatim, is the evidence** behind the scenario's `output`:
 
 | Need | Command | What it proves |
 |---|---|---|
@@ -102,11 +102,12 @@ Re-takes, dead ends and missed presses stay in staging and are discarded at clea
 **Re-driving a scenario an earlier round filmed? Delete its old evidence first, then capture:**
 
 ```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_*
+rm .yok/RUN/artifacts/verification/screenshots/NN_* .yok/RUN/artifacts/verification/NN_*
 ```
 
-Step 5 builds each video by globbing every frame still under that prefix, so a frame from a walk that no longer
-exists ends up in the video nobody can tell apart from a fresh one.
+Step 5 builds each video from every frame still under that prefix, and keeps any `NN_SLUG.mp4` it finds beside the
+report. So a frame or a video from a walk that no longer exists passes for a fresh one, and nobody can tell them
+apart.
 
 For every action, in this order:
 
@@ -117,7 +118,11 @@ For every action, in this order:
 3. **Read the staged PNG** and confirm it shows what you think — the round-trip you never skip. Frames lag
    renders, so a frame that disagrees with its assert is re-shot after a `wait` on the condition, never promoted.
 4. **Promote it** once the assert passed and your eyes agree: move it into `verification/screenshots/` under its
-   `NN_SLUG__SS_STEP.png` name, and record the assert's quoted output for the scenario's `reason`.
+   `NN_SLUG__SS_STEP.png` name, and keep the assert's quoted output for the scenario's `output`.
+
+**Once the walk reaches its closing assert, write the scenario from it**, as two short paragraphs: `when` narrates
+the actions behind the promoted frames in the order they ran, and `output` tells what the app showed for each
+outcome `then` promises, in the reader's plain language; the assert output behind it goes in a proof's `raw`.
 
 You need both checks. The assert answers whether the state took hold — a press that silently no-ops looks identical
 to one that landed until you ask the tree. The read answers whether the frame shows it.
@@ -146,7 +151,7 @@ so a frame shot at the end proves nothing.
 The replay carries a verdict, so the walk answers the same question it answered on the first device:
 
 - **The closing assert returns the value it returned on the first device** — the outcome, not a similar-looking
-  screen. This is what the scenario's `expected` already claims, now claimed at this device's size.
+  screen. This is what the scenario's `then` already claims, now claimed at this device's size.
 - **Every control the replay drove is at least 44px on its short side**, read from `get attrs`.
 - **Controls are reached the way this device presents them** — a tablet that shows a sidebar where the phone
   showed a tab bar is driven through the sidebar, the way the user gets to it.

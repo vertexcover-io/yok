@@ -3,18 +3,23 @@
 **Read this when:** a scenario's frames are shot and their asserts have passed, before you write the scenario up
 (Step 2). You are mid-walk with the session still open, which is what makes this cheap.
 
-**This pass drives nothing, and it runs on one scenario at a time.** That scenario is a desktop walk, a phone
+**This pass reads, and it runs on one scenario at a time.** That scenario is a desktop walk, a phone
 replay, or a device scenario; its frames are shot and the session is still open, so where a frame cannot answer a
-question you ask the open screen — one `eval` in the browser, one `get attrs` on a device, no walk. **Read the
-frames at the width they were shot at, and the one re-shoot below is the only new capture this pass makes.** The
+question you ask the open screen — one `eval` in the browser, one `get attrs` on a device. **Read the frames at
+the width they were shot at; the one re-shoot below is the only new capture this pass makes, and the only driving
+it does.** The
 phone replay is the only second width there is, and it is already a real device — `set device "iPhone 14"`, not
 a narrowed window, for the reason `driving-the-browser.md` gives: an app that branches on user-agent serves its
 desktop layout to a resized viewport and photographs a mobile pass that never happened.
 
 **The one re-shoot.** Read each frame at the width the plan's step gives it (`build to design/FILE at WIDTHpx`);
 a step that gives no width is read at the width the scenario was shot at. When the step's width differs from the
-scenario's, re-shoot that one screen in the session already open: one `set viewport`, one `screenshot` to
-`screenshots/NN_SLUG.design.png`, a name the scenario's video leaves out. Record the path as `visualMatch.build`
+scenario's, re-shoot that one screen in the session already open, after the take and with the recorder off, so
+the scenario's video stays the take. Set the viewport to the step's width, bring the screen to the state the
+design draws, and take one `screenshot` to `screenshots/NN_SLUG.design.png`, a name the scenario's video leaves
+out. A state the take ended on is already on screen. A state the take passed through — a surface that opens and
+closes inside the flow — is reached again by replaying the scouted steps as far as that state. Then restore the
+viewport, and whatever the replay changed, to what the next scenario opens on. Record the path as `visualMatch.build`
 and the width as `visualMatch.width`, and say in `matched` that the comparison ran at that width. A device has
 one width, the device's own, so a device scenario is read at that width and `matched` says so when the plan's
 width differs.
@@ -141,7 +146,7 @@ element and quote the observation, or you have not looked closely enough to repo
 **The fidelity is derived, never chosen.** Start at 100, subtract 25 per BLOCKER and 8 per HIGH, floor at 0;
 things the rule called not-a-finding subtract nothing. A number picked because the screen felt close is the
 thing this field exists to prevent. It is `null` wherever the baseline is. **Below 80 with no BLOCKER is a finding
-on the scenario, not a fail** — say it in `reason` and let the reader weigh it.
+on the scenario, not a fail** — say it in `visualMatch.matched` and let the reader weigh it.
 
 Each finding names what the design shows, what the build shows, and the evidence that settles it:
 
