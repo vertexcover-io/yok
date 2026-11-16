@@ -101,7 +101,7 @@
                    spacing delta against the baseline is not a finding. The
                    baseline renders beside build, or the first frame when there
                    is no build, both opening in the modal.
-       proofs[]    {claim,found,holds,raw} — a second witness for what output
+       proofs[]    {claim,found,holds,raw,image} — a second witness for what output
                    says. One proof confirms one thing from one witness.
                    claim: what the witness showed, one short plain sentence.
                    found: what this proof is for — what it confirms about
@@ -110,6 +110,8 @@
                    raw: the original behind this proof, inline — the request
                    as sent, the status, the response as it came back. The
                    proof renders folded and opens onto it.
+                   image: optional report-relative picture of what the witness
+                   showed, drawn above raw.
        artifacts[] {label,href,note} files the product produced, sitting beside
                    the report — a webhook body, a download. Exchanges you drove
                    live inline in proofs[].
@@ -206,7 +208,8 @@
           "claim": "<what this confirms, one plain sentence>",
           "found": "<what this proof is for: what it confirms, and why that matters here>",
           "holds": true,
-          "raw": "<the original behind this proof, as it arrived>"
+          "raw": "<the original behind this proof, as it arrived>",
+          "image": "<optional: screenshots/NN_SLUG.NAME.png>"
         }
       ],
       "artifacts": [
@@ -583,6 +586,7 @@ a { color: var(--accent); }
 }
 .proof[open] .proof__peek { display: none; }
 .proof__b { padding: 0 12px 12px 30px; }
+.proof__img { display: block; max-width: min(100%, 720px); max-height: 480px; width: auto; height: auto; margin: 0 0 10px; border: 1px solid var(--line); border-radius: 6px; }
 .proof__b p { margin: 0 0 10px; font-size: 13.5px; max-width: 92ch; }
 .cap {
   font: 11.5px/1.6 var(--mono); background: var(--pre-bg); color: var(--pre-fg);
@@ -1150,9 +1154,14 @@ code {
     sum.appendChild(top);
     if (pr.found) { const f = el('div', 'proof__found'); paras(f, pr.found); sum.appendChild(f); }
     d.appendChild(sum);
-    if (pr.raw) {
+    if (pr.raw || pr.image) {
       const b = el('div', 'proof__b');
-      b.appendChild(el('pre', 'cap', pr.raw));
+      if (pr.image && res(pr.image)) {
+        const img = el('img', 'proof__img'); img.src = res(pr.image); img.alt = pr.claim; b.appendChild(img);
+      } else if (pr.image) {
+        b.appendChild(el('p', 'empty', 'This picture is not inside the report: ' + pr.image));
+      }
+      if (pr.raw) b.appendChild(el('pre', 'cap', pr.raw));
       d.appendChild(b);
     }
     sec.appendChild(d);

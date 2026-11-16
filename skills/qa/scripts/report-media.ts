@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
-// Leaves every verification scenario with one video. A scenario whose take was recorded already
-// has its NN_<slug>.mp4 beside the report: that file is shown to play, then compressed in place
-// where that makes it smaller, since the report carries every video inline. Every other
+// Leaves every verification scenario with one video. A take recorded as numbered parts,
+// NN_<slug>.partK.mp4, because it followed the user from one tab to another, is first joined in
+// order into NN_<slug>.mp4. A scenario whose take was recorded already
+// has its NN_<slug>.mp4 beside the report, with or without frames: that file is shown to play,
+// then compressed in place where that makes it smaller, since the report carries every video
+// inline. Every other
 // scenario gets a video built from its promoted frames, which is then cropdetected, and the
 // scenario fails unless the window cropdetect reports still carries the source frame's aspect
 // ratio — a frame stretched to fill the canvas shows a geometry that was never on screen.
@@ -10,7 +13,9 @@
 // file carries its own videos and frames wherever it is moved.
 // Usage: report-media.ts [--inline] VERIFICATION_DIR
 // Building prints one line per scenario — "ok NN_<slug>.mp4 recorded" for a kept recording, with
-// "— compressed <bytes>B to <bytes>B" where it was made smaller,
+// "— trimmed <seconds>s of still picture" where a stretch with no change on screen was cut down,
+// "— compressed <bytes>B to <bytes>B" where it was made smaller or "— joined <n> parts" where it
+// was recorded in parts,
 // "ok NN_<slug>.mp4 crop=<window>" for a built one, or "FAILED NN_<slug> — <reason>" — and
 // writes each built NN_<slug>.mp4 beside the report.
 // Inlining prints one line per file — "ok <path> <bytes>B", or "FAILED <path> — <reason>" — then
@@ -108,13 +113,19 @@ const isDirectory = (path: string): boolean => {
   }
 };
 
-/** The scenario prefixes behind a directory of promoted `NN_<slug>__SS_<step>.png` frames. */
-export function scenarioPrefixes(screenshotsDir: string): readonly string[] {
-  if (!existsSync(screenshotsDir)) return [];
-  const prefixes = readdirSync(screenshotsDir)
+const namesIn = (dir: string): readonly string[] => (isDirectory(dir) ? readdirSync(dir) : []);
+
+/**
+ * The scenario prefixes of a verification directory: those behind its promoted
+ * `screenshots/NN_<slug>__SS_<step>.png` frames, and those of each `NN_<slug>.mp4` beside the
+ * report, which is all a scenario filmed without frames leaves.
+ */
+export function scenarioPrefixes(dir: string): readonly string[] {
+  const framed = namesIn(join(dir, "screenshots"))
     .filter((name) => name.endsWith(".png") && name.includes("__"))
     .map((name) => name.slice(0, name.indexOf("__")));
-  return [...new Set(prefixes)].toSorted();
+  const filmed = namesIn(dir).flatMap((name) => /^(\d\d_[^.]+)\.mp4$/.exec(name)?.[1] ?? []);
+  return [...new Set([...framed, ...filmed])].toSorted();
 }
 
 /** The last crop window cropdetect reported, which is the picture inside the bars. */
@@ -243,6 +254,22 @@ const plays = (dir: string, video: string): boolean =>
 // The comment a compressed recording carries, so a later run keeps it as it is.
 const COMPRESSED_MARK = "report-media-compressed";
 
+const COMPRESSED_ENCODING: readonly string[] = [
+  "-c:v",
+  "libx264",
+  "-crf",
+  "28",
+  "-preset",
+  "slow",
+  "-pix_fmt",
+  "yuv420p",
+  "-movflags",
+  "+faststart",
+  "-an",
+  "-metadata",
+  `comment=${COMPRESSED_MARK}`,
+];
+
 const isCompressed = (dir: string, video: string): boolean =>
   (
     spawnSync("ffmpeg", ["-nostdin", "-hide_banner", "-i", video], { cwd: dir, encoding: "utf8" })
@@ -250,9 +277,39 @@ const isCompressed = (dir: string, video: string): boolean =>
   ).includes(COMPRESSED_MARK);
 
 /** Re-encodes a recorded take for the report and keeps whichever file is smaller. */
-function compressRecording(dir: string, video: string): string | null {
-  if (isCompressed(dir, video)) return null;
-  const smaller = `${video}.compressed.mp4`;
+const STILL_LIMIT_SECONDS = 3;
+const STILL_KEPT_SECONDS = 2;
+
+type Cut = { readonly from: number; readonly to: number };
+
+/** The parts of each still stretch past the limit, given when the picture changed. */
+export function stillCuts(changes: readonly number[], duration: number): readonly Cut[] {
+  const ends = [...changes.slice(1), duration];
+  return changes
+    .map((from, n) => ({ from: from + STILL_KEPT_SECONDS, to: ends[n] ?? duration }))
+    .filter((cut, n) => cut.to - (changes[n] ?? 0) > STILL_LIMIT_SECONDS);
+}
+
+/**
+ * Cuts every stretch where the picture does not change down to a short hold, so a wait on
+ * something off screen does not fill the video. Returns the note for the scenario's line.
+ */
+function trimStills(dir: string, video: string): string | null {
+  const probe = spawnSync(
+    "ffmpeg",
+    ["-nostdin", "-hide_banner", "-i", video, "-vf", "mpdecimate,showinfo", "-f", "null", "-"],
+    { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  const log = probe.stderr ?? "";
+  const length = /Duration: (\d+):(\d+):(\d+\.\d+)/.exec(log);
+  if (probe.status !== 0 || length === null) return null;
+  const duration = Number(length[1]) * 3600 + Number(length[2]) * 60 + Number(length[3]);
+  const changes = [...log.matchAll(/pts_time:(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
+  const cuts = stillCuts(changes, duration);
+  if (cuts.length === 0) return null;
+
+  const dropped = cuts.map((cut) => `gte(t,${cut.from})*lt(t,${cut.to})`).join("+");
+  const trimmed = `${video}.trimmed.mp4`;
   const encoded = spawnSync(
     "ffmpeg",
     [
@@ -262,21 +319,28 @@ function compressRecording(dir: string, video: string): string | null {
       "-y",
       "-i",
       video,
-      "-c:v",
-      "libx264",
-      "-crf",
-      "28",
-      "-preset",
-      "slow",
-      "-pix_fmt",
-      "yuv420p",
-      "-movflags",
-      "+faststart",
-      "-an",
-      "-metadata",
-      `comment=${COMPRESSED_MARK}`,
-      smaller,
+      "-vf",
+      `fps=30,select='not(${dropped})',setpts=N/(30*TB)`,
+      ...COMPRESSED_ENCODING,
+      trimmed,
     ],
+    { cwd: dir, stdio: "ignore" },
+  );
+  if (encoded.status !== 0 || !plays(dir, trimmed)) {
+    rmSync(join(dir, trimmed), { force: true });
+    return null;
+  }
+  renameSync(join(dir, trimmed), join(dir, video));
+  const seconds = cuts.reduce((sum, cut) => sum + cut.to - cut.from, 0);
+  return `trimmed ${seconds.toFixed(1)}s of still picture`;
+}
+
+function compressRecording(dir: string, video: string): string | null {
+  if (isCompressed(dir, video)) return null;
+  const smaller = `${video}.compressed.mp4`;
+  const encoded = spawnSync(
+    "ffmpeg",
+    ["-nostdin", "-v", "error", "-y", "-i", video, ...COMPRESSED_ENCODING, smaller],
     { cwd: dir, stdio: "ignore" },
   );
   const before = statSync(join(dir, video)).size;
@@ -287,6 +351,57 @@ function compressRecording(dir: string, video: string): string | null {
   }
   renameSync(join(dir, smaller), join(dir, video));
   return `compressed ${before}B to ${after}B`;
+}
+
+const recordedParts = (dir: string, prefix: string): readonly string[] =>
+  readdirSync(dir)
+    .filter((name) => new RegExp(`^${prefix}\\.part\\d+\\.mp4$`).test(name))
+    .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+const videoSize = (dir: string, video: string): FrameSize | null => {
+  const probe = spawnSync("ffmpeg", ["-nostdin", "-hide_banner", "-i", video], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  const size = /Video:.*?\b(\d{2,5})x(\d{2,5})\b/.exec(probe.stderr ?? "");
+  return size === null ? null : { width: Number(size[1]), height: Number(size[2]) };
+};
+
+/**
+ * Joins a take's parts, in order, into the scenario's one video, then removes the parts.
+ * Every part is fitted inside the first part's size, so a pop-up window keeps its shape.
+ */
+function joinParts(dir: string, prefix: string, parts: readonly string[]): string | null {
+  const unplayable = parts.find((part) => !plays(dir, part));
+  if (unplayable !== undefined) return `${unplayable} does not play`;
+  const size = videoSize(dir, parts[0] ?? "");
+  if (size === null) return `${parts[0]} reports no picture size`;
+  const fit = `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30`;
+  const fitted = parts.map((_, n) => `[${n}:v]${fit}[v${n}]`).join(";");
+  const labels = parts.map((_, n) => `[v${n}]`).join("");
+  const joined = spawnSync(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-v",
+      "error",
+      "-y",
+      ...parts.flatMap((part) => ["-i", part]),
+      "-filter_complex",
+      `${fitted};${labels}concat=n=${parts.length}:v=1:a=0[out]`,
+      "-map",
+      "[out]",
+      ...COMPRESSED_ENCODING,
+      `${prefix}.mp4`,
+    ],
+    { cwd: dir, encoding: "utf8" },
+  );
+  if (joined.status !== 0) {
+    rmSync(join(dir, `${prefix}.mp4`), { force: true });
+    return `ffmpeg: ${(joined.stderr ?? "").trim().split("\n").at(-1) || "could not join the parts"}`;
+  }
+  for (const part of parts) rmSync(join(dir, part));
+  return null;
 }
 
 function cropWindow(dir: string, prefix: string): string | null {
@@ -325,13 +440,27 @@ function firstFrameSize(screenshotsDir: string, prefix: string): FrameSize | nul
 
 export function buildScenarios(dir: string): readonly ScenarioResult[] {
   const screenshots = join(dir, "screenshots");
-  return scenarioPrefixes(screenshots).map((prefix) => {
+  return scenarioPrefixes(dir).map((prefix) => {
     const video = `${prefix}.mp4`;
+    const parts = recordedParts(dir, prefix);
+    if (parts.length > 0) {
+      const failure = joinParts(dir, prefix, parts);
+      if (failure !== null) return { prefix, crop: null, failure, note: null };
+      const trimmed = trimStills(dir, video);
+      const joined = `joined ${parts.length} parts`;
+      return {
+        prefix,
+        crop: null,
+        failure: null,
+        note: trimmed === null ? joined : `${joined}, ${trimmed}`,
+      };
+    }
     if (existsSync(join(dir, video))) {
       if (!plays(dir, video)) {
         return { prefix, crop: null, failure: `${video} does not play`, note: null };
       }
-      return { prefix, crop: null, failure: null, note: compressRecording(dir, video) };
+      const note = trimStills(dir, video) ?? compressRecording(dir, video);
+      return { prefix, crop: null, failure: null, note };
     }
 
     const failure = buildVideo(dir, prefix);
@@ -386,6 +515,7 @@ export function mediaPaths(data: Record<string, unknown>): readonly string[] {
       isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["baseline"] : null,
       isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["build"] : null,
       ...listOf(scenario["artifacts"]).map((artifact) => pathOf(artifact, "href")),
+      ...listOf(scenario["proofs"]).map((proof) => (isRecord(proof) ? proof["image"] : null)),
     ]);
   const local = named
     .filter((path): path is string => typeof path === "string" && path !== "")
@@ -462,9 +592,8 @@ function inlineMain(dir: string): number {
 }
 
 function buildMain(dir: string): number {
-  const screenshots = join(dir, "screenshots");
-  if (scenarioPrefixes(screenshots).length === 0) {
-    console.log(`no frames under ${screenshots} — no videos to build`);
+  if (scenarioPrefixes(dir).length === 0) {
+    console.log(`no frames under ${join(dir, "screenshots")} — no videos to build`);
     return 0;
   }
 

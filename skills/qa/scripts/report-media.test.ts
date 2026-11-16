@@ -12,6 +12,7 @@ import {
   parseReportData,
   pngSize,
   scenarioPrefixes,
+  stillCuts,
   withMediaIsland,
 } from "./report-media.ts";
 
@@ -70,10 +71,18 @@ test("SC1: prefix discovery groups a scenario's frames and ignores unrelated fil
   writeFileSync(join(dir, "screenshots", "notes.txt"), "");
   writeFileSync(join(dir, "screenshots", "stray.png"), "");
 
-  assert.deepEqual(scenarioPrefixes(join(dir, "screenshots")), [
-    "01_float_matches",
-    "02_phone_replay",
-  ]);
+  assert.deepEqual(scenarioPrefixes(dir), ["01_float_matches", "02_phone_replay"]);
+});
+
+test("SC58: a video beside the report with no frames is a scenario too, and its parts are not", () => {
+  const dir = withScreenshots("video-prefixes");
+  frame(dir, "01_filmed__01_open.png");
+  writeFileSync(join(dir, "01_filmed.mp4"), "");
+  writeFileSync(join(dir, "02_e2e_only.mp4"), "");
+  writeFileSync(join(dir, "03_tabs.part1.mp4"), "");
+  writeFileSync(join(dir, "02_e2e_only_export.csv"), "");
+
+  assert.deepEqual(scenarioPrefixes(dir), ["01_filmed", "02_e2e_only"]);
 });
 
 test("SC3: the crop window is the last one cropdetect reported", () => {
@@ -308,6 +317,148 @@ test("SC54: a recorded video is compressed in place, and the smaller file still 
   assert.ok(playsBack(path));
 });
 
+test("SC59: a scenario with a video and no frames is checked and compressed like any recording", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = sandbox("e2e-video");
+  const path = heavyRecording(dir, "01_e2e_only.mp4");
+  const before = readFileSync(path).length;
+  writeFileSync(join(dir, "02_cut_short.mp4"), "a recording the recorder never closed");
+
+  const r = run(dir);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^ok 01_e2e_only\.mp4 recorded — compressed \d+B to \d+B$/m);
+  assert.match(r.stdout, /^FAILED 02_cut_short — 02_cut_short\.mp4 does not play$/m);
+  assert.ok(readFileSync(path).length < before);
+});
+
+const duration = (path: string): number =>
+  Number(
+    spawnSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+      { encoding: "utf8" },
+    ).stdout.trim(),
+  );
+
+test("SC56: a take recorded in numbered parts is joined into one video, in order", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("parts");
+  frame(dir, "01_tabs__01_open.png", 640, 480);
+  heavyRecording(dir, "01_tabs.part1.mp4");
+  heavyRecording(dir, "01_tabs.part2.mp4");
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_tabs\.mp4 recorded — joined 2 parts$/m);
+  assert.ok(Math.abs(duration(join(dir, "01_tabs.mp4")) - 4) < 0.3);
+  assert.equal(existsSync(join(dir, "01_tabs.part1.mp4")), false);
+  assert.equal(existsSync(join(dir, "01_tabs.part2.mp4")), false);
+});
+
+const videoSize = (path: string): string =>
+  spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "csv=p=0",
+      path,
+    ],
+    { encoding: "utf8" },
+  ).stdout.trim();
+
+test("SC58: parts of different sizes are joined at the first part's size", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("sizes");
+  frame(dir, "01_popup__01_open.png", 640, 480);
+  heavyRecording(dir, "01_popup.part1.mp4");
+  spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=s=320x400:d=2",
+      join(dir, "01_popup.part2.mp4"),
+    ],
+    { stdio: "ignore" },
+  );
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(videoSize(join(dir, "01_popup.mp4")), "640,480");
+  assert.ok(Math.abs(duration(join(dir, "01_popup.mp4")) - 4) < 0.3);
+  assert.ok(playsBack(join(dir, "01_popup.mp4")));
+});
+
+test("SC57: a part that does not play fails the scenario and leaves its parts in place", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("badpart");
+  frame(dir, "01_tabs__01_open.png", 640, 480);
+  heavyRecording(dir, "01_tabs.part1.mp4");
+  writeFileSync(join(dir, "01_tabs.part2.mp4"), "a part the recorder never closed");
+
+  const r = run(dir);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^FAILED 01_tabs — 01_tabs\.part2\.mp4 does not play$/m);
+  assert.equal(existsSync(join(dir, "01_tabs.part1.mp4")), true);
+});
+
+test("SC61: only the part of a still stretch past two seconds is cut, and short stretches stay", () => {
+  assert.deepEqual(stillCuts([0, 1, 9, 10], 20), [
+    { from: 3, to: 9 },
+    { from: 12, to: 20 },
+  ]);
+  assert.deepEqual(stillCuts([0, 2.5, 5], 7.5), []);
+});
+
+test("SC60: a long still stretch in a recorded video is cut down to two seconds", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("still");
+  frame(dir, "01_still__01_open.png", 640, 480);
+  const path = join(dir, "01_still.mp4");
+  spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=s=640x480:d=2:r=30",
+      "-vf",
+      "tpad=stop_mode=clone:stop_duration=10",
+      path,
+    ],
+    { stdio: "ignore" },
+  );
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_still\.mp4 recorded — trimmed \d+(\.\d)?s of still picture$/m);
+  assert.ok(Math.abs(duration(path) - 4) < 0.4, String(duration(path)));
+  assert.ok(playsBack(path));
+});
+
 test("SC55: a video the script already compressed is kept as it is on the next run", {
   skip: needsFfmpeg,
 }, () => {
@@ -364,6 +515,10 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
         ],
         visualMatch: { baseline: "design/a.png" },
         artifacts: [{ label: "export", href: "01_a_export.csv" }, "01_a.mp4"],
+        proofs: [
+          { claim: "printed", image: "screenshots/01_a.printed.png" },
+          { claim: "no image" },
+        ],
       },
       { frames: [{ src: "screenshots/01_a__01_open.png" }], visualMatch: { baseline: null } },
       {
@@ -380,6 +535,7 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
     "screenshots/01_a__02_saved.png",
     "design/a.png",
     "01_a_export.csv",
+    "screenshots/01_a.printed.png",
   ]);
   assert.deepEqual(mediaPaths({}), []);
 });

@@ -188,7 +188,9 @@
         "Every sentence in the scenario reads to a Product or QA person who has never seen the code: told from the user's side, naming controls by their on-screen labels",
         "Each proof's found tells the reviewer what the proof is for: what it confirms about the scenario and why that matters",
         "Before any text is typed in the take, the pointer travels to the field and clicks it, and the text arrives a few words at a time",
-        "A target off screen is brought into view by a smooth scroll before the pointer travels to it"
+        "A target off screen is brought into view by a smooth scroll before the pointer travels to it",
+        "Where a step opens another tab, the take restarts the recorder there as the next numbered part, and Step 5 joins the parts into one video",
+        "Every frame the scenario lists was shot during the take, so it is also in the video"
       ],
       "anti_expectations": [
         "Starts the recorder before the flow is known, so retries and dead ends are in the video",
@@ -201,7 +203,8 @@
         "Starts or ends the video mid-motion, with no time to read the first or the last state",
         "Changes the take, or cuts the video, to get the design re-shoot",
         "Puts field names, status codes, selectors, identifiers or an assert's raw return in given, when, then, output, claim or found",
-        "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take"
+        "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take",
+        "Leaves the recording on the first tab and shoots the new tab only as a screenshot after the take"
       ]
     }
   ]

@@ -435,20 +435,40 @@ first device, then again on each later device the entry lists, as its own number
 session, through the same steps; the `driving-the-device` reference says how a replay is driven and graded. A
 device walk with one device, or none listed, drives each flow once.
 
+**An e2e test this run wrote is a scenario.** Once every flow and replay is driven, film the run's e2e tests
+with their own runner. Each video is an **e2e scenario**, added to the scenarios you drove. In this order:
+
+1. **List the tests**: every executed test the `phase-N-e2e.json` reports name whose scenario row is at level
+   `e2e`. On a later round, list the ones behind the e2e scenarios Step 0 put back in the set, and clear those
+   scenarios' videos.
+2. **Run them once with video recording on.** Run the package's `e2e` command from the config, limited to
+   those tests, with its JSON report written under `.yok/RUN/verify-staging/`. The `tdd` skill's
+   `references/hermetic-e2e.md` says how each runner records video and writes that report.
+3. **Make one scenario per video the runner saved**, covering every listed test the video films. Number it
+   after the scenarios already named, or keep the `NN_SLUG` the ledger gave it, and save its video beside the
+   report as `NN_SLUG.mp4`, converted with `ffmpeg` where the runner recorded another format.
+4. **Write each one up as the `writing-the-report` reference shapes an e2e scenario, and append its ledger
+   line**, its `requirements` the ids in the `Traces` cell of each row the scenario covers.
+5. **Give every failed test a bug**, its `trigger` the steps the test ran.
+
 **Done when:**
 
 - every behaviour the docs claim is reached by some flow, driven this round or carried from the ledger;
 - every UI scenario names the path it opened on;
 - every scenario driven this round has a `when` that narrates its video in order and an `output` that answers
   its `then`, each one short paragraph;
-- every UI scenario's `NN_SLUG` frames in `screenshots/` tell its whole story;
-- every scenario driven on a browser walk has the `NN_SLUG.mp4` its take recorded beside the report, or is one its
-  reference handed to Step 5;
-- every UI scenario carries a `visualMatch` — a derived fidelity, or the named absence of a baseline — with each of
-  the seven questions evidenced or called clean, and every frame the plan builds is some scenario's baseline, read at
-  the width the plan gives it, or named in the `mechanism` of the gap of the scenario that could not reach it;
+- every UI scenario you drove has `NN_SLUG` frames in `screenshots/` that tell its whole story;
+- every scenario driven on a browser walk has the `NN_SLUG.mp4` its take recorded beside the report, or the
+  numbered parts of a take that followed the user across tabs, or is one its reference handed to Step 5;
+- every frame a scenario lists is a moment of its take;
+- every UI scenario you drove carries a `visualMatch` — a derived fidelity, or the named absence of a baseline —
+  with each of the seven questions evidenced or called clean, and every frame the plan builds is some scenario's
+  baseline, read at the width the plan gives it, or named in the `mechanism` of the gap of the scenario that could
+  not reach it;
 - every flow has its replays driven to their closing assert, whatever it returned: on a phone on a browser walk,
-  on each later listed device on a device walk.
+  on each later listed device on a device walk;
+- every video the e2e runner saved for a test this run wrote is an e2e scenario with its `NN_SLUG.mp4` beside the
+  report and its ledger line, run this round or carried from the ledger.
 
 ## Step 3 — API, DB & Side-Effects: Proving What Has No Screen
 
@@ -581,12 +601,14 @@ device walk, and any whose recorder failed — gets a video assembled from its p
 `writing-the-report` reference owns what the settings do and what a hand-run rebuild has to keep.
 
 1. **Run the `report-media` script over the verification directory**, passing it
-   `/abs/path/to/.yok/RUN/artifacts/verification`. It globs every `NN_SLUG` prefix under `screenshots/`. Where
+   `/abs/path/to/.yok/RUN/artifacts/verification`. It takes every `NN_SLUG` prefix under `screenshots/` and
+   every `NN_SLUG.mp4` beside the report. Where
    `NN_SLUG.mp4` is already beside the report it checks that the file plays and compresses it in place for the
-   report; where there is none it builds one from the frames.
+   report; where the take was recorded in numbered parts it joins them, in order, into that file; where there is
+   neither it builds one from the frames.
 
 2. **Read every line it prints.** Each scenario gets `ok NN_SLUG.mp4 recorded`, with the sizes where the
-   recording was compressed, `ok NN_SLUG.mp4 crop=…` or `FAILED NN_SLUG — REASON`, and the exit is non-zero if any
+   recording was compressed, the count where parts were joined, or the seconds of still picture it cut out, `ok NN_SLUG.mp4 crop=…` or `FAILED NN_SLUG — REASON`, and the exit is non-zero if any
    failed. A recording that does not play is a take
    the recorder never closed: film that scenario's take again, or delete the file and run the script again to
    build from its frames. A scenario with no `ok` line has no video: its `video` stays unset, and its frames still

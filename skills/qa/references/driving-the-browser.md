@@ -121,7 +121,7 @@ more — a scenario with more *promoted* frames than steps is doing it right.
 
 ### 1. Scout the flow, recorder off
 
-Drive the scenario one step at a time until you hold four things for every step:
+Drive the scenario one step at a time until you hold five things for every step:
 
 - **The target**, as a selector that survives a reload: CSS, or `xpath=…` where only its text tells the element
   apart. A snapshot ref belongs to the page that issued it, so refs are for scouting and selectors are for the take.
@@ -130,6 +130,8 @@ Drive the scenario one step at a time until you hold four things for every step:
 - **The way to the target**, as a person would get there: the scroll that brings a target outside the viewport
   into view, the field to click before typing into it, the option to click once a list is open, the centre of an
   element the user only points at.
+- **The tab the step ends on.** A step that opens another tab or window, or brings the user back from one, is
+  where the recording moves with them.
 
 Screenshots taken while scouting go to staging and serve your own reading. Retries, dead ends and missed clicks
 all happen here, where nothing is filmed.
@@ -200,7 +202,8 @@ starts before anything moves.
 
    The instant forms — `fill`, `hover`, `scrollintoview`, a bare `mouse move` — belong to the scout and the setup
    batch, where speed is what counts.
-2. **Wait on the condition** you scouted for that step.
+2. **Wait on the condition** you scouted for that step, one the viewer sees arrive on screen. An effect that never
+   reaches the screen is waited for after `record stop` and shown by a proof.
 3. **Assert**, returning the value and the path as *The rules* say.
 4. **Screenshot to staging.** A frame shot during the take carries the pointer, which shows the reader what was
    just clicked.
@@ -209,6 +212,14 @@ starts before anything moves.
 
 **The closing hold.** The last step's pause runs about a second and a half, so the video rests on the final state
 — the outcome the scenario's `then` promises — long enough to read.
+
+**The recording follows the user.** The recorder films one tab, and the browser makes a tab the step opened the
+active one. A take whose scout found such a step is recorded in numbered parts: it starts as
+`NN_SLUG.part1.mp4`, and the entry right after each step that changes the tab is `record restart` with the next
+part's path and `--cursor`, so filming carries on in the tab the user is now looking at. A step that returns to an
+earlier tab switches to it with `tab ID` first. Step 5 joins the parts, in order, into `NN_SLUG.mp4`.
+In the phone session a tab the app opens starts as a desktop tab: `set device` on it and `reload` before the
+`record restart`.
 
 `--bail` ends the batch at the first step that fails, so nothing after it is filmed on the wrong screen. `record
 stop` is a command of its own, run after the batch whatever the batch returned, because it is what closes the file.
@@ -232,6 +243,11 @@ something other than the scenario.
 counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
 `NN_<slug>__SS_<step>.png` name, and keep the assert's deciding value (the returned `{n: …}`, the measured rect,
 the quoted string) for the scenario's `output`.
+
+**Every promoted frame is a moment of the take**, so each frame the report shows is also in the scenario's video.
+What was gathered outside the take has its own home: a file the product produced goes in `artifacts[]`, the
+design re-shoot keeps its `.design.png` name, a check on another device is that device's replay scenario, and
+anything else seen is a proof's `image`.
 
 You need both checks. **The assert answers whether the state took hold** — a click that silently no-ops looks
 identical to one that worked until you ask the DOM. **The look answers whether the frame shows it.** When they

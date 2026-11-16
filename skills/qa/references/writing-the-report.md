@@ -80,11 +80,15 @@ design where the plan supplies one, and against the screen's own coherence alway
 
 ## The videos (Step 5)
 
-Every scenario has one video, `NN_<slug>.mp4`, beside the report. It comes from one of two places:
+Every scenario has one video, `NN_<slug>.mp4`, beside the report. It comes from one of three places:
 
 - **Recorded.** A browser scenario's video is its take, filmed by the round that drove it as
   `driving-the-browser.md` says. Step 5 checks that it plays and compresses it in place, since the report carries
-  every video inline.
+  every video inline, and cuts any stretch where the picture stays still for over three seconds down to two. A
+  take that followed the user across tabs was recorded in numbered parts, which Step 5 joins
+  into the one video.
+- **Recorded by the e2e runner.** An e2e scenario's video is the one Step 2 saved beside the report. Step 5
+  checks and compresses it like a take.
 - **Assembled.** A device scenario, and a browser scenario whose recorder failed, gets its video built by ffmpeg
   from its promoted frames in `screenshots/`, grouped by the `NN_<slug>` prefix before the `__`.
 
@@ -169,6 +173,21 @@ Visual proof** under them, the video leading with the screenshots folded behind 
 yourself. When something fits none of the sections, put it in `extra[]` — `{heading, body, capture}`, all optional,
 no imposed shape.
 
+### An e2e scenario
+
+Write an e2e scenario from the plan's scenario row for each test its video covers, the test's code, and the
+runner's report:
+
+- **`title`** is the row's `Scenario` cell, ending in `(e2e)`. A video covering several rows takes a title that
+  names what they prove together, with the same ending.
+- **`given`** comes from the row's `Given`, and **`then`** from its `Expected`.
+- **`when`** tells what the test did, in the order the video shows it, read from the test's code.
+- **`output`** tells what the test checked and whether each check held.
+- **`verdict`** is `SUCCESS` where every test the video covers passed, and `FAILURE` where one failed, with the
+  failed check in `reason`.
+- **`url`** is the path the test opened on, and **`video`** its `NN_<slug>.mp4`.
+- **`frames[]` and `visualMatch`** are left out.
+
 ### Supporting proofs
 
 A proof is a **second witness**: somewhere other than the screen confirming what the scenario's `output` says —
@@ -177,7 +196,7 @@ one for each thing worth a second witness: an effect with no screen, a value tha
 was reached.
 
 **One proof confirms one thing, read from one witness.** Two things confirmed, or two witnesses, are two proofs. A
-reviewer takes each in at a glance, so every entry has the same four parts:
+reviewer takes each in at a glance, so every entry has the same parts:
 
 - **`claim`** — what the witness showed, as one short plain sentence. It states what was found, so a proof that
   failed reads as the failure.
@@ -192,8 +211,10 @@ reviewer takes each in at a glance, so every entry has the same four parts:
 - **`raw`** — the original behind this one proof, untouched: the request as sent, the status, the response as it
   came back, the rows as returned, the log lines. Several calls behind one claim go in the order they ran. Redact
   secrets as `<redacted>`.
+- **`image`** — where the witness is something seen, its picture, saved as `screenshots/NN_SLUG.NAME.png`, a name
+  the scenario's video leaves out.
 
-A proof renders as one folded row showing its mark, `claim` and `found`; opening it shows `raw`.
+A proof renders as one folded row showing its mark, `claim` and `found`; opening it shows `image`, then `raw`.
 
 ```json
 "proofs": [
@@ -201,7 +222,8 @@ A proof renders as one folded row showing its mark, `claim` and `found`; opening
     "claim": "WHAT THE WITNESS SHOWED",
     "found": "WHAT THIS PROOF IS FOR: WHAT IT CONFIRMS, AND WHY THAT MATTERS HERE",
     "holds": true,
-    "raw": "THE ORIGINAL BEHIND THIS PROOF"
+    "raw": "THE ORIGINAL BEHIND THIS PROOF",
+    "image": "screenshots/NN_SLUG.NAME.png"
   }
 ]
 ```
@@ -214,7 +236,7 @@ scenario's `output`.**
 
 ### The visual match
 
-Every UI scenario carries a `visualMatch`. It is how a reader sees, without opening a single image, whether the
+Every UI scenario you drove carries a `visualMatch`. It is how a reader sees, without opening a single image, whether the
 screen was drawn before it was built and whether the build kept to the drawing.
 
 ```json
@@ -271,8 +293,8 @@ or not you reached it. It is what makes an incomplete run visible instead of ari
 ```
 
 Several ids pointing at one scenario is normal and good — a single walk that proves five requirements is a better
-walk. One id proven by more than one walk — a desktop scenario and its phone replay, or a device scenario and its
-replays on the other listed devices — stays **one row** whose `scenario` names them all (`"01, 09"`), carrying
+walk. One id proven by more than one scenario — a desktop scenario and its phone replay, a device scenario and its
+replays on the other listed devices, or a walk and an e2e scenario — stays **one row** whose `scenario` names them all (`"01, 09"`), carrying
 `FAILURE` if any failed and `NOT VERIFIED` if any went unproven. What is not allowed is an id in the docs with no
 row here.
 
@@ -373,6 +395,7 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
   user's side, in the product's own words, with each technical original in a proof's `raw` or in its bug's or
   gap's own fields.
 - Every scenario's `when` reads as a narration of its video: play the video with the paragraph beside it.
+- Every frame a scenario lists is a moment of its video.
 - `fields[]` carries a `Base URL` row on a browser walk, or an `App` row on a device walk; every scenario that
   drove a page or a request carries the `url` it opened on, path and query and no host, or on a device the deep
   link it opened, else its screen path; and a `when` that moved the browser to another path names that path.
@@ -390,7 +413,9 @@ sentence above passes it. `attempted` is what you actually ran, distinct approac
 - Every verdict cites a live observation from this run — a DOM assert, an HTTP status and body, a DB read-back, a
   measured rect, a captured webhook body. Where that observation is mechanism rather than surface, it is a `proofs[]`
   entry, written once.
-- Every UI scenario carries a `visualMatch`: a `baseline` path with a derived `fidelity` where a design defines the
+- Every e2e scenario has a `title` ending in `(e2e)`, the four blocks, and its `video`, with no `frames[]` and no
+  `visualMatch`.
+- Every UI scenario you drove carries a `visualMatch`: a `baseline` path with a derived `fidelity` where a design defines the
   screen, read at the frame's width, or `baseline: null` where none does. Every spec rule a step cites is in
   `specRules[]`. No `findings[]` entry rests on a spacing delta alone, every entry cites a measurement or a computed
   style, and every `BLOCKER` has made its scenario a `FAILURE` with a `bugs[]` entry behind it.
