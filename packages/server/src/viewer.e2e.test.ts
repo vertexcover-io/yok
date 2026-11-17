@@ -1025,6 +1025,47 @@ describe("runs page in a browser", () => {
     expect(await evaluate(bannerShown)).toEqual([true]);
   }, 60000);
 
+  test("the header stays at the top and the version footer at the bottom of the window on a long page at its top and at its end, and on a page too short to scroll", async () => {
+    const edges =
+      "(() => ({ header: document.querySelector('header.bar').getBoundingClientRect().top, footer: Math.round(document.querySelector('footer.foot').getBoundingClientRect().bottom), height: innerHeight }))()";
+    await page.setViewportSize({ width: 393, height: 300 });
+    await page.goto(viewer.origin);
+    await until(`${allCount} === "5"`);
+    expect(await evaluate("document.documentElement.scrollHeight > innerHeight + 100")).toBe(true);
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 300, height: 300 });
+    await evaluate("window.scrollTo(0, document.documentElement.scrollHeight)");
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 300, height: 300 });
+
+    await page.setViewportSize({ width: 1280, height: 2000 });
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 2000, height: 2000 });
+  }, 60000);
+
+  test.each([
+    [1280, 240],
+    [393, 420],
+  ])(
+    "at %ix%i, Tab and Shift+Tab through the runs list never leave the focused link under the pinned header or footer",
+    async (width, height) => {
+      // Each stop reads null outside the list, "ok" when the focused element is clear of both bars, else its text.
+      const stop =
+        "(() => { const el = document.activeElement; if (!document.querySelector('#list').contains(el)) return null; const r = el.getBoundingClientRect(); const clear = r.top >= document.querySelector('.top').getBoundingClientRect().bottom - 1 && r.bottom <= document.querySelector('footer.foot').getBoundingClientRect().top + 1; return clear ? 'ok' : el.textContent.trim().slice(0, 40); })()";
+      await page.setViewportSize({ width, height });
+      await page.goto(viewer.origin);
+      await until(`${allCount} === "5"`);
+      expect(await evaluate("document.documentElement.scrollHeight > innerHeight + 100")).toBe(
+        true,
+      );
+      const stops: unknown[] = [];
+      for (const key of [...Array(30).fill("Tab"), ...Array(30).fill("Shift+Tab")]) {
+        await page.keyboard.press(key);
+        stops.push(await evaluate(stop));
+      }
+      expect(stops.filter((s) => s === "ok").length).toBeGreaterThan(5);
+      expect(stops.filter((s) => s !== null && s !== "ok")).toEqual([]);
+    },
+    60000,
+  );
+
   test("a starter's name that is one long word wraps inside its card on a phone, so the page never scrolls sideways", async () => {
     const rename = (name: string) =>
       updateUsers(home, (users) => (users.u_2 ? { ...users, u_2: { ...users.u_2, name } } : users));
