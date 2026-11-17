@@ -10,10 +10,10 @@
       "expectations": [
         "Exports AGENT_DEVICE_SESSION before running stackUp",
         "Opens the app with agent-device open com.example.app --platform ios --relaunch after seed and auth, built from the entry's app and platform fields",
-        "Every scenario's output quotes the output of an agent-device get, is or wait command",
+        "Every check's result rests on the output of an agent-device get, is or wait command, quoted in the raw of the proof it cites",
         "fields[] carries an App row naming the app id, platform, device and OS version and no Base URL row",
         "Step 7 runs agent-device close",
-        "The report contains no phone replay scenario"
+        "No scenario carries a phone replay recording"
       ],
       "anti_expectations": [
         "Runs agent-browser",
@@ -131,10 +131,10 @@
       "id": 8,
       "name": "browser-walk-replays-on-a-phone",
       "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change added a filter to a list page and the project says the app serves phones.",
-      "expected_output": "Drives the filter flow on desktop, then, once every desktop scenario is filmed, opens a second named session, sets it to agent-browser set device \"iPhone 14\" and signs in again there, and drives the same flow as its own numbered scenario to its closing assert. The replay's crop reads as a portrait picture in Step 5, and Step 7 closes both sessions by name.",
+      "expected_output": "Drives the filter flow on desktop, then, once every desktop scenario is filmed, opens a second named session, sets it to agent-browser set device \"iPhone 14\" and signs in again there, and drives the same flow to its closing assert as one more recording of the same scenario, under that scenario's number with the recording's prefix. The replay's crop reads as a portrait picture in Step 5, and Step 7 closes both sessions by name.",
       "files": [],
       "expectations": [
-        "A second numbered scenario replays the flow after set device \"iPhone 14\"",
+        "The flow is replayed after set device \"iPhone 14\", and the replay is a second entry in the same scenario's recordings[], its files named NN_SLUG-NAME",
         "The replay runs after every desktop scenario, in a named session of its own that ran its own setup",
         "The replay is driven from its first click to the same closing assert as desktop",
         "The replay asserts documentElement.scrollWidth minus clientWidth is 0",
@@ -144,6 +144,7 @@
         "Narrows the viewport instead of setting a device",
         "Shoots only the final screen on the phone",
         "Skips the replay because desktop passed",
+        "Lists the phone replay as a scenario of its own",
         "Sets the phone device in the desktop session and tries to restore it afterwards"
       ]
     },
@@ -151,46 +152,48 @@
       "id": 9,
       "name": "device-walk-replays-on-each-listed-device",
       "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios, app com.example.app, devices [\"iPhone 17 Pro\", \"iPad Pro 13-inch (M4)\"] and a stackUp of make ios-run DEVICE={DEVICE}. The plan lists R1, a list screen with a detail view. Both simulators exist and agent-device and ffmpeg are installed.",
-      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone as the main scenario and again on the iPad as its own numbered scenario naming the iPad in its title, keeps one coverage row for R1 naming both scenarios, writes one App row listing both devices, and closes both sessions.",
+      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone and again on the iPad as a second recording of the same scenario, keeps one coverage row for R1 naming that scenario, writes one App row listing both devices, and closes both sessions.",
       "files": [],
       "expectations": [
         "Runs make ios-run DEVICE=iPhone 17 Pro and make ios-run DEVICE=iPad Pro 13-inch (M4), with the placeholder filled",
         "Exports a different AGENT_DEVICE_SESSION per device and opens the app with --device on each",
-        "The iPad replay is its own scenario driven from its first press to the same closing assert, with the device named in its title",
-        "coverage[] has one row for R1 naming both scenario numbers",
+        "The iPad replay is driven from its first press to the same closing assert and joins the scenario's recordings[], naming the iPad as its device",
+        "coverage[] has one row for R1 naming the one scenario",
         "fields[] has one App row naming both devices and their OS versions",
         "Runs agent-device close once per device session"
       ],
       "anti_expectations": [
         "Drives the iPad by shooting only the final screen",
         "Opens both devices in one session",
-        "Writes two coverage rows for R1"
+        "Writes two coverage rows for R1",
+        "Lists the iPad replay as a scenario of its own"
       ]
     },
     {
       "id": 10,
       "name": "browser-scenario-is-scouted-then-filmed-in-one-take",
       "prompt": "You are running the qa stage of run feat-x, the only attempt, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
-      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail that holds the opening state for about a second and a half, in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, a closing hold of about a second and a half on the final state, then record stop as its own command. Promotes the take's frames after reading them, writes the scenario's when as a short paragraph narrating the take's actions in order and its output as a short paragraph quoting the values the take's asserts returned, names the video on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it, with the sizes where it compressed the recording.",
+      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail that holds the opening state for about a second and a half, in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, a closing hold of about a second and a half on the final state, then record stop as its own command. Promotes the take's frames after reading them, writes the scenario's steps as a summary of the take in order, each with the checks it brings about and each check's result from the take's asserts, adds the take to recordings[] with its video named on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it, with the sizes where it compressed the recording.",
       "files": [],
       "expectations": [
         "The recorder starts only after the flow has been driven once without it",
         "The take is one batch, and record stop runs as a separate command after it",
         "Every click in the take is written as click with --human, and the recording is started with --cursor",
         "Each step in the take waits on a condition before its assert and screenshot",
-        "The scenario's ledger line names NN_SLUG.mp4 as its video before Step 5 runs",
-        "The scenario's given and then are written from the docs before the flow is driven",
-        "The scenario's when narrates the take's user actions in the order the take ran them, written after the take counted",
-        "The scenario's output quotes what the take's asserts returned for the outcomes then promises",
-        "Each of given, when, then and output is one short paragraph of two or three sentences",
+        "The scenario's ledger line names NN_SLUG.mp4 as its recording's video before Step 5 runs",
+        "The scenario's title, its given and the text of every check are written from the docs before the flow is driven",
+        "The scenario's steps summarise the take's user actions in the order the take ran them, written after the take counted, and every step carries at least one check",
+        "Every check has a result of pass or fail from the take's asserts, and what an assert returned sits in the raw of a proof the check cites",
+        "The title is the question the scenario answers, given is a list with one setup fact a line, and each step and each check is one plain sentence",
         "The take holds on the opening state before its first action and on the final state after its last, about a second and a half each",
         "A design drawn at another width for a state the take passed through is re-shot after the take, recorder off, by replaying the scouted steps to that state",
-        "Every sentence in the scenario reads to a Product or QA person who has never seen the code: told from the user's side, naming controls by their on-screen labels",
-        "Each proof's found tells the reviewer what the proof is for: what it confirms about the scenario and why that matters",
+        "Every sentence in the scenario reads to a Product or QA person who has never seen the code: told from the user's side, naming controls by their on-screen labels and records, users and values by their kind",
+        "Each proof has an id, a label and a raw of at most fifteen lines holding only the values its checks rest on, is cited by the checks it shows and by those only, and its found says why it counts",
+        "The primary journeys have the group journey, every other scenario sits under a short broad heading naming the kind of check it is, free of this feature's own terms, and a behaviour an e2e test already asserts is filmed from that test with no browser walk of its own",
         "Before any text is typed in the take, the pointer travels to the field and clicks it, and the text arrives a few words at a time",
         "A target off screen is brought into view by a smooth scroll before the pointer travels to it",
         "Where a step opens another tab, the take restarts the recorder there as the next numbered part, and Step 5 joins the parts into one video",
-        "Every frame the scenario lists was shot during the take, so it is also in the video"
+        "Every frame the recording lists was shot during the take, so it is also in the video"
       ],
       "anti_expectations": [
         "Starts the recorder before the flow is known, so retries and dead ends are in the video",
@@ -198,11 +201,13 @@
         "Keeps the video of a take in which a step failed or an assert returned an unexpected value",
         "Builds the browser scenario's video from its screenshots while its recorder works",
         "Writes the scenario's steps before the take, or as a summary that does not follow the video",
-        "Writes an interpretation in output instead of what the system returned",
-        "Writes given, when, then or output as a bulleted or numbered list",
+        "Marks a check passed on an interpretation instead of on what an assert returned",
+        "Writes given, the steps or the checks as paragraphs",
+        "Names the ids, names or amounts the run used in title, given, a step or a check",
+        "Says how the run was filmed or driven in title, given, a step or a check",
         "Starts or ends the video mid-motion, with no time to read the first or the last state",
         "Changes the take, or cuts the video, to get the design re-shoot",
-        "Puts field names, status codes, selectors, identifiers or an assert's raw return in given, when, then, output, claim or found",
+        "Puts field names, status codes, selectors, identifiers or an assert's raw return in title, given, a step, a check, claim or found",
         "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take",
         "Leaves the recording on the first tab and shoots the new tab only as a screenshot after the take"
       ]

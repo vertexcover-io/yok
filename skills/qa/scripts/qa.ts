@@ -67,40 +67,33 @@ export const QaOutputSchema = z
 
 export const schemas = { "qa.output.v1": QaOutputSchema };
 
+// One line a scenario shows its reader: what should be true, and the proofs that show it.
+const checkFields = {
+  text: NonEmptyStringSchema,
+  saw: z.string().optional(),
+  note: z.string().optional(),
+  proofs: z.array(NonEmptyStringSchema).optional(),
+};
+
 // A scenario's screen read against its design, as the report's data island holds it.
 export const VisualMatchSchema = z
   .strictObject({
     baseline: NonEmptyStringSchema.nullable(),
-    fidelity: z.number().min(0).max(100).nullable(),
-    matched: z.string().optional(),
-    // the screen re-shot at the width the design was drawn at, report-relative, and that width
+    // the screen as built, report-relative: the re-shoot at the design's width, else a frame of the take
     build: NonEmptyStringSchema.optional(),
     width: z.int().positive().optional(),
-    // each design/spec.md rule a plan step cites, and whether the build kept it
-    specRules: z
-      .array(
-        z.strictObject({
-          rule: NonEmptyStringSchema,
-          held: z.boolean(),
-          evidence: NonEmptyStringSchema,
-        }),
-      )
-      .optional(),
-    findings: z
-      .array(
-        z.strictObject({
-          severity: z.enum(["BLOCKER", "HIGH"]),
-          what: NonEmptyStringSchema,
-          baselineShows: z.string(),
-          buildShows: z.string(),
-          evidence: NonEmptyStringSchema,
-        }),
-      )
-      .optional(),
+    // fail: the build breaks what the design says; warn: worth a look, and the scenario still passes
+    checks: z
+      .array(z.strictObject({ ...checkFields, result: z.enum(["pass", "fail", "warn"]) }))
+      .min(1),
   })
-  .refine((match) => (match.build === undefined) === (match.width === undefined), {
+  .refine((match) => match.baseline === null || match.build !== undefined, {
+    path: ["build"],
+    message: "a drawn screen is shown beside the screen as built",
+  })
+  .refine((match) => match.width === undefined || match.build !== undefined, {
     path: ["width"],
-    message: "a re-shoot names both build and width, or neither",
+    message: "a width belongs to a re-shoot",
   });
 
 const ReportScenariosSchema = z.looseObject({
@@ -174,13 +167,13 @@ const checkFrames = async (
   return [...uncompared, ...offWidth];
 };
 
-// A BLOCKER makes its scenario a FAILURE, so the verdict that carries one is FAIL.
+// A failed design check makes its scenario a FAILURE, so the verdict that carries one is FAIL.
 const checkBlockers = (data: unknown, reportPath: string): Finding[] =>
   (ReportScenariosSchema.safeParse(data).data?.scenarios ?? []).flatMap((scenario, i) =>
-    scenario.visualMatch?.findings?.some(({ severity }) => severity === "BLOCKER")
+    scenario.visualMatch?.checks.some(({ result }) => result === "fail")
       ? [
           {
-            message: `scenario ${String(scenario.id ?? i + 1)} has a BLOCKER visual finding, which makes it a FAILURE: give it a bug and report FAIL`,
+            message: `scenario ${String(scenario.id ?? i + 1)} has a failed design check, which makes it a FAILURE: give it a bug and report FAIL`,
             path: reportPath,
           },
         ]
@@ -222,4 +215,150 @@ export const checkDesignCoverage = async (input: VerifierInput): Promise<Verifie
   const specFindings = hasSpec ? checkSpecRows(data, report.path) : [];
   const all = [...checkBlockers(data, report.path), ...frameFindings, ...specFindings];
   return { pass: all.length === 0, findings: all };
+};
+
+// What the report page shows a reader is held loosely here, so that every departure from the
+// contract is named in one pass rather than the first one failing the parse.
+const record = z.looseObject({});
+const list = (value: unknown): readonly Record<string, unknown>[] =>
+  z.array(record).safeParse(value).data ?? [];
+const strings = (value: unknown): readonly string[] =>
+  z.array(z.string()).safeParse(value).data ?? [];
+const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+// What only a proof's raw may carry: code, a computed colour, a request line.
+const GROUP_WORDS = 5;
+const RAW_LINES = 15;
+const SCRIPT = /=>|\bfunction\s*\(|\bconst\s|\beval\b|querySelector|getBoundingClientRect/;
+const TECHNICAL = /`|rgb\(|#[0-9a-f]{6}\b|getComputedStyle|\b(GET|POST|PUT|PATCH|DELETE) \//i;
+
+// The ways one scenario departs from the shape its verdict owes, each as what to do about it.
+const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => {
+  const driven = ["SUCCESS", "FAILURE"].includes(text(scenario["verdict"]));
+  const given = strings(scenario["given"]);
+  const steps = list(scenario["steps"]);
+  const stepChecks = steps.flatMap((step) => list(step["checks"]));
+  const designChecks = list(
+    z.looseObject({ checks: z.unknown() }).safeParse(scenario["visualMatch"]).data?.checks,
+  );
+  const checks = [...stepChecks, ...designChecks];
+  const proofs = list(scenario["proofs"]);
+  const ids = proofs.map((proof) => text(proof["id"]));
+  const group = text(scenario["group"]);
+  const recordings = list(scenario["recordings"]);
+  const drivenByHand = recordings.some((recording) => list(recording["frames"]).length > 0);
+  const raws = proofs.map((proof) => text(proof["raw"]));
+  const cited = checks.flatMap((check) => strings(check["proofs"]));
+  const failed = checks.filter((check) => check["result"] === "fail");
+  const unknown = [...new Set(cited.filter((id) => !ids.includes(id)))];
+  const uncited = ids.filter((id) => id !== "" && !cited.includes(id));
+  const shown = [
+    text(scenario["title"]),
+    group,
+    ...given,
+    ...steps.map((step) => text(step["when"])),
+    ...checks.flatMap((check) => [text(check["text"]), text(check["saw"]), text(check["note"])]),
+    ...proofs.flatMap((proof) => [text(proof["claim"]), text(proof["found"])]),
+  ].filter((line) => TECHNICAL.test(line));
+  const problems: readonly (readonly [boolean, string])[] = [
+    [text(scenario["title"]) === "", "has no title: write the question the scenario answers"],
+    [
+      group === "",
+      "has no group: set group to journey for a primary journey, else to the heading its group is listed under",
+    ],
+    [
+      group.split(/\s+/).length > GROUP_WORDS,
+      `has a group heading longer than ${GROUP_WORDS} words: name what its scenarios share in a few words`,
+    ],
+    [
+      group === "journey" && recordings.length > 0 && !drivenByHand,
+      "is a primary journey with no driven recording: drive it, or list it under the heading of the group it belongs to",
+    ],
+    [
+      given.length === 0 || given.some((line) => line.trim() === ""),
+      "given is not a list of setup lines: write each fact the scenario starts from as its own line",
+    ],
+    [
+      steps.length === 0,
+      "has no steps: drive it again and write each thing the user does as a step with its checks",
+    ],
+    [
+      steps.some((step) => text(step["when"]) === ""),
+      "has a step with no when: say what the user does at that step",
+    ],
+    [
+      steps.some((step) => list(step["checks"]).length === 0) ||
+        checks.some((check) => text(check["text"]) === ""),
+      "has a step without at least one check that says what should be true: give every step its checks, or fold it into the next step",
+    ],
+    [
+      driven && stepChecks.some((check) => !["pass", "fail"].includes(text(check["result"]))),
+      "has a check with no result: set pass or fail on every check of a driven scenario",
+    ],
+    [
+      failed.some((check) => text(check["saw"]) === ""),
+      "has a failed check with no saw: say what was seen instead",
+    ],
+    [
+      scenario["verdict"] === "SUCCESS" && failed.length > 0,
+      "is a SUCCESS with a failed check: a failed check makes the scenario a FAILURE",
+    ],
+    [
+      scenario["verdict"] === "FAILURE" && failed.length === 0,
+      "is a FAILURE with no failed check: mark the check that failed and say what was seen",
+    ],
+    [
+      unknown.length > 0,
+      `cites ${unknown.join(", ")}, which is not the id of one of its proofs: cite each proof by its id`,
+    ],
+    [
+      uncited.length > 0,
+      `has proofs no check cites (${uncited.join(", ")}): cite each under the check it backs, or drop it`,
+    ],
+    [ids.includes(""), "has a proof with no id: give every proof an id its checks can cite"],
+    [
+      proofs.some((proof) => typeof proof["holds"] !== "boolean"),
+      "has a proof whose holds is not true or false: set holds on each",
+    ],
+    [
+      raws.some((raw) => raw.split("\n").length > RAW_LINES),
+      `has a proof whose raw runs past ${RAW_LINES} lines: keep the values its checks rest on and drop the rest`,
+    ],
+    [
+      raws.some((raw) => SCRIPT.test(raw)),
+      "has a proof whose raw carries a script: say what was read in the plain first line and keep the values that came back",
+    ],
+    [
+      shown.length > 0,
+      `shows the reader a technical original ("${shown[0]}"): say it in plain words and keep the original in a proof's raw`,
+    ],
+  ];
+  return problems.flatMap(([broken, message]) => (broken ? [message] : []));
+};
+
+// The qa stage's second verifier, for a PASS or PARTIAL. The report page shows whatever it is
+// given, so the contract is held here. A scenario an older round wrote in another shape fails it,
+// and is driven again.
+export const checkReportShape = async (input: VerifierInput): Promise<VerifierResult> => {
+  const report = input.artifacts.find(
+    (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
+  );
+  const shipped = z.looseObject({ status: z.enum(["PASS", "PARTIAL"]) }).safeParse(input.output);
+  if (report === undefined || !shipped.success) return { pass: true, findings: [] };
+  const data = parseReportData((await readOptional(report.path)) ?? "");
+  const scenarios = list(z.looseObject({ scenarios: z.unknown() }).safeParse(data).data?.scenarios);
+  const findings: Finding[] = scenarios.flatMap((scenario, i) =>
+    shapeProblems(scenario).map((problem) => ({
+      message: `scenario ${String(scenario["n"] ?? i + 1)} ${problem}`,
+      path: report.path,
+    })),
+  );
+  // The reader opens the report to see the happy paths first.
+  if (scenarios.length > 0 && !scenarios.some((scenario) => scenario["group"] === "journey"))
+    findings.push({
+      message:
+        "no scenario is a primary journey: set group to journey on each flow a user carries through to what the feature is for",
+      path: report.path,
+    });
+  return { pass: findings.length === 0, findings };
 };

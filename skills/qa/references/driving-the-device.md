@@ -59,7 +59,7 @@ agent-device help COMMAND         # one command's exact shape
 ## Asserts — the quoted output is the evidence
 
 There is no `eval` on a device: nothing runs inside the app. Every claim is settled by one of these read-only
-commands, and **the command's printed output, quoted verbatim, is the evidence** behind the scenario's `output`:
+commands, and **the command's printed output, quoted verbatim, is the evidence** behind each check's result:
 
 | Need | Command | What it proves |
 |---|---|---|
@@ -118,11 +118,12 @@ For every action, in this order:
 3. **Read the staged PNG** and confirm it shows what you think — the round-trip you never skip. Frames lag
    renders, so a frame that disagrees with its assert is re-shot after a `wait` on the condition, never promoted.
 4. **Promote it** once the assert passed and your eyes agree: move it into `verification/screenshots/` under its
-   `NN_SLUG__SS_STEP.png` name, and keep the assert's quoted output for the scenario's `output`.
+   `NN_SLUG__SS_STEP.png` name, and keep the assert's quoted output for the check it settles.
 
-**Once the walk reaches its closing assert, write the scenario from it**, as two short paragraphs: `when` narrates
-the actions behind the promoted frames in the order they ran, and `output` tells what the app showed for each
-outcome `then` promises, in the reader's plain language; the assert output behind it goes in a proof's `raw`.
+**Once the walk reaches its closing assert, write the scenario from it**: the steps summarise the actions behind
+the promoted frames in the order they ran, each check sits under the step that brings it about with its `result`,
+in the reader's plain language, and the values an assert returned that a check rests on go in the `raw` of the proof it cites.
+Add the walk to `recordings[]` with the device's name and OS version.
 
 You need both checks. The assert answers whether the state took hold — a press that silently no-ops looks identical
 to one that landed until you ask the tree. The read answers whether the frame shows it.
@@ -144,18 +145,20 @@ A device walk is already on a real device, so there is no `agent-browser` phone 
 later devices the entry's `devices` list names — a smaller phone, a tablet — and each one replays every flow.
 
 **Drive the whole scenario again on each later device.** Export that device's session name, then walk it from its
-first press — the same batches and the same asserts as the main walk, under the replay's own `NN_SLUG`, and
-with the device named in the scenario's title. A layout breaks on the way to the final screen rather than on it,
-so a frame shot at the end proves nothing.
+first press — the same batches and the same asserts as the main walk, under the scenario's number with that
+recording's prefix. A layout breaks on the way to the final screen rather than on it, so a frame shot at the end
+proves nothing.
 
-The replay carries a verdict, so the walk answers the same question it answered on the first device:
+The replay grades the scenario's own checks, so the walk answers the same question it answered on the first
+device:
 
 - **The closing assert returns the value it returned on the first device** — the outcome, not a similar-looking
-  screen. This is what the scenario's `then` already claims, now claimed at this device's size.
+  screen. This is what the scenario's checks already claim, now claimed at this device's size.
 - **Every control the replay drove is at least 44px on its short side**, read from `get attrs`.
 - **Controls are reached the way this device presents them** — a tablet that shows a sidebar where the phone
   showed a tab bar is driven through the sidebar, the way the user gets to it.
 
-A replay that fails is a `FAILURE` scenario and a `bugs[]` entry like any other, and its `reachedBy` writes itself:
-the user on that device, and the surface they touched. A project that ships both platforms declares two entries,
+**The replay joins its scenario as one more recording**, as the `writing-the-report` reference says. A check
+that fails on it fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes itself: the
+user on that device, and the surface they touched. A project that ships both platforms declares two entries,
 and each is its own run.

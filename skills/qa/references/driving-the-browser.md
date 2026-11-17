@@ -112,9 +112,9 @@ after the click is the race you came here to close. When it resolves `{appeared:
 
 **The video is a recording of the scenario from its first step to its last, and of nothing else.** So each
 scenario is driven twice: a scout that works the flow out with the recorder off, then one take that replays the
-whole flow as a single command with the recorder on. The take is the evidence. Its asserts decide the verdict, its
-screenshots are the frames, its recording is the video and its actions are the report's `when`, so all four come
-from one run.
+whole flow as a single command with the recorder on. The take is the evidence. Its asserts decide each check's
+result, its screenshots are the frames, its recording is the video and its actions are the report's steps, so all
+four come from one run.
 
 **Film the whole life of the scenario, not a checklist of its steps.** Every step earns at least one frame, many earn
 more — a scenario with more *promoted* frames than steps is doing it right.
@@ -211,7 +211,7 @@ starts before anything moves.
    video; the wait in entry 2 is what makes the step reliable.
 
 **The closing hold.** The last step's pause runs about a second and a half, so the video rests on the final state
-— the outcome the scenario's `then` promises — long enough to read.
+— the outcome the scenario's last checks describe — long enough to read.
 
 **The recording follows the user.** The recorder films one tab, and the browser makes a tab the step opened the
 active one. A take whose scout found such a step is recorded in numbered parts: it starts as
@@ -242,11 +242,11 @@ something other than the scenario.
 **Open every staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the take
 counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
 `NN_<slug>__SS_<step>.png` name, and keep the assert's deciding value (the returned `{n: …}`, the measured rect,
-the quoted string) for the scenario's `output`.
+the quoted string) for the check it settles and the proof that check cites.
 
 **Every promoted frame is a moment of the take**, so each frame the report shows is also in the scenario's video.
 What was gathered outside the take has its own home: a file the product produced goes in `artifacts[]`, the
-design re-shoot keeps its `.design.png` name, a check on another device is that device's replay scenario, and
+design re-shoot keeps its `.design.png` name, a check on another device is that device's replay recording, and
 anything else seen is a proof's `image`.
 
 You need both checks. **The assert answers whether the state took hold** — a click that silently no-ops looks
@@ -264,17 +264,18 @@ wider shot catches. Read the page's expected top-level section ordering from the
 ordering is a layout invariant your frames must uphold. Prefer a cropped or clipped shot over full-page: it keeps
 the frame readable at video size.
 
-### 7. Write When and Output from the take
+### 7. Write the steps and results from the take
 
 **The take that counted is the source of the scenario's account.** Read its batch from top to bottom, with its
-`--json` result beside it, and write two short paragraphs:
+`--json` result beside it:
 
-- **`when` narrates the user's actions** in the order the batch ran them, naming each control by its label on
-  screen and each value entered.
-  Pointer placement, scrolling into view, waits and pauses are the take's own mechanics and stay in the batch.
-- **`output` tells what the page gave back in that take** for each outcome `then` promises, stating the deciding
-  values the way the page shows them. What an assert returned goes in a proof's `raw` where a reviewer gains from
-  seeing it.
+- **Write the steps as a summary of what the user did**, in the order the batch ran, one step for each moment
+  something is checked, naming each control by its label on screen. Pointer placement, scrolling into view,
+  waits and pauses are the take's own mechanics and stay in the batch.
+- **Place each check under the step that brings it about and give it its `result`** from the assert that
+  settles it. The values the assert returned that the check rests on go in the `raw` of the proof the check cites,
+  where a reviewer gains from seeing them.
+- **Add the take to `recordings[]`** with the device and browser the session reported.
 
 Written this way, the video and the report describe one run. A scenario the stitched path filmed is written from
 the batch that produced its promoted frames.
@@ -319,20 +320,23 @@ phone from here to its close, so every replay runs in it and every desktop comma
 session. The phone session starts signed out and empty: run the setup batch in it from the first `open`, the way
 the desktop session began.
 
-**Film the whole scenario again on the phone, as a take of its own.** Run the seven steps above under the replay's
-own `NN_<slug>`: the same steps and the same asserts as the desktop take, scouted again wherever the phone presents
-a control differently or puts a target off screen. A phone breaks on the way to the final screen rather than on
-it, so the take runs from the first click. The recording keeps the phone's own portrait shape.
+**Film the whole scenario again on the phone, as a take of its own.** Run the seven steps above under the
+scenario's number with the phone recording's prefix: the same steps and the same asserts as the desktop take,
+scouted again wherever the phone presents a control differently or puts a target off screen. A phone breaks on
+the way to the final screen rather than on it, so the take runs from the first click. The recording keeps the
+phone's own portrait shape.
 
-The replay carries a verdict, so the walk answers the same question it answered on desktop:
+The replay grades the scenario's own checks, so the walk answers the same question it answered on desktop:
 
-- **The closing assert returns the value it returned on desktop** — the outcome, not a similar-looking screen. This
-  is what the scenario's `then` already claims, now claimed at phone width.
+- **The closing assert returns the value it returned on desktop** — the outcome, not a similar-looking screen.
+  This is what the scenario's checks already claim, now claimed at phone width.
 - **Nothing scrolls sideways** — `(()=>({over: document.documentElement.scrollWidth -
-  document.documentElement.clientWidth}))()` returns `0`. Anything above zero is a bug with its measurement already
-  attached.
+  document.documentElement.clientWidth}))()` returns `0`. It is a check of its own on the scenario; anything
+  above zero fails it with its measurement already attached.
 - **Controls are reached the way the phone presents them** — driven through the menu the layout collapsed them into,
   the way the user gets to them.
 
-A replay that fails is a `FAILURE` scenario and a `bugs[]` entry like any other, and its `reachedBy` writes itself:
-the user on that device, and the surface they touched.
+**The replay joins its scenario as one more recording**, as the `writing-the-report` reference says. A check
+that fails on the phone fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes
+itself: the user on that device, and the surface they touched. **A flow the phone reaches by different steps is
+a scenario of its own**, with the phone take as its one recording.

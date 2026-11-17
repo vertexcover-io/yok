@@ -3,8 +3,9 @@
 **Read this when:** a scenario's frames are shot and their asserts have passed, before you write the scenario up
 (Step 2). You are mid-walk with the session still open, which is what makes this cheap.
 
-**This pass reads, and it runs on one scenario at a time.** That scenario is a desktop walk, a phone
-replay, or a device scenario; its frames are shot and the session is still open, so where a frame cannot answer a
+**This pass reads, and it runs on one recording at a time** — a desktop take, a phone replay, or a device
+walk — and what it finds joins the `visualMatch` of the scenario that recording belongs to. The recording's
+frames are shot and the session is still open, so where a frame cannot answer a
 question you ask the open screen — one `eval` in the browser, one `get attrs` on a device. **Read the frames at
 the width they were shot at; the one re-shoot below is the only new capture this pass makes, and the only driving
 it does.** The
@@ -20,17 +21,19 @@ design draws, and take one `screenshot` to `screenshots/NN_SLUG.design.png`, a n
 out. A state the take ended on is already on screen. A state the take passed through — a surface that opens and
 closes inside the flow — is reached again by replaying the scouted steps as far as that state. Then restore the
 viewport, and whatever the replay changed, to what the next scenario opens on. Record the path as `visualMatch.build`
-and the width as `visualMatch.width`, and say in `matched` that the comparison ran at that width. A device has
-one width, the device's own, so a device scenario is read at that width and `matched` says so when the plan's
-width differs.
+and the width as `visualMatch.width`. **Where no re-shoot was needed, `build` is the frame of the take that
+shows the drawn screen**, so the report always shows the design beside the screen as built. A device has
+one width, the device's own, so a device recording is read at that width, and a check's `note` says so when the
+plan's width differs.
 
 **It is one pass, not two.** You look at each frame once and ask every question below of it. Some questions have
 an answer only where the plan supplies a design; the rest are asked of every screen, drawn or not. Running them
 as two sweeps means reading the same image twice and finding the second-pass defects with the first pass's
 conclusions already in your head.
 
-It produces the scenario's `visualMatch` (shape in `writing-the-report.md`) and, for anything a user would be
-wrong-footed by, a bug that routes through Step 4.
+It produces the scenario's `visualMatch` — the design, the screen as built, and a list of checks a Product or
+QA reader can follow (shape in `writing-the-report.md`) — and, for anything a user would be wrong-footed by, a
+bug that routes through Step 4.
 
 **Contents:**
 
@@ -50,12 +53,11 @@ decided: padding off the grid, gaps that differ between two rows of the same lis
 author's cursor landed. Grading against those numbers produces a long list of findings that are all noise and
 buries the one that mattered.
 
-**Where no image defines the screen, the *(design)* questions do not run.** Write
-`visualMatch: { baseline: null, fidelity: null }`, ask the rest, and move on — the scenario can pass with no
+**Where no image defines the screen, the *(design)* questions do not run.** Write `baseline` as `null`, ask
+the rest, and move on — the scenario can pass with no
 design behind it. **Do not build a baseline out of anything that is not an image**: not the PRD's prose, not the
 plan's acceptance criteria, not a ticket's description. A paragraph fixes no placement, no order and no colour,
-so a "match" graded against one is your taste with a number written beside it — and that number reaches the
-report looking exactly like a measured one.
+so a "match" graded against one is your taste reaching the report looking exactly like a measured check.
 
 **A phone replay or a device scenario has a baseline only where one was drawn at phone width.** The mockup that
 defines a screen is almost always a desktop drawing, and a phone layout is *supposed* to differ from it. So a
@@ -64,12 +66,12 @@ the phone; otherwise its `baseline` is `null` and only the *(always)* questions 
 
 ## The three grades
 
-- **BLOCKER** — the build does not do what the design says. Its scenario is a `FAILURE`, and the divergence is a
-  bug: filmed from its own repro in Step 4, with a `bugs[]` entry like any other.
+- **BLOCKER** — the build does not do what the design says. It is a check with `result` `fail`, its scenario is
+  a `FAILURE`, and the divergence is a bug: filmed from its own repro in Step 4, with a `bugs[]` entry like any
+  other.
 - **HIGH** — the build says something different from the design, or the screen is degraded on its own terms.
-  A finding on the scenario, not a hard fail.
-- **Not a finding** — the difference is a number, and nothing turns on it. Report nothing at all: no
-  `findings[]` entry, nothing off the fidelity, no note in `extra[]`.
+  It is a check with `result` `warn`: a finding on the scenario, which still passes.
+- **Not a finding** — the difference is a number, and nothing turns on it. It gets no check and no note.
 
 ## The pass — every question, in order
 
@@ -128,42 +130,42 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
 
 **7. Spec rules**
 - *(design)* Each rule in the part of `design/spec.md` a plan step's `Spec:` line points at for this screen
-  holds. Read that part in spec.md, check each rule from `getComputedStyle()` or a measurement, and record every
-  rule in `visualMatch.specRules`, held or not. A broken rule is a finding, graded by the question above that it
-  belongs to.
+  holds. Read that part in spec.md and check each rule from `getComputedStyle()` or a measurement. Keep, for
+  every rule, the rule as the spec writes it and the values you read, held or not: they go in the proof the
+  rule's check cites. A broken rule is a finding, graded by the question above that it belongs to.
 
 **One question needs driving, and Step 4 owns it.** Content longer than the fixture — a long name, a long label,
 a number with more digits — is the check most worth having, because a layout that survives seeded data and
 breaks on a real customer's name breaks in production and not here. It is an attack, not a look, so it is driven
 as a Step 4 probe under that step's rules, not from this file.
 
-**Every question is answered.** A finding with its evidence, or explicitly clean. A pass you did not look for is
+**Every question is answered.** A finding with its evidence, or a clean answer naming what was looked at. A pass you did not look for is
 not a pass, and "looks off", "spacing feels wrong", "colours are a bit different" are not findings — name the
 element and quote the observation, or you have not looked closely enough to report it.
 
 ## What it produces
 
-**The fidelity is derived, never chosen.** Start at 100, subtract 25 per BLOCKER and 8 per HIGH, floor at 0;
-things the rule called not-a-finding subtract nothing. A number picked because the screen felt close is the
-thing this field exists to prevent. It is `null` wherever the baseline is. **Below 80 with no BLOCKER is a finding
-on the scenario, not a fail** — say it in `visualMatch.matched` and let the reader weigh it.
+**Turn the seven answers into checks, written for the report's reader.** Each check is one plain sentence about
+what the screen does, in everyday words and the product's own, with the measurement behind it in a proof:
 
-Each finding names what the design shows, what the build shows, and the evidence that settles it:
-
-```
-BLOCKER — the empty state is never rendered
-  design:   an illustration and "No invoices yet — import one to begin" fill the table region
-  built:    the table region is 0px tall with the list empty
-  evidence: getBoundingClientRect() on [data-testid=invoice-table] → {height: 0, top: 214}
-```
+1. **Say what lined up.** Each question that came back clean becomes a `pass` check naming what was looked at.
+   Questions that tell the reader one thing share one check.
+2. **Say what differs.** Each finding becomes its own check: `fail` for a BLOCKER, `warn` for a HIGH. The text
+   says what the user meets on the screen; `saw` on a `fail` says what the build shows in place of the design;
+   `note` on a `warn` says why it leaves the verdict alone.
+3. **Put the evidence in a proof the check cites.** Its `raw` holds what the design shows or the rule as the
+   spec writes it, then the values read from the page, laid out as `writing-the-report.md` says. A clean answer
+   that rests on a measurement cites that measurement the same way.
+4. **Cover every spec rule from question 7** with a check, grouping rules that tell the reader one thing.
 
 Then route what you found:
 
 - **Any BLOCKER, and any finding a user would be wrong-footed by** — a bug. Step 4 films it from its own repro
   and it earns a `bugs[]` entry with its `reachedBy` and `origin`, like every other bug.
-- **Everything else, and the fidelity** — the scenario's `visualMatch`.
-- **Cosmetic drift nobody would be wrong-footed by** — a note in `extra[]`, as it always was.
+- **Everything else** — the scenario's `visualMatch`.
+- **Cosmetic drift nobody would be wrong-footed by** — a note in `extra[]`.
 
-**Done when** every frame has been through all seven questions with each answer evidenced or called clean; every
-scenario carries a `visualMatch` whose fidelity is derived from graded findings, or names the absent baseline;
-no finding rests on a number alone; and every BLOCKER has become a bug with a repro.
+**Done when** every frame has been through all seven questions; every answer is a check, a `pass` saying what
+lined up or a finding with its evidence in a proof; every scenario carries a `visualMatch` naming its baseline,
+or the absence of one, and the screen as built wherever there is a baseline; every check rests on what changes
+for the user; and every BLOCKER has become a bug with a repro.

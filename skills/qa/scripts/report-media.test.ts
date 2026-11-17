@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -239,6 +246,10 @@ test("SC51, SC8: a scenario ffmpeg cannot build is FAILED, and the run exits non
   assert.equal(r.status, 1);
   assert.match(r.stdout, /^ok 01_good\.mp4 crop=/m);
   assert.match(r.stdout, /^FAILED 02_broken — ffmpeg: .+/m);
+  assert.deepEqual(
+    readdirSync(dir).filter((name) => name.endsWith(".mp4")),
+    ["01_good.mp4"],
+  );
 });
 
 const recording = (dir: string, name: string): string => {
@@ -331,6 +342,20 @@ test("SC59: a scenario with a video and no frames is checked and compressed like
   assert.match(r.stdout, /^ok 01_e2e_only\.mp4 recorded — compressed \d+B to \d+B$/m);
   assert.match(r.stdout, /^FAILED 02_cut_short — 02_cut_short\.mp4 does not play$/m);
   assert.ok(readFileSync(path).length < before);
+});
+
+test("SC60: a recording damaged after its opening frame is FAILED", { skip: needsFfmpeg }, () => {
+  const dir = sandbox("damaged");
+  const path = heavyRecording(dir, "01_damaged.mp4");
+  const bytes = readFileSync(path);
+  bytes.fill(0, Math.floor(bytes.length / 2), Math.floor(bytes.length / 2) + 4000);
+  writeFileSync(path, bytes);
+
+  const r = run(dir);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^FAILED 01_damaged — 01_damaged\.mp4 does not play$/m);
+  assert.ok(readFileSync(path).equals(bytes));
 });
 
 const duration = (path: string): number =>
@@ -504,14 +529,20 @@ const withReport = (name: string, data: unknown): string => {
   return dir;
 };
 
-test("SC17: the report's media paths are every video, frame, baseline and artifact, once each", () => {
+test("SC17: the report's media paths are every recording's video and frames, baseline and artifact, once each", () => {
   const data = {
     scenarios: [
       {
-        video: "01_a.mp4",
-        frames: [
-          { src: "screenshots/01_a__01_open.png", label: "open" },
-          "screenshots/01_a__02_saved.png",
+        recordings: [
+          {
+            video: "01_a.mp4",
+            frames: [
+              { src: "screenshots/01_a__01_open.png", label: "open" },
+              "screenshots/01_a__02_saved.png",
+            ],
+          },
+          { video: "01_a-phone.mp4", frames: [{ src: "screenshots/01_a-phone__01_open.png" }] },
+          "not a recording",
         ],
         visualMatch: { baseline: "design/a.png" },
         artifacts: [{ label: "export", href: "01_a_export.csv" }, "01_a.mp4"],
@@ -520,9 +551,12 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
           { claim: "no image" },
         ],
       },
-      { frames: [{ src: "screenshots/01_a__01_open.png" }], visualMatch: { baseline: null } },
       {
-        video: "https://example.com/run.mp4",
+        recordings: [{ frames: [{ src: "screenshots/01_a__01_open.png" }] }],
+        visualMatch: { baseline: null },
+      },
+      {
+        recordings: [{ video: "https://example.com/run.mp4" }],
         artifacts: [{ href: "data:text/plain,hi" }, { label: "no href" }],
       },
       "not a scenario",
@@ -533,6 +567,8 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
     "01_a.mp4",
     "screenshots/01_a__01_open.png",
     "screenshots/01_a__02_saved.png",
+    "01_a-phone.mp4",
+    "screenshots/01_a-phone__01_open.png",
     "design/a.png",
     "01_a_export.csv",
     "screenshots/01_a.printed.png",
@@ -540,11 +576,11 @@ test("SC17: the report's media paths are every video, frame, baseline and artifa
   assert.deepEqual(mediaPaths({}), []);
 });
 
-test("SC21 (design): a scenario's baseline and re-shoot are both inlined, once each, after its frames", () => {
+test("SC21 (design): a scenario's baseline and the screen as built are both inlined, once each, after its frames", () => {
   const data = {
     scenarios: [
       {
-        frames: ["screenshots/01_a__01_open.png"],
+        recordings: [{ frames: ["screenshots/01_a__01_open.png"] }],
         visualMatch: { baseline: "../design/a.png", build: "screenshots/01_a.design.png" },
       },
     ],
@@ -578,7 +614,9 @@ test("SC19: the media island lands before the data island, and a re-run replaces
 
 test("SC51, SC20: --inline writes every readable file into the report as a data URI", () => {
   const dir = withReport("inline", {
-    scenarios: [{ video: "01_a.mp4", frames: [{ src: "screenshots/01_a__01_open.png" }] }],
+    scenarios: [
+      { recordings: [{ video: "01_a.mp4", frames: [{ src: "screenshots/01_a__01_open.png" }] }] },
+    ],
   });
   writeFileSync(join(dir, "01_a.mp4"), "video-bytes");
   writeFileSync(join(dir, "screenshots", "01_a__01_open.png"), "png-bytes");
@@ -601,7 +639,7 @@ test("SC51, SC21: a file --inline cannot read is FAILED, exits 1, and the rest i
   const dir = withReport("inline-missing", {
     scenarios: [
       {
-        video: "01_a.mp4",
+        recordings: [{ video: "01_a.mp4" }],
         artifacts: [{ href: "01_a.bin" }],
         visualMatch: { baseline: "gone.png" },
       },

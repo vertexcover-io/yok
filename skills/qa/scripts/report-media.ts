@@ -8,6 +8,7 @@
 // scenario gets a video built from its promoted frames, which is then cropdetected, and the
 // scenario fails unless the window cropdetect reports still carries the source frame's aspect
 // ratio — a frame stretched to fill the canvas shows a geometry that was never on screen.
+// A video the script makes takes its NN_<slug>.mp4 name only once it has passed its checks.
 // With --inline it instead writes every file the finished report names into the report itself,
 // as data URIs in a `report-media` island the template resolves paths through, so the one html
 // file carries its own videos and frames wherever it is moved.
@@ -207,7 +208,7 @@ function ffmpegFailure(err: unknown): string {
   return lastLine || message || "ffmpeg exited non-zero";
 }
 
-function buildVideo(dir: string, prefix: string): string | null {
+function buildVideo(dir: string, prefix: string, output: string): string | null {
   try {
     execFileSync(
       "ffmpeg",
@@ -230,7 +231,7 @@ function buildVideo(dir: string, prefix: string): string | null {
         "veryfast",
         "-r",
         "30",
-        `${prefix}.mp4`,
+        output,
       ],
       { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -240,16 +241,19 @@ function buildVideo(dir: string, prefix: string): string | null {
   }
 }
 
-// A recording whose recorder never closed it has no index, and ffmpeg cannot open it.
-const plays = (dir: string, video: string): boolean =>
-  spawnSync(
-    "ffmpeg",
-    ["-nostdin", "-v", "error", "-i", video, "-frames:v", "1", "-f", "null", "-"],
-    {
-      cwd: dir,
-      stdio: "ignore",
-    },
-  ).status === 0;
+// Decodes the whole file. A recording whose recorder never closed it has no index and does not
+// open; one damaged or cut short later opens, and ffmpeg reports the damage while exiting 0.
+const plays = (dir: string, video: string): boolean => {
+  const decoded = spawnSync("ffmpeg", ["-nostdin", "-v", "error", "-i", video, "-f", "null", "-"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  return decoded.status === 0 && (decoded.stderr ?? "").trim() === "";
+};
+
+// A video the script makes is written under a working name and takes the scenario's name only
+// once it has passed its checks, so an NN_<slug>.mp4 beside the report is always a checked one.
+const workingName = (prefix: string, step: string): string => `${prefix}.${step}.mp4`;
 
 // The comment a compressed recording carries, so a later run keeps it as it is.
 const COMPRESSED_MARK = "report-media-compressed";
@@ -379,6 +383,7 @@ function joinParts(dir: string, prefix: string, parts: readonly string[]): strin
   const fit = `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30`;
   const fitted = parts.map((_, n) => `[${n}:v]${fit}[v${n}]`).join(";");
   const labels = parts.map((_, n) => `[v${n}]`).join("");
+  const working = workingName(prefix, "join");
   const joined = spawnSync(
     "ffmpeg",
     [
@@ -392,19 +397,20 @@ function joinParts(dir: string, prefix: string, parts: readonly string[]): strin
       "-map",
       "[out]",
       ...COMPRESSED_ENCODING,
-      `${prefix}.mp4`,
+      working,
     ],
     { cwd: dir, encoding: "utf8" },
   );
-  if (joined.status !== 0) {
-    rmSync(join(dir, `${prefix}.mp4`), { force: true });
+  if (joined.status !== 0 || !plays(dir, working)) {
+    rmSync(join(dir, working), { force: true });
     return `ffmpeg: ${(joined.stderr ?? "").trim().split("\n").at(-1) || "could not join the parts"}`;
   }
+  renameSync(join(dir, working), join(dir, `${prefix}.mp4`));
   for (const part of parts) rmSync(join(dir, part));
   return null;
 }
 
-function cropWindow(dir: string, prefix: string): string | null {
+function cropWindow(dir: string, video: string): string | null {
   // cropdetect writes its report to stderr, which only spawnSync hands back on a zero exit.
   // Default loglevel, since -v error silences cropdetect itself.
   const probe = spawnSync(
@@ -417,7 +423,7 @@ function cropWindow(dir: string, prefix: string): string | null {
       "-t",
       "0.5",
       "-i",
-      `${prefix}.mp4`,
+      video,
       "-vf",
       "cropdetect",
       "-f",
@@ -438,8 +444,31 @@ function firstFrameSize(screenshotsDir: string, prefix: string): FrameSize | nul
   return first === undefined ? null : pngSize(join(screenshotsDir, first));
 }
 
+/** Builds a scenario's video from its frames at `working` and checks the shape it came out in. */
+function checkedBuild(dir: string, prefix: string, working: string): ScenarioResult {
+  const failure = buildVideo(dir, prefix, working);
+  if (failure !== null) return { prefix, crop: null, failure: `ffmpeg: ${failure}`, note: null };
+
+  const crop = cropWindow(dir, working);
+  if (crop === null) {
+    const unread = `cropdetect read no crop window out of ${prefix}.mp4`;
+    return { prefix, crop: null, failure: unread, note: null };
+  }
+
+  const shape = checkFrameShape(firstFrameSize(join(dir, "screenshots"), prefix), crop);
+  if (shape.kind === "stretched") return { prefix, crop, failure: shape.note, note: null };
+  return { prefix, crop, failure: null, note: shape.note };
+}
+
+function buildFromFrames(dir: string, prefix: string): ScenarioResult {
+  const working = workingName(prefix, "build");
+  const result = checkedBuild(dir, prefix, working);
+  if (result.failure === null) renameSync(join(dir, working), join(dir, `${prefix}.mp4`));
+  else rmSync(join(dir, working), { force: true });
+  return result;
+}
+
 export function buildScenarios(dir: string): readonly ScenarioResult[] {
-  const screenshots = join(dir, "screenshots");
   return scenarioPrefixes(dir).map((prefix) => {
     const video = `${prefix}.mp4`;
     const parts = recordedParts(dir, prefix);
@@ -459,24 +488,12 @@ export function buildScenarios(dir: string): readonly ScenarioResult[] {
       if (!plays(dir, video)) {
         return { prefix, crop: null, failure: `${video} does not play`, note: null };
       }
+      // The video is known to play whole, so a trim or compression that fails keeps a good file.
       const note = trimStills(dir, video) ?? compressRecording(dir, video);
       return { prefix, crop: null, failure: null, note };
     }
 
-    const failure = buildVideo(dir, prefix);
-    if (failure !== null) {
-      return { prefix, crop: null, failure: `ffmpeg: ${failure}`, note: null };
-    }
-
-    const crop = cropWindow(dir, prefix);
-    if (crop === null) {
-      const unread = `cropdetect read no crop window out of ${prefix}.mp4`;
-      return { prefix, crop: null, failure: unread, note: null };
-    }
-
-    const shape = checkFrameShape(firstFrameSize(screenshots, prefix), crop);
-    if (shape.kind === "stretched") return { prefix, crop, failure: shape.note, note: null };
-    return { prefix, crop, failure: null, note: shape.note };
+    return buildFromFrames(dir, prefix);
   });
 }
 
@@ -505,13 +522,17 @@ const pathOf = (entry: unknown, key: string): unknown => (isRecord(entry) ? entr
 
 const listOf = (v: unknown): readonly unknown[] => (Array.isArray(v) ? v : []);
 
-/** Every file the report names — video, frames, design baseline and re-shoot, artifacts — once each, in order. */
+/** Every file the report names — each recording's video and frames, the design baseline and the screen as built, artifacts, proof pictures — once each, in order. */
 export function mediaPaths(data: Record<string, unknown>): readonly string[] {
   const named = listOf(data["scenarios"])
     .filter(isRecord)
     .flatMap((scenario) => [
-      scenario["video"],
-      ...listOf(scenario["frames"]).map((frame) => pathOf(frame, "src")),
+      ...listOf(scenario["recordings"])
+        .filter(isRecord)
+        .flatMap((recording) => [
+          recording["video"],
+          ...listOf(recording["frames"]).map((frame) => pathOf(frame, "src")),
+        ]),
       isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["baseline"] : null,
       isRecord(scenario["visualMatch"]) ? scenario["visualMatch"]["build"] : null,
       ...listOf(scenario["artifacts"]).map((artifact) => pathOf(artifact, "href")),
