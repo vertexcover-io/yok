@@ -864,6 +864,71 @@ describe("viewer in a browser", () => {
       rmSync(join(runDir, "state.json"), { force: true });
     }
   }, 30000);
+  test("the file list groups files under the stage that delivered them, with folders, the rest after a divider, and a bare link opens the first stage's file", async () => {
+    const delivered = (...paths: readonly string[]) => ({
+      nodeRunId: "n",
+      nodeType: "agent" as const,
+      status: "completed" as const,
+      startedAt: null,
+      completedAt: null,
+      artifacts: paths.map((path) => ({ type: "file", name: path, path })),
+    });
+    writeFileSync(
+      join(runDir, "workflow.yaml"),
+      [
+        "name: w",
+        "nodes:",
+        "  - { id: design, type: agent, stage: design, input: {} }",
+        "  - { id: plan, type: agent, stage: planning, dependsOn: [design], input: {} }",
+        "  - { id: review, type: agent, stage: code-review, dependsOn: [plan], input: {} }",
+        "",
+      ].join("\n"),
+    );
+    mkdirSync(join(runDir, "artifacts", "ux"));
+    writeFileSync(join(runDir, "artifacts", "ux", "flow.md"), "# Flow\n");
+    mkdirSync(join(runDir, "artifacts", "notes"));
+    writeFileSync(join(runDir, "artifacts", "notes", "todo.md"), "# Todo\n");
+    const state = seedState(runDir, {
+      design: delivered("artifacts/design.md"),
+      plan: delivered("artifacts/outline.md", "artifacts/code.md"),
+      review: delivered("artifacts/mock.html", "artifacts/ux/flow.md"),
+    });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    try {
+      await browser("open", `${url}#artifacts/design.md`);
+      await until(
+        "document.querySelectorAll('#fileList .stage').length === 3 && document.querySelectorAll('#fileList .folder').length === 2",
+      );
+      const tree = await evaluate(
+        "(function walk(ul) { return [...ul.children].map((li) => { if (li.classList.contains('divider')) return '---'; const label = li.querySelector(':scope > .stage, :scope > .folder'); return label ? [label.textContent, walk(li.querySelector(':scope > ul'))] : li.querySelector('.name').textContent; }); })(document.querySelector('#fileList'))",
+      );
+      expect(tree).toEqual([
+        ["design", ["design.md"]],
+        ["planning", ["code.md", "outline.md"]],
+        ["code-review", ["mock.html", ["ux/", ["flow.md"]]]],
+        "---",
+        "factors.md",
+        "list.md",
+        "module.html",
+        "module.js",
+        "module.json",
+        "scenarios.md",
+        "steps.md",
+        ["notes/", ["todo.md"]],
+      ]);
+      expect(await evaluate("document.querySelectorAll('#fileList .draft-dot').length")).toBe(0);
+
+      await browser("open", url);
+      await until(
+        "document.querySelector('#fileList [aria-current=\"true\"] .name')?.textContent === 'design.md'",
+      );
+    } finally {
+      rmSync(join(runDir, "workflow.yaml"), { force: true });
+      rmSync(join(runDir, "state.json"), { force: true });
+      rmSync(join(runDir, "artifacts", "ux"), { recursive: true, force: true });
+      rmSync(join(runDir, "artifacts", "notes"), { recursive: true, force: true });
+    }
+  }, 30000);
 });
 
 // The runs page reads the run list from /stream, so this suite seeds a registry and users.json
