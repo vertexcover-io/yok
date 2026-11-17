@@ -3,12 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ITerminal, ITerminalHost } from "./agent.ts";
 import { ConfigSchema } from "./config.ts";
 import type { RunRef } from "./events.ts";
 import { createRegistry, type WorkflowRun } from "./registry.ts";
 import {
   closingLine,
   findConfigRoot,
+  findRunPane,
   loadCheckoutConfig,
   loadNamedConfig,
   loadPickedConfig,
@@ -291,5 +293,96 @@ describe("closingLine", () => {
     ["completed", "Run demo completed. Resume it with: yok resume demo"],
   ] as const)("SC11: a %s run's closing line reads %s", (status, line) => {
     expect(closingLine("demo", status)).toBe(line);
+  });
+});
+
+// A pane that answers isAlive as told; findRunPane only asks that and hands it back.
+const fakePane = (alive: boolean): ITerminal => ({
+  sendText: async () => ({ ok: true, value: undefined }),
+  sendKeys: async () => ({ ok: true, value: undefined }),
+  capture: async () => ({ ok: true, value: "" }),
+  isAlive: async () => alive,
+  kill: async () => ({ ok: true, value: undefined }),
+  rename: async () => ({ ok: true, value: undefined }),
+  respawn: async () => ({ ok: true, value: undefined }),
+  attachCommand: () => ["tmux", "attach-session", "-t", "=demo-pane:"],
+});
+
+const fakeHost = (pane: ITerminal, asked: string[] = []): ITerminalHost => ({
+  checks: [],
+  create: async () => ({ ok: true, value: pane }),
+  find: (name) => {
+    asked.push(name);
+    return pane;
+  },
+  list: async () => [],
+});
+
+const writeRunState = (cwd: string, status: string): void => {
+  const runDir = join(cwd, ".yok", "demo");
+  const state = {
+    schemaVersion: 1,
+    lastEventSeq: 0,
+    runId: "r-1",
+    runName: "demo",
+    runDir,
+    version: "1",
+    workflow: { name: "demo", path: "workflow.yaml" },
+    input: {},
+    scope: null,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: null,
+    status,
+    workspace: {
+      type: "mono",
+      path: cwd,
+      repositories: { r: { path: cwd, git: { branch: "b", baseBranch: "main", startSha: "s" } } },
+    },
+    nodeRuns: {},
+    activeSessions: [],
+    tiers: null,
+    eventHandlers: {},
+    subscribers: {},
+  };
+  writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+};
+
+describe("findRunPane", () => {
+  test("SC1: a run with no terminal is refused with the attach wording, without asking the host", async () => {
+    const asked: string[] = [];
+
+    const pane = await findRunPane(
+      fakeHost(fakePane(true), asked),
+      savedRun("r-1", tempDir(), "demo"),
+    );
+
+    expect(errorOf(pane)).toBe("run r-1 has no terminal yet");
+    expect(asked).toEqual([]);
+  });
+
+  test.each([
+    ["failed", "Run demo failed. Retry it from the failed step with: yok retry demo"],
+    ["completed", "Run demo completed. Resume it with: yok resume demo"],
+    ["running", "Run demo has no running session. Resume it with: yok resume demo"],
+    ["missing", "Run demo has no running session. Resume it with: yok resume demo"],
+    ["unparsable", "Run demo has no running session. Resume it with: yok resume demo"],
+  ] as const)("SC2: a dead session of a run whose state is %s reads %s", async (status, line) => {
+    const cwd = tempDir();
+    mkdirSync(join(cwd, ".yok", "demo"), { recursive: true });
+    if (status === "unparsable") writeFileSync(join(cwd, ".yok", "demo", "state.json"), "{nope");
+    if (status !== "missing" && status !== "unparsable") writeRunState(cwd, status);
+    const run = { ...savedRun("r-1", cwd, "demo"), terminal: "demo-pane" };
+
+    expect(errorOf(await findRunPane(fakeHost(fakePane(false)), run))).toBe(line);
+  });
+
+  test("SC3: a live session returns its own pane", async () => {
+    const asked: string[] = [];
+    const run = { ...savedRun("r-1", tempDir(), "demo"), terminal: "demo-pane" };
+
+    const pane = unwrap(await findRunPane(fakeHost(fakePane(true), asked), run));
+
+    expect(pane.attachCommand()).toEqual(["tmux", "attach-session", "-t", "=demo-pane:"]);
+    expect(asked).toEqual(["demo-pane"]);
   });
 });

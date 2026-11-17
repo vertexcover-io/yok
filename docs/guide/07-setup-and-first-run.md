@@ -222,7 +222,11 @@ yok-remote server status
 
 Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 
-A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, SSH into the server and attach to the run there.
+A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, open the run's page and click the Terminal tab: it attaches to the run's tmux session in the browser, as `yok attach` does on the server.
+
+The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same login and the same Host and Origin check as the rest of the page. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
+
+On Linux and Windows the browser keeps Ctrl-W and Ctrl-T for itself: they close or open a tab instead of reaching the agent. Install the page as an app (Chrome's "Install page as app") to get them back. On macOS those keys reach the agent, and Cmd-W closes the window either way.
 
 You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
 

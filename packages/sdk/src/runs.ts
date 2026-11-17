@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import type { ITerminal, ITerminalHost } from "./agent.ts";
 import {
   type Config,
   defaultConfig,
@@ -7,7 +8,7 @@ import {
   loadConfigFile,
   loadConfigOrDefault,
 } from "./config.ts";
-import type { Result, State } from "./contracts.ts";
+import { isRunLive, type Result, type State } from "./contracts.ts";
 import { type RunRef, runDirOf } from "./events.ts";
 import { createGit } from "./git.ts";
 import type { RegistryReader, WorkflowRun } from "./registry.ts";
@@ -191,6 +192,28 @@ export const closingLine = (
   status === "failed"
     ? `Run ${name} failed. Retry it from the failed step with: yok retry ${name}`
     : `Run ${name} ${status}. Resume it with: yok resume ${name}`;
+
+// The session is gone: a finished run says how it ended, any other run how to bring it back.
+// readState throws on a broken state.json; that run is treated as one still going.
+const goneMessage = async (run: WorkflowRun): Promise<string> => {
+  const name = run.name ?? run.id;
+  const state =
+    run.name === null ? null : await readState(runDirOf(run.cwd, run.name)).catch(() => null);
+  if (state !== null && !isRunLive(state.status)) return closingLine(name, state.status);
+  return `Run ${name} has no running session. Resume it with: yok resume ${name}`;
+};
+
+// The run's pane while its session is up; otherwise the line a person is shown instead of a
+// terminal, by `yok attach` and by the browser terminal alike.
+export const findRunPane = async (
+  host: ITerminalHost,
+  run: WorkflowRun,
+): Promise<Result<ITerminal>> => {
+  if (run.terminal === null) return { ok: false, error: `run ${run.id} has no terminal yet` };
+  const pane = host.find(run.terminal);
+  if (await pane.isAlive()) return { ok: true, value: pane };
+  return { ok: false, error: await goneMessage(run) };
+};
 
 export const loadPickedConfig = (
   run: RunRef | undefined,
