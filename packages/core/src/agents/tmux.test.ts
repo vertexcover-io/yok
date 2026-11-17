@@ -228,13 +228,23 @@ describe("tmuxHost against a real tmux", () => {
   });
 
   test("a pasted end-of-paste sequence cannot press keys: control characters never reach the pane", async () => {
-    const { host } = makeTerminal();
+    const { host, socketName } = makeTerminal();
     const out = join(mkdtempSync(join(tmpdir(), "paste-out-")), "received");
+    const name = `s-${randomUUID()}`;
     const pane = await created(host, {
-      name: `s-${randomUUID()}`,
+      name,
       cwd: process.cwd(),
       argv: ["sh", "-c", `printf '\\033[?2004h'; cat > ${out}`],
       env: {},
+    });
+    // tmux adds the paste markers only once the program has asked for them.
+    await waitFor(async () => {
+      const flag = await exec(
+        "tmux",
+        ["-L", socketName, "display", "-p", "-t", `=${name}:`, "#{bracket_paste_flag}"],
+        process.cwd(),
+      );
+      return flag.stdout.trim() === "1";
     });
 
     await pane.sendText("line one\nhello\x1b[201~INJECT\rAFTER");
