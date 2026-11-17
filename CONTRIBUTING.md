@@ -31,6 +31,7 @@ You need Bun 1.4.3+, Node 22.12+, tmux 3.3+, git, jq, curl, the GitHub CLI logge
 git clone https://github.com/vertexcover-io/yok.git
 cd yok
 bun install
+bunx playwright install chromium
 cd packages/cli && bun link && cd ../..
 ```
 
@@ -129,7 +130,7 @@ bun test packages/core
 bun test packages/core/src/workflow/next.test.ts
 ```
 
-Tests sit beside the code they test. `*.test.ts` files are unit tests. `*.e2e.test.ts` files drive the real commands against a temporary repo and home, and take longer. The testing standard is [skills/tdd/references/testing.md](./skills/tdd/references/testing.md), with [anti-patterns.md](./skills/tdd/references/anti-patterns.md) beside it. It applies to this repo too.
+Tests sit beside the code they test. `*.test.ts` files are unit tests. `*.e2e.test.ts` files drive the real commands against a temporary repo and home, and take longer. Tests that drive a browser use Playwright, which needs the Chromium it installed during setup. The testing standard is [skills/tdd/references/testing.md](./skills/tdd/references/testing.md), with [anti-patterns.md](./skills/tdd/references/anti-patterns.md) beside it. It applies to this repo too.
 
 Inside a `.worktrees/` checkout, `bun run lint` finds no files because `biome.json` excludes that path. Lint from the main checkout, or use a temporary Biome config without the exclusion.
 

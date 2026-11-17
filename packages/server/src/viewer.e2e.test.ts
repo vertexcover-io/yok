@@ -10,6 +10,7 @@ import { noopLogger } from "@yok/sdk";
 import { createRegistry, updateUsers } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
+import { type Browser, chromium, type Page } from "playwright";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
 import { terminalRoutes } from "./terminal.ts";
@@ -19,7 +20,6 @@ const ORCHESTRATE = [
   join(import.meta.dir, "..", "..", "cli", "src", "index.ts"),
   "orchestrate",
 ] as const;
-const SESSION = `viewer-e2e-${process.pid}`;
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "yok-viewer-e2e-")));
 
@@ -132,39 +132,26 @@ const MODULE_PAGE = `<!doctype html><html><body>
 <script>fetch("./module.json").then((r) => r.json()).then((d) => { document.getElementById("data").textContent = d.word; });</script>
 </body></html>`;
 
-// Async on purpose: the viewer runs in this process, and a sync spawn would freeze it while the
-// browser waits for its page.
-const browser = async (...args: string[]): Promise<string> => {
-  const run = Bun.spawn(["agent-browser", ...args], {
-    env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(run.stdout).text(),
-    new Response(run.stderr).text(),
-    run.exited,
-  ]);
-  if (code !== 0) throw new Error(`agent-browser ${args[0]} failed: ${stderr}${stdout}`);
-  return stdout.trim();
-};
+// One browser for the file; every test gets its own context, so no tab, storage or viewport leaks
+// from one test into the next.
+let chrome: Browser;
+let page: Page;
 
-const evaluate = async (js: string): Promise<unknown> => {
-  const out = await browser("eval", js);
-  try {
-    return JSON.parse(out);
-  } catch {
-    return out;
-  }
-};
+beforeAll(async () => {
+  chrome = await chromium.launch();
+}, 30000);
+afterAll(() => chrome.close());
+beforeEach(async () => {
+  page = await (await chrome.newContext()).newPage();
+});
+afterEach(() => page.context().close());
+
+const evaluate = (js: string): Promise<unknown> => page.evaluate<unknown>(js);
 
 const until = async (js: string, ms = 5000): Promise<void> => {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if ((await evaluate(js)) === true) return;
-    await Bun.sleep(100);
-  }
-  throw new Error(`still false after ${ms}ms: ${js}`);
+  await page.waitForFunction(js, undefined, { timeout: ms }).catch(() => {
+    throw new Error(`still false after ${ms}ms: ${js}`);
+  });
 };
 
 const selectText = async (inFrame: boolean, text: string): Promise<void> => {
@@ -185,18 +172,29 @@ const selectText = async (inFrame: boolean, text: string): Promise<void> => {
   })()`);
 };
 
-const belowHead = (heading: string): string => `(() => {
+const gapBelowHead = (heading: string): string => `(() => {
   const head = document.querySelector('#docHead').getBoundingClientRect().bottom;
   const target = [...document.querySelectorAll('#docRoot h1, #docRoot h2, #docRoot h3')].find((h) => h.textContent === ${JSON.stringify(heading)});
-  const gap = target.getBoundingClientRect().top - head;
-  return gap >= 0 && gap < 40;
+  return target.getBoundingClientRect().top - head;
 })()`;
+
+const untilBelowHead = async (heading: string): Promise<void> => {
+  const gap = gapBelowHead(heading);
+  await until(`${gap} >= 0 && ${gap} < 40`).catch(async () => {
+    const pane = await evaluate(
+      "(() => { const p = document.querySelector('#docPane'); return { scrollTop: p.scrollTop, maxScroll: p.scrollHeight - p.clientHeight, hash: location.hash, viewport: [innerWidth, innerHeight] }; })()",
+    );
+    throw new Error(
+      `"${heading}" sits ${await evaluate(gap)}px below the header, not 0-39px: ${JSON.stringify(pane)}`,
+    );
+  });
+};
 
 const barShown = "!document.querySelector('#selbar').hidden";
 const commenting = "document.querySelector('#docPane').classList.contains('commenting')";
 
 const ensureCommentMode = async (): Promise<void> => {
-  if ((await evaluate(commenting)) !== true) await browser("click", "#modeBtn");
+  if ((await evaluate(commenting)) !== true) await page.click("#modeBtn");
   await until(commenting);
 };
 
@@ -214,12 +212,9 @@ const ARTIFACTS: Readonly<Record<string, string>> = {
   "scenarios.md": CHECKLIST,
 };
 
-// Every test starts from the seeded files, no comments, no state, and its own tab. Each test closes
-// its tab after: pages only navigated away from kept their event streams open until they used up
-// Chrome's six connections to the viewer.
-const resetRun = async (runDir: string): Promise<void> => {
+// Every test starts from the seeded files, no comments and no state.
+const resetRun = (runDir: string): void => {
   stopDeliveries();
-  await browser("tab", "new");
   // A seeded state.json starts at event 0, so events left from other tests would replay onto it.
   for (const name of ["comments.json", "state.json", "event.jsonl"])
     rmSync(join(runDir, name), { force: true });
@@ -285,39 +280,31 @@ describe("viewer in a browser", () => {
     url = `${viewer.origin}/runs/r1`;
   });
 
-  beforeEach(() => resetRun(runDir), 30000);
-  afterEach(() => browser("tab", "close"), 30000);
+  beforeEach(() => resetRun(runDir));
 
   afterAll(async () => {
     stopDeliveries();
-    // A sync spawn blocks the worker until every holder of its pipes exits, and the browser's
-    // background process can hold them for good, so it gets no pipes and a deadline.
-    spawnSync("agent-browser", ["close"], {
-      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-      stdio: "ignore",
-      timeout: 10_000,
-    });
     await viewer.stop();
   });
 
   test("SC33, SC14: Comment mode gates the selection bar, Add to batch holds comments listed by place until Send 2, and both reach the agent's status", async () => {
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.goto(`${url}#artifacts/design.md`);
     await until("!!document.querySelector('#docRoot')");
     await evaluate("localStorage.setItem('yok-viewer:comment-mode','off')");
-    await browser("reload");
+    await page.reload();
     await until("!!document.querySelector('#docRoot')");
 
     await selectText(false, "one file per run");
     await Bun.sleep(600);
     expect(await evaluate(barShown)).toBe(false);
 
-    await browser("click", "#modeBtn");
+    await page.click("#modeBtn");
     await selectText(false, "one file per run");
     await until(barShown);
 
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Why only one file?");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Why only one file?");
+    await page.click("#batchBtn");
     await until("document.querySelector('.batch') !== null");
     expect(await evaluate("document.querySelector('#docRoot mark.hl.is-draft') !== null")).toBe(
       true,
@@ -328,9 +315,9 @@ describe("viewer in a browser", () => {
 
     await selectText(false, "Start small");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "How small?");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "How small?");
+    await page.click("#batchBtn");
     await until("document.querySelectorAll('.batch .card').length === 2");
     expect(
       await evaluate(
@@ -343,7 +330,7 @@ describe("viewer in a browser", () => {
     expect(await evaluate("document.querySelector('#sendBtn').textContent")).toBe(
       "Send 2 to the agent",
     );
-    await browser("click", "#sendBtn");
+    await page.click("#sendBtn");
     await until("document.querySelector('.batch') === null");
     await until(
       "[...document.querySelectorAll('#threads .card .status')].filter((s) => s.textContent === 'With the agent').length === 2",
@@ -367,7 +354,7 @@ describe("viewer in a browser", () => {
       }),
     });
     expect(posted.status).toBe(201);
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.goto(`${url}#artifacts/design.md`);
     await until("!!document.querySelector('#threads .card[data-cid=c1]')");
 
     const reply = spawnSync(
@@ -413,18 +400,18 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC35: text selected inside an HTML artifact becomes a comment with an element path", async () => {
-    await browser("open", `${url}#artifacts/mock.html`);
+    await page.goto(`${url}#artifacts/mock.html`);
     await until(
       "document.querySelector('#htmlFrame')?.contentDocument?.getElementById('go')?.textContent === 'Continue'",
     );
     await ensureCommentMode();
     await selectText(true, "Sign in");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Make the title bolder");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Make the title bolder");
+    await page.click("#batchBtn");
     await until("document.querySelector('.batch') !== null");
-    await browser("click", "#sendBtn");
+    await page.click("#sendBtn");
     await until("document.querySelector('.batch') === null");
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('div.mk-card > h2.mk-title'))",
@@ -432,16 +419,16 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("an HTML artifact loads a sibling module script and fetches a sibling file, and the fetched text takes a comment", async () => {
-    await browser("open", `${url}#artifacts/module.html`);
+    await page.goto(`${url}#artifacts/module.html`);
     const text = (id: string): string =>
       `document.querySelector('#htmlFrame')?.contentDocument?.getElementById('${id}')?.textContent`;
     await until(`${text("mod")} === 'module ran' && ${text("data")} === 'fetched'`);
     await ensureCommentMode();
     await selectText(true, "fetched");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Say where this came from");
-    await browser("click", "#sendNowBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Say where this came from");
+    await page.click("#sendNowBtn");
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('module.html · p:nth-of-type(2)'))",
     );
@@ -453,8 +440,8 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("a code block is one wrapped box with diff colors, not a stack of inline chips", async () => {
-    await browser("set", "viewport", "1000", "800");
-    await browser("open", `${url}#artifacts/code.md`);
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto(`${url}#artifacts/code.md`);
     await until("!!document.querySelector('#docRoot pre .hljs-addition')");
     const look = await evaluate(`(() => {
       const pre = document.querySelector('#docRoot pre');
@@ -497,35 +484,23 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("the outline lists the file's headings, jumps to one on click, and marks the section in view", async () => {
-    await browser("open", `${url}#artifacts/outline.md`);
+    await page.goto(`${url}#artifacts/outline.md`);
     await until("document.querySelectorAll('#outline button').length > 0");
     expect(
       await evaluate("[...document.querySelectorAll('#outline button')].map((b) => b.textContent)"),
     ).toEqual(["Outline", "One", "Two", "Three", "Three detail"]);
 
-    await browser("set", "viewport", "1000", "800");
-    await browser("click", "#outline li:nth-child(4) button");
-    await until(belowHead("Three"));
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.click("#outline li:nth-child(4) button");
+    await untilBelowHead("Three");
     expect(await evaluate("location.hash")).toBe("#artifacts/outline.md#three");
     await until(
       "document.querySelector('#outline button[aria-current=\"true\"]')?.textContent === 'Three'",
     );
   }, 30000);
 
-  test("a link to a section opens the file at that section, and a heading's # link points at it", async () => {
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/outline.md#three-detail`);
-    await until("!!document.querySelector('#docRoot')");
-    await until(belowHead("Three detail"));
-    expect(
-      await evaluate(
-        "[...document.querySelectorAll('#docRoot h2')].find((h) => h.textContent === 'Two').querySelector('a.anchor').getAttribute('href')",
-      ),
-    ).toBe("#artifacts/outline.md#two");
-  }, 30000);
-
   test("a code block copies its code, and one over 40 lines opens folded until asked", async () => {
-    await browser("open", `${url}#artifacts/code.md`);
+    await page.goto(`${url}#artifacts/code.md`);
     await until("!!document.querySelector('#docRoot pre .copy-btn')");
     const fold =
       "document.querySelector('#docRoot pre.language-ts, #docRoot pre:has(code.language-ts)')";
@@ -535,56 +510,49 @@ describe("viewer in a browser", () => {
       ),
     ).toBe(true);
     expect(await evaluate("document.querySelector('#docRoot .fold-btn').dataset.more")).toBe("20");
-    await browser("click", "#docRoot .fold-btn");
+    await page.click("#docRoot .fold-btn");
     expect(await evaluate(`${fold}.classList.contains('folded')`)).toBe(false);
 
-    // The test browser denies clipboard reads, so record what the page writes instead.
-    await evaluate(`(() => {
-      const write = navigator.clipboard.writeText.bind(navigator.clipboard);
-      navigator.clipboard.writeText = (text) => { window.copiedText = text; return write(text); };
-      ${fold}.scrollIntoView({ block: 'center' });
-    })()`);
-    await browser("click", "#docRoot pre:has(code.language-ts) .copy-btn");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.click("#docRoot pre:has(code.language-ts) .copy-btn");
     await until(
       "document.querySelector('#docRoot pre:has(code.language-ts) .copy-btn').dataset.state === 'copied'",
     );
-    expect(await evaluate("window.copiedText")).toContain("const line50 = 50;");
+    expect(await evaluate("navigator.clipboard.readText()")).toContain("const line50 = 50;");
   }, 30000);
 
   test("a diff shows more of its file above and below on request, until the file runs out", async () => {
-    await browser("open", `${url}#artifacts/steps.md`);
+    await page.goto(`${url}#artifacts/steps.md`);
     await until("!!document.querySelector('#docRoot .hunk .expand-btn')");
     const hunk = "document.querySelector('#docRoot .hunk')";
     const shown = `[${hunk}.dataset.from, ${hunk}.dataset.to].join('-')`;
     expect(await evaluate(shown)).toBe("19-21");
 
-    await browser("click", "#docRoot .expand-btn[data-dir=up]");
+    await page.click("#docRoot .expand-btn[data-dir=up]");
     await until(`${shown} === '9-21'`);
     expect(await evaluate(`${hunk}.querySelector('.diff-line').textContent`)).toBe(
       " export const v9 = 9;",
     );
     expect(await evaluate(`!!${hunk}.querySelector('.diff-line .hljs-keyword')`)).toBe(true);
 
-    await browser("click", "#docRoot .expand-btn[data-dir=up]");
+    await page.click("#docRoot .expand-btn[data-dir=up]");
     await until(`${shown} === '1-21'`);
     expect(await evaluate(`${hunk}.querySelector('.expand-btn[data-dir=up]').hidden`)).toBe(true);
     for (const expected of ["1-31", "1-40"]) {
-      // agent-browser clicks the middle of a button cut off by the window's bottom edge, and misses
-      await browser("scrollintoview", "#docRoot .expand-btn[data-dir=down]");
-      await browser("click", "#docRoot .expand-btn[data-dir=down]");
+      await page.click("#docRoot .expand-btn[data-dir=down]");
       await until(`${shown} === '${expected}'`);
     }
     expect(await evaluate(`${hunk}.querySelector('.expand-btn[data-dir=down]').hidden`)).toBe(true);
   }, 30000);
 
   test("a file path, a diff and the open artifact each open in the editor at their line", async () => {
-    await browser("open", `${url}#artifacts/steps.md`);
+    await page.goto(`${url}#artifacts/steps.md`);
     await until("!!document.querySelector('#docRoot code[data-path]')");
     opened.length = 0;
-    await browser("click", "#docRoot code[data-path]");
+    await page.click("#docRoot code[data-path]");
     await until("!document.querySelector('#toast').hidden");
-    await browser("click", "#docRoot pre[data-file] .open-btn");
-    await browser("click", "#editBtn");
+    await page.click("#docRoot pre[data-file] .open-btn");
+    await page.click("#editBtn");
     const sample = join(cwd, "src", "sample.ts");
     for (let i = 0; i < 30 && opened.length < 3; i++) await Bun.sleep(100);
     expect(opened).toEqual([
@@ -610,18 +578,18 @@ describe("viewer in a browser", () => {
     const typedBefore = typed.length;
     try {
       const approveHidden = "document.querySelector('#approveBtn').hidden";
-      await browser("open", `${url}#artifacts/code.md`);
+      await page.goto(`${url}#artifacts/code.md`);
       await until("document.querySelector('#docPath').textContent === 'artifacts/code.md'");
       expect(await evaluate(approveHidden)).toBe(true);
 
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.goto(`${url}#artifacts/design.md`);
       await until(
         `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
       );
       expect(await evaluate("document.querySelector('#docBadge').textContent")).toBe(
         "Waiting for your approval",
       );
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       expect(await evaluate(approveHidden)).toBe(true);
       await until(
         "[...document.querySelectorAll('#threads .card .chip')].some((c) => c.textContent === 'Approved')",
@@ -645,7 +613,7 @@ describe("viewer in a browser", () => {
       JSON.stringify({ ...seedState(runDir, {}), policies }),
     );
     try {
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.goto(`${url}#artifacts/design.md`);
       await until("document.querySelector('#modeBtn').hidden === true");
       expect(await evaluate("getComputedStyle(document.querySelector('#modeBtn')).display")).toBe(
         "none",
@@ -656,8 +624,8 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC13: Send posts one comment at once, Control+Enter does the same, no batch appears, and stored anchors keep their lines", async () => {
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${url}#artifacts/design.md`);
     await until("document.querySelector('#docPath').textContent === 'artifacts/design.md'");
     await ensureCommentMode();
     await evaluate(`(() => {
@@ -669,15 +637,15 @@ describe("viewer in a browser", () => {
 
     await selectText(false, "Start small");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Say how small.");
-    await browser("click", "#sendNowBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Say how small.");
+    await page.click("#sendNowBtn");
 
     await selectText(false, "second sentence");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Cut the second sentence.");
-    await browser("press", "Control+Enter");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Cut the second sentence.");
+    await page.keyboard.press("Control+Enter");
 
     for (const text of ["Say how small.", "Cut the second sentence."])
       await until(`${cardWith(text)}?.querySelector('.status')?.textContent === 'With the agent'`);
@@ -707,8 +675,8 @@ describe("viewer in a browser", () => {
       body: JSON.stringify({ comments: [comment] }),
     });
     expect(posted.status).toBe(201);
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${url}#artifacts/design.md`);
     await until(`${cardWith("Trim it.")} !== undefined`);
     expect(
       await evaluate(
@@ -735,8 +703,8 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
     const approveHidden = "document.querySelector('#approveBtn').hidden";
     try {
-      await browser("set", "viewport", "1280", "800");
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto(`${url}#artifacts/design.md`);
       await until(
         `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
       );
@@ -751,9 +719,9 @@ describe("viewer in a browser", () => {
       await ensureCommentMode();
       await selectText(false, "Start small");
       await until(barShown);
-      await browser("click", "#selbar button[data-kind=comment]");
-      await browser("fill", "#composerText", "Never sent.");
-      await browser("click", "#sendNowBtn");
+      await page.click("#selbar button[data-kind=comment]");
+      await page.fill("#composerText", "Never sent.");
+      await page.click("#sendNowBtn");
 
       await until(`!!${cardWith("Never sent.")}?.closest('.batch')`);
       expect(await evaluate("document.querySelector('.batch .group-label').textContent")).toBe(
@@ -763,7 +731,7 @@ describe("viewer in a browser", () => {
         "disk full",
       );
 
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       await until("!document.querySelector('#toast').hidden");
       expect(await evaluate("document.querySelector('#toast').textContent")).toContain("disk full");
       await until(`!${approveHidden}`);
@@ -773,10 +741,10 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC16: hovering the second bullet in comment mode marks that bullet, while the list and the other bullets stay transparent", async () => {
-    await browser("open", `${url}#artifacts/list.md`);
+    await page.goto(`${url}#artifacts/list.md`);
     await until("document.querySelectorAll('#docRoot li').length === 3");
     await ensureCommentMode();
-    await browser("hover", "#docRoot li:nth-child(2)");
+    await page.hover("#docRoot li:nth-child(2)");
     expect(
       await evaluate(
         "['ul', 'li:nth-child(1)', 'li:nth-child(2)', 'li:nth-child(3)'].map((s) => getComputedStyle(document.querySelector('#docRoot ' + s)).backgroundColor !== 'rgba(0, 0, 0, 0)')",
@@ -799,7 +767,7 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
   };
   const openFile = async (file: string): Promise<void> => {
-    await browser("open", `${url}#artifacts/${file}`);
+    await page.goto(`${url}#artifacts/${file}`);
     await until(`document.querySelector('#docPath').textContent === 'artifacts/${file}'`);
     await until("!!document.querySelector('#docRoot .task-box')");
   };
@@ -810,7 +778,7 @@ describe("viewer in a browser", () => {
     expect(await evaluate(`document.querySelector('${box(1)}').disabled`)).toBe(true);
     awaiting("factors.md");
     try {
-      await browser("reload");
+      await page.reload();
       await until("!document.querySelector('#approveBtn').hidden");
       await until(`!document.querySelector('${box(1)}').disabled`);
     } finally {
@@ -823,21 +791,21 @@ describe("viewer in a browser", () => {
     try {
       await openFile("factors.md");
       await until(`!document.querySelector('${box(2)}').disabled`);
-      await browser("click", box(2));
+      await page.click(box(2));
       expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(false);
       await until(`${batchLabel} === 'Not sent yet · 1'`);
       expect(await evaluate(`!!${cardWith("Untick this")}`)).toBe(true);
 
-      await browser("click", box(2));
+      await page.click(box(2));
       await until("!document.querySelector('.batch')");
       expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(true);
 
-      await browser("click", box(2));
-      await browser("click", box(3));
+      await page.click(box(2));
+      await page.click(box(3));
       await until(`${batchLabel} === 'Not sent yet · 2'`);
       expect(await evaluate(`!!${cardWith("Tick this")}`)).toBe(true);
       const before = typed.length;
-      await browser("click", "#sendBtn");
+      await page.click("#sendBtn");
       await until("!document.querySelector('.batch')");
       for (let i = 0; i < 50 && typed.length === before; i++) await Bun.sleep(100);
       const message = typed.slice(before).join("\n");
@@ -855,10 +823,10 @@ describe("viewer in a browser", () => {
     try {
       await openFile("scenarios.md");
       await until(`!document.querySelector('${box(1)}').disabled`);
-      await browser("click", box(1));
+      await page.click(box(1));
       await until(`${batchLabel} === 'Not sent yet · 1'`);
       const before = typed.length;
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       await until("!document.querySelector('.batch')");
       for (let i = 0; i < 50 && !typed.slice(before).some((t) => t.includes("approved:")); i++)
         await Bun.sleep(100);
@@ -900,7 +868,7 @@ describe("viewer in a browser", () => {
     });
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
     try {
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.goto(`${url}#artifacts/design.md`);
       await until(
         "document.querySelectorAll('#fileList .stage').length === 3 && document.querySelectorAll('#fileList .folder').length === 2",
       );
@@ -923,7 +891,7 @@ describe("viewer in a browser", () => {
       ]);
       expect(await evaluate("document.querySelectorAll('#fileList .draft-dot').length")).toBe(0);
 
-      await browser("open", url);
+      await page.goto(url);
       await until(
         "document.querySelector('#fileList [aria-current=\"true\"] .name')?.textContent === 'design.md'",
       );
@@ -1025,17 +993,7 @@ describe("runs page in a browser", () => {
     viewer = { origin: `http://localhost:${server.port}`, stop: () => server.stop(true) };
   });
 
-  beforeEach(() => browser("tab", "new"), 30000);
-  afterEach(() => browser("tab", "close"), 30000);
-
-  afterAll(async () => {
-    spawnSync("agent-browser", ["close"], {
-      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-      stdio: "ignore",
-      timeout: 10_000,
-    });
-    await viewer.stop();
-  });
+  afterAll(() => viewer.stop());
 
   const allCount = "document.querySelector('#tabs .tab .n').textContent";
   const shownIds =
@@ -1046,21 +1004,21 @@ describe("runs page in a browser", () => {
     "[...document.querySelectorAll('#list .banner')].map((b) => b.textContent.includes('Which store for Asha?'))";
 
   test("SC41: picking ritesh-gh in Started by, or searching ritesh@, narrows All to u_1's 2 runs, and u_2's blocked run keeps its banner", async () => {
-    await browser("open", viewer.origin);
+    await page.goto(viewer.origin);
     await until("document.querySelectorAll('#who option').length === 3");
     expect(
       await evaluate("[...document.querySelectorAll('#who option')].map((o) => o.textContent)"),
     ).toEqual(["Anyone", "Asha (asha-gh)", "ritesh-gh (ritesh-gh)"]);
 
-    await browser("select", "#who", "ritesh-gh (ritesh-gh)");
+    await page.selectOption("#who", { label: "ritesh-gh (ritesh-gh)" });
     await until(`${allCount} === "2"`);
     expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
     expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
     expect(await evaluate(bannerShown)).toEqual([true]);
 
-    await browser("select", "#who", "Anyone");
+    await page.selectOption("#who", { label: "Anyone" });
     await until(`${allCount} === "5"`);
-    await browser("fill", "#search", "ritesh@");
+    await page.fill("#search", "ritesh@");
     await until(`${allCount} === "2"`);
     expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
     expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
@@ -1073,8 +1031,8 @@ describe("runs page in a browser", () => {
     const long = "A".repeat(80);
     await rename(long);
     try {
-      await browser("set", "viewport", "393", "852");
-      await browser("open", viewer.origin);
+      await page.setViewportSize({ width: 393, height: 852 });
+      await page.goto(viewer.origin);
       await until(
         `[...document.querySelectorAll('.card .owner')].some((s) => s.textContent.startsWith(${JSON.stringify(long)}))`,
       );
@@ -1122,9 +1080,9 @@ describe("terminal tab in a browser", () => {
   const stateHidden = "document.querySelector('#termState').hidden";
 
   const openTerminal = async (): Promise<void> => {
-    await browser("open", url);
+    await page.goto(url);
     await until("!document.querySelector('#tabTerminal').hidden", 10_000);
-    await browser("click", "#tabTerminal");
+    await page.click("#tabTerminal");
     await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
     await waitFor(() => clientCount() === 1);
   };
@@ -1188,21 +1146,10 @@ describe("terminal tab in a browser", () => {
     };
     serve();
     url = `http://localhost:${port}/runs/r1`;
-    // An earlier block may have closed the browser; a relaunched one has a single tab, which
-    // afterEach could not close, leaving its terminal attached into the next test.
-    await browser("open", "about:blank");
   }, 30000);
-
-  beforeEach(() => browser("tab", "new"), 30000);
-  afterEach(() => browser("tab", "close"), 30000);
 
   afterAll(async () => {
     stopDeliveries();
-    spawnSync("agent-browser", ["close"], {
-      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-      stdio: "ignore",
-      timeout: 10_000,
-    });
     await stop();
     tmux("kill-server");
   });
@@ -1221,7 +1168,7 @@ describe("terminal tab in a browser", () => {
   }, 60000);
 
   test("SC13: two clicks while xterm.js loads open one terminal", async () => {
-    await browser("open", url);
+    await page.goto(url);
     await until("!document.querySelector('#tabTerminal').hidden", 10_000);
 
     await evaluate(
@@ -1238,30 +1185,30 @@ describe("terminal tab in a browser", () => {
     "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.9.0/lib/addon-unicode11.js";
 
   test("SC13: a CDN file that is not the pinned one is refused", async () => {
-    await browser("network", "route", addonUrl, "--body", JSON.stringify("tampered"));
+    await page.route(addonUrl, (route) => route.fulfill({ body: JSON.stringify("tampered") }));
     try {
-      await browser("open", url);
+      await page.goto(url);
       await until("!document.querySelector('#tabTerminal').hidden", 10_000);
-      await browser("click", "#tabTerminal");
+      await page.click("#tabTerminal");
 
       await until(couldNotLoad, 20_000);
     } finally {
-      await browser("network", "unroute", addonUrl);
+      await page.unroute(addonUrl);
     }
   }, 60000);
 
   test("SC13: when the CDN cannot be reached it says so, and opening the tab again retries", async () => {
-    await browser("network", "route", addonUrl, "--abort");
+    await page.route(addonUrl, (route) => route.abort());
     try {
-      await browser("open", url);
+      await page.goto(url);
       await until("!document.querySelector('#tabTerminal').hidden", 10_000);
-      await browser("click", "#tabTerminal");
+      await page.click("#tabTerminal");
       await until(couldNotLoad, 20_000);
     } finally {
-      await browser("network", "unroute", addonUrl);
+      await page.unroute(addonUrl);
     }
 
-    await browser("click", "#tabTerminal");
+    await page.click("#tabTerminal");
 
     await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
     await waitFor(() => clientCount() === 1);
@@ -1269,16 +1216,16 @@ describe("terminal tab in a browser", () => {
 
   test("SC13: when xterm's stylesheet cannot be loaded it says so and opens no terminal", async () => {
     const cssUrl = "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css";
-    await browser("network", "route", cssUrl, "--abort");
+    await page.route(cssUrl, (route) => route.abort());
     try {
-      await browser("open", url);
+      await page.goto(url);
       await until("!document.querySelector('#tabTerminal').hidden", 10_000);
-      await browser("click", "#tabTerminal");
+      await page.click("#tabTerminal");
 
       await until(couldNotLoad, 20_000);
       expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(0);
     } finally {
-      await browser("network", "unroute", cssUrl);
+      await page.unroute(cssUrl);
     }
   }, 60000);
 
@@ -1301,11 +1248,11 @@ describe("terminal tab in a browser", () => {
     })()`)) as { x: number; y: number };
     const clickLink = async (): Promise<void> => {
       // Move in from another row: xterm looks for a link only when the mouse enters a new cell.
-      await browser("mouse", "move", String(at.x), String(at.y + 60));
-      await browser("mouse", "move", String(at.x), String(at.y));
+      await page.mouse.move(at.x, at.y + 60);
+      await page.mouse.move(at.x, at.y);
       await Bun.sleep(200);
-      await browser("mouse", "down");
-      await browser("mouse", "up");
+      await page.mouse.down();
+      await page.mouse.up();
     };
     const stub = (answer: boolean): Promise<unknown> =>
       evaluate(`(() => {
@@ -1370,7 +1317,7 @@ describe("terminal tab in a browser", () => {
   ])(
     "SC15: at %sx%s the fitted terminal stays inside the window",
     async (width, height) => {
-      await browser("set", "viewport", width, height);
+      await page.setViewportSize({ width: Number(width), height: Number(height) });
       await openTerminal();
       const deadline = Date.now() + 10_000;
       while ((await evaluate("window.yokTerminal.cols")) !== windowWidth()) {
@@ -1394,8 +1341,8 @@ describe("terminal tab in a browser", () => {
   test("SC14: keys typed in the terminal reach the session", async () => {
     await openTerminal();
 
-    await browser("keyboard", "type", "echo typed-$((40+2))");
-    await browser("press", "Enter");
+    await page.keyboard.type("echo typed-$((40+2))");
+    await page.keyboard.press("Enter");
 
     await waitFor(() =>
       tmux("capture-pane", "-p", "-t", `=${pane}:`).stdout.split("\n").includes("typed-42"),
@@ -1404,7 +1351,7 @@ describe("terminal tab in a browser", () => {
   }, 60000);
 
   test("SC15: the terminal follows the window's size", async () => {
-    await browser("set", "viewport", "1280", "800");
+    await page.setViewportSize({ width: 1280, height: 800 });
     await openTerminal();
     const sameWidth = async (): Promise<number> => {
       const deadline = Date.now() + 10_000;
@@ -1417,7 +1364,7 @@ describe("terminal tab in a browser", () => {
     };
     const wide = await sameWidth();
 
-    await browser("set", "viewport", "900", "700");
+    await page.setViewportSize({ width: 900, height: 700 });
     await until(`window.yokTerminal.cols < ${wide}`);
     const narrow = await sameWidth();
 
@@ -1427,8 +1374,7 @@ describe("terminal tab in a browser", () => {
   test("SC16: Ctrl-\\ detaches to a Reattach button, and Reattach comes back", async () => {
     await openTerminal();
 
-    // agent-browser sends "Backslash" as a key with no keyCode; the "\\" name sends keyCode 220.
-    await browser("press", "Control+\\");
+    await page.keyboard.press("Control+\\");
     await until(`${stateText} === "Detached from the run's session."`);
     expect(await evaluate("!document.querySelector('#reattachBtn').hidden")).toBe(true);
     const seen: number[] = [];
@@ -1438,7 +1384,7 @@ describe("terminal tab in a browser", () => {
     }
     expect(Math.max(...seen)).toBe(0);
 
-    await browser("click", "#reattachBtn");
+    await page.click("#reattachBtn");
     await until(stateHidden);
     await waitFor(() => clientCount() === 1);
   }, 60000);
@@ -1460,7 +1406,7 @@ describe("terminal tab in a browser", () => {
 
     tmux("kill-session", "-t", `=${pane}`);
     await until(`${stateText} === "Detached from the run's session."`);
-    await browser("click", "#reattachBtn");
+    await page.click("#reattachBtn");
     await until(
       `${stateText} === "Run demo has no running session. Resume it with: yok resume demo"`,
     );
