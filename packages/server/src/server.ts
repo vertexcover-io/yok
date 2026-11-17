@@ -182,6 +182,7 @@ export const startServer = async ({
   await adoptLegacyTriggers(home, { triggers, log: triggersLog }).catch((error: unknown) =>
     triggersLog.error({ err: error }, "triggers saved with a folder were not moved to projects"),
   );
+  const stopping = new AbortController();
   const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS, { GIT_TERMINAL_PROMPT: "0" }));
   startScheduler({
     triggers,
@@ -206,6 +207,7 @@ export const startServer = async ({
     pid: process.pid,
     version,
     startedAt: Date.now(),
+    stopping: stopping.signal,
     git,
     checkCheckout,
     port: boundPort,
@@ -221,7 +223,10 @@ export const startServer = async ({
   const stop = async (): Promise<void> => {
     stopDeliveries();
     await stopScheduler();
-    // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
+    // The live streams and terminal sockets never finish on their own; end them first. stop()
+    // then resolves once the other in-flight requests finish, so a run still launching gets
+    // recorded.
+    stopping.abort();
     await server.stop();
     await removeOwnPid(home);
   };

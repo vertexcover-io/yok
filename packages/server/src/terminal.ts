@@ -6,12 +6,19 @@ import { upgradeWebSocket } from "hono/bun";
 import type { WSContext } from "hono/ws";
 import * as z from "zod";
 
-export type TerminalDeps = Readonly<{ registry: Registry; host: ITerminalHost; log: ILogger }>;
+export type TerminalDeps = Readonly<{
+  registry: Registry;
+  host: ITerminalHost;
+  log: ILogger;
+  stopping: AbortSignal;
+}>;
 
 // Close codes the page tells apart: the person detached (it offers Reattach), or the run has no
 // session to attach to (it shows why). Any other close is a dropped socket, which it retries.
 export const DETACHED = 4000;
 export const REFUSED = 4001;
+// The server is stopping: the page retries, as for a dropped socket, and finds the next server.
+const GOING_AWAY = 1001;
 
 const SizeSchema = z.object({
   cols: z.coerce.number().int().min(2).max(1000).catch(80),
@@ -69,6 +76,7 @@ export const terminalRoutes = (deps: TerminalDeps) =>
     const size = SizeSchema.parse(c.req.query());
     const log = deps.log.child({ component: "terminal", runId: id });
     let attach: Subprocess | null = null;
+    let goAway = (): void => {};
     return upgradeWebSocket(c, {
       onOpen: (_event, ws) => {
         if (!argv.ok) {
@@ -76,8 +84,15 @@ export const terminalRoutes = (deps: TerminalDeps) =>
           ws.close(REFUSED, "refused");
           return;
         }
+        // An upgrade already in flight when the server stopped still opens, after the abort fired.
+        if (deps.stopping.aborted) {
+          ws.close(GOING_AWAY, "server stopping");
+          return;
+        }
         const started = spawnAttach(argv.value, size, ws);
         attach = started;
+        goAway = () => ws.close(GOING_AWAY, "server stopping");
+        deps.stopping.addEventListener("abort", goAway, { once: true });
         log.info(size, "browser terminal attached");
         void started.exited.then((code) => {
           log.info({ code }, "browser terminal detached");
@@ -91,6 +106,9 @@ export const terminalRoutes = (deps: TerminalDeps) =>
         if (message.type === "input") terminal.write(message.data);
         if (message.type === "resize") terminal.resize(message.cols, message.rows);
       },
-      onClose: () => attach?.kill(),
+      onClose: () => {
+        deps.stopping.removeEventListener("abort", goAway);
+        attach?.kill();
+      },
     });
   });

@@ -270,6 +270,7 @@ describe("viewer in a browser", () => {
         log: noopLogger,
         now: () => new Date(),
         home,
+        stopping: new AbortController().signal,
         openInEditor: (target) => {
           opened.push(target);
           return { ok: true, value: null };
@@ -987,6 +988,7 @@ describe("runs page in a browser", () => {
         log: noopLogger,
         now: () => new Date(),
         home,
+        stopping: new AbortController().signal,
         openInEditor: () => ({ ok: true, value: null }),
       }).fetch,
     });
@@ -1119,7 +1121,10 @@ describe("terminal tab in a browser", () => {
         upgrades++;
         await next();
       })
-      .route("/api/runs", terminalRoutes({ registry, host, log: noopLogger }))
+      .route(
+        "/api/runs",
+        terminalRoutes({ registry, host, log: noopLogger, stopping: new AbortController().signal }),
+      )
       .route(
         "/",
         viewerRoutes({
@@ -1129,6 +1134,7 @@ describe("terminal tab in a browser", () => {
           log: noopLogger,
           now: () => new Date(),
           home,
+          stopping: new AbortController().signal,
           openInEditor: () => ({ ok: true, value: null }),
         }),
       );
