@@ -198,6 +198,52 @@ describe("viewer routes", () => {
     ]);
   });
 
+  test("each file names the first stage, in workflow order, that delivered it, and files no stage delivered come last", async () => {
+    const { get, cwd, runDir } = await setup();
+    put(
+      runDir,
+      "workflow.yaml",
+      [
+        "name: w",
+        "nodes:",
+        "  - { id: design, type: agent, stage: design, input: {} }",
+        "  - { id: plan, type: agent, stage: planning, dependsOn: [design], input: {} }",
+        "  - { id: tidy, type: exec, input: {}, runtime: sh, script: 'true', dependsOn: [plan] }",
+        "  - { id: review, type: agent, stage: code-review, dependsOn: [tidy], input: {} }",
+        "",
+      ].join("\n"),
+    );
+    for (const name of ["a.md", "design.md", "outline.md", "review.md", "tidy.md"]) {
+      put(runDir, `artifacts/${name}`, "# x");
+    }
+    const delivered = (...paths: readonly string[]) => ({
+      ...nodeRun([]),
+      artifacts: paths.map((path) => ({ type: "file", name: path, path })),
+    });
+    put(
+      runDir,
+      "state.json",
+      stateWithRuns(cwd, {
+        review: delivered("artifacts/review.md", "artifacts/design.md"),
+        tidy: delivered("artifacts/tidy.md"),
+        plan: delivered("artifacts/outline.md"),
+        design: delivered("artifacts/design.md"),
+      }),
+    );
+
+    const body = (await (await get("/runs/r-named/files")).json()) as {
+      files: { path: string; stage: string | null }[];
+    };
+
+    expect(body.files.map((f) => [f.path, f.stage])).toEqual([
+      ["artifacts/design.md", "design"],
+      ["artifacts/outline.md", "planning"],
+      ["artifacts/review.md", "code-review"],
+      ["artifacts/a.md", null],
+      ["artifacts/tidy.md", null],
+    ]);
+  });
+
   test("SC6b: a state.json that does not parse leaves the list standing, all drafts", async () => {
     const { get, runDir } = await setup();
     put(runDir, "artifacts/design.md", "# d");

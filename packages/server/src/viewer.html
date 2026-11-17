@@ -59,11 +59,12 @@
 .file-btn .dir { color: var(--muted); }
 .count { font-family: var(--ui); font-size: 11px; min-width: 18px; text-align: center; padding: 0 5px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
 .file-btn[aria-current="true"] .count { background: var(--panel); color: var(--accent); }
-.folder { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding: 8px 8px 2px; }
-.file-list .nested .file-btn { padding-left: 20px; }
+.stage, .folder { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding: 8px 8px 2px; }
+.file-list .nested .file-btn, .file-list .nested .folder { padding-left: 20px; }
+.file-list .nested .nested .file-btn { padding-left: 32px; }
+.divider { border-top: 1px solid var(--line); margin: 8px 8px 4px; }
 .file-btn.view-only .name { color: var(--muted); }
 .ftype { font-family: var(--ui); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-.draft-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; animation: pulse 1.4s ease-in-out infinite; }
 .side-empty { font-size: 12.5px; color: var(--muted); padding: 4px 8px; }
 .badge { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px; }
 .badge.draft { background: var(--warn-soft); color: var(--warn); }
@@ -234,7 +235,7 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
   .composer { left: 16px !important; right: 16px; top: auto !important; bottom: 16px; width: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .draft-dot, .empty-state .watch .dot, .glyph.running { animation: none; }
+  .empty-state .watch .dot, .glyph.running { animation: none; }
 }
 </style>
 
@@ -352,18 +353,17 @@ const forFile = (path) => [...comments, ...drafts].filter((c) => c.file === path
 
 /* ---------- file tree ---------- */
 
-function fileButton(file) {
+function fileButton(file, folder = "") {
   const li = el("li");
   const btn = el("button", "file-btn");
   btn.type = "button";
   btn.setAttribute("aria-current", String(file.path === current));
   if (!canComment(file.type)) btn.classList.add("view-only");
-  if (file.draft) {
-    const dot = el("span", "draft-dot");
-    dot.title = "Draft: the agent is still writing it";
-    btn.append(dot);
-  }
-  btn.append(el("span", "name", base(file.path)));
+  const name = el("span", "name");
+  const dir = rel(file.path).slice(folder.length).split("/").slice(0, -1).join("/");
+  if (dir !== "") name.append(el("span", "dir", `${dir}/`));
+  name.append(base(file.path));
+  btn.append(name);
   if (!canComment(file.type)) btn.append(el("span", "ftype", file.path.split(".").pop()));
   const count = forFile(file.path).length;
   if (count) btn.append(el("span", "count", String(count)));
@@ -379,16 +379,32 @@ function renderFiles() {
     list.append(el("li", "side-empty", "No files yet."));
     return;
   }
-  for (const file of files.filter((f) => !rel(f.path).includes("/"))) list.append(fileButton(file));
-  const folders = [...new Set(files.map((f) => rel(f.path)).filter((p) => p.includes("/")).map((p) => p.split("/")[0]))];
+  // The server sends files in stage order, with the ones no stage delivered last.
+  const stages = [...new Set(files.flatMap((f) => (f.stage === null ? [] : [f.stage])))];
+  for (const stage of stages) list.append(nested("stage", stage, treeItems(files.filter((f) => f.stage === stage))));
+  const rest = files.filter((f) => f.stage === null);
+  if (stages.length > 0 && rest.length > 0) list.append(el("li", "divider"));
+  list.append(...treeItems(rest));
+}
+
+function nested(kind, label, items) {
+  const li = el("li", "nested");
+  li.append(el("div", kind, label));
+  const sub = el("ul", "file-list");
+  sub.append(...items);
+  li.append(sub);
+  return li;
+}
+
+// Files at the top of the tree come first, then one folder per first path segment.
+function treeItems(list) {
+  const items = list.filter((f) => !rel(f.path).includes("/")).map((f) => fileButton(f));
+  const folders = [...new Set(list.map((f) => rel(f.path)).filter((p) => p.includes("/")).map((p) => p.split("/")[0]))];
   for (const folder of folders) {
-    const li = el("li", "nested");
-    li.append(el("div", "folder", `${folder}/`));
-    const sub = el("ul", "file-list");
-    for (const file of files.filter((f) => rel(f.path).startsWith(`${folder}/`))) sub.append(fileButton(file));
-    li.append(sub);
-    list.append(li);
+    const inside = list.filter((f) => rel(f.path).startsWith(`${folder}/`));
+    items.push(nested("folder", `${folder}/`, inside.map((f) => fileButton(f, `${folder}/`))));
   }
+  return items;
 }
 
 function renderHead() {
