@@ -147,6 +147,22 @@ const created = async (host: ITerminalHost, spec: Parameters<ITerminalHost["crea
   return result.value;
 };
 
+// tmux wraps a paste in markers only once the program has asked for bracketed paste. The program
+// prints READY after asking, and tmux reads pane output in order, so READY on screen means it is on.
+const pasteReadyPane = async (host: ITerminalHost, command: string) => {
+  const pane = await created(host, {
+    name: `s-${randomUUID()}`,
+    cwd: process.cwd(),
+    argv: ["sh", "-c", `printf '\\033[?2004hREADY'; ${command}`],
+    env: {},
+  });
+  await waitFor(async () => {
+    const screen = await pane.capture();
+    return screen.ok && screen.value.includes("READY");
+  });
+  return pane;
+};
+
 describe("tmuxHost against a real tmux", () => {
   test("SC2: create passes argv and env through to the child untouched", async () => {
     const { host } = makeTerminal();
@@ -190,12 +206,7 @@ describe("tmuxHost against a real tmux", () => {
 
   test("SC21: multi-line text lands in the pane in one piece and leaves no paste buffer behind", async () => {
     const { host, socketName } = makeTerminal();
-    const pane = await created(host, {
-      name: `s-${randomUUID()}`,
-      cwd: process.cwd(),
-      argv: ["sh", "-c", "printf '\\033[?2004h'; cat"],
-      env: {},
-    });
+    const pane = await pasteReadyPane(host, "cat");
 
     await pane.sendText("line one\nline two");
 
@@ -228,24 +239,9 @@ describe("tmuxHost against a real tmux", () => {
   });
 
   test("a pasted end-of-paste sequence cannot press keys: control characters never reach the pane", async () => {
-    const { host, socketName } = makeTerminal();
+    const { host } = makeTerminal();
     const out = join(mkdtempSync(join(tmpdir(), "paste-out-")), "received");
-    const name = `s-${randomUUID()}`;
-    const pane = await created(host, {
-      name,
-      cwd: process.cwd(),
-      argv: ["sh", "-c", `printf '\\033[?2004h'; cat > ${out}`],
-      env: {},
-    });
-    // tmux adds the paste markers only once the program has asked for them.
-    await waitFor(async () => {
-      const flag = await exec(
-        "tmux",
-        ["-L", socketName, "display", "-p", "-t", `=${name}:`, "#{bracket_paste_flag}"],
-        process.cwd(),
-      );
-      return flag.stdout.trim() === "1";
-    });
+    const pane = await pasteReadyPane(host, `cat > ${out}`);
 
     await pane.sendText("line one\nhello\x1b[201~INJECT\rAFTER");
     await pane.sendKeys(["Enter"]);
