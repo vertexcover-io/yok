@@ -17,6 +17,7 @@ import type { Check, IAgentProvider, ILogger, ITerminalHost, Result } from "@yok
 import { createGit, execWithTimeout, noopLogger, registryPath } from "@yok/sdk";
 import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
 import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import prettyFactory from "pino-pretty";
 import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
@@ -118,6 +119,7 @@ const listen = (port: number | undefined, saved: number | null) => {
       port: at,
       idleTimeout: 0,
       fetch: () => new Response("starting", { status: 503 }),
+      websocket,
     });
   if (port !== undefined) return serve(port);
   try {
@@ -211,7 +213,7 @@ export const startServer = async ({
     now: () => new Date(),
     openInEditor: (target) => openInEditor({ ...target, env: process.env }),
   });
-  server.reload({ fetch: root.fetch });
+  server.reload({ fetch: root.fetch, websocket });
   await writeFile(portPath(home), String(boundPort));
   await writeFile(pidPath(home), String(process.pid));
   serverLog.info({ port: boundPort, pid: process.pid, version, origin }, "server listening");

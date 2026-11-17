@@ -133,6 +133,7 @@ const PUBLIC_RUNTIME_NAMES = [
   "fail",
   "findConfigRoot",
   "findRoot",
+  "findRunPane",
   "findTranscript",
   "humanMessages",
   "indexedFrames",
