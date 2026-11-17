@@ -40,6 +40,11 @@ body { margin: 0; }
 .pill[data-state="stopped"], .pill[data-state="starting"] { background: var(--panel-2); color: var(--muted); }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pill[hidden] { display: none; }
+/* the buttons wrap with the pill, never apart from it */
+.run-actions { display: flex; align-items: center; gap: 16px; }
+.relaunch-error { flex-basis: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); font-size: 13px; }
+.relaunch-error[hidden] { display: none; }
+.relaunch-error pre { flex: 1; min-width: 0; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 
 /* files */
 .files { grid-area: files; border-right: 1px solid var(--line); background: var(--panel); overflow: hidden; padding: 14px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -262,7 +267,16 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
       <button class="tab" type="button" id="tabTerminal" title="Open the agent's terminal" hidden>Terminal</button>
     </nav>
     <div class="spacer"></div>
-    <span class="pill" id="agentPill" data-state="starting" role="status" hidden><span class="dot"></span><span id="pillText">Agent starting</span></span>
+    <div class="run-actions">
+      <button class="btn" type="button" id="resumeBtn" title="Start a new agent session where the run stopped" hidden>Resume</button>
+      <button class="btn primary" type="button" id="retryBtn" title="Run the failed step again in a new agent session" hidden>Retry</button>
+      <span class="pill" id="agentPill" data-state="starting" role="status" hidden><span class="dot"></span><span id="pillText">Agent starting</span></span>
+    </div>
+    <div class="relaunch-error" id="relaunchError" role="alert" hidden>
+      <pre id="relaunchErrorText"></pre>
+      <button class="btn" type="button" id="answeredBtn" hidden>Retry as answered</button>
+      <button class="btn ghost" type="button" id="relaunchDismiss" aria-label="Dismiss">×</button>
+    </div>
   </header>
 
   <nav class="files" aria-label="Artifacts">
@@ -1423,6 +1437,7 @@ function onFile(info) {
 }
 
 const AGENT_LABELS = { starting: "Agent starting", running: "Agent running", stopped: "Agent not running" };
+let agentState = "starting";
 
 function applyAgent({ state, reason }) {
   const pill = $("#agentPill");
@@ -1431,7 +1446,57 @@ function applyAgent({ state, reason }) {
   pill.hidden = false;
   agentLive = state === "running" || state === "waiting";
   $("#tabTerminal").hidden = !agentLive;
+  agentState = state;
+  renderRelaunch();
 }
+
+/* ---------- resume and retry ---------- */
+
+// The server refuses a run whose session is still up, so both wait for the agent to stop.
+function renderRelaunch() {
+  const stopped = agentState === "stopped" && runStatus !== null;
+  $("#resumeBtn").hidden = !(stopped && runStatus !== "completed");
+  $("#retryBtn").hidden = !(stopped && runStatus === "failed");
+}
+
+// The message, then each failed doctor check and its fixes, as yok run prints a blocked start.
+function relaunchErrorText(error) {
+  const failed = (error.details?.results ?? []).filter((row) => row.status === "fail");
+  const rows = failed.flatMap((row) => [`${row.name}: ${row.detail}`, ...row.fix.map((step) => `  fix: ${step}`)]);
+  return [error.message, ...rows].join("\n");
+}
+
+function showRelaunchError(error, answerable) {
+  $("#relaunchError").hidden = error === null;
+  $("#relaunchErrorText").textContent = error === null ? "" : relaunchErrorText(error);
+  $("#answeredBtn").hidden = !answerable;
+}
+
+async function relaunch(action, answered) {
+  const btn = action === "retry" ? $("#retryBtn") : $("#resumeBtn");
+  showRelaunchError(null, false);
+  $("#resumeBtn").disabled = true;
+  $("#retryBtn").disabled = true;
+  btn.textContent = action === "retry" ? "Retrying…" : "Resuming…";
+  const res = await fetch(`/api/runs/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ run: { id: runId }, ...(answered ? { answered: true } : {}) }),
+  }).catch(() => null);
+  btn.textContent = action === "retry" ? "Retry" : "Resume";
+  $("#resumeBtn").disabled = false;
+  $("#retryBtn").disabled = false;
+  if (res?.ok) return toast(action === "retry" ? "Run retried; the agent is starting" : "Run resumed; the agent is starting");
+  const body = res === null ? null : await res.json().catch(() => null);
+  const error = body?.error ?? { message: res === null ? "The server is not reachable." : `The server answered ${res.status}` };
+  // A step that failed waiting on a person is refused until retried as answered; the refusal says so.
+  showRelaunchError(error, action === "retry" && !answered && error.message.includes("--answered"));
+}
+
+$("#resumeBtn").addEventListener("click", () => relaunch("resume", false));
+$("#retryBtn").addEventListener("click", () => relaunch("retry", false));
+$("#answeredBtn").addEventListener("click", () => relaunch("retry", true));
+$("#relaunchDismiss").addEventListener("click", () => showRelaunchError(null, false));
 
 /* ---------- terminal ---------- */
 
@@ -1760,6 +1825,7 @@ function applySummary(run) {
     refresh();
   }
   runStatus = run.status;
+  renderRelaunch();
   if (steps.length === 0) renderSteps();
 }
 
