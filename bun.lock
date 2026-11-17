@@ -14,7 +14,7 @@
     },
     "packages/cli": {
       "name": "@yok/cli",
-      "version": "0.0.10",
+      "version": "0.0.11",
       "bin": {
         "yok-dev": "./src/index.ts",
       },
@@ -29,7 +29,7 @@
     },
     "packages/core": {
       "name": "@yok/core",
-      "version": "0.0.10",
+      "version": "0.0.11",
       "dependencies": {
         "@commander-js/extra-typings": "^15.0.0",
         "@yok/sdk": "workspace:*",
@@ -47,14 +47,14 @@
     },
     "packages/plugins": {
       "name": "@yok/plugins",
-      "version": "0.0.10",
+      "version": "0.0.11",
       "dependencies": {
         "@yok/core": "workspace:*",
       },
     },
     "packages/sdk": {
       "name": "@yok/sdk",
-      "version": "0.0.10",
+      "version": "0.0.11",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4",
@@ -62,7 +62,7 @@
     },
     "packages/server": {
       "name": "@yok/server",
-      "version": "0.0.10",
+      "version": "0.0.11",
       "dependencies": {
         "@hono/zod-validator": "^0.9.1",
         "@yok/core": "workspace:*",
