@@ -30,7 +30,13 @@ import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
 
 export type CheckCheckout = (
-  input: Readonly<{ cwd: string; config?: string; plan?: WorkflowPlan }>,
+  // env: the env the session will get, checked instead of the checkout's when given
+  input: Readonly<{
+    cwd: string;
+    config?: string;
+    plan?: WorkflowPlan;
+    env?: Result<Record<string, string>>;
+  }>,
 ) => Promise<Readonly<{ env: Result<Record<string, string>>; report: DoctorReport }>>;
 
 export type Runtime = Readonly<{
@@ -57,10 +63,10 @@ export const runtimeChecks = (agent: WorkflowAgent): readonly Check[] => {
 // env checks fall back to process.env, which is the server's.
 export const checkCheckoutWith = async (
   runtime: readonly Check[],
-  { cwd, config, plan }: Parameters<CheckCheckout>[0],
+  { cwd, config, plan, ...given }: Parameters<CheckCheckout>[0],
 ): ReturnType<CheckCheckout> => {
   const agent = plan?.agent ?? "claude";
-  const env = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent });
+  const env = given.env ?? (await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent }));
   const declared = plan === undefined ? [] : workflowChecks(plan.doctor, env);
   const report = await runDoctor({
     cwd,

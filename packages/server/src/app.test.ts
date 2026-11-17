@@ -16,7 +16,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { addComments, captureLogger, type DoctorReport, loadStartEnv, summarize } from "@yok/core";
+import {
+  addComments,
+  captureLogger,
+  compilePlan,
+  type DoctorReport,
+  loadStartEnv,
+  summarize,
+  unwrap,
+} from "@yok/core";
 import type {
   Exec,
   IAgentProvider,
@@ -799,6 +807,28 @@ describe("POST /doctor", () => {
       expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
     },
   );
+});
+
+describe("checkCheckoutWith", () => {
+  test("SC7101: a key the handed env holds passes the workflow's env check, and fails without that env", async () => {
+    const key = "YOK_RELAUNCH_KEY";
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-check-")));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeFileSync(
+      join(cwd, "check.yaml"),
+      okWorkflow({ doctor: [{ check: "env", key, fix: "set it" }] }),
+    );
+    const plan = unwrap(await compilePlan(join(cwd, "check.yaml"), cwd, null));
+    const env = { ok: true as const, value: { [key]: "1" } };
+    const failedOn = (report: DoctorReport) => report.failed.filter((name) => name.includes(key));
+
+    const handed = await checkCheckoutWith([], { cwd, plan, env });
+    const own = await checkCheckoutWith([], { cwd, plan });
+
+    expect(failedOn(handed.report)).toEqual([]);
+    expect(handed.env).toBe(env);
+    expect(failedOn(own.report)).not.toEqual([]);
+  });
 });
 
 describe("startProjectRun", () => {
@@ -2602,6 +2632,24 @@ describe("/projects", () => {
   });
 });
 
+// The copy of the workflow orchestrate init keeps in the run folder: one exec node, two, that fails.
+const RUN_WORKFLOW =
+  'name: ok\nnodes:\n  - { id: two, type: exec, runtime: sh, script: "exit 1", input: {} }\n';
+
+// RUN_WORKFLOW with a doctor that needs RELAUNCH_KEY, which no test sets in the server's env.
+const RELAUNCH_KEY = "YOK_RELAUNCH_KEY";
+const GATED_WORKFLOW = JSON.stringify({
+  name: "ok",
+  doctor: [{ check: "env", key: RELAUNCH_KEY, fix: `add ${RELAUNCH_KEY} to .env` }],
+  nodes: [{ id: "two", type: "exec", runtime: "sh", script: "exit 1", input: {} }],
+});
+
+// What the doctor's own checks need of a checkout, so only a workflow's checks can block it.
+const passBuiltInChecks = (cwd: string): void => {
+  writeFileSync(join(cwd, ".gitignore"), ".yok/\n");
+  writeFileSync(join(cwd, "orchestrate.config.json"), '{ "version": 2 }\n');
+};
+
 const TIERS = {
   default: "fast",
   models: { fast: { model: "haiku-x" }, deep: { model: "opus-x" } },
@@ -2612,6 +2660,9 @@ type Seed = Readonly<{
   // false leaves the switch to opus-x requested with no applied event
   applied?: boolean;
   run?: Partial<WorkflowRun>;
+  // the run folder's workflow.yaml, and the checkout's .env
+  workflow?: string;
+  dotenv?: string;
 }>;
 
 const modelEvent = (
@@ -2627,8 +2678,14 @@ const modelEvent = (
 });
 
 // A run named demo on sessions s-0 then s-1, whose state and event log say it switched to opus-x.
+// Its checkout is a git repo holding the run folder's workflow.yaml, as orchestrate init leaves it.
 const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun> => {
-  const cwd = mkdtempSync(join(tmpdir(), "yok-resume-"));
+  const cwd = seed.run?.cwd ?? mkdtempSync(join(tmpdir(), "yok-resume-"));
+  execFileSync("git", ["init", "-q"], { cwd });
+  const runDir = runDirOf(cwd, "demo");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "workflow.yaml"), seed.workflow ?? RUN_WORKFLOW);
+  if (seed.dotenv !== undefined) writeFileSync(join(cwd, ".env"), seed.dotenv);
   const run: WorkflowRun = {
     id: "r-1a2b3c4d",
     workflow: "ok",
@@ -2647,8 +2704,6 @@ const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun
     ...seed.run,
   };
   await registry.addRun(run);
-  const runDir = runDirOf(cwd, "demo");
-  mkdirSync(runDir, { recursive: true });
   const status = seed.status ?? "running";
   const blocker =
     status === "blocked"
@@ -2685,14 +2740,15 @@ const resumeDeps = async () => {
   return { deps, launches };
 };
 
-const resume = (deps: Parameters<typeof createApi>[0], runId: string, env = {}) =>
-  createApi(deps).request(`/runs/${runId}/resume`, {
+// run: the run's id, or a whole run pick such as { project, name }
+const resume = (deps: Parameters<typeof createApi>[0], run: object | string) =>
+  createApi(deps).request("/runs/resume", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ env }),
+    body: JSON.stringify({ run: typeof run === "string" ? { id: run } : run }),
   });
 
-describe("POST /runs/:id/resume", () => {
+describe("POST /runs/resume", () => {
   test("SC34: resuming a run owned by a connected user, with an empty body env, launches with their GitHub token", async () => {
     const { deps, launches } = await resumeDeps();
     const run = await seedRun(deps.registry, { run: { source: "slack", user: "u_1" } });
@@ -2713,11 +2769,11 @@ describe("POST /runs/:id/resume", () => {
     expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
   });
 
-  test("SC602: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal", async () => {
+  test("SC602, SC7102: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal, with the env the server built from its checkout's .env", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.registry, { dotenv: "FOO=bar\n" });
 
-    const res = await resume(deps, run.id, { FOO: "bar" });
+    const res = await resume(deps, run.id);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -2733,6 +2789,110 @@ describe("POST /runs/:id/resume", () => {
     expect(options?.cwd).toBe(run.cwd);
     expect(options?.env).toMatchObject({ FOO: "bar", YOK_RUN_ID: run.id, YOK_HOME: deps.home });
     expect(await deps.registry.findRun(run.id)).toEqual(run);
+  });
+
+  test("SC7103: a body that still carries an env is 400 bad-request and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+
+    const res = await createApi(deps).request("/runs/resume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ run: { id: run.id }, env: { FOO: "bar" } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("bad-request");
+    expect(launches).toEqual([]);
+  });
+
+  test("SC7104: a run named demo inside project demo, registered at its checkout, resumes continuing its s-1", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    addProjectEntry(deps.home, "demo", run.cwd);
+
+    const res = await resume(deps, { project: "demo", name: "demo" });
+
+    expect(res.status).toBe(200);
+    expect(launches.map((options) => options.continueSession?.id)).toEqual(["s-1"]);
+  });
+
+  test.each([
+    ["an unknown project", { project: "nope", name: "demo" }, 'unknown project "nope"'],
+    ["an unknown run name", { project: "demo", name: "other" }, 'no run named "other"'],
+  ])("SC7105: %s is 404 not-found and nothing launches", async (_label, pick, holds) => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    addProjectEntry(deps.home, "demo", run.cwd);
+
+    const res = await resume(deps, pick);
+
+    expect(res.status).toBe(404);
+    const error = await errorOf(res);
+    expect(error.code).toBe("not-found");
+    expect(error.message).toContain(holds);
+    expect(launches).toEqual([]);
+  });
+
+  test("SC7106: a resume whose workflow's doctor needs YOK_RELAUNCH_KEY is 400 with the doctor's report until the checkout's .env holds it", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = {
+      ...base,
+      checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
+    };
+    const run = await seedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    passBuiltInChecks(run.cwd);
+
+    const blocked = await resume(deps, run.id);
+
+    expect(blocked.status).toBe(400);
+    const { error }: { error: { code: string; message: string; details: DoctorReport } } =
+      await blocked.json();
+    expect(error.code).toBe("bad-request");
+    expect(error.message).toStartWith("BLOCKED");
+    expect(error.details.failed).toEqual([`env:${RELAUNCH_KEY}`]);
+    expect(launches).toEqual([]);
+
+    writeFileSync(join(run.cwd, ".env"), `${RELAUNCH_KEY}=1\n`);
+    expect((await resume(deps, run.id)).status).toBe(200);
+    expect(launches).toHaveLength(1);
+  });
+
+  test("a resume whose run folder's workflow.yaml no longer compiles is 409 conflict and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { workflow: "name: ok\nnodes: 3\n" });
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    const error = await errorOf(res);
+    expect(error.code).toBe("conflict");
+    expect(error.message).toStartWith("run demo cannot start a session: ");
+    expect(launches).toEqual([]);
+  });
+
+  test("a claude workflow's run whose last session was codex runs its doctor for codex, the agent it resumes on", async () => {
+    const { deps: base } = await resumeDeps();
+    const checked: string[] = [];
+    const deps = {
+      ...base,
+      checkCheckout: (async (input) => {
+        checked.push(input.plan?.agent ?? "none");
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    const run = await seedRun(deps.registry, {
+      run: {
+        sessions: [
+          { agent: "claude", sessionId: "s-0" },
+          { agent: "codex", sessionId: "s-1" },
+        ],
+      },
+    });
+
+    expect((await resume(deps, run.id)).status).toBe(200);
+
+    expect(checked).toEqual(["codex"]);
   });
 
   test.each([
@@ -3024,14 +3184,7 @@ const seedFailedRun = async (
   error: Readonly<{ kind: string; message: string }> = { kind: "exit", message: "exit 1" },
 ): Promise<WorkflowRun> => {
   const run = await seedRun(registry, { status: "failed", ...seed });
-  // Retry compiles the run's workflow, which reads the git repo the run started in.
-  execFileSync("git", ["init", "-q"], { cwd: run.cwd });
   const runDir = runDirOf(run.cwd, "demo");
-  // The copy of the workflow orchestrate init keeps in the run folder.
-  writeFileSync(
-    join(runDir, "workflow.yaml"),
-    'name: ok\nnodes:\n  - { id: two, type: exec, runtime: sh, script: "exit 1", input: {} }\n',
-  );
   const store = jsonlEventStore(runDir);
   const two = { nodeId: "two", nodeRunId: "nr-two" };
   const events = [
@@ -3056,27 +3209,22 @@ const seedFailedRun = async (
   return run;
 };
 
-const retry = (
-  deps: Parameters<typeof createApi>[0],
-  runId: string,
-  env = {},
-  answered?: boolean,
-) =>
-  createApi(deps).request(`/runs/${runId}/retry`, {
+const retry = (deps: Parameters<typeof createApi>[0], runId: string, answered?: boolean) =>
+  createApi(deps).request("/runs/retry", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ env, ...(answered === undefined ? {} : { answered }) }),
+    body: JSON.stringify({ run: { id: runId }, ...(answered === undefined ? {} : { answered }) }),
   });
 
 const stateOf = (run: WorkflowRun): State =>
   JSON.parse(readFileSync(join(runDirOf(run.cwd, "demo"), "state.json"), "utf8"));
 
-describe("POST /runs/:id/retry", () => {
+describe("POST /runs/retry", () => {
   test("SC12: a failed run gets its failed step two reopened and continues s-1 with the resume prompt", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedFailedRun(deps.registry);
+    const run = await seedFailedRun(deps.registry, { dotenv: "FOO=bar\n" });
 
-    const res = await retry(deps, run.id, { FOO: "bar" });
+    const res = await retry(deps, run.id);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -3126,12 +3274,57 @@ describe("POST /runs/:id/retry", () => {
     expect(launches).toEqual([]);
     expect(stateOf(run).status).toBe("failed");
 
-    expect((await retry(deps, run.id, {}, true)).status).toBe(200);
+    expect((await retry(deps, run.id, true)).status).toBe(200);
     expect(launches).toHaveLength(1);
     expect(stateOf(run).status).toBe("running");
   });
 
-  test("SC13: a failed codex run asks for the codex provider and prompts $orchestrate --resume demo", async () => {
+  test("SC7107: a retry the doctor refuses is 400, leaves the run and its step two failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = {
+      ...base,
+      checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
+    };
+    const run = await seedFailedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    passBuiltInChecks(run.cwd);
+    const before = stateOf(run);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("bad-request");
+    expect(stateOf(run)).toEqual(before);
+    expect(before.status).toBe("failed");
+    expect(launches).toEqual([]);
+  });
+
+  test("a retry whose agent session comes back while its doctor runs is 409, leaves step two failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    let alive = false;
+    const deps = {
+      ...base,
+      host: {
+        ...base.host,
+        find: (name: string) => ({ ...base.host.find(name), isAlive: async () => alive }),
+      },
+      // another resume launches the session while this request's doctor runs
+      checkCheckout: (async (input) => {
+        alive = true;
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    const run = await seedFailedRun(deps.registry);
+    const before = stateOf(run);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toContain("still has its agent session");
+    expect(stateOf(run)).toEqual(before);
+    expect(launches).toEqual([]);
+  });
+
+  test("SC13:a failed codex run asks for the codex provider and prompts $orchestrate --resume demo", async () => {
     const { deps, launches } = await resumeDeps();
     const run = await seedFailedRun(deps.registry, {
       run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },

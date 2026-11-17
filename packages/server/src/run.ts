@@ -5,11 +5,13 @@ import { zValidator } from "@hono/zod-validator";
 import {
   clearDeadSwitchLocks,
   compilePlan,
+  compileRunWorkflow,
   locateWorkflow,
   orchestrateArgv,
   pickNotifier,
   resolveWorkflowInputs,
   retryFailedSteps,
+  unwrap,
   verdict,
   type WorkflowAgent,
   WorkflowAgentSchema,
@@ -24,12 +26,16 @@ import {
   type ITerminalHost,
   type JsonObject,
   type JsonValue,
+  loadEnv,
+  loadRunConfig,
   loadStartConfig,
   type Notifier,
   type PermissionMode,
   type PolicyLayer,
   type ResolvedTiers,
   type Result,
+  type RunRef,
+  resolveRun,
   runDirOf,
   type SavedPolicies,
   type SessionRef,
@@ -62,6 +68,7 @@ import {
   ResumeRunBodySchema,
   type RetryRunBody,
   RetryRunBodySchema,
+  type RunPick,
   type RunsFilter,
   type StartRunBody,
   StartRunBodySchema,
@@ -415,17 +422,62 @@ const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
     })
     .at(-1);
 
+// The id of the run a resume or retry names. A name is looked up among the project's runs, as
+// yok resume NAME does in that checkout.
+const findRunId = async (deps: RunDeps, pick: RunPick): Promise<Result<string>> => {
+  if ("id" in pick) return { ok: true, value: pick.id };
+  const project = await pickProject(deps.home, pick.project);
+  if (!project.ok) return project;
+  const named = await resolveRun({
+    registry: deps.registry,
+    root: project.value.path,
+    name: pick.name,
+  });
+  return named.ok ? { ok: true, value: named.value.id } : named;
+};
+
+// What launchRun checks before a new session, for a run that already has a workflow and config:
+// the doctor over the env the session gets, built as every later session of the run builds it.
+const checkRelaunch = async (
+  deps: RunDeps,
+  run: RunRef,
+  agent: WorkflowAgent,
+): Promise<Result<Record<string, string>, LaunchError>> => {
+  const loaded = await (async () => {
+    const config = unwrap(await loadRunConfig(run));
+    // the doctor and env follow the agent this session resumes on, which may not be the workflow's
+    const plan = { ...(await compileRunWorkflow(run, config)), agent };
+    return { config, plan, env: await loadEnv(config, plan, run.cwd) };
+  })().catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+  if (loaded instanceof Error) {
+    return refused(409, "conflict", `run ${run.name} cannot start a session: ${loaded.message}`);
+  }
+  const { config, plan, env } = loaded;
+  const checked = await deps.checkCheckout({
+    cwd: run.cwd,
+    plan,
+    env,
+    ...(config.path === null ? {} : { config: config.path }),
+  });
+  if (checked.report.failed.length > 0) {
+    return refused(400, "bad-request", verdict(checked.report), checked.report);
+  }
+  return env.ok ? env : refused(400, "bad-request", env.error);
+};
+
 // Brings back a run whose agent session is gone, finished or not: the last linked session
 // continues on the model the run was on, in a tmux session under the run's old name. A finished
-// run's resumed session stays open as a chat. A retry first reopens a failed run's failed steps,
-// once the guards pass and before the launch.
+// run's resumed session stays open as a chat. The doctor runs after the guards; a retry then
+// reopens a failed run's failed steps, before the launch.
 const relaunchRun = async (
   c: Context<{ Variables: Vars }>,
   deps: RunDeps,
-  id: string,
   body: ResumeRunBody,
   retry?: Readonly<{ answered: boolean }>,
 ) => {
+  const found = await findRunId(deps, body.run);
+  if (!found.ok) return errorResponse(c, 404, "not-found", found.error);
+  const id = found.value;
   const log = c.get("log").child({ component: "runs", runId: id });
   const run = await deps.registry.findRun(id);
   if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
@@ -436,9 +488,8 @@ const relaunchRun = async (
   const runDir = runDirOf(run.cwd, run.name);
   const state = await readStateOrNull(runDir);
   if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
-  if (await isAgentAlive(run, deps.host)) {
-    return conflict(c, `run ${run.name} still has its agent session; use yok attach ${run.name}`);
-  }
+  const stillAlive = `run ${run.name} still has its agent session; use yok attach ${run.name}`;
+  if (await isAgentAlive(run, deps.host)) return conflict(c, stillAlive);
   const events = await jsonlEventStore(runDir).read();
   const session = lastStartedSession(events) ?? linked;
   const agent = WorkflowAgentSchema.safeParse(session.agent);
@@ -456,6 +507,15 @@ const relaunchRun = async (
     );
   }
 
+  const checked = await checkRelaunch(deps, { id, cwd: run.cwd, name: run.name }, agent.data);
+  if (!checked.ok) {
+    const { status, code, message, details } = checked.error;
+    log.info({ err: message }, "run not relaunched: its checks failed");
+    return errorResponse(c, status, code, message, details);
+  }
+  // The doctor takes seconds, in which another resume or retry of this run may have launched.
+  if (await isAgentAlive(run, deps.host)) return conflict(c, stillAlive);
+
   if (retry !== undefined) {
     const reopened = await retryFailedSteps({ id, cwd: run.cwd, name: run.name }, retry.answered);
     if (!reopened.ok) return conflict(c, reopened.error);
@@ -467,7 +527,7 @@ const relaunchRun = async (
   const launched = await provider.launch({
     cwd: run.cwd,
     prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
-    env: await sessionEnv(body.env, id, deps.home, writeShim(selfArgv(), deps.home)),
+    env: await sessionEnv(checked.value, id, deps.home, writeShim(selfArgv(), deps.home)),
     pluginDir: devPluginDir(),
     orchestrateArgv: orchestrateArgv(),
     continueSession: { id: session.sessionId, terminalName: run.terminal },
@@ -536,12 +596,12 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
       ),
       (c) => startRun(c, deps, c.req.valid("json")),
     )
-    .post("/:id/resume", jsonBody(ResumeRunBodySchema), (c) =>
-      relaunchRun(c, deps, c.req.param("id"), c.req.valid("json")),
+    .post("/resume", jsonBody(ResumeRunBodySchema), (c) =>
+      relaunchRun(c, deps, c.req.valid("json")),
     )
-    .post("/:id/retry", jsonBody(RetryRunBodySchema), (c) => {
+    .post("/retry", jsonBody(RetryRunBodySchema), (c) => {
       const { answered, ...body }: RetryRunBody = c.req.valid("json");
-      return relaunchRun(c, deps, c.req.param("id"), body, { answered: answered ?? false });
+      return relaunchRun(c, deps, body, { answered: answered ?? false });
     })
     .get("/", queryParams(ListRunsQuerySchema), (c) => listRuns(c, deps, c.req.valid("query")))
     .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))

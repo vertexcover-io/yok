@@ -77,10 +77,12 @@ describe("checkRemoteFlag", () => {
     ["doctor", true],
     ["login", true],
     ["server status", true],
+    ["resume", true],
+    ["retry", true],
     ["run", false],
     ["attach", false],
     ["server start", false],
-  ])("SC4024: %s with remote=%p passes", (path, remote) => {
+  ])("SC4024, SC7110: %s with remote=%p passes", (path, remote) => {
     expect(() => checkRemoteFlag(remote, path)).not.toThrow();
   });
 

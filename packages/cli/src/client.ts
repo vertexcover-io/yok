@@ -201,6 +201,8 @@ const REMOTE_COMMANDS = new Set([
   "doctor",
   "login",
   "ls",
+  "resume",
+  "retry",
   "server status",
 ]);
 const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop"]);

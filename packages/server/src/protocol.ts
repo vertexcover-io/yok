@@ -142,8 +142,15 @@ export const folderSlug = (folder: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-// The env the resumed session starts with, which yok resume builds the way yok run does
-export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
+// The run a resume or retry brings back: by id, or by its name inside a registered project.
+export const RunPickSchema = z.union([
+  z.strictObject({ id: NonEmptyStringSchema }),
+  z.strictObject({ project: SlugSchema, name: SlugSchema }),
+]);
+export type RunPick = z.infer<typeof RunPickSchema>;
+
+// The server builds the session's env and runs the doctor itself, as it does for a new run.
+export const ResumeRunBodySchema = z.strictObject({ run: RunPickSchema });
 export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
 
 // answered: a person has dealt with what a needs-input failure asked, so retry may rerun it
