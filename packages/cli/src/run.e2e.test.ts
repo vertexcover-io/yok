@@ -182,11 +182,12 @@ const stopServer = (cwd: string, env: NodeJS.ProcessEnv): void => {
   yok(cwd, env, "server", "stop");
 };
 
+// A record still being written has no newline yet, so the text after the last one is left out.
 const readLines = (path: string): Array<Record<string, unknown>> =>
   existsSync(path)
     ? readFileSync(path, "utf8")
-        .trim()
         .split("\n")
+        .slice(0, -1)
         .filter((line) => line !== "")
         .map((line) => JSON.parse(line) as Record<string, unknown>)
     : [];
