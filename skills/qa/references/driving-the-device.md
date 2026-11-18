@@ -14,6 +14,7 @@ The browser twin of this file is `driving-the-browser.md`, and the two never app
 - The capture loop — act, assert, capture to staging, promote
 - Fresh state
 - Replaying on another device
+- The two attacks Step 4 owes
 
 What depends on the app — how sign-in works, which screens lie about their own state, which permission prompt
 appears first — is knowledge the project owns, held in its own skills and `CLAUDE.md`. Look for it before your first
@@ -25,11 +26,10 @@ appears first — is knowledge the project owns, held in its own skills and `CLA
 command here and for Step 7's close. A session is bound to one device, so switching device means exporting that
 device's session name; every command then lands on it.
 
-**Step 1 opened the app** on each device with `agent-device open APP --platform PLATFORM --device "DEVICE"
---relaunch`, filled from the entry's fields, under that device's session name, and its reply was the first
-interactive snapshot, with refs. Resume from that session and continue from its current screen; open again only
-for a scenario that starts from a cold app (see *Fresh state*), since `--relaunch` wipes the state the scenario
-before it built.
+**Step 1 opened the app** on each device under that device's session name, as the `stack-up` reference says,
+and its reply was the first interactive snapshot, with refs. Resume from that session and continue from its
+current screen; open again only for a scenario that starts from a cold app (see *Fresh state*), since
+`--relaunch` wipes the state the scenario before it built.
 
 The CLI ships its own guide, version-matched to the binary and authoritative on the basics — refs, selectors, the
 `wait` verbs, recovery, platform limits:
@@ -59,7 +59,7 @@ agent-device help COMMAND         # one command's exact shape
 ## Asserts — the quoted output is the evidence
 
 There is no `eval` on a device: nothing runs inside the app. Every claim is settled by one of these read-only
-commands, and **the command's printed output, quoted verbatim, is the evidence** the scenario's `reason` cites:
+commands, and **the command's printed output, quoted verbatim, is the evidence** behind each check's result:
 
 | Need | Command | What it proves |
 |---|---|---|
@@ -99,15 +99,6 @@ more — a scenario with more *promoted* frames than steps is doing it right.
 of `verification/` and never part of it — and move a frame into `screenshots/` only once it earns its place.
 Re-takes, dead ends and missed presses stay in staging and are discarded at cleanup.
 
-**Re-driving a scenario an earlier round filmed? Delete its old evidence first, then capture:**
-
-```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_*
-```
-
-Step 5 builds each video by globbing every frame still under that prefix, so a frame from a walk that no longer
-exists ends up in the video nobody can tell apart from a fresh one.
-
 For every action, in this order:
 
 1. **Act and assert** — a press or fill with `--settle`, then the assert from the table above that names what the
@@ -117,7 +108,12 @@ For every action, in this order:
 3. **Read the staged PNG** and confirm it shows what you think — the round-trip you never skip. Frames lag
    renders, so a frame that disagrees with its assert is re-shot after a `wait` on the condition, never promoted.
 4. **Promote it** once the assert passed and your eyes agree: move it into `verification/screenshots/` under its
-   `NN_SLUG__SS_STEP.png` name, and record the assert's quoted output for the scenario's `reason`.
+   `NN_SLUG__SS_STEP.png` name, and keep the assert's quoted output for the check it settles.
+
+**Once the walk reaches its closing assert, write the scenario from it**: the steps summarise the actions behind
+the promoted frames in the order they ran, each check sits under the step that brings it about with its `result`,
+in the reader's plain language, and the values an assert returned that a check rests on go in the `raw` of the proof it cites.
+Add the walk to `recordings[]` with the device's name and OS version.
 
 You need both checks. The assert answers whether the state took hold — a press that silently no-ops looks identical
 to one that landed until you ask the tree. The read answers whether the frame shows it.
@@ -129,7 +125,7 @@ screenshot over `--crop-on`: it keeps the frame readable at video size and keeps
 ## Fresh state
 
 A scenario that must start from a cold app — first launch, a logged-out start, a cleared draft — reopens it with
-the same `open … --relaunch` command Step 1 used, which terminates the process before launching. Open
+the `open … --relaunch` command of the `stack-up` reference, which terminates the process before launching. Open
 once per such scenario, and take a new `snapshot -i` afterwards: every ref from before the relaunch is stale.
 State the app keeps on disk survives a relaunch; clearing it is the project's own procedure, from its stack skill.
 
@@ -139,18 +135,29 @@ A device walk is already on a real device, so there is no `agent-browser` phone 
 later devices the entry's `devices` list names — a smaller phone, a tablet — and each one replays every flow.
 
 **Drive the whole scenario again on each later device.** Export that device's session name, then walk it from its
-first press — the same batches and the same asserts as the main walk, under the replay's own `NN_SLUG`, and
-with the device named in the scenario's title. A layout breaks on the way to the final screen rather than on it,
-so a frame shot at the end proves nothing.
+first press — the same batches and the same asserts as the main walk, under the scenario's number with that
+recording's prefix. A layout breaks on the way to the final screen rather than on it, so a frame shot at the end
+proves nothing.
 
-The replay carries a verdict, so the walk answers the same question it answered on the first device:
+The replay grades the scenario's own checks, so the walk answers the same question it answered on the first
+device:
 
 - **The closing assert returns the value it returned on the first device** — the outcome, not a similar-looking
-  screen. This is what the scenario's `expected` already claims, now claimed at this device's size.
+  screen. This is what the scenario's checks already claim, now claimed at this device's size.
 - **Every control the replay drove is at least 44px on its short side**, read from `get attrs`.
 - **Controls are reached the way this device presents them** — a tablet that shows a sidebar where the phone
   showed a tab bar is driven through the sidebar, the way the user gets to it.
 
-A replay that fails is a `FAILURE` scenario and a `bugs[]` entry like any other, and its `reachedBy` writes itself:
-the user on that device, and the surface they touched. A project that ships both platforms declares two entries,
+**The replay joins its scenario as one more recording**, as the `writing-the-report` reference says. A check
+that fails on it fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes itself: the
+user on that device, and the surface they touched. A project that ships both platforms declares two entries,
 and each is its own run.
+
+## The two attacks Step 4 owes
+
+Run both on the first device, on each screen the change landed on, with the state the scenario built still on it:
+
+- **Background and return** — `agent-device home`, then `agent-device open APP --platform PLATFORM` without
+  `--relaunch`, and assert the screen and its state are as they were.
+- **Rotate** — `agent-device orientation landscape-left`, assert and shoot the screen, then
+  `agent-device orientation portrait` before the next probe.
