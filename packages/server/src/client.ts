@@ -99,10 +99,8 @@ export const createYokClient = ({
   return {
     health: () => unwrap(api.health.$get()),
     run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),
-    resume: (runId: string, body: ResumeRunBody) =>
-      unwrap(api.runs[":id"].resume.$post({ param: { id: runId }, json: body })),
-    retry: (runId: string, body: RetryRunBody) =>
-      unwrap(api.runs[":id"].retry.$post({ param: { id: runId }, json: body })),
+    resume: (body: ResumeRunBody) => unwrap(api.runs.resume.$post({ json: body })),
+    retry: (body: RetryRunBody) => unwrap(api.runs.retry.$post({ json: body })),
     projects: () => unwrap(api.projects.$get()),
     addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
     removeProject: (name: string, purge: boolean) =>

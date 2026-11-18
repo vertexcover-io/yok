@@ -216,13 +216,21 @@ yok-remote run task --prompt "fix login" --project web
 yok-remote server status
 ```
 
-`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
+`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login`, `ls`, `resume`, `retry` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. `ls` takes `--project` only as a filter, and `resume` and `retry` need it only with a run name, not with `--run-id`. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
 
 `login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
 
 Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 
-A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, open the run's page and click the Terminal tab: it attaches to the run's tmux session in the browser, as `yok attach` does on the server.
+A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. While its agent runs, answer it from the run's page: the Terminal tab attaches to the run's tmux session in the browser, as `yok attach` does on the server.
+
+With `interaction: false`, a step that needs an answer fails the run instead of waiting. Deal with what it asked, then click Retry on the run's page and choose Retry as answered, or run:
+
+```bash
+yok-remote retry fix-login --project web --answered
+```
+
+When the agent stopped on a run that did not fail, after a reboot or a crash, Resume on the page, or `yok-remote resume fix-login --project web`, starts it again where it stopped. Either command takes `--run-id ID` instead of a name and `--project`, and prints the run's id and link as `yok-remote run` does. The server checks the run as it checks a new one, so a resume the doctor blocks names the failing checks and their fixes.
 
 The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same login and the same Host and Origin check as the rest of the page. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
 
@@ -269,6 +277,7 @@ yok-dev project remove NAME     # forget one; --purge also deletes a folder yok 
 yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
+yok-dev --remote retry NAME --project P --answered  # bring a failed run back there
 yok-dev --remote project list   # the server's projects; also doctor, trigger
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page

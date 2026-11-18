@@ -1021,7 +1021,7 @@ describe("yok resume", () => {
   );
 
   test(
-    "SC610: after its tmux server is killed, yok resume demo relaunches claude --resume s-1 with the resume prompt, and a second resume is told to attach",
+    "SC610: after its tmux server is killed, yok resume other --run-id ID is refused as naming different runs, yok resume demo relaunches claude --resume s-1 with the resume prompt, and a second resume is told to attach",
     () => {
       const repo = makeRepo();
       const { env, fakeOut, socket } = makeEnv();
@@ -1054,6 +1054,11 @@ describe("yok resume", () => {
         0,
       );
       spawnSync("tmux", ["-L", socket, "kill-server"]);
+      const args = ["--no-attach", "--no-open"];
+      const mismatched = yok(repo, env, "resume", "other", "--run-id", runId, ...args);
+      expect(mismatched.code).toBe(1);
+      expect(mismatched.stderr).toContain("name different runs");
+      expect(launches()).toHaveLength(1);
 
       const resumed = yok(repo, env, "resume", "demo", "--no-attach", "--no-open");
 
@@ -1581,6 +1586,58 @@ describe("yok --remote", () => {
       expect(run.stderr).toContain("LINEAR_API_KEY: not set");
       expect(run.stderr).toContain("  fix: add LINEAR_API_KEY to .env");
       expect(run.code).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7113: yok --remote retry demo --project web --answered sends one retry naming the run and prints its id and link",
+    async () => {
+      const server = fakeRemote({
+        "POST /api/runs/retry": () =>
+          Response.json({
+            run: { id: "r-1", terminal: null },
+            attach: [],
+            view: "https://yok.example.com/runs/r-1",
+          }),
+      });
+
+      const retried = await remoteYok(server.url, [
+        ...["retry", "demo", "--project", "web", "--answered"],
+      ]);
+
+      expect(retried.stderr).toBe("");
+      expect(retried.code).toBe(0);
+      expect(routeCalls(server.seen)).toEqual([
+        {
+          request: "POST /api/runs/retry",
+          body: { run: { project: "web", name: "demo" }, answered: true },
+        },
+      ]);
+      expect(retried.stdout).toBe("r-1\nview: https://yok.example.com/runs/r-1\n");
+      expect(hasNoServer(retried.home)).toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7114: a remote resume the server's doctor refuses prints the failing checks and their fixes",
+    async () => {
+      const refused = { code: "bad-request", message: "BLOCKED: 1 check failed" };
+      const server = fakeRemote({
+        "POST /api/runs/resume": () =>
+          Response.json({ error: { ...refused, details: LINEAR_REPORT } }, { status: 400 }),
+      });
+
+      const resumed = await remoteYok(server.url, ["resume", "--run-id", "r-1"]);
+
+      expect(routeCalls(server.seen)).toEqual([
+        { request: "POST /api/runs/resume", body: { run: { id: "r-1" } } },
+      ]);
+      expect(resumed.stderr).toContain("BLOCKED: 1 check failed");
+      expect(resumed.stderr).toContain("LINEAR_API_KEY: not set");
+      expect(resumed.stderr).toContain("  fix: add LINEAR_API_KEY to .env");
+      expect(resumed.code).toBe(1);
     },
     TIMEOUT_MS,
   );

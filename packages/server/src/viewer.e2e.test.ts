@@ -12,7 +12,8 @@ import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import { type Browser, chromium, type Page } from "playwright";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, fakePane, seedState } from "./fake-host.ts";
+import { forgetFinishedRun } from "./overview.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
 
@@ -1478,4 +1479,256 @@ describe("terminal tab in a browser", () => {
     await until("document.querySelector('#pillText').textContent === 'Agent not running'", 10_000);
     expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(true);
   }, 60000);
+});
+
+describe("resume and retry buttons in a browser", () => {
+  let runDir: string;
+  let viewer: Readonly<{ stop: () => Promise<void> }>;
+  let url: string;
+  // what the pane reports; the page's stream reads it once a second
+  let alive = false;
+  // the stub's next answers, in order, and every request it saw
+  let answers: (() => Response | Promise<Response>)[] = [];
+  const posted: { path: string; body: unknown }[] = [];
+
+  beforeAll(async () => {
+    const home = tempDir();
+    const cwd = tempDir();
+    execFileSync("git", ["init", "-q"], { cwd });
+    runDir = join(cwd, ".yok", "demo");
+    mkdirSync(join(runDir, "artifacts"), { recursive: true });
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    await registry.addRun({
+      id: "r1",
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [{ agent: "claude", sessionId: "s1" }],
+      name: "demo",
+      terminal: "s1",
+      config: null,
+      tiers: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const fake = fakeHost(EMPTY_BOX).host;
+    const host = { ...fake, find: () => ({ ...fakePane("s1"), isAlive: async () => alive }) };
+    // The routes phase 1's tests cover; here only what the page does with their answers.
+    const stub = new Hono().post("/api/runs/:action", async (c) => {
+      posted.push({ path: c.req.path, body: await c.req.json() });
+      const answer = answers.shift();
+      return answer === undefined
+        ? c.json({ error: { code: "conflict", message: "none" } }, 409)
+        : answer();
+    });
+    const views = viewerRoutes({
+      registry,
+      providerFor: () => claudeOver(host),
+      host,
+      log: noopLogger,
+      now: () => new Date(),
+      home,
+      openInEditor: () => ({ ok: true, value: null }),
+      stopping: new AbortController().signal,
+    });
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: (request) =>
+        request.method === "POST" && new URL(request.url).pathname.startsWith("/api/runs/")
+          ? stub.fetch(request)
+          : views.fetch(request),
+    });
+    viewer = { stop: () => server.stop(true) };
+    url = `http://localhost:${server.port}/runs/r1`;
+  });
+
+  beforeEach(() => {
+    stopDeliveries();
+    alive = false;
+    answers = [];
+    posted.length = 0;
+  });
+
+  afterAll(async () => {
+    stopDeliveries();
+    await viewer.stop();
+  });
+
+  // The server keeps a finished run's files, so a status another test wrote would stay.
+  const seedStatus = (status: string): void => {
+    writeFileSync(join(runDir, "state.json"), JSON.stringify({ ...seedState(runDir, {}), status }));
+    forgetFinishedRun(runDir);
+  };
+
+  const open = async (): Promise<void> => {
+    await page.goto(url);
+    await until("document.querySelector('#pillText').textContent !== 'Agent starting'", 10_000);
+  };
+
+  const hidden = (id: string) => evaluate(`document.querySelector('#${id}').hidden`);
+
+  test.each([
+    ["failed", false, { resume: true, retry: true }],
+    ["blocked", false, { resume: true, retry: false }],
+    ["completed", false, { resume: false, retry: false }],
+    ["failed", true, { resume: false, retry: false }],
+  ] as const)(
+    "SC7115: a %s run whose agent is running=%p shows Resume and Retry as %o",
+    async (status, running, shown) => {
+      seedStatus(status);
+      alive = running;
+
+      await open();
+      await until(`!!document.querySelector('#runSummary').textContent`);
+
+      expect({ resume: !(await hidden("resumeBtn")), retry: !(await hidden("retryBtn")) }).toEqual(
+        shown,
+      );
+    },
+    30000,
+  );
+
+  test("SC7116: Retry reads Retrying… with both buttons disabled while the request runs, then toasts and hands over to the running agent", async () => {
+    seedStatus("failed");
+    const held = Promise.withResolvers<void>();
+    answers = [
+      async () => {
+        await held.promise;
+        return Response.json({ run: { id: "r1" }, attach: [], view: url });
+      },
+    ];
+    await open();
+    await until("!document.querySelector('#retryBtn').hidden");
+
+    await page.click("#retryBtn");
+    await until("document.querySelector('#retryBtn').textContent === 'Retrying…'");
+
+    expect(await evaluate("document.querySelector('#retryBtn').disabled")).toBe(true);
+    expect(await evaluate("document.querySelector('#resumeBtn').disabled")).toBe(true);
+    expect(posted).toEqual([{ path: "/api/runs/retry", body: { run: { id: "r1" } } }]);
+
+    held.resolve();
+    await until(
+      "document.querySelector('#toast').textContent === 'Run retried; the agent is starting'",
+    );
+    alive = true;
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+    expect(await hidden("retryBtn")).toBe(true);
+    expect(await hidden("resumeBtn")).toBe(true);
+  }, 30000);
+
+  test("SC7117: a resume the doctor refuses keeps the message and the failing check with its fix on the page", async () => {
+    seedStatus("blocked");
+    const report = {
+      results: [
+        {
+          name: "LINEAR_API_KEY",
+          status: "fail",
+          optional: false,
+          detail: "not set",
+          fix: ["add it to .env"],
+        },
+      ],
+      failed: ["LINEAR_API_KEY"],
+      warned: [],
+    };
+    answers = [
+      () =>
+        Response.json(
+          { error: { code: "bad-request", message: "BLOCKED LINEAR_API_KEY", details: report } },
+          { status: 400 },
+        ),
+    ];
+    await open();
+    await until("!document.querySelector('#resumeBtn').hidden");
+
+    await page.click("#resumeBtn");
+    await until("!document.querySelector('#relaunchError').hidden");
+    await Bun.sleep(4000);
+
+    expect(await hidden("relaunchError")).toBe(false);
+    expect(await evaluate("document.querySelector('#relaunchErrorText').textContent")).toBe(
+      "BLOCKED LINEAR_API_KEY\nLINEAR_API_KEY: not set\n  fix: add it to .env",
+    );
+    expect(await hidden("answeredBtn")).toBe(true);
+    expect(await evaluate("document.querySelector('#resumeBtn').disabled")).toBe(false);
+  }, 30000);
+
+  test("SC7118: a retry refused for a step waiting on an answer offers Retry as answered, which sends answered: true", async () => {
+    seedStatus("failed");
+    const needsInput =
+      "two failed needing a person's answer: Which database?\nOnce a person has dealt with it, retry with --answered";
+    answers = [
+      () => Response.json({ error: { code: "conflict", message: needsInput } }, { status: 409 }),
+      () => Response.json({ run: { id: "r1" }, attach: [], view: url }),
+    ];
+    await open();
+    await until("!document.querySelector('#retryBtn').hidden");
+
+    await page.click("#retryBtn");
+    await until("!document.querySelector('#answeredBtn').hidden");
+    expect(await evaluate("document.querySelector('#relaunchErrorText').textContent")).toBe(
+      needsInput,
+    );
+
+    await page.click("#answeredBtn");
+    await until(
+      "document.querySelector('#toast').textContent === 'Run retried; the agent is starting'",
+    );
+
+    expect(posted.map((call) => call.body)).toEqual([
+      { run: { id: "r1" } },
+      { run: { id: "r1" }, answered: true },
+    ]);
+    expect(await hidden("relaunchError")).toBe(true);
+  }, 30000);
+
+  test("on a 390px phone a failed run's Resume and Retry sit on one row with the agent pill", async () => {
+    seedStatus("failed");
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      await open();
+      await until("!document.querySelector('#retryBtn').hidden");
+
+      const middles = await evaluate(
+        "['resumeBtn', 'retryBtn', 'agentPill'].map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return Math.round(r.top + r.height / 2); })",
+      );
+
+      const [resume, retry, pill] = middles as number[];
+      expect(Math.abs((resume ?? 0) - (retry ?? 0))).toBeLessThanOrEqual(2);
+      expect(Math.abs((retry ?? 0) - (pill ?? 0))).toBeLessThanOrEqual(2);
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 800 });
+    }
+  }, 30000);
+
+  test("a refusal naming an 80-character key wraps inside a 390px phone, so the page never scrolls sideways", async () => {
+    seedStatus("failed");
+    const key = "A_VERY_LONG_KEY_NAME_THAT_A_REAL_PROJECT_MIGHT_USE_FOR_ITS_STAGING_DATABASE_URL";
+    answers = [
+      () =>
+        Response.json(
+          { error: { code: "bad-request", message: `BLOCKED env:${key}` } },
+          { status: 400 },
+        ),
+    ];
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      await open();
+      await until("!document.querySelector('#retryBtn').hidden");
+
+      await page.click("#retryBtn");
+      await until("!document.querySelector('#relaunchError').hidden");
+
+      expect(
+        await evaluate(
+          "document.documentElement.scrollWidth - document.documentElement.clientWidth",
+        ),
+      ).toBe(0);
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 800 });
+    }
+  }, 30000);
 });
