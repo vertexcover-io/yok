@@ -14,7 +14,6 @@ import {
   notify,
   type OpenNotifier,
   openNotifier,
-  UPLOAD_LIMIT_BYTES,
 } from "./notifier.ts";
 
 const state: State = {
@@ -463,12 +462,15 @@ describe("formatSlackText", () => {
 type Sent = Readonly<{ url: string; body: RequestInit["body"] }>;
 
 // Answers each Slack method with the reply given for it, and records every request.
-const fakeSlack = (replies: Readonly<Record<string, object>>) => {
+const fakeSlack = (
+  replies: Readonly<Record<string, object>>,
+  statuses: Readonly<Record<string, number>> = {},
+) => {
   const sent: Sent[] = [];
   const fetch = async (url: string, init: RequestInit): Promise<Response> => {
     sent.push({ url, body: init.body });
     const method = url.split("/").pop() ?? "";
-    return Response.json(replies[method] ?? { ok: true });
+    return Response.json(replies[method] ?? { ok: true }, { status: statuses[method] ?? 200 });
   };
   const notifier = createSlackNotifier({
     token: "xoxb-test",
@@ -511,7 +513,7 @@ describe("createSlackNotifier", () => {
     );
   });
 
-  test("SC206: an upload asks for a URL, posts the bytes to it, then completes into thread 171.1", async () => {
+  test("SC206, SC11: an upload asks for a URL, posts the bytes to it, then completes into thread 171.1, and reports uploaded", async () => {
     const file = join(await mkdtemp(join(tmpdir(), "notifier-")), "design.md");
     await writeFile(file, "# Design");
     const slack = fakeSlack({
@@ -522,8 +524,9 @@ describe("createSlackNotifier", () => {
       },
     });
 
-    await slack.notifier.upload(file, "171.1");
+    const outcome = await slack.notifier.upload(file, "171.1");
 
+    expect(outcome).toBe("uploaded");
     expect(slack.sent.map((request) => request.url)).toEqual([
       "https://slack.com/api/files.getUploadURLExternal",
       "https://files.test/up",
@@ -536,6 +539,73 @@ describe("createSlackNotifier", () => {
       channel_id: "C1",
       thread_ts: "171.1",
     });
+  });
+
+  test("an upload hands Slack the file as a lazy blob, so a large file is never buffered in memory", async () => {
+    const file = join(await mkdtemp(join(tmpdir(), "notifier-")), "big.mp4");
+    await writeFile(file, "video");
+    const slack = fakeSlack({
+      "files.getUploadURLExternal": {
+        ok: true,
+        upload_url: "https://files.test/up",
+        file_id: "F1",
+      },
+    });
+
+    await slack.notifier.upload(file, "171.1");
+
+    expect(formOf(slack.sent[0])).toEqual({ filename: "big.mp4", length: "5" });
+    expect(slack.sent[1]?.body).toBeInstanceOf(Blob);
+  });
+
+  const bigFile = async () => {
+    const file = join(await mkdtemp(join(tmpdir(), "notifier-")), "big.html");
+    await writeFile(file, "x");
+    return file;
+  };
+
+  test("SC8: Slack's workspace size restriction turns an upload into too-large", async () => {
+    const slack = fakeSlack({
+      "files.getUploadURLExternal": { ok: false, error: "file_upload_size_restricted" },
+    });
+
+    const outcome = await slack.notifier.upload(await bigFile(), "171.1");
+
+    expect(outcome).toBe("too-large");
+    expect(slack.sent.map((request) => request.url)).toEqual([
+      "https://slack.com/api/files.getUploadURLExternal",
+    ]);
+  });
+
+  test("SC9: an upload URL answering 413 turns an upload into too-large", async () => {
+    const slack = fakeSlack(
+      {
+        "files.getUploadURLExternal": {
+          ok: true,
+          upload_url: "https://files.test/up",
+          file_id: "F1",
+        },
+      },
+      { up: 413 },
+    );
+
+    const outcome = await slack.notifier.upload(await bigFile(), "171.1");
+
+    expect(outcome).toBe("too-large");
+    expect(slack.sent.map((request) => request.url)).toEqual([
+      "https://slack.com/api/files.getUploadURLExternal",
+      "https://files.test/up",
+    ]);
+  });
+
+  test("SC10: any other Slack refusal still fails the upload", async () => {
+    const slack = fakeSlack({
+      "files.getUploadURLExternal": { ok: false, error: "not_in_channel" },
+    });
+
+    await expect(slack.notifier.upload(await bigFile(), "171.1")).rejects.toThrow(
+      "slack files.getUploadURLExternal failed: not_in_channel",
+    );
   });
 });
 
@@ -563,7 +633,7 @@ describe("the notifier's Slack variables", () => {
 });
 
 // An opener whose notifier records what it was asked to do and starts thread 171.1.
-const fakeOpener = () => {
+const fakeOpener = (refused: readonly string[] = []) => {
   const opened: string[] = [];
   const envs: Readonly<Record<string, string | undefined>>[] = [];
   const posts: (string | undefined)[] = [];
@@ -577,6 +647,7 @@ const fakeOpener = () => {
     },
     upload: async (file, threadId) => {
       uploads.push([file, threadId]);
+      return refused.includes(basename(file)) ? "too-large" : "uploaded";
     },
   };
   const open: OpenNotifier = (type, env = {}) => {
@@ -611,6 +682,7 @@ describe("notify", () => {
       { event: event("workflow.started"), state, run },
       open,
       record,
+      undefined,
     );
     const second = await notify(
       "slack",
@@ -621,6 +693,7 @@ describe("notify", () => {
       },
       open,
       record,
+      undefined,
     );
 
     expect(first).toEqual({ threadId: "171.1" });
@@ -649,6 +722,7 @@ describe("notify", () => {
       { event: started, state: inRequesterThread, run },
       open,
       fakeRecorder().record,
+      undefined,
     );
 
     expect(calls.posts).toEqual(["100.1"]);
@@ -659,25 +733,31 @@ describe("notify", () => {
     const { calls, open } = fakeOpener();
     const started = event("workflow.node.started", { nodeType: "agent", notify: true }, "design");
 
-    await notify("slack", { event: started, state: inThread171, run }, open, fakeRecorder().record);
+    await notify(
+      "slack",
+      { event: started, state: inThread171, run },
+      open,
+      fakeRecorder().record,
+      undefined,
+    );
 
     expect(calls.envs[0]?.SLACK_CHANNEL_ID).toBe(process.env.SLACK_CHANNEL_ID);
     expect(calls.envs[0]?.SLACK_MEMBER_ID).toBe(process.env.SLACK_MEMBER_ID);
   });
 
-  // A run folder holding artifacts/design.md, a 2 MB artifacts/page.html, artifacts/big.html over
-  // the upload limit, and
-  // artifacts/env.md linking to the checkout's .env; design ended listing PATHS.
+  // A run folder holding artifacts/design.md, artifacts/plan.html, a 2 MB artifacts/page.html, a 150 MB
+  // artifacts/big.html, and artifacts/env.md linking to the checkout's .env; design ended listing PATHS.
   const runFolder = async (...paths: readonly string[]) => {
     const checkout = await realpath(await mkdtemp(join(tmpdir(), "notifier-run-")));
     const runDir = join(checkout, ".yok", "demo");
     await mkdir(join(runDir, "artifacts"), { recursive: true });
     await writeFile(join(runDir, "artifacts", "design.md"), "# design\n");
+    await writeFile(join(runDir, "artifacts", "plan.html"), "<h1>plan</h1>\n");
     // Sparse files: the notifier checks the size stat reports, and these take no disk.
     await writeFile(join(runDir, "artifacts", "page.html"), "");
     await truncate(join(runDir, "artifacts", "page.html"), 2_000_000);
     await writeFile(join(runDir, "artifacts", "big.html"), "");
-    await truncate(join(runDir, "artifacts", "big.html"), UPLOAD_LIMIT_BYTES + 1);
+    await truncate(join(runDir, "artifacts", "big.html"), 150_000_000);
     await writeFile(join(checkout, ".env"), "SLACK_BOT_TOKEN=xoxb-secret\n");
     await symlink(join(checkout, ".env"), join(runDir, "artifacts", "env.md"));
     const artifacts = paths.map((path) => ({
@@ -695,7 +775,7 @@ describe("notify", () => {
     const { calls, open } = fakeOpener();
     const inRun = await runFolder("artifacts/design.md");
 
-    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record);
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
 
     expect(calls.posts).toEqual(["171.1"]);
     expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
@@ -705,21 +785,129 @@ describe("notify", () => {
     const { calls, open } = fakeOpener();
     const inRun = await runFolder("artifacts/env.md", "artifacts/design.md");
 
-    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record);
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
 
     expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
   });
 
-  test("SC717: a 2 MB page is uploaded, and a file over the 100 MB limit is named in the message instead", async () => {
-    const { calls, open } = fakeOpener();
+  test("SC12: a refused file gets one warning in the thread and the next file still uploads", async () => {
+    const { calls, open } = fakeOpener(["big.html"]);
     const inRun = await runFolder("artifacts/big.html", "artifacts/page.html");
 
-    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record);
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
+
+    expect(calls.notices.map((posted) => posted.body)).toEqual(["Chose two buttons.", ""]);
+    expect(calls.notices[1]?.title).toBe(
+      "⚠️ big.html is too large for Slack; open it in the run viewer.",
+    );
+    expect(calls.posts).toEqual(["171.1", "171.1"]);
+    expect(calls.uploads).toEqual([
+      [join(inRun.state.runDir, "artifacts", "big.html"), "171.1"],
+      [join(inRun.state.runDir, "artifacts", "page.html"), "171.1"],
+    ]);
+  });
+
+  test("SC13: a file over 100 MB is offered to Slack instead of being held back", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/big.html");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
+
+    expect(calls.notices.map((posted) => posted.body)).toEqual(["Chose two buttons."]);
+    expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "big.html"), "171.1"]]);
+  });
+
+  test("a server run links only files that really sit in the run's artifacts folder", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/env.md", "artifacts/design.md", "artifacts/gone.md");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, origin);
 
     expect(calls.notices.map((posted) => posted.body)).toEqual([
-      "Chose two buttons.\nbig.html is too big to attach; open it in the run viewer.",
+      "Chose two buttons.\ndesign.md \u00b7 https://yok.example.com/runs/r-demo#artifacts/design.md",
     ]);
-    expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "page.html"), "171.1"]]);
+  });
+
+  test("a warning the chat refuses does not stop the next file from uploading", async () => {
+    const { calls, open } = fakeOpener(["big.html"]);
+    const failing: OpenNotifier = (type, env) => {
+      const opened = open(type, env);
+      if (!opened.ok) return opened;
+      const { post } = opened.value;
+      return {
+        ok: true,
+        value: {
+          ...opened.value,
+          post: async (notice, threadId) => {
+            if (notice.title.startsWith("⚠️")) throw new Error("slack rate limited");
+            return post(notice, threadId);
+          },
+        },
+      };
+    };
+    const inRun = await runFolder("artifacts/big.html", "artifacts/page.html");
+
+    await notify(
+      "slack",
+      { event: designDone, ...inRun },
+      failing,
+      fakeRecorder().record,
+      undefined,
+    );
+
+    expect(calls.uploads.map(([file]) => basename(file))).toEqual(["big.html", "page.html"]);
+  });
+
+  const approvalAsked = event("artifact.approval.requested", { path: "artifacts/plan.html" });
+  const origin = "https://yok.example.com";
+
+  test("SC3: a done message on a server run links each file and uploads nothing", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/design.md", "artifacts/page.html");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, origin);
+
+    expect(calls.notices.map((posted) => posted.body)).toEqual([
+      "Chose two buttons.\ndesign.md \u00b7 https://yok.example.com/runs/r-demo#artifacts/design.md\npage.html \u00b7 https://yok.example.com/runs/r-demo#artifacts/page.html",
+    ]);
+    expect(calls.uploads).toEqual([]);
+  });
+
+  test("SC4: an approval message on a server run links the file and uploads nothing", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/plan.html");
+
+    await notify("slack", { event: approvalAsked, ...inRun }, open, fakeRecorder().record, origin);
+
+    expect(calls.notices.map((posted) => posted.title)).toEqual(["Plan ready for approval"]);
+    expect(calls.notices.map((posted) => posted.body)).toEqual([
+      "_Approve in the viewer, or type approve in the session._\nplan.html \u00b7 https://yok.example.com/runs/r-demo#artifacts/plan.html",
+    ]);
+    expect(calls.uploads).toEqual([]);
+  });
+
+  test("a link encodes each part of a file's path, so a # in a name reaches the viewer as %23 and a space as %20", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/notes/round #2.md", "artifacts/release notes.md");
+    await mkdir(join(inRun.state.runDir, "artifacts", "notes"));
+    await writeFile(join(inRun.state.runDir, "artifacts", "notes", "round #2.md"), "# round\n");
+    await writeFile(join(inRun.state.runDir, "artifacts", "release notes.md"), "# notes\n");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, origin);
+
+    expect(calls.notices.map((posted) => posted.body)).toEqual([
+      "Chose two buttons.\nround #2.md \u00b7 https://yok.example.com/runs/r-demo#artifacts/notes/round%20%232.md\nrelease notes.md \u00b7 https://yok.example.com/runs/r-demo#artifacts/release%20notes.md",
+    ]);
+  });
+
+  test("SC5 (regression): a done message with no public domain has no link line and uploads the file", async () => {
+    const { calls, open } = fakeOpener();
+    const inRun = await runFolder("artifacts/design.md");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
+
+    expect(calls.notices.map((posted) => posted.body)).toEqual(["Chose two buttons."]);
+    expect(calls.uploads).toEqual([[join(inRun.state.runDir, "artifacts", "design.md"), "171.1"]]);
   });
 
   test("SC217: an orchestrate.next with a steps reply returns nothing and never opens the notifier", async () => {
@@ -729,7 +917,13 @@ describe("notify", () => {
       output: { kind: "steps", steps: [{ kind: "stage", nodeId: "plan" }] },
     });
 
-    const result = await notify("slack", { event: next, state, run }, open, fakeRecorder().record);
+    const result = await notify(
+      "slack",
+      { event: next, state, run },
+      open,
+      fakeRecorder().record,
+      undefined,
+    );
 
     expect(result).toBeUndefined();
     expect(calls.opened).toEqual([]);
