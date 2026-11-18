@@ -1529,6 +1529,7 @@ describe("resume and retry buttons in a browser", () => {
       now: () => new Date(),
       home,
       openInEditor: () => ({ ok: true, value: null }),
+      stopping: new AbortController().signal,
     });
     const server = Bun.serve({
       hostname: "127.0.0.1",
