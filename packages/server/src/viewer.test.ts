@@ -134,6 +134,7 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
     host,
     now,
     home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: (target) => {
       opened.push(target);
       return { ok: true, value: null };
@@ -869,6 +870,7 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
     host,
     now: () => new Date(),
     home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: () => ({ ok: true, value: null }),
   });
 };
@@ -1137,6 +1139,7 @@ describe("summary on the run stream", () => {
       host,
       now: () => new Date(),
       home,
+      stopping: new AbortController().signal,
       openInEditor: () => ({ ok: true, value: null }),
     });
 

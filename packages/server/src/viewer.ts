@@ -66,6 +66,8 @@ export type ViewerDeps = Readonly<{
   host: ITerminalHost;
   now: () => Date;
   home: string;
+  // Aborted when the server stops, so the live streams end instead of holding it open.
+  stopping: AbortSignal;
 }>;
 export type FileType = "md" | "html" | "image" | "text" | "binary";
 export type ArtifactEntry = Readonly<{
@@ -436,7 +438,7 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
   const sent = new Map<string, string>();
   // null until the first look at the folder: files already there on connect are not "changed".
   let stamps: ReadonlyMap<string, Stamp> | null = null;
-  while (!stream.aborted) {
+  while (!stream.aborted && !deps.stopping.aborted) {
     const page = await findViewedRun(deps.registry, id);
     if (page.kind === "missing") {
       await stream.sleep(POLL_MS);
@@ -471,7 +473,7 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
 
 const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<void> => {
   let sent = "";
-  while (!stream.aborted) {
+  while (!stream.aborted && !deps.stopping.aborted) {
     const json = JSON.stringify({
       runs: await listRunSummaries(deps.registry, deps.host, deps.home),
     });
