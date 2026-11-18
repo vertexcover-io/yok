@@ -98,7 +98,7 @@ export const VisualMatchSchema = z
 
 const ReportScenariosSchema = z.looseObject({
   scenarios: z.array(
-    z.looseObject({ id: z.unknown().optional(), visualMatch: VisualMatchSchema.optional() }),
+    z.looseObject({ n: z.unknown().optional(), visualMatch: VisualMatchSchema.optional() }),
   ),
 });
 
@@ -173,7 +173,7 @@ const checkBlockers = (data: unknown, reportPath: string): Finding[] =>
     scenario.visualMatch?.checks.some(({ result }) => result === "fail")
       ? [
           {
-            message: `scenario ${String(scenario.id ?? i + 1)} has a failed design check, which makes it a FAILURE: give it a bug and report FAIL`,
+            message: `scenario ${String(scenario.n ?? i + 1)} has a failed design check, which makes it a FAILURE: give it a bug and report FAIL`,
             path: reportPath,
           },
         ]

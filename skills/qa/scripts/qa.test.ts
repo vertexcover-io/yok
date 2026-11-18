@@ -134,7 +134,7 @@ const reportWith = (
   coverage: readonly { req: string; scenario: string; verdict: string }[] = [],
 ): string => {
   const scenarios = baselines.map((baseline, i) => ({
-    id: `SC${i + 1}`,
+    n: `SC${i + 1}`,
     visualMatch: drawn(baseline),
   }));
   return `<html><body><script type="application/json" id="report-data">${JSON.stringify({ scenarios, coverage })}</script></body></html>`;
@@ -292,8 +292,8 @@ describe("checkDesignCoverage", () => {
       ],
     };
     const scenarios = [
-      { id: "SC1", visualMatch },
-      { id: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png", width: 390 } },
+      { n: "SC1", visualMatch },
+      { n: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png", width: 390 } },
     ];
     const dir = artifactsWith({ report: reportOf(scenarios), index: INDEX });
 
@@ -305,8 +305,8 @@ describe("checkDesignCoverage", () => {
       checks: [{ text: "The empty state shows.", result: "fail", saw: "The region is blank." }],
     });
     const scenarios = [
-      { id: "SC1", visualMatch: broken },
-      { id: "SC2", visualMatch: drawn("../design/b.png") },
+      { n: "SC1", visualMatch: broken },
+      { n: "SC2", visualMatch: drawn("../design/b.png") },
     ];
     const indexed = artifactsWith({ report: reportOf(scenarios), index: INDEX });
     const unindexed = artifactsWith({ report: reportOf(scenarios) });
@@ -323,8 +323,8 @@ describe("checkDesignCoverage", () => {
 
   test("a scenario that read design/b.png at a width other than the index's 390 fails, naming the frame and both widths", async () => {
     const at = (width: number) => [
-      { id: "SC1", visualMatch: drawn("../design/a.png") },
-      { id: "SC2", visualMatch: drawn("../design/b.png", { build: "screenshots/02.png", width }) },
+      { n: "SC1", visualMatch: drawn("../design/a.png") },
+      { n: "SC2", visualMatch: drawn("../design/b.png", { build: "screenshots/02.png", width }) },
     ];
     const wrong = artifactsWith({ report: reportOf(at(1440)), index: INDEX });
     const right = artifactsWith({ report: reportOf(at(390)), index: INDEX });
