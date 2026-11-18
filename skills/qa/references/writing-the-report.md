@@ -27,10 +27,9 @@ language**:
 - **Use the product's own words** for its screens, controls and messages, the way the user sees them, and everyday
   words for everything behind the screen.
 - **Name each thing by its kind**: the kind of record, the kind of user, the kind of value. The ids, names and
-  amounts this run happened to use belong to the proofs and to the run details. Quote the product's own wording
-  where that wording is the behaviour under test. A proof's `claim` states the one value the proof turns on.
-- **Describe the application only.** How the run was driven or filmed belongs to the recording it concerns, as
-  that recording's `note`, or to the run details.
+  amounts the round happened to use belong to the proofs. Quote the product's own wording where that wording is
+  the behaviour under test. A proof's `claim` states the one value the proof turns on.
+- **Describe the application only.** How a recording was driven or filmed goes in that recording's `note`.
 - **Send the technical original to a proof's `raw`**: a request, a response, a status code, a field name, an
   identifier, a command, a computed style, a measurement. The code behind a bug or a gap goes in that entry's own
   fields.
@@ -135,9 +134,6 @@ generated — each as `{label, href, note}`.
 - **`frames[]`** — `{src, label}` for each promoted frame of that recording, in order.
 - **`note`** — one line about how this recording was made, where a reader needs it.
 
-**Files carry the recording's prefix.** The scenario's first recording uses `NN_SLUG`; each later one adds a
-hyphen and one word naming it, `NN_SLUG-NAME`, on its video and on every frame.
-
 Every video comes from one of three places:
 
 - **Recorded.** A browser recording is its take, filmed by the round that drove it as `driving-the-browser.md`
@@ -223,26 +219,12 @@ scenario is transcribed into the report, and the `requirements` beside it are wh
 scenario. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's `gap` object the same
 way.
 
-**The surface row comes from this attempt.** `fields[]` carries one row naming where the run drove, written
-once for the whole report:
-
-- **A browser walk** writes a `Base URL` row with the host this attempt drove, as Step 1 held it.
-- **A device walk** writes an `App` row with the app id, the platform, and each device's name and OS version,
-  as Step 1 read them.
-
-Every scenario's `url` is a path, so the reader joins it to this row to reopen the screen. When an earlier
-round drove a different host or device, add that to the row's value in a few words.
-
-Copy `references/proof-report-template.html` to `verification/proof-report.html` and **fill its JSON island —
-the `<script type="application/json" id="report-data">` block. Change nothing else in the file.** You write
-data; the template renders it. Its header comment is the field-by-field guide, and it stays in the file you
-ship.
+**Fill the JSON island of the copy Step 6 made — the `<script type="application/json" id="report-data">`
+block — and leave the rest of the file as it is.** Its header comment is the field-by-field guide.
 
 ```json
 {
   "title": "FEATURE",
-  "drivenOn": "WHERE, AS WHAT USER, AGAINST WHICH DATA",
-  "fields": [{ "label": "Base URL", "value": "HOST" }],
   "scenarios": [
     {
       "n": "NN",
@@ -290,9 +272,8 @@ ship.
 }
 ```
 
-**`url` is the path the scenario opened on** — the path with its query string, with the host left to the
-`Base URL` row, because the host changes with the stack while the path is the thing under test. One path per
-scenario. **Redact what the query carries**: keep the parameters that select what was under test, write the
+**`url` is the path the scenario opened on** — the path with its query string and no host; the host goes in
+the return. One path per scenario. **Redact what the query carries**: keep the parameters that select what was under test, write the
 value of any auth or identity parameter as `<redacted>`, and record the path alone for a scenario reached
 through a callback or a pre-signed URL. **On a device walk, `url` is the deep link the scenario opened, else the
 screen path it reached** — the screen names from the app's root to the one under test, joined with `/` —
@@ -304,7 +285,8 @@ When something fits none of the sections, put it in `extra[]` — `{heading, bod
 ### Coverage and the derived verdict
 
 `coverage[]` at the top level is the scope ledger: **one entry per requirement id the feature's docs list**,
-reached or not, each `{req, scenario, verdict}`. It is what makes an incomplete run visible.
+reached or not, each `{req, scenario, verdict}`. The page does not show it: the verdict is read off it, and a
+`NOT VERIFIED` row reaches the reader through its `gaps[]` entry.
 
 Several ids pointing at one scenario is normal and good. One id proven by more than one scenario stays **one
 row** whose `scenario` names them all, carrying `FAILURE` if any failed and `NOT VERIFIED` if any went unproven.
@@ -317,8 +299,8 @@ when that check passed, `FAILURE` when it failed. A rule no scenario reached is 
 entry, and a rule that does not apply to this build is `INVALID` with why. The spec has no fixed format, so read
 rules as the spec writes them: a sentence, a bullet or a table row each count.
 
-**`verdict` is derived from that table:** any scenario `FAILURE` → `FAIL`; else any requirement
-`NOT VERIFIED` → `PARTIAL`; an all-covered, all-`SUCCESS` run is `PASS`. Compute it once the table is complete
+**`verdict` is derived from `coverage[]`:** any scenario `FAILURE` → `FAIL`; else any requirement
+`NOT VERIFIED` → `PARTIAL`; an all-covered, all-`SUCCESS` round is `PASS`. Compute it once every id has its row
 and write what it says.
 
 ### Bugs
@@ -337,8 +319,7 @@ entry is `{severity, origin, reachedBy, scenario, title, body}`:
 
 `bugs[]` carries what is still broken as the report is written, most consequential first; a bug a fix round
 closed leaves a passing scenario and no entry. A `FAILURE` scenario states `reachedBy` and `origin` in its
-`reason`, one sentence each. With no bugs, `bugs` is empty and the sentence from Step 4 naming your best attack
-goes in `bugsNote`.
+`reason`, one sentence each. With no bugs, `bugs` is empty.
 
 What this run could not reach goes in `gaps[]` — one entry per `NOT VERIFIED` scenario, every field filled:
 `{scenario, req, mechanism, attempted, wouldClose}`. `mechanism` is the cause Step 4 made you read the blocking
@@ -346,13 +327,13 @@ path for: the line, condition, credential or absent datum. `attempted` lists the
 `wouldClose` is the concrete thing a human or a later run can supply.
 
 Your infrastructure adventures, the data you could not find, and the workaround that got the stack up go in
-what you report back to whoever dispatched you (Step 6).
+the return.
 
 ## Completion checklist — the report is done when all of these hold
 
 - The JSON island parses, and the file opens in a browser showing every scenario — open it and look.
 - `coverage[]` has a row for every requirement id the docs list, and `verdict` is what the derivation rule
-  computes from it. Grep the docs for their id pattern and diff that set against the table.
+  computes from it. Grep the docs for their id pattern and diff that set against `coverage[]`.
 - When the run has `design/spec.md`, `coverage[]` has a `SPEC:` row for every rule it states.
 - Every scenario has a stable `n`, its `group`, a `title` that is the
   question it answers, a `given` list, and steps that
@@ -379,8 +360,7 @@ what you report back to whoever dispatched you (Step 6).
   `build`; every spec rule a step cites is covered by a check with its measurements in a proof; every check
   rests on a measurement or a computed style; and every failed design check has made its scenario a `FAILURE`
   with a `bugs[]` entry behind it.
-- `fields[]` carries a `Base URL` row on a browser walk, or an `App` row on a device walk, and every scenario
-  that drove a page or a request carries its `url` as *The report format* shapes it.
+- Every scenario that drove a page or a request carries its `url` as *The report format* shapes it.
 - Every `url` shows `<redacted>` for the value of an auth or identity parameter, and a path reached through a
   callback or a pre-signed URL carries no query.
 - Every `NOT VERIFIED` scenario has a `gaps[]` entry whose `mechanism` names a line, condition, credential or

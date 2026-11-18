@@ -14,6 +14,7 @@ The browser twin of this file is `driving-the-browser.md`, and the two never app
 - The capture loop — act, assert, capture to staging, promote
 - Fresh state
 - Replaying on another device
+- The two attacks Step 4 owes
 
 What depends on the app — how sign-in works, which screens lie about their own state, which permission prompt
 appears first — is knowledge the project owns, held in its own skills and `CLAUDE.md`. Look for it before your first
@@ -25,11 +26,10 @@ appears first — is knowledge the project owns, held in its own skills and `CLA
 command here and for Step 7's close. A session is bound to one device, so switching device means exporting that
 device's session name; every command then lands on it.
 
-**Step 1 opened the app** on each device with `agent-device open APP --platform PLATFORM --device "DEVICE"
---relaunch`, filled from the entry's fields, under that device's session name, and its reply was the first
-interactive snapshot, with refs. Resume from that session and continue from its current screen; open again only
-for a scenario that starts from a cold app (see *Fresh state*), since `--relaunch` wipes the state the scenario
-before it built.
+**Step 1 opened the app** on each device under that device's session name, as the `stack-up` reference says,
+and its reply was the first interactive snapshot, with refs. Resume from that session and continue from its
+current screen; open again only for a scenario that starts from a cold app (see *Fresh state*), since
+`--relaunch` wipes the state the scenario before it built.
 
 The CLI ships its own guide, version-matched to the binary and authoritative on the basics — refs, selectors, the
 `wait` verbs, recovery, platform limits:
@@ -99,16 +99,6 @@ more — a scenario with more *promoted* frames than steps is doing it right.
 of `verification/` and never part of it — and move a frame into `screenshots/` only once it earns its place.
 Re-takes, dead ends and missed presses stay in staging and are discarded at cleanup.
 
-**Re-driving a scenario an earlier round filmed? Delete its old evidence first, then capture:**
-
-```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_* .yok/RUN/artifacts/verification/NN_*
-```
-
-Step 5 builds each video from every frame still under that prefix, and keeps any `NN_SLUG.mp4` it finds beside the
-report. So a frame or a video from a walk that no longer exists passes for a fresh one, and nobody can tell them
-apart.
-
 For every action, in this order:
 
 1. **Act and assert** — a press or fill with `--settle`, then the assert from the table above that names what the
@@ -135,7 +125,7 @@ screenshot over `--crop-on`: it keeps the frame readable at video size and keeps
 ## Fresh state
 
 A scenario that must start from a cold app — first launch, a logged-out start, a cleared draft — reopens it with
-the same `open … --relaunch` command Step 1 used, which terminates the process before launching. Open
+the `open … --relaunch` command of the `stack-up` reference, which terminates the process before launching. Open
 once per such scenario, and take a new `snapshot -i` afterwards: every ref from before the relaunch is stale.
 State the app keeps on disk survives a relaunch; clearing it is the project's own procedure, from its stack skill.
 
@@ -162,3 +152,12 @@ device:
 that fails on it fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes itself: the
 user on that device, and the surface they touched. A project that ships both platforms declares two entries,
 and each is its own run.
+
+## The two attacks Step 4 owes
+
+Run both on the first device, on each screen the change landed on, with the state the scenario built still on it:
+
+- **Background and return** — `agent-device home`, then `agent-device open APP --platform PLATFORM` without
+  `--relaunch`, and assert the screen and its state are as they were.
+- **Rotate** — `agent-device orientation landscape-left`, assert and shoot the screen, then
+  `agent-device orientation portrait` before the next probe.

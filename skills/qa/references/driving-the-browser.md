@@ -136,29 +136,14 @@ Drive the scenario one step at a time until you hold five things for every step:
 Screenshots taken while scouting go to staging and serve your own reading. Retries, dead ends and missed clicks
 all happen here, where nothing is filmed.
 
-### 2. Clear the evidence of an earlier round
-
-A scenario an earlier round filmed keeps its frames, its video and its produced files until you delete them:
-
-```bash
-rm .yok/RUN/artifacts/verification/screenshots/NN_* .yok/RUN/artifacts/verification/NN_*
-```
-
-That covers the frames, the `NN_<slug>.mp4`, and the `NN_<slug>.<ext>` download or webhook body its `artifacts[]`
-named. Each one left behind is cited as this round's evidence: a frame from a step the walk no longer has, a video
-of a version of the feature that no longer exists, a download this round never produced. Nothing downstream can
-tell a stale file from a fresh one, and the report cites whatever it is handed.
-
-Staging needs no clearing — nothing leaves it unverified.
-
-### 3. Return to the scenario's opening state
+### 2. Return to the scenario's opening state
 
 Scouting moves the page and may have written data. Before the take, open the scenario's first path again, restore
 every control the scout changed, and re-seed, the Step 1 way, every fixture the scout used up. The take starts
 where a user starting this scenario would start: the state its `given` describes. The recording opens on that
 state, settled and in view.
 
-### 4. Film the take
+### 3. Film the take
 
 Three commands, in this order: start the recorder, run the whole flow as one batch, stop the recorder.
 
@@ -224,7 +209,7 @@ In the phone session a tab the app opens starts as a desktop tab: `set device` o
 `--bail` ends the batch at the first step that fails, so nothing after it is filmed on the wrong screen. `record
 stop` is a command of its own, run after the batch whatever the batch returned, because it is what closes the file.
 
-### 5. Judge the take
+### 4. Judge the take
 
 **A take counts when the batch exited 0, every entry reports success, every assert returned the value the scout
 recorded, and every action was filmed in its human form.** Any other take is discarded whole: delete its video and its staged frames, correct the step that
@@ -237,7 +222,7 @@ something other than the scenario.
   the stitched path: run the same batch with the recorder off, promote its frames as below, and leave the scenario
   without an `.mp4`. Step 5 builds its video from those frames.
 
-### 6. Confirm the frames and promote them
+### 5. Confirm the frames and promote them
 
 **Open every staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the take
 counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
@@ -264,7 +249,7 @@ wider shot catches. Read the page's expected top-level section ordering from the
 ordering is a layout invariant your frames must uphold. Prefer a cropped or clipped shot over full-page: it keeps
 the frame readable at video size.
 
-### 7. Write the steps and results from the take
+### 6. Write the steps and results from the take
 
 **The take that counted is the source of the scenario's account.** Read its batch from top to bottom, with its
 `--json` result beside it:
@@ -320,7 +305,7 @@ phone from here to its close, so every replay runs in it and every desktop comma
 session. The phone session starts signed out and empty: run the setup batch in it from the first `open`, the way
 the desktop session began.
 
-**Film the whole scenario again on the phone, as a take of its own.** Run the seven steps above under the
+**Film the whole scenario again on the phone, as a take of its own.** Run the six steps above under the
 scenario's number with the phone recording's prefix: the same steps and the same asserts as the desktop take,
 scouted again wherever the phone presents a control differently or puts a target off screen. A phone breaks on
 the way to the final screen rather than on it, so the take runs from the first click. The recording keeps the

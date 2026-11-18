@@ -55,8 +55,9 @@ test("every scaffold url is a bare path, never a host", () => {
   }
 });
 
-test("the base URL has a home in fields[]", () => {
-  assert.ok(island().fields.some((f) => /base url/i.test(f.label)));
+test("the scaffold holds no top-level field the page leaves unshown", () => {
+  const d = island();
+  for (const key of ["fields", "drivenOn", "bugsNote"]) assert.equal(d[key], undefined, key);
 });
 
 // The section is opt-in per scenario and hangs off one key. A guard reading a

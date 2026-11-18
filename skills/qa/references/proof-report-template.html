@@ -26,14 +26,12 @@
        verdict     PASS | PARTIAL | FAIL, derived from coverage[]
        coverage[]  {req,scenario,verdict} — one row per requirement id the docs
                    list, reached or not. scenario: the n that proves it, or
-                   "01, 09" when two scenarios do.
-       drivenOn    where you drove, as what user, against which data
-       fields[]    {label,value} shown behind Run details
+                   "01, 09" when two scenarios do. The page does not show
+                   it; the verdict and the stage's verifier read it.
        labels{}    rename a section: url, given, steps, media, frames,
-                   visualMatch, files, coverage, bugs, gaps
+                   visualMatch, files, bugs, gaps
        scenarios[] see below
        bugs[]      {severity,origin,reachedBy,scenario,title,body}
-       bugsNote    the attack you most expected to land, and why it did not
        gaps[]      {scenario,req,mechanism,attempted,wouldClose}
 
      SCENARIO
@@ -79,7 +77,9 @@
        artifacts[] {label,href,note} files the product produced
        extra[]     {heading,body,capture}
 
-     `code` and **bold** work in every prose field.
+     **bold** works in every prose field. `code` works in reason, a bug's
+     body, a gap's fields and extra[]; every other line a scenario shows is
+     plain words.
 
      TO ADD A COMPONENT: see the SECTIONS registry in the script below. One
      entry plus one render function; nothing else moves.
@@ -105,21 +105,6 @@
       "req": "<a requirement id this run did not prove>",
       "scenario": "02",
       "verdict": "NOT VERIFIED"
-    }
-  ],
-  "drivenOn": "<where you drove, as what user, against which data>",
-  "fields": [
-    {
-      "label": "Base URL",
-      "value": "<the one host every scenario's path hangs off>"
-    },
-    {
-      "label": "Stack",
-      "value": "<service :port → service :port>"
-    },
-    {
-      "label": "Driven",
-      "value": "<date>"
     }
   ],
   "scenarios": [
@@ -231,7 +216,6 @@
       "body": "<what it is, and what blame or diff settled its origin>\n\n**Repro:** <steps>"
     }
   ],
-  "bugsNote": "<the attack you most expected to land, and why it did not>",
   "gaps": [
     {
       "scenario": "<n of the NOT VERIFIED scenario this closes over>",
@@ -399,7 +383,6 @@ a { color: var(--accent); }
 .item--aux.is-on .item__t { color: var(--fg); }
 .item__c { font: 600 11.5px/1.5 var(--mono); color: var(--fg-3); }
 .item__c.is-hot { color: var(--fail); }
-.item__c.is-warm { color: var(--hold); }
 
 /* ── detail pane ────────────────────────────────────────── */
 .pane { overflow-y: auto; background: var(--pane); }
@@ -568,38 +551,6 @@ a { color: var(--accent); }
 .bug__at li { margin-bottom: 2px; }
 .empty { color: var(--fg-2); font-size: 13.5px; }
 
-/* coverage ledger — like the rail, only the unproven rows carry colour */
-.cov { width: 100%; max-width: 104ch; border-collapse: collapse; }
-.cov th {
-  font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--fg-3); text-align: left; padding: 0 12px 7px 9px;
-  border-bottom: 1px solid var(--line);
-}
-.cov td {
-  padding: 6px 12px 6px 9px; font-size: 13.5px; vertical-align: top;
-  border-bottom: 1px solid var(--line-2);
-}
-.cov tr:last-child td { border-bottom: 0; }
-.cov th:first-child, .cov td:first-child { border-left: 3px solid transparent; }
-.cov__r--fail > td:first-child { border-left-color: var(--fail); }
-.cov__r--hold > td:first-child { border-left-color: var(--hold); }
-.cov__r--skip > td:first-child { border-left-color: var(--skip); }
-.cov__req { font: 600 12px/1.7 var(--mono); white-space: nowrap; }
-.cov__by { color: var(--fg-2); }
-.cov__v { width: 1%; white-space: nowrap; }
-
-/* run details popover */
-.run { border-bottom: 1px solid var(--line); background: var(--rail); display: none; }
-.run.is-open { display: block; }
-.run__in {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 2px 22px; padding: 11px 14px;
-}
-.run__f { min-width: 0; }
-.run__k { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--fg-3); }
-.run__v { font: 12px/1.5 var(--mono); color: var(--fg); margin-bottom: 7px; }
-.run__note { grid-column: 1 / -1; font-size: 12.5px; color: var(--fg-2); border-top: 1px solid var(--line); padding-top: 8px; }
-
 code {
   font: .875em/1.4 var(--mono); background: var(--code-bg);
   padding: 1px 4px; border-radius: 3px;
@@ -752,11 +703,8 @@ code {
   <span class="bar__verdict" id="b-verdict" hidden></span>
   <span class="bar__spacer"></span>
   <div class="bar__counts" id="b-counts"></div>
-  <button class="bar__btn" id="b-run">Run details</button>
   <button class="bar__btn" id="b-theme" title="Toggle theme">Theme</button>
 </header>
-
-<div class="run" id="run"><div class="run__in" id="run-in"></div></div>
 
 <div class="shell">
   <nav class="rail" id="rail" aria-label="Scenarios"></nav>
@@ -789,7 +737,7 @@ code {
   const res = p => MEDIA[p] || '';
   const NOT_INLINED = '<strong>This file is not inside the report.</strong> ' +
     'Run the qa skill\'s report-media script with --inline and fix whatever it prints as FAILED.';
-  const S = D.scenarios || [], BUGS = D.bugs || [], GAPS = D.gaps || [], COV = D.coverage || [];
+  const S = D.scenarios || [], BUGS = D.bugs || [], GAPS = D.gaps || [];
 
   const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
   const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -815,7 +763,6 @@ code {
     frames: 'Screenshots',
     visualMatch: 'Design check',
     files: 'Files',
-    coverage: 'Requirement coverage',
     bugs: 'Bugs',
     gaps: 'What this run did not reach'
   }, D.labels || {});
@@ -824,21 +771,11 @@ code {
   const n = { pass: 0, fail: 0, hold: 0, skip: 0 };
   kinds.forEach(k => n[k]++);
 
-  /* the ledger: every requirement the docs list, proven or not. covOpen is what
-     keeps an incomplete run visible — the count the page colours and leads with. */
-  const covKinds = COV.map(c => kind(c.verdict));
-  const covOpen = covKinds.filter(k => k !== 'pass').length;
-  const covTone = covKinds.includes('fail') ? 'fail' : covOpen ? 'hold' : '';
-  const covCount = (COV.length - covOpen) + '/' + COV.length;
-  const covSummary = covOpen
-    ? covOpen + ' of ' + COV.length + ' unproven'
-    : 'all ' + COV.length + ' covered';
-
   /* ── bar ── */
   document.getElementById('b-title').textContent = D.title || 'Proof Report';
   document.title = 'Proof · ' + (D.title || '');
 
-  const topVerdict = D.verdict || ((D.fields || []).find(f => /verdict/i.test(f.label || '')) || {}).value;
+  const topVerdict = D.verdict;
   if (topVerdict) {
     const vb = document.getElementById('b-verdict');
     const text = String(topVerdict).split(/\s[—-]\s/)[0];
@@ -854,18 +791,16 @@ code {
     ['pass', n.pass,  'pass', 'pass'],
     ['fail', n.fail,  'fail', 'fail'],
     ['hold', n.hold,  'not verified', 'hold'],
-    ['coverage', covCount, 'covered', covTone],
     ['bugs', BUGS.length, BUGS.length === 1 ? 'bug' : 'bugs', BUGS.length ? 'fail' : '']
   ];
   const chips = {};
   defs.forEach(([key, v, txt, tone]) => {
     if (!v && (key === 'hold' || key === 'fail')) return;
-    if (key === 'coverage' && !COV.length) return;
     const b = el('button', 'count' + (tone ? ' count--' + tone : ''));
     b.type = 'button';
     b.appendChild(el('span', 'count__n', String(v)));
     b.appendChild(el('span', 'count__l', txt));
-    if (key === 'bugs' || key === 'coverage') {
+    if (key === 'bugs') {
       b.addEventListener('click', () => select(key));
     } else {
       b.addEventListener('click', () => { filter = filter === key ? 'all' : key; paint(); });
@@ -873,17 +808,6 @@ code {
     }
     counts.appendChild(b);
   });
-
-  const runBox = document.getElementById('run');
-  document.getElementById('b-run').addEventListener('click', () => runBox.classList.toggle('is-open'));
-  const runIn = document.getElementById('run-in');
-  (D.fields || []).forEach(f => {
-    const cell = el('div', 'run__f');
-    cell.appendChild(el('div', 'run__k', f.label));
-    cell.appendChild(el('div', 'run__v', f.value));
-    runIn.appendChild(cell);
-  });
-  if (D.drivenOn) { const p = el('div', 'run__note'); p.innerHTML = rich(D.drivenOn); runIn.appendChild(p); }
 
   const root = document.documentElement;
   document.getElementById('b-theme').addEventListener('click', () => {
@@ -934,16 +858,13 @@ code {
 
   rail.appendChild(el('div', 'rail__sep'));
   rail.appendChild(el('div', 'rail__h', 'Report'));
-  /* Coverage leads the report views: it is the scope of everything under it. */
-  [['coverage', L.coverage, covCount, covTone],
-   ['bugs', L.bugs, BUGS.length, BUGS.length ? 'fail' : ''],
+  [['bugs', L.bugs, BUGS.length, BUGS.length ? 'fail' : ''],
    ['gaps', 'Not reached', GAPS.length, '']].forEach(([id, txt, c, tone]) => {
     if (id === 'gaps' && !GAPS.length) return;
-    if (id === 'coverage' && !COV.length) return;
     const b = el('button', 'item item--aux' + (tone ? ' item--' + tone : ''));
     b.type = 'button';
     b.appendChild(el('span', 'item__t', txt));
-    b.appendChild(el('span', 'item__c' + (tone === 'fail' ? ' is-hot' : tone === 'hold' ? ' is-warm' : ''), String(c)));
+    b.appendChild(el('span', 'item__c' + (tone === 'fail' ? ' is-hot' : ''), String(c)));
     b.addEventListener('click', () => select(id));
     rail.appendChild(b);
     aux.push([id, b]);
@@ -1294,66 +1215,6 @@ code {
     metaRow(box, label, a);
   }
 
-  /* The scenarios one ledger row names — "01", or "01, 09" when two walks prove
-     the same id. Each id that matches a scenario becomes a button that walks
-     there; an id with no scenario behind it says so instead of linking nowhere. */
-  function scenarioLinks(ref) {
-    const row = el('div', 'paths');
-    const ids = String(ref == null ? '' : ref).split(',').map(x => x.trim()).filter(Boolean);
-    if (!ids.length) {
-      row.appendChild(el('span', null, 'no scenario'));
-      return row;
-    }
-    ids.forEach(id => {
-      const i = S.findIndex(s => String(s.n) === id);
-      if (i < 0) {
-        row.appendChild(el('span', null, 'Scenario ' + id + ' (missing)'));
-        return;
-      }
-      const b = el('button', 'bug__go', 'Scenario ' + S[i].n + ' — ' + (S[i].short || S[i].title || ''));
-      b.addEventListener('click', () => select(i));
-      row.appendChild(b);
-    });
-    return row;
-  }
-
-  /* Coverage — D.coverage[]: {req, scenario, verdict}, one row per requirement id
-     the docs list, reached or not. It is the scope of the run and the table the
-     top-level verdict is read off: any FAILURE → FAIL, else any NOT VERIFIED →
-     PARTIAL, all SUCCESS → PASS. Unproven rows are flagged at the row edge and in
-     the badge, so a reader sees an uncovered requirement without counting rows. */
-  function drawCoverage() {
-    pane.textContent = '';
-    const head = el('div', 'head' + (covTone ? ' head--' + covTone : ''));
-    head.appendChild(el('h2', 'head__t', L.coverage));
-    head.appendChild(el('span', 'head__v v--' + (covTone || 'pass'), covSummary));
-    pane.appendChild(head);
-    const sec = el('div', 'sec');
-    if (!COV.length) {
-      sec.appendChild(el('p', 'empty', 'This report carries no requirement ledger.'));
-      pane.appendChild(sec);
-      return;
-    }
-    const tbl = el('table', 'cov');
-    const hr = el('tr');
-    ['Requirement', 'Proven by', 'Verdict'].forEach(t => hr.appendChild(el('th', null, t)));
-    tbl.appendChild(hr);
-    COV.forEach((c, i) => {
-      const k = covKinds[i];
-      const tr = el('tr', k === 'pass' ? null : 'cov__r--' + k);
-      tr.appendChild(el('td', 'cov__req', c.req || '—'));
-      const by = el('td', 'cov__by');
-      by.appendChild(scenarioLinks(c.scenario));
-      tr.appendChild(by);
-      const v = el('td', 'cov__v');
-      v.appendChild(el('span', 'item__v v--' + k, label(c.verdict)));
-      tr.appendChild(v);
-      tbl.appendChild(tr);
-    });
-    sec.appendChild(tbl);
-    pane.appendChild(sec);
-  }
-
   function drawBugs() {
     pane.textContent = '';
     const head = el('div', 'head');
@@ -1374,11 +1235,7 @@ code {
       if (b.scenario != null) scenarioRow(box, 'Proven in', b.scenario);
       sec.appendChild(box);
     });
-    if (D.bugsNote) {
-      sec.appendChild(el('p', 'sec__h', 'The attack that did not land'));
-      const p = el('div', 'prose'); paras(p, D.bugsNote); sec.appendChild(p);
-    }
-    if (!BUGS.length && !D.bugsNote) sec.appendChild(el('p', 'empty', 'No bugs found.'));
+    if (!BUGS.length) sec.appendChild(el('p', 'empty', 'No bugs found.'));
     pane.appendChild(sec);
   }
 
@@ -1418,8 +1275,7 @@ code {
     current = id;
     rows.forEach((b, i) => b.classList.toggle('is-on', i === id));
     aux.forEach(([k, b]) => b.classList.toggle('is-on', k === id));
-    if (id === 'coverage') drawCoverage();
-    else if (id === 'bugs') drawBugs();
+    if (id === 'bugs') drawBugs();
     else if (id === 'gaps') drawGaps();
     else drawScenario(S[id], id);
     document.querySelector('.pane').scrollTop = 0;

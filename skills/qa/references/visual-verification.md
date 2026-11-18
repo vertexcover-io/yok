@@ -9,9 +9,7 @@ frames are shot and the session is still open, so where a frame cannot answer a
 question you ask the open screen — one `eval` in the browser, one `get attrs` on a device. **Read the frames at
 the width they were shot at; the one re-shoot below is the only new capture this pass makes, and the only driving
 it does.** The
-phone replay is the only second width there is, and it is already a real device — `set device "iPhone 14"`, not
-a narrowed window, for the reason `driving-the-browser.md` gives: an app that branches on user-agent serves its
-desktop layout to a resized viewport and photographs a mobile pass that never happened.
+phone replay is the only second width there is, and `driving-the-browser.md` says how its device is set.
 
 **The one re-shoot.** Read each frame at the width the plan's step gives it (`build to design/FILE at WIDTHpx`);
 a step that gives no width is read at the width the scenario was shot at. When the step's width differs from the

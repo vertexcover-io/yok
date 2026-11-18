@@ -39,7 +39,7 @@ Run them in this order: `stackStatus`, then `stackUp` only for what is not alrea
 `stackWait`, poll `stackStatus`), then `stackUrls`, `seed` and `auth`. The base URL comes from `stackUrls` or
 `servicePort` output, never from an assumed port. A step that blocks for minutes runs in the background while you
 read code, and you check its output before the first walk. At teardown, `stackDown` releases only what this
-attempt brought up.
+round brought up.
 
 On a device walk, three more rules:
 
@@ -51,7 +51,8 @@ On a device walk, three more rules:
 3. **Open the app on each device once the steps are done**, with
    `agent-device open APP --platform PLATFORM --device "DEVICE" --relaunch` (no `--device` when the entry lists no
    devices), filled from the entry's fields and with that device's session exported. It returns the first screen
-   and binds the device.
+   and binds the device. Read each bound device's name and OS version from `agent-device devices --json`; its
+   recordings and the return name them.
 
 A step that exits non-zero is retried once when its output says the failure was transient. A stack that still
 will not come up is SKILL.md's `no-infra:` block, its `reason` quoting the command as it ran.
@@ -77,4 +78,4 @@ Where the values come from:
   services or packages the diff touches. Leave an optional part or segment out unless the task or the diff needs
   it.
 
-Record each command exactly as it ran, placeholders filled, in the report's environment findings.
+Record each command exactly as it ran, placeholders filled, in the return's environment findings.

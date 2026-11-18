@@ -5,21 +5,17 @@
       "id": 1,
       "name": "device-entry-drives-the-app",
       "prompt": "You are running the qa stage of run feat-x against environment ios. orchestrate.config.yaml's environments.entries.ios has platform ios, app com.example.app, and the steps stackUp (builds, installs and runs the app on the simulator), stackDown (uninstalls it), seed and auth. The plan lists R1, a settings toggle that persists after the app is reopened. agent-device and ffmpeg are installed.",
-      "expected_output": "Exports AGENT_DEVICE_SESSION before stackUp, runs stackUp, seed and auth, opens the app with agent-device open com.example.app --platform ios --relaunch, drives the toggle through agent-device with snapshot -i and press --settle, cites get or is output as evidence, writes an App row in fields[] instead of Base URL, runs no phone replay, closes with agent-device close, and ends with the return contract's JSON block.",
+      "expected_output": "Exports AGENT_DEVICE_SESSION before stackUp, runs stackUp, seed and auth, opens the app with agent-device open com.example.app --platform ios --relaunch, drives the toggle through agent-device with snapshot -i and press --settle, cites get or is output as evidence, names the device and its OS version on the scenario's recording, runs no phone replay, closes with agent-device close, and ends with the return contract's JSON block.",
       "files": [],
       "expectations": [
         "Exports AGENT_DEVICE_SESSION before running stackUp",
         "Opens the app with agent-device open com.example.app --platform ios --relaunch after seed and auth, built from the entry's app and platform fields",
         "Every check's result rests on the output of an agent-device get, is or wait command, quoted in the raw of the proof it cites",
-        "fields[] carries an App row naming the app id, platform, device and OS version and no Base URL row",
+        "The scenario's recording names the device and its OS version, and the return names the app id and platform",
         "Step 7 runs agent-device close",
         "No scenario carries a phone replay recording"
       ],
-      "anti_expectations": [
-        "Runs agent-browser",
-        "Asserts through eval",
-        "Writes a Base URL row for a device walk"
-      ]
+      "anti_expectations": ["Runs agent-browser", "Asserts through eval"]
     },
     {
       "id": 2,
@@ -101,7 +97,7 @@
         "status is FAIL and report is null",
         "bugs[] has one entry whose id is the scenario number and whose askUser is false",
         "No report-media run and no proof-report.html",
-        "The stack is left running and the report-back says so"
+        "The stack is left running and the return says so"
       ],
       "anti_expectations": [
         "Writes proof-report.html on this round",
@@ -152,14 +148,14 @@
       "id": 9,
       "name": "device-walk-replays-on-each-listed-device",
       "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios, app com.example.app, devices [\"iPhone 17 Pro\", \"iPad Pro 13-inch (M4)\"] and a stackUp of make ios-run DEVICE={DEVICE}. The plan lists R1, a list screen with a detail view. Both simulators exist and agent-device and ffmpeg are installed.",
-      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone and again on the iPad as a second recording of the same scenario, keeps one coverage row for R1 naming that scenario, writes one App row listing both devices, and closes both sessions.",
+      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone and again on the iPad as a second recording of the same scenario, keeps one coverage row for R1 naming that scenario, names each device and its OS version on its recording, and closes both sessions.",
       "files": [],
       "expectations": [
         "Runs make ios-run DEVICE=iPhone 17 Pro and make ios-run DEVICE=iPad Pro 13-inch (M4), with the placeholder filled",
         "Exports a different AGENT_DEVICE_SESSION per device and opens the app with --device on each",
         "The iPad replay is driven from its first press to the same closing assert and joins the scenario's recordings[], naming the iPad as its device",
         "coverage[] has one row for R1 naming the one scenario",
-        "fields[] has one App row naming both devices and their OS versions",
+        "Each recording names its device and OS version",
         "Runs agent-device close once per device session"
       ],
       "anti_expectations": [
@@ -172,7 +168,7 @@
     {
       "id": 10,
       "name": "browser-scenario-is-scouted-then-filmed-in-one-take",
-      "prompt": "You are running the qa stage of run feat-x, the only attempt, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
+      "prompt": "You are running the qa stage of run feat-x, the only round, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
       "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail that holds the opening state for about a second and a half, in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, a closing hold of about a second and a half on the final state, then record stop as its own command. Promotes the take's frames after reading them, writes the scenario's steps as a summary of the take in order, each with the checks it brings about and each check's result from the take's asserts, adds the take to recordings[] with its video named on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it, with the sizes where it compressed the recording.",
       "files": [],
       "expectations": [
