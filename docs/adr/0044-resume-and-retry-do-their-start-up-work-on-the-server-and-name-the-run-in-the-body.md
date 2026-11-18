@@ -19,7 +19,7 @@ tags: [harness-server, harness-cli, cli-to-server, viewer]
 
 ## Decision Outcome
 
-Chosen: the server does the start-up work and the body names the run, because only the server has the run's checkout, `.env` and tools, and a remote caller knows a run by project and name, not by id; resolving the name inside the route keeps every caller, the CLI here or remote and the run page, to one request. This extends 0018's start-up work to relaunches: the server builds the env with `loadSessionEnv` from the run's recorded config and runs `checkCheckout` over it. It amends 0038, whose route was `POST /runs/:id/retry` with a CLI-built env, and 0030's allowed set, which gains `resume` and `retry`.
+Chosen: the server does the start-up work and the body names the run, because only the server has the run's checkout, `.env` and tools, and a remote caller knows a run by project and name, not by id; resolving the name inside the route keeps every caller, the CLI here or remote and the run page, to one request. This extends 0018's start-up work to relaunches: the server builds the env with `loadEnv` (the builder `loadSessionEnv` wraps) from the run's recorded config and compiled workflow and runs `checkCheckout` over it. It amends 0038, whose route was `POST /runs/:id/retry` with a CLI-built env, and 0030's allowed set, which gains `resume` and `retry`.
 
 ## Consequences
 
