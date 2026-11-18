@@ -1,7 +1,7 @@
 name: Deploy
 
 # Puts one release on the server. The box was provisioned once with deploy/provision.py; this
-# only installs the tag and restarts the service, over ssh as the user that owns the runs,
+# only installs the tag from npm and restarts the service, over ssh as the user that owns the runs,
 # with no sudo.
 #
 # Triggers:
@@ -19,7 +19,6 @@ name: Deploy
 #            SSH_HOST_KEY    the server's public host key, one line as in known_hosts
 #            YOK_PASSWORD    the login's password, or the platform token with an external proxy
 #            CLAUDE_CODE_OAUTH_TOKEN or CODEX_API_KEY, at least one
-#            GH_TOKEN        only while the repo is private
 #            SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID   for the notifier
 #            SLACK_SIGNING_SECRET, SLACK_COMMAND_CHANNEL         for driving yok from Slack
 #
@@ -100,7 +99,6 @@ jobs:
       # secret is skipped.
       - name: Deploy
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -112,7 +110,7 @@ jobs:
           set -euo pipefail
           scp -q deploy/deploy.sh "$TARGET:.yok/deploy.sh"
           jq -rn '$ENV
-              | {GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY,
+              | {CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY,
                  SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_MEMBER_ID, SLACK_SIGNING_SECRET, SLACK_COMMAND_CHANNEL}
               | with_entries(select(.value != null and .value != ""))
               | to_entries[] | "\(.key)=\(.value)"' \

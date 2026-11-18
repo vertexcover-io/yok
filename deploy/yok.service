@@ -1,4 +1,5 @@
-# The yok server as a systemd user unit, installed by deploy.sh at ~/.config/systemd/user/.
+# The yok server as a systemd user unit, installed by provision.py at ~/.config/systemd/user/.
+# yok is the npm package in the user's own npm prefix, ~/.local, where deploy.sh installs it.
 # PATH is spelled out because a service loads no shell profile; without it yok finds neither
 # the agents nor tmux. secrets.env carries the agent tokens into every run's session.
 [Unit]
@@ -6,9 +7,9 @@ Description=yok server
 After=network-online.target
 
 [Service]
-ExecStart=%h/.yok/bin/yok server start --port 7777
+ExecStart=%h/.local/bin/yok server start --port 7777
 Restart=on-failure
-Environment=PATH=%h/.yok/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.yok/secrets.env
 
 [Install]

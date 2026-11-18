@@ -7,7 +7,14 @@ set -eu
 
 YOK_HOME="$HOME/.yok"
 PORT=7777
-REPO=vertexcover-io/yok
+PACKAGE=@vertexcover/yok
+# npm's own global folder belongs to root. A prefix in the user's home keeps this install, and
+# every yok update after it, free of sudo. yok.service starts the server from the same path.
+NPM_PREFIX="$HOME/.local"
+YOK="$NPM_PREFIX/bin/yok"
+# An ssh session that skipped logind has no XDG_RUNTIME_DIR, and without it systemctl --user
+# cannot find the user manager that linger keeps alive.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
@@ -32,36 +39,37 @@ write_secrets() {
     die "secrets has neither CLAUDE_CODE_OAUTH_TOKEN nor CODEX_API_KEY; a run needs one agent"
 }
 
-# install.sh comes from the tag it installs. With GH_TOKEN it goes through gh, so a private repo
-# works; without one the repo is public, and the raw file and the release assets are plain
-# downloads, which is what install.sh's YOK_RELEASE_URL takes. yok update must not run here: it
-# restarts the server outside systemd. install.sh swaps the binary only; start_service brings
-# the new version up.
+# yok update takes the newest release from npm and moves the agent plugin to it. A first
+# install, and a tag that is not the newest (a rollback), take that version from npm by name.
+install_release() {
+  if [ -x "$YOK" ] && [ "$newest" = "$version" ]; then
+    "$YOK" update $pre_release
+    return
+  fi
+  npm install -g "$PACKAGE@$version" && "$YOK" plugin install
+}
+
+# The running server keeps its old version through the install: yok update leaves it alone, and
+# start_service restarts it on the new one. A failed install changes nothing.
 install_yok() {
   say "yok $TAG"
-  script=$(mktemp)
-  if [ -n "${GH_TOKEN:-}" ]; then
-    gh api "repos/$REPO/contents/install.sh?ref=$TAG" -H "Accept: application/vnd.github.raw" > "$script" ||
-      die "could not fetch install.sh at $TAG with gh"
-    YOK_VERSION="$TAG" sh "$script"
-  else
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/$TAG/install.sh" -o "$script" ||
-      die "could not fetch install.sh at $TAG; set GH_TOKEN if the repo is private"
-    YOK_VERSION="$TAG" YOK_RELEASE_URL="https://github.com/$REPO/releases/download/$TAG" sh "$script"
-  fi
-  rm -f "$script"
-  installed=$("$YOK_HOME/bin/yok" --version)
-  [ "$installed" = "${TAG#v}" ] || die "installed yok is $installed, not ${TAG#v}"
+  version="${TAG#v}"
+  case "$version" in
+    *-*) channel=next pre_release=--pre-release ;;
+    *) channel=latest pre_release= ;;
+  esac
+  npm config set prefix "$NPM_PREFIX"
+  newest=$(npm view "$PACKAGE@$channel" version) || die "could not ask npm for $PACKAGE@$channel"
+  install_release || die "could not install $PACKAGE@$version; the server still runs the version it had"
+  installed=$("$YOK" --version)
+  [ "$installed" = "$version" ] || die "installed yok is $installed, not $version"
   if [ -n "${CODEX_API_KEY:-}" ]; then
     printf '%s' "$CODEX_API_KEY" | codex login --with-api-key
   fi
 }
 
-# An ssh session that skipped logind has no XDG_RUNTIME_DIR, and without it systemctl --user
-# cannot find the user manager that linger keeps alive.
 start_service() {
   say "service"
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   systemctl --user daemon-reload
   systemctl --user restart yok
   # A tmux server with no sessions still holds the environment it was born with. Dropping an

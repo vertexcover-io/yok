@@ -8,13 +8,13 @@ a run needs, creates the user that owns the runs, writes the server's config, in
 unit, and sets up Caddy, which asks for the login and leaves `/api/hooks/*` open for Slack.
 
 `.github/workflows/deploy.yml` is a GitHub Actions workflow that runs on every stable release.
-It logs in as that user, writes the agent tokens, installs the release with `install.sh`,
+It logs in as that user, writes the agent tokens, installs the release from npm,
 restarts the unit and checks the version, on the box and then through the proxy.
 
 | | Runs | Does |
 |---|---|---|
 | `provision.py` | once per machine, by a person | tools, user, `~/.yok/.env`, unit, linger, Caddy |
-| `deploy.yml` | on every stable release, by GitHub; by hand with any tag | tokens, binary, restart, health check |
+| `deploy.yml` | on every stable release, by GitHub; by hand with any tag | tokens, the npm package, restart, health check |
 
 The interface between the two is small: a user with the deploy key, `~/.yok/.env` and the
 unit file. Provisioning never needs to run again unless one of those changes. The workflow
@@ -23,7 +23,7 @@ never needs sudo.
 ```
 ONCE      laptop ── pyinfra over ssh, sudo ──► box: apt, npm, user, ~/.yok/.env, yok.service, Caddy
 RELEASE   release.yml ──dispatch tag──► deploy.yml ── ssh as the user, no sudo ──► box:
-             ~/.yok/secrets.env, install.sh TAG, systemctl --user restart yok, /api/health
+             ~/.yok/secrets.env, yok update, systemctl --user restart yok, /api/health
              then curl https://SERVER_DOMAIN/api/health with the login from the runner
 ```
 
@@ -79,7 +79,7 @@ before it acts, so a second run reports nothing to do.
 
 On completion the box has the tools, the `yok` user with the deploy key, `~/.yok/.env`, the
 unit enabled but not started, and Caddy serving `SERVER_DOMAIN` with the login. The first
-Deploy run installs the binary and starts the server.
+Deploy run installs yok and starts the server.
 
 ## Configuration reference
 
@@ -152,7 +152,6 @@ In the repository, create an environment named `production` and add the followin
 | secret | `SSH_HOST_KEY` | one line from `ssh-keyscan -t ed25519 DEPLOY_HOST` |
 | secret | `YOK_PASSWORD` | the login's password, as given to provisioning |
 | secret | `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY` | at least one; the agents a run can use |
-| secret | `GH_TOKEN` | only while the repository is private: a token that can read its contents |
 | secret | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | for Slack messages; a run whose config turns the notifier on stops without them |
 | secret | `SLACK_MEMBER_ID` | the person the notifier mentions when a run needs someone |
 | secret | `SLACK_SIGNING_SECRET`, `SLACK_COMMAND_CHANNEL` | for driving yok from Slack: the app's signing secret and the one channel whose mentions are answered |
@@ -189,8 +188,11 @@ two deploys queue rather than race:
 
 1. **secrets**: writes stdin to `~/.yok/secrets.env` (mode 600) whole, so a secret removed in
    GitHub is removed here. One agent credential must be present.
-2. **yok**: installs the tag with `install.sh`, which also installs the agent plugin and the
-   `yok-remote` shortcut, then logs Codex in when it has a key.
+2. **yok**: puts the tag's version of `@vertexcover/yok` in the user's
+   own npm prefix, `~/.local`. When yok is installed and the tag is the newest release, that
+   is `yok update`; on a first deploy or a rollback it is `npm install -g` of that version
+   and `yok plugin install`. Then it logs Codex in when it has a key. The server holds no
+   checkout of the yok repository.
 3. **service**: restarts the unit, which reads `secrets.env` on start, and drops an idle tmux
    server so the next run's session sees today's tokens. A busy one is left alone.
 4. **check**: waits for `/api/health` on loopback to answer with the tag's version.

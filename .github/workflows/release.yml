@@ -326,11 +326,12 @@ jobs:
         run: sh install.sh && test "$("$HOME/.yok/bin/yok" --version)" = "${TAG#v}"
 
   # A stable release puts itself on the server; an rc is deployed by hand from Actions, Deploy.
+  # It waits for the npm job, since the server installs the release from npm.
   # The run's own token may fire workflow_dispatch, the one event it is allowed to start, and
   # --ref is the tag, so the Deploy that runs is the one at that release.
   deploy:
-    needs: [cut, release]
-    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(needs.cut.outputs.tag || github.ref_name, '-') }}
+    needs: [cut, release, npm]
+    if: ${{ !cancelled() && needs.npm.result == 'success' && !contains(needs.cut.outputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -156,7 +156,7 @@ files.put(
     mode="644",
 )
 
-# Enabled, not started: the binary arrives with the first Deploy. An ssh session that skipped
+# Enabled, not started: yok arrives with the first Deploy. An ssh session that skipped
 # logind has no XDG_RUNTIME_DIR, and without it systemctl --user cannot find the user manager.
 if not host.get_fact(Link, path=f"{HOME}/.config/systemd/user/default.target.wants/yok.service"):
     server.shell(
