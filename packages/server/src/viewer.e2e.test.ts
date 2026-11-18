@@ -357,9 +357,10 @@ describe("viewer in a browser", () => {
     await page.goto(`${url}#artifacts/design.md`);
     await until("!!document.querySelector('#threads .card[data-cid=c1]')");
 
-    const reply = spawnSync(
-      "bun",
+    // Not spawnSync: that would freeze this process, whose server may hold a run lock the command waits for.
+    const reply = Bun.spawn(
       [
+        "bun",
         ...ORCHESTRATE,
         "comments",
         "reply",
@@ -374,11 +375,12 @@ describe("viewer in a browser", () => {
       ],
       {
         cwd,
-        encoding: "utf8",
         env: { ...process.env, YOK_RUN_ID: undefined, YOK_HOME: home },
+        stdout: "ignore",
+        stderr: "inherit",
       },
     );
-    expect(reply.status).toBe(0);
+    expect(await reply.exited).toBe(0);
     await until(
       "document.querySelector('#threads .card[data-cid=c1]').textContent.includes('Simpler to review.') && document.querySelector('#threads .card[data-cid=c1] .status').textContent === 'Answered'",
       3500,
@@ -1038,6 +1040,18 @@ describe("runs page in a browser", () => {
 
     await page.setViewportSize({ width: 1280, height: 2000 });
     expect(await evaluate(edges)).toEqual({ header: 0, footer: 2000, height: 2000 });
+  }, 60000);
+
+  test("focusing the search box or a status tab after scrolling down the list leaves the page where it was", async () => {
+    await page.setViewportSize({ width: 393, height: 420 });
+    await page.goto(viewer.origin);
+    await until(`${allCount} === "5"`);
+    await evaluate("window.scrollTo(0, 200)");
+    expect(await evaluate("scrollY")).toBe(200);
+    await page.keyboard.press("/");
+    expect(await evaluate("[document.activeElement.id, scrollY]")).toEqual(["search", 200]);
+    await evaluate("document.querySelector('#tabs .tab').focus()");
+    expect(await evaluate("scrollY")).toBe(200);
   }, 60000);
 
   test.each([

@@ -61,6 +61,8 @@ a { color: inherit; }
 .foot { position: sticky; bottom: 0; z-index: 2; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-align: right; }
 
 main { flex: 1; width: 100%; max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
+/* Focus scrolls a run clear of the pinned bars. The margin is on the list only: on the page it would also move the bars' own controls, and focusing the search box would jump the page. */
+#list * { scroll-margin: var(--top-h, 0px) 0 var(--foot-h, 0px); }
 .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0; }
 .empty { color: var(--muted); padding: 32px 0; text-align: center; }
 .empty code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 4px; }
@@ -151,11 +153,11 @@ const TABS = [["all", "All"], ["active", "Active"], ["needs", "Needs you"], ["fa
 const view = { runs: null, tab: "all", query: "", who: "" };
 const $ = (id) => document.getElementById(id);
 
-// Keyboard focus scrolls a run clear of the pinned bars. The header's height changes with the width and the reconnecting note, so it is measured, not written in CSS.
+// The header's height changes with the width and the reconnecting note, so the bars are measured, not written in CSS.
 const bars = { top: document.querySelector(".top"), foot: document.querySelector(".foot") };
 new ResizeObserver(() => {
-  document.documentElement.style.scrollPaddingTop = `${Math.ceil(bars.top.getBoundingClientRect().height)}px`;
-  document.documentElement.style.scrollPaddingBottom = `${Math.ceil(bars.foot.getBoundingClientRect().height)}px`;
+  document.documentElement.style.setProperty("--top-h", `${Math.ceil(bars.top.getBoundingClientRect().height)}px`);
+  document.documentElement.style.setProperty("--foot-h", `${Math.ceil(bars.foot.getBoundingClientRect().height)}px`);
 }).observe(bars.top);
 
 const statusOf = (run) => ({ ...(STATUS[run.status] ?? UNKNOWN), label: RUN_STATUS_WORDS[run.status] ?? run.status });
