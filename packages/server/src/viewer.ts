@@ -26,7 +26,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
-import { CommentDraftSchema, type Registry, readUsers } from "@yok/sdk/internal";
+import { CommentDraftSchema, type Registry, readUsers, VERSION } from "@yok/sdk/internal";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
@@ -50,6 +50,7 @@ import VIEWER_HTML from "./viewer.html" with { type: "text" };
 
 // The document styles live in core, shared with the plan page; the viewer page carries a slot for them.
 const VIEWER_PAGE = (VIEWER_HTML as unknown as string).replace("/* {{DOC_STYLES}} */", DOC_STYLES);
+const RUNS_PAGE = (RUNS_HTML as unknown as string).replace("{{VERSION}}", VERSION);
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 const ANCHOR_JS = transpiler.transformSync(ANCHOR_SOURCE as string);
@@ -485,7 +486,7 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
 // createRoot (server.ts) puts hostGuard in front of these routes.
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
-    .get("/", (c) => c.html(RUNS_HTML as unknown as string))
+    .get("/", (c) => c.html(RUNS_PAGE))
     .get("/runs", async (c) =>
       c.json({ runs: await listRunSummaries(deps.registry, deps.host, deps.home) }),
     )
