@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
@@ -11,44 +10,24 @@ import {
   withLock,
   yokHome,
 } from "@yok/sdk";
+import { homeEnvPath, readHomeFile, readServerDomain } from "@yok/sdk/internal";
 import * as z from "zod";
 import { RunStatusSchema } from "./overview.ts";
 
+export { homeEnvPath, publicOrigin, readHomeEnv } from "@yok/sdk/internal";
+
 export const portPath = (home: string = yokHome()): string => join(home, "server.port");
-export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
 export const pidPath = (home: string = yokHome()): string => join(home, "server.pid");
 export const logPath = (home: string = yokHome()): string => join(home, "server.log");
-
-const readHomeFile = (path: string): string => {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return "";
-  }
-};
 
 export const readPort = (home: string): number | null => {
   const port = Number.parseInt(readHomeFile(portPath(home)), 10);
   return Number.isInteger(port) && port > 0 ? port : null;
 };
 
-export const readHomeEnv = (home: string): Record<string, string | undefined> =>
-  parseEnv(readHomeFile(homeEnvPath(home)));
-
 // The domain a reverse proxy in front of yok answers on; this machine's own address without one.
-// A browser sends its Host lowercase and without a scheme, so the saved value is cleaned to match.
-export const serverDomain = (home: string, port: number): string => {
-  const domain = (readHomeEnv(home).SERVER_DOMAIN ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
-    .replace(/\/+$/, "");
-  return domain || `localhost:${port}`;
-};
-
-// Plain http only for this machine: any other domain is reached through a proxy doing https.
-export const publicOrigin = (domain: string): string =>
-  `${/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(domain) ? "http" : "https"}://${domain}`;
+export const serverDomain = (home: string, port: number): string =>
+  readServerDomain(home) ?? `localhost:${port}`;
 
 const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
 

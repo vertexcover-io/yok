@@ -3,6 +3,14 @@
 export { resolveTiers, uniqueNames } from "./config.ts";
 export { AgentModeSchema, isRunLive, pickTierModel } from "./contracts.ts";
 export {
+  homeEnvPath,
+  publicOrigin,
+  readHomeEnv,
+  readHomeFile,
+  readServerDomain,
+  readViewerOrigin,
+} from "./env.ts";
+export {
   type EventDraft,
   type IEventStore,
   jsonlEventStore,
