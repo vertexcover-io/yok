@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -498,6 +499,53 @@ test("SC55: a video the script already compressed is kept as it is on the next r
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /^ok 01_twice\.mp4 recorded$/m);
   assert.ok(readFileSync(path).equals(once));
+});
+
+test("SC62: a second run builds a built video again from its frames and reports its crop", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("rebuilt");
+  for (const step of ["01_open", "02_typed", "03_saved"]) frame(dir, `01_demo__${step}.png`);
+  run(dir);
+  const once = duration(join(dir, "01_demo.mp4"));
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_demo\.mp4 crop=\d+:\d+:\d+:\d+$/m);
+  assert.equal(duration(join(dir, "01_demo.mp4")), once);
+});
+
+test("SC63: a built video whose frames no longer build is FAILED and removed", {
+  skip: needsFfmpeg,
+}, () => {
+  const dir = withScreenshots("stale");
+  frame(dir, "01_demo__01_open.png");
+  run(dir);
+  writeFileSync(join(dir, "screenshots", "01_demo__01_open.png"), "not a png");
+
+  const r = run(dir);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^FAILED 01_demo — ffmpeg: .+/m);
+  assert.deepEqual(
+    readdirSync(dir).filter((name) => name.endsWith(".mp4")),
+    [],
+  );
+});
+
+test("SC64: a built video whose frames are gone is kept as it is", { skip: needsFfmpeg }, () => {
+  const dir = withScreenshots("orphan");
+  for (const step of ["01_open", "02_saved"]) frame(dir, `01_demo__${step}.png`);
+  run(dir);
+  const built = readFileSync(join(dir, "01_demo.mp4"));
+  for (const name of readdirSync(join(dir, "screenshots"))) rmSync(join(dir, "screenshots", name));
+
+  const r = run(dir);
+
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 01_demo\.mp4 recorded$/m);
+  assert.ok(readFileSync(join(dir, "01_demo.mp4")).equals(built));
 });
 
 test("SC53: a recorded video that does not play is FAILED and left as it is", {

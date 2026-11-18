@@ -9,6 +9,8 @@
 // scenario fails unless the window cropdetect reports still carries the source frame's aspect
 // ratio — a frame stretched to fill the canvas shows a geometry that was never on screen.
 // A video the script makes takes its NN_<slug>.mp4 name only once it has passed its checks.
+// A built video is marked as built, so a later run builds it again from its frames, and removes
+// it when those frames no longer pass.
 // With --inline it instead writes every file the finished report names into the report itself,
 // as data URIs in a `report-media` island the template resolves paths through, so the one html
 // file carries its own videos and frames wherever it is moved.
@@ -208,6 +210,10 @@ function ffmpegFailure(err: unknown): string {
   return lastLine || message || "ffmpeg exited non-zero";
 }
 
+// The comment a video built from frames carries, so a later run builds it again from its frames
+// and leaves a recorded take's handling to recordings alone.
+const BUILT_MARK = "report-media-built";
+
 function buildVideo(dir: string, prefix: string, output: string): string | null {
   try {
     execFileSync(
@@ -231,6 +237,8 @@ function buildVideo(dir: string, prefix: string, output: string): string | null 
         "veryfast",
         "-r",
         "30",
+        "-metadata",
+        `comment=${BUILT_MARK}`,
         output,
       ],
       { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
@@ -274,11 +282,11 @@ const COMPRESSED_ENCODING: readonly string[] = [
   `comment=${COMPRESSED_MARK}`,
 ];
 
-const isCompressed = (dir: string, video: string): boolean =>
+const carriesMark = (dir: string, video: string, mark: string): boolean =>
   (
     spawnSync("ffmpeg", ["-nostdin", "-hide_banner", "-i", video], { cwd: dir, encoding: "utf8" })
       .stderr ?? ""
-  ).includes(COMPRESSED_MARK);
+  ).includes(mark);
 
 /** Re-encodes a recorded take for the report and keeps whichever file is smaller. */
 const STILL_LIMIT_SECONDS = 3;
@@ -340,7 +348,7 @@ function trimStills(dir: string, video: string): string | null {
 }
 
 function compressRecording(dir: string, video: string): string | null {
-  if (isCompressed(dir, video)) return null;
+  if (carriesMark(dir, video, COMPRESSED_MARK)) return null;
   const smaller = `${video}.compressed.mp4`;
   const encoded = spawnSync(
     "ffmpeg",
@@ -435,12 +443,16 @@ function cropWindow(dir: string, video: string): string | null {
   return parseCropWindow(`${probe.stdout ?? ""}\n${probe.stderr ?? ""}`);
 }
 
+const frameNames = (screenshotsDir: string, prefix: string): readonly string[] =>
+  existsSync(screenshotsDir)
+    ? readdirSync(screenshotsDir)
+        .filter((name) => name.startsWith(`${prefix}__`) && name.endsWith(".png"))
+        .toSorted()
+    : [];
+
 /** The shape of the scenario's first frame, which is the one the cropdetect probe samples. */
 function firstFrameSize(screenshotsDir: string, prefix: string): FrameSize | null {
-  const first = readdirSync(screenshotsDir)
-    .filter((name) => name.startsWith(`${prefix}__`) && name.endsWith(".png"))
-    .toSorted()
-    .at(0);
+  const first = frameNames(screenshotsDir, prefix).at(0);
   return first === undefined ? null : pngSize(join(screenshotsDir, first));
 }
 
@@ -468,6 +480,13 @@ function buildFromFrames(dir: string, prefix: string): ScenarioResult {
   return result;
 }
 
+/** Builds a built video again, and removes it when its frames no longer pass the checks. */
+function rebuildFromFrames(dir: string, prefix: string): ScenarioResult {
+  const result = buildFromFrames(dir, prefix);
+  if (result.failure !== null) rmSync(join(dir, `${prefix}.mp4`));
+  return result;
+}
+
 export function buildScenarios(dir: string): readonly ScenarioResult[] {
   return scenarioPrefixes(dir).map((prefix) => {
     const video = `${prefix}.mp4`;
@@ -485,9 +504,14 @@ export function buildScenarios(dir: string): readonly ScenarioResult[] {
       };
     }
     if (existsSync(join(dir, video))) {
+      const built = carriesMark(dir, video, BUILT_MARK);
+      if (built && frameNames(join(dir, "screenshots"), prefix).length > 0) {
+        return rebuildFromFrames(dir, prefix);
+      }
       if (!plays(dir, video)) {
         return { prefix, crop: null, failure: `${video} does not play`, note: null };
       }
+      if (built) return { prefix, crop: null, failure: null, note: null };
       // The video is known to play whole, so a trim or compression that fails keeps a good file.
       const note = trimStills(dir, video) ?? compressRecording(dir, video);
       return { prefix, crop: null, failure: null, note };
