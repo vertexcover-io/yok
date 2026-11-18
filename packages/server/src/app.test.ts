@@ -120,6 +120,7 @@ const buildDeps = async (
     pid: 4242,
     version: "0.0.0-test",
     startedAt: 1_700_000_000_000,
+    stopping: new AbortController().signal,
     git: createGit(),
     checkCheckout: readyCheckout,
   };

@@ -33,6 +33,8 @@ export type ApiDeps = TriggerRouteDeps &
     pid: number;
     version: string;
     startedAt: number;
+    // Aborted when the server stops; open terminal sockets close on it.
+    stopping: AbortSignal;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the

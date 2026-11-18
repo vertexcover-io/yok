@@ -560,7 +560,13 @@ describe("scheduler", () => {
       const now = new Date();
       await store.save({ ...trigger, cron: "* * * * *", nextFireAt: now.toISOString() });
       const { now: _now, ...scheduled } = deps(now.toISOString());
-      const app = createApi({ ...scheduled, pid: 1, version: "0.0.0-test", startedAt: 0 });
+      const app = createApi({
+        ...scheduled,
+        pid: 1,
+        version: "0.0.0-test",
+        startedAt: 0,
+        stopping: new AbortController().signal,
+      });
 
       startScheduler(deps(now.toISOString()));
       const reply = await app.request("/triggers/fire", {
@@ -582,7 +588,13 @@ describe("/triggers routes", () => {
     const env = await setup(workflow);
     await env.store.remove(env.trigger.id);
     const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
-    const app = createApi({ ...deps, pid: 1, version: "0.0.0-test", startedAt: 0 });
+    const app = createApi({
+      ...deps,
+      pid: 1,
+      version: "0.0.0-test",
+      startedAt: 0,
+      stopping: new AbortController().signal,
+    });
     const call = (method: string, path: string, body?: unknown) =>
       app.request(path, {
         method,
@@ -864,7 +876,13 @@ describe("adoptLegacyTriggers", () => {
       await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
 
       const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
-      const app = createApi({ ...deps, pid: 1, version: "0.0.0-test", startedAt: 0 });
+      const app = createApi({
+        ...deps,
+        pid: 1,
+        version: "0.0.0-test",
+        startedAt: 0,
+        stopping: new AbortController().signal,
+      });
       const listed = (await (await app.request("/triggers")).json()) as { triggers: Trigger[] };
       expect(listed.triggers).toMatchObject([
         { id: legacy.id, name: "digest", project: "web", nextFireAt: legacy.nextFireAt },

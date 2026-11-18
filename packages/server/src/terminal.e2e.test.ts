@@ -5,12 +5,14 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { summarize, yokTerminalHost } from "@yok/core";
-import { registryPath, type WorkflowRun } from "@yok/sdk";
+import { noopLogger, registryPath, type WorkflowRun } from "@yok/sdk";
 import { createRegistry } from "@yok/sdk/internal";
+import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import { claudeOver } from "./fake-host.ts";
 import { readPort } from "./protocol.ts";
 import { startServer } from "./server.ts";
-import { DETACHED, REFUSED } from "./terminal.ts";
+import { DETACHED, REFUSED, terminalRoutes } from "./terminal.ts";
 
 const SESSION = "demo-pane";
 
@@ -35,8 +37,9 @@ const savedRun = (id: string, cwd: string, terminal: string | null): WorkflowRun
   createdAt: new Date().toISOString(),
 });
 
-// A real server whose host is a tmux server on its own socket, holding one session that runs sh.
-const setUp = async (): Promise<Setup> => {
+// A home whose registry holds r-1, attached to a session that runs sh on its own tmux server,
+// and r-2, with no session yet.
+const seedHome = async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-term-")));
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-term-cwd-")));
   const socket = `yok-test-${randomUUID()}`;
@@ -51,6 +54,12 @@ const setUp = async (): Promise<Setup> => {
   const registry = createRegistry(registryPath(home));
   await registry.addRun(savedRun("r-1", cwd, SESSION));
   await registry.addRun(savedRun("r-2", cwd, null));
+  return { home, host, socket };
+};
+
+// A real server over a seeded home.
+const setUp = async (): Promise<Setup> => {
+  const { home, host, socket } = await seedHome();
   const server = await startServer({
     home,
     runtime: {
@@ -240,5 +249,83 @@ describe("the run's terminal websocket", () => {
     expect(reply.status).toBe(403);
     await Bun.sleep(300);
     expect(clients(setup.socket)).toBe("");
+  }, 20_000);
+});
+
+describe("a server stopped by a signal", () => {
+  test("it exits within a few seconds of SIGTERM while the runs-list stream, a run-page stream and a terminal socket are open", async () => {
+    const { home, socket } = await seedHome();
+    const server = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `import { startServer } from ${JSON.stringify(join(import.meta.dir, "server.ts"))};
+        await startServer({ home: process.env.YOK_HOME });`,
+      ],
+      { env: { ...process.env, YOK_HOME: home, YOK_TMUX_SOCKET: socket }, stdout: "ignore" },
+    );
+    cleanups.push(async () => {
+      server.kill("SIGKILL");
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+    });
+    await until(() => readPort(home) !== null, 10_000);
+    const port = readPort(home) as number;
+    const readers = await Promise.all(
+      ["/stream", "/runs/r-1/stream"].map(async (path) => {
+        const reply = await fetch(`http://127.0.0.1:${port}${path}`);
+        const reader = (reply.body as ReadableStream<Uint8Array>).getReader();
+        await reader.read();
+        return reader;
+      }),
+    );
+    const client = connect(port, "r-1");
+    await until(() => client.screen().includes("pane-ready"));
+
+    server.kill("SIGTERM");
+
+    const code = await Promise.race([server.exited, Bun.sleep(5_000).then(() => "still running")]);
+    expect(code).toBe(0);
+    expect((await client.closed).code).toBe(1001);
+    // A stream cut off instead of ended would make a read reject.
+    for (const reader of readers) {
+      let chunk = await reader.read();
+      while (!chunk.done) chunk = await reader.read();
+    }
+  }, 30_000);
+
+  test("a terminal socket still looking up its run when the server stops is closed with 1001, and the stop finishes", async () => {
+    const { home, host, socket } = await seedHome();
+    const registry = createRegistry(registryPath(home));
+    const stopping = new AbortController();
+    const lookup = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const slowRegistry = {
+      ...registry,
+      findRun: async (id: string) => {
+        lookup.resolve();
+        await release.promise;
+        return registry.findRun(id);
+      },
+    };
+    const app = new Hono().route(
+      "/api/runs",
+      terminalRoutes({ registry: slowRegistry, host, log: noopLogger, stopping: stopping.signal }),
+    );
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch, websocket });
+    cleanups.push(async () => {
+      spawnSync("tmux", ["-L", socket, "kill-server"]);
+      await server.stop(true);
+    });
+    const client = connect(server.port as number, "r-1");
+    await lookup.promise;
+
+    stopping.abort();
+    const stopped = server.stop().then(() => "stopped");
+    release.resolve();
+
+    expect(await Promise.race([stopped, Bun.sleep(3_000).then(() => "still running")])).toBe(
+      "stopped",
+    );
+    expect((await client.closed).code).toBe(1001);
   }, 20_000);
 });

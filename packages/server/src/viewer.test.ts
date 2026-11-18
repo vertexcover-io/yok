@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
 import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, type Registry, updateUsers } from "@yok/sdk/internal";
+import { createRegistry, type Registry, updateUsers, VERSION } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -134,6 +134,7 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
     host,
     now,
     home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: (target) => {
       opened.push(target);
       return { ok: true, value: null };
@@ -176,6 +177,12 @@ describe("viewer routes", () => {
     expect(page).toMatch(
       /<header class="bar">[\s\S]*<a class="nav" href="\/settings">Settings<\/a>[\s\S]*<\/header>/,
     );
+  });
+
+  test("the dashboard's footer names the running yok version", async () => {
+    const { get } = await setup();
+    const page = await (await get("/")).text();
+    expect(page).toContain(`<footer class="foot">yok v${VERSION}</footer>`);
   });
 
   test("SC6: the file list shows every artifact with type and draft flag, top-level first", async () => {
@@ -863,6 +870,7 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
     host,
     now: () => new Date(),
     home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: () => ({ ok: true, value: null }),
   });
 };
@@ -1131,6 +1139,7 @@ describe("summary on the run stream", () => {
       host,
       now: () => new Date(),
       home,
+      stopping: new AbortController().signal,
       openInEditor: () => ({ ok: true, value: null }),
     });
 
