@@ -12,9 +12,6 @@ inputs:
     type: string
     default: default
 doctor:
-  - check: env
-    key: LINEAR_API_KEY
-    fix: Set LINEAR_API_KEY in .env
   - check: binary
     key: bun
     fix: Install Bun
@@ -36,6 +33,7 @@ nodes:
     input:
       request: "{{ nodes.ticket-fetcher.output.task }}"
 
+  # Runs in a subagent beside design: nothing reads baseline.json before implement.
   - id: baseline
     type: agent
     stage: baseline
@@ -46,7 +44,7 @@ nodes:
   - id: design
     type: agent
     stage: design
-    dependsOn: [baseline]
+    dependsOn: [create-workspace]
     input:
       task: "{{ nodes.ticket-fetcher.output.task }}"
 
@@ -76,7 +74,8 @@ nodes:
   - id: implement
     type: agent
     stage: implement
-    dependsOn: [compact-after-planning]
+    mode: subagent
+    dependsOn: [compact-after-planning, baseline]
     input:
       workspace: "{{ nodes.create-workspace.output }}"
 
@@ -106,6 +105,7 @@ nodes:
       - id: fix
         type: agent
         stage: fix
+        mode: subagent
         dependsOn: [compact-before-fix]
         input:
           workspace: "{{ inputs.workspace }}"
@@ -116,6 +116,7 @@ nodes:
       - id: code-review
         type: agent
         stage: code-review
+        mode: subagent
         input:
           workspace: "{{ inputs.workspace }}"
           round: "{{ iteration.index }}"
@@ -141,6 +142,7 @@ nodes:
       - id: fix
         type: agent
         stage: fix
+        mode: subagent
         when: "{{ iteration.index > 1 }}"
         input:
           workspace: "{{ inputs.workspace }}"
@@ -181,6 +183,7 @@ nodes:
   # its own failure never changes the run's status.
   - id: retro
     type: agent
+    mode: subagent
     stage: retro
     notify: false
     dependsOn: [pr]

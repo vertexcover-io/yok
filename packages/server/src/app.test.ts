@@ -16,7 +16,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { addComments, captureLogger, type DoctorReport, loadStartEnv, summarize } from "@yok/core";
+import {
+  addComments,
+  captureLogger,
+  compilePlan,
+  type DoctorReport,
+  loadStartEnv,
+  summarize,
+  unwrap,
+} from "@yok/core";
 import type {
   Exec,
   IAgentProvider,
@@ -32,6 +40,10 @@ import {
   createTriggerStore,
   jsonlEventStore,
   type Registry,
+  readUsers,
+  type UsersFile,
+  updateUsers,
+  usersPath,
 } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import * as z from "zod";
@@ -86,9 +98,10 @@ const buildDeps = async (
   ) => Promise<Result<{ terminalName: string; terminal: ITerminal }>>,
   log = noopLogger,
 ) => {
-  const registryPath = join(mkdtempSync(join(tmpdir(), "yok-registry-")), "registry.json");
-  const registry = createRegistry(registryPath, log);
+  // in the home, as the server keeps it: sessionEnv looks a run's owner up there
   const home = mkdtempSync(join(tmpdir(), "yok-home-"));
+  const registryPath = join(home, "registry.json");
+  const registry = createRegistry(registryPath, log);
   const asked: string[] = [];
   return {
     registryPath,
@@ -107,6 +120,7 @@ const buildDeps = async (
     pid: 4242,
     version: "0.0.0-test",
     startedAt: 1_700_000_000_000,
+    stopping: new AbortController().signal,
     git: createGit(),
     checkCheckout: readyCheckout,
   };
@@ -189,6 +203,23 @@ const errorOf = async (res: Response) =>
   ((await res.json()) as { error: { code: string; message: string } }).error;
 
 describe("POST /runs", () => {
+  test("SC32 (regression): a run started through POST /runs records no owner and keeps the project's GH_TOKEN and the server's gh config", async () => {
+    const launches: LaunchOptions[] = [];
+    const deps = await buildDeps((options) => {
+      launches.push(options);
+      return launchesOk();
+    });
+    const { cwd } = tempWorkspace(deps.home);
+    writeFileSync(join(cwd, ".env"), "GH_TOKEN=server\n");
+
+    expect((await postRun(createApi(deps))).status).toBe(201);
+
+    const [run] = await deps.registry.listRuns();
+    expect(run).not.toHaveProperty("user");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("server");
+    expect(launches[0]?.env).not.toHaveProperty("GH_CONFIG_DIR");
+  });
+
   test.each([
     ["a body that is not JSON", "{not json"],
     ["an invalid supplied name", runBody({ name: "Bad/Name" })],
@@ -246,6 +277,7 @@ describe("POST /runs", () => {
       workflowPath,
       cwd,
       terminal: "session-xyz",
+      source: "api",
     });
   });
 
@@ -778,6 +810,28 @@ describe("POST /doctor", () => {
   );
 });
 
+describe("checkCheckoutWith", () => {
+  test("SC7101: a key the handed env holds passes the workflow's env check, and fails without that env", async () => {
+    const key = "YOK_RELAUNCH_KEY";
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-check-")));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeFileSync(
+      join(cwd, "check.yaml"),
+      okWorkflow({ doctor: [{ check: "env", key, fix: "set it" }] }),
+    );
+    const plan = unwrap(await compilePlan(join(cwd, "check.yaml"), cwd, null));
+    const env = { ok: true as const, value: { [key]: "1" } };
+    const failedOn = (report: DoctorReport) => report.failed.filter((name) => name.includes(key));
+
+    const handed = await checkCheckoutWith([], { cwd, plan, env });
+    const own = await checkCheckoutWith([], { cwd, plan });
+
+    expect(failedOn(handed.report)).toEqual([]);
+    expect(handed.env).toBe(env);
+    expect(failedOn(own.report)).not.toEqual([]);
+  });
+});
+
 describe("startProjectRun", () => {
   test("SC2017: a start the caller no longer wants is refused with a conflict after the doctor, recording nothing", async () => {
     const order: string[] = [];
@@ -802,7 +856,7 @@ describe("startProjectRun", () => {
       { project: "demo", workflow: "ok.yaml", inputs: {} },
       deps,
       noopLogger,
-      { stillWanted },
+      { source: "api", stillWanted },
     );
 
     expect(started.ok ? null : started.error.status).toBe(409);
@@ -823,7 +877,7 @@ describe("startProjectRun", () => {
       { project: "demo", workflow: "ok.yaml", inputs: {} },
       deps,
       noopLogger,
-      { permissionMode: "bypassPermissions" },
+      { source: "api", permissionMode: "bypassPermissions" },
     );
 
     expect(started.ok).toBe(true);
@@ -1071,6 +1125,17 @@ describe("createRoot guard", () => {
     }
   });
 
+  test("SC4 mount: the root app serves /login and /settings from the identity routes, behind the host guard", async () => {
+    const { app } = await rootApp("yok.example.com");
+    const headers = { host: "yok.example.com" };
+
+    const login = await send(app, "GET", "/login", headers);
+    expect(login.status).toBe(200);
+    expect(await login.text()).toContain("Sign in with GitHub");
+    expect((await send(app, "GET", "/settings", headers)).status).toBe(302);
+    expect((await send(app, "GET", "/login", { host: "evil.example.com" })).status).toBe(403);
+  });
+
   test("SC1005: a foreign Host gets 403 naming it on API and dashboard paths, and nothing is written", async () => {
     const { app, deps, launched } = await rootApp("yok.example.com");
     const headers = { host: "evil.example:4000" };
@@ -1188,7 +1253,7 @@ const signedHook = async (
 const mention = (text: string, extra: object = {}, eventId = "Ev1") => ({
   type: "event_callback",
   event_id: eventId,
-  event: { type: "app_mention", channel: "C1", ts: "100.1", text, ...extra },
+  event: { type: "app_mention", channel: "C1", ts: "100.1", user: "U7", text, ...extra },
 });
 
 // The hook acks before it posts, so a test waits on the fake's recorded calls.
@@ -1197,6 +1262,20 @@ const until = async (check: () => boolean): Promise<void> => {
 };
 
 describe("Slack hook", () => {
+  test("SC17: @yok login from U7 in thread 100.1 posts ephemeral to U7 in that thread, while help still posts to everyone", async () => {
+    const { app, posts } = await slackRoot();
+
+    await signedHook(app, mention("<@UBOT> login"));
+    await until(() => posts.length > 0);
+    await signedHook(app, mention("<@UBOT> help", {}, "Ev2"));
+    await until(() => posts.length > 1);
+
+    expect(posts[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+    expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1", user: "U7" });
+    expect(posts[1]?.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(posts[1]?.form.user).toBeUndefined();
+  });
+
   test("SC8: @yok help from the command channel gets one reply in its thread, as blocks with a text fallback", async () => {
     const { app, posts } = await slackRoot();
 
@@ -1448,7 +1527,10 @@ describe("Slack run command", () => {
     expect(run?.policies?.values.interaction).toBe(false);
     const [starting, started] = replies(posts);
     expect(starting).toBe("Starting `ok.yaml` on *demo*…");
-    expect(started).toBe(`*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`);
+    // the member is linked to no yok user, so a not-linked line follows (SC29)
+    expect(started?.split("\n")[0]).toBe(
+      `*\`${run?.id}\` started* · http://localhost:1/runs/${run?.id}`,
+    );
     expect(posts.every((post) => post.form.thread_ts === "100.1")).toBe(true);
   });
 
@@ -1468,17 +1550,32 @@ describe("Slack run command", () => {
     );
   });
 
-  test("SC22: a project whose updates go to C9 is refused naming C9, launches nothing and registers no run", async () => {
+  test("SC22: a project whose .env sends updates to C9 still starts from C1, with SLACK_CHANNEL_ID=C1, SLACK_MEMBER_ID=U7 (who typed it) and YOK_SLACK_THREAD=100.1 in the session", async () => {
     const { app, deps, posts, launches } = await slackRunRoot({ channel: "C9" });
 
     await signedHook(app, mention('<@UBOT> run ok.yaml --project demo --prompt "fix login"'));
 
     await until(() => posts.length >= 2);
-    const reply = replies(posts)[1];
-    expect(reply).toContain("C9");
-    expect(reply).toContain("run not started");
-    expect(launches).toEqual([]);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env?.SLACK_CHANNEL_ID).toBe("C1");
+    expect(launches[0]?.env?.SLACK_MEMBER_ID).toBe("U7");
+    expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
+    expect(replies(posts)[1]).not.toContain("no updates will follow here");
+    expect(await deps.registry.listRuns()).toHaveLength(1);
+  });
+
+  test("SC914: a mention whose user is empty sets no SLACK_MEMBER_ID, so the env's member stays the one tagged", async () => {
+    const { app, posts, launches } = await slackRunRoot({ channel: "C9" });
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --prompt "go"', { user: "" }),
+    );
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env).not.toHaveProperty("SLACK_MEMBER_ID");
+    expect(launches[0]?.env?.SLACK_CHANNEL_ID).toBe("C1");
   });
 
   test("SC23: a project with its notifier off starts without YOK_SLACK_THREAD and says no updates will follow", async () => {
@@ -1584,7 +1681,7 @@ const chatDeps = async () => {
     url: "http://yok.internal",
     send: async (input, init) => api.request(input, init),
   });
-  return { deps: { ...deps, client }, launches };
+  return { deps: { ...deps, client, now: () => new Date() }, launches };
 };
 
 const chatReply = (deps: DispatchDeps, text: string): Promise<Reply> =>
@@ -1600,7 +1697,7 @@ const firstCells = async (deps: DispatchDeps, text: string): Promise<readonly st
 // Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
 const addRunAt = (
   registry: Registry,
-  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name">>,
+  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name" | "user">>,
 ) =>
   registry.addRun({
     workflow: "ok",
@@ -1620,6 +1717,112 @@ const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
   if (!listed.ok) throw new Error(listed.error.message);
   return { ids: listed.value.runs.map((run) => run.id), total: listed.value.total };
 };
+
+const ritesh = { id: 7, login: "ritesh-gh" };
+const linkedU7 = (token: string | undefined): UsersFile => ({
+  u_1: {
+    name: "Ritesh",
+    email: "",
+    accounts: { github: token === undefined ? ritesh : { ...ritesh, token } },
+    slack: "U7",
+  },
+});
+const CONNECTED = "gho_u1";
+
+// Project demo, USERS in the home, and a GitHub whose /user answers with STATUS or throws;
+// from(MEMBER) runs `@yok run` as that Slack member.
+const ownedRunSetup = async (users: UsersFile, github: number | "down" = 200) => {
+  const { deps, launches } = await chatDeps();
+  tempWorkspace(deps.home);
+  await updateUsers(deps.home, () => users);
+  const githubFetch = async (): Promise<Response> => {
+    if (github === "down") throw new Error("ECONNREFUSED");
+    return new Response("{}", { status: github });
+  };
+  const owned = { ...deps, githubFetch };
+  const from = async (member: string) =>
+    replyText(
+      await dispatchCommand(
+        'run ok.yaml --project demo --prompt "x"',
+        { channel: "C1", ts: "100.1", user: member },
+        owned,
+        async () => undefined,
+      ),
+    );
+  return { deps, launches, from };
+};
+
+describe("Slack run owner", () => {
+  test("SC28: @yok run from U7, linked to u_1 with a live token, records u_1 as owner, launches with u_1's token, and warns about nothing", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await from("U7");
+
+    expect((await deps.registry.listRuns())[0]).toMatchObject({ source: "slack", user: "u_1" });
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+    expect(reply).not.toContain("not linked");
+    expect(reply).not.toContain("not connected");
+  });
+
+  test("SC29: @yok run from unlinked U8 starts as a Slack run with no user, with no GitHub token, and says to @yok login", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await from("U8");
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.source).toBe("slack");
+    expect(run?.user).toBeUndefined();
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(launches[0]?.env?.GH_CONFIG_DIR).toBe(join(deps.home, "gh-owned"));
+    expect(reply).toContain("`@yok login`");
+  });
+
+  test("SC30: a token GitHub answers 401 for is dropped, the account kept, and the run starts as u_1 with no token and the settings link", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), 401);
+
+    const reply = await from("U7");
+
+    const [user] = Object.values(await readUsers(deps.home));
+    expect(user?.accounts.github).toEqual(ritesh);
+    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(reply).toContain("GitHub is not connected for Ritesh");
+    expect(reply).toContain("http://localhost:1/settings");
+  });
+
+  test("@yok run from U7, linked to u_1 with no GitHub token, starts as u_1 with no token and the settings link, and leaves users.json alone", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(undefined), "down");
+    const before = readFileSync(usersPath(deps.home), "utf8");
+
+    const reply = await from("U7");
+
+    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect(launches[0]?.env?.GH_TOKEN).toBe("");
+    expect(reply).toContain("GitHub is not connected for Ritesh");
+    expect(reply).toContain("http://localhost:1/settings");
+    expect(readFileSync(usersPath(deps.home), "utf8")).toBe(before);
+  });
+
+  test("@yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user, told to @yok login", async () => {
+    const { deps } = await ownedRunSetup(linkedU7(CONNECTED));
+
+    const reply = await chat(deps, 'run ok.yaml --project demo --prompt "x"');
+
+    const [run] = await deps.registry.listRuns();
+    expect(run?.source).toBe("slack");
+    expect(run?.user).toBeUndefined();
+    expect(reply).toContain("`@yok login`");
+  });
+
+  test("SC31: when GitHub cannot be reached the token is kept and the run launches with it", async () => {
+    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), "down");
+
+    await from("U7");
+
+    expect((await readUsers(deps.home)).u_1?.accounts.github?.token).toBe(CONNECTED);
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+  });
+});
 
 describe("GET /runs", () => {
   const minute = (n: number): string => new Date(Date.UTC(2026, 9, 29, 10, n)).toISOString();
@@ -1715,6 +1918,57 @@ describe("GET /runs", () => {
     for (const valid of ["running", "blocked", "unreadable"]) {
       expect(!bogus.ok && bogus.error.message).toContain(valid);
     }
+  });
+});
+
+// Two runs by u_1 (ritesh-gh, GitHub id 8675309), one by u_2 and one with no owner.
+const ownedRunsDeps = async () => {
+  const { deps } = await chatDeps();
+  await updateUsers(deps.home, () => ({
+    u_1: {
+      name: "Ritesh",
+      email: "ritesh@example.com",
+      accounts: { github: { id: 8675309, login: "ritesh-gh" } },
+    },
+    u_2: {
+      name: "Asha",
+      email: "asha@example.com",
+      accounts: { github: { id: 42, login: "asha-gh" } },
+    },
+  }));
+  const cwd = gitRepo();
+  const owners = [
+    ["r-1", "u_1"],
+    ["r-2", "u_2"],
+    ["r-3", "u_1"],
+    ["r-4", undefined],
+  ] as const;
+  for (const [n, [id, user]] of owners.entries()) {
+    const createdAt = `2026-10-29T10:0${n}:00.000Z`;
+    await addRunAt(deps.registry, { id, cwd, createdAt, ...(user === undefined ? {} : { user }) });
+  }
+  return deps;
+};
+
+describe("GET /runs by", () => {
+  test("SC39: by=ritesh-gh, by=8675309 and by=ritesh@example.com each list u_1's two runs, and by=nobody is an empty 200", async () => {
+    const deps = await ownedRunsDeps();
+
+    for (const by of ["ritesh-gh", "8675309", "ritesh@example.com"]) {
+      const listed = await deps.client.runs({ by });
+      expect(listed.ok && listed.value.total).toBe(2);
+      expect(listed.ok && listed.value.runs.map((run) => [run.id, run.startedBy?.login])).toEqual([
+        ["r-3", "ritesh-gh"],
+        ["r-1", "ritesh-gh"],
+      ]);
+    }
+    expect(await listIds(deps, { by: "nobody" })).toEqual({ ids: [], total: 0 });
+  });
+
+  test("SC40: @yok ls --by ritesh-gh lists u_1's two runs and no others", async () => {
+    const deps = await ownedRunsDeps();
+
+    expect(await firstCells(deps, "ls --by ritesh-gh")).toEqual(["r-3", "r-1"]);
   });
 });
 
@@ -2403,6 +2657,24 @@ describe("/projects", () => {
   });
 });
 
+// The copy of the workflow orchestrate init keeps in the run folder: one exec node, two, that fails.
+const RUN_WORKFLOW =
+  'name: ok\nnodes:\n  - { id: two, type: exec, runtime: sh, script: "exit 1", input: {} }\n';
+
+// RUN_WORKFLOW with a doctor that needs RELAUNCH_KEY, which no test sets in the server's env.
+const RELAUNCH_KEY = "YOK_RELAUNCH_KEY";
+const GATED_WORKFLOW = JSON.stringify({
+  name: "ok",
+  doctor: [{ check: "env", key: RELAUNCH_KEY, fix: `add ${RELAUNCH_KEY} to .env` }],
+  nodes: [{ id: "two", type: "exec", runtime: "sh", script: "exit 1", input: {} }],
+});
+
+// What the doctor's own checks need of a checkout, so only a workflow's checks can block it.
+const passBuiltInChecks = (cwd: string): void => {
+  writeFileSync(join(cwd, ".gitignore"), ".yok/\n");
+  writeFileSync(join(cwd, "orchestrate.config.json"), '{ "version": 2 }\n');
+};
+
 const TIERS = {
   default: "fast",
   models: { fast: { model: "haiku-x" }, deep: { model: "opus-x" } },
@@ -2413,6 +2685,9 @@ type Seed = Readonly<{
   // false leaves the switch to opus-x requested with no applied event
   applied?: boolean;
   run?: Partial<WorkflowRun>;
+  // the run folder's workflow.yaml, and the checkout's .env
+  workflow?: string;
+  dotenv?: string;
 }>;
 
 const modelEvent = (
@@ -2428,8 +2703,14 @@ const modelEvent = (
 });
 
 // A run named demo on sessions s-0 then s-1, whose state and event log say it switched to opus-x.
+// Its checkout is a git repo holding the run folder's workflow.yaml, as orchestrate init leaves it.
 const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun> => {
-  const cwd = mkdtempSync(join(tmpdir(), "yok-resume-"));
+  const cwd = seed.run?.cwd ?? mkdtempSync(join(tmpdir(), "yok-resume-"));
+  execFileSync("git", ["init", "-q"], { cwd });
+  const runDir = runDirOf(cwd, "demo");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "workflow.yaml"), seed.workflow ?? RUN_WORKFLOW);
+  if (seed.dotenv !== undefined) writeFileSync(join(cwd, ".env"), seed.dotenv);
   const run: WorkflowRun = {
     id: "r-1a2b3c4d",
     workflow: "ok",
@@ -2448,8 +2729,6 @@ const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun
     ...seed.run,
   };
   await registry.addRun(run);
-  const runDir = runDirOf(cwd, "demo");
-  mkdirSync(runDir, { recursive: true });
   const status = seed.status ?? "running";
   const blocker =
     status === "blocked"
@@ -2486,19 +2765,40 @@ const resumeDeps = async () => {
   return { deps, launches };
 };
 
-const resume = (deps: Parameters<typeof createApi>[0], runId: string, env = {}) =>
-  createApi(deps).request(`/runs/${runId}/resume`, {
+// run: the run's id, or a whole run pick such as { project, name }
+const resume = (deps: Parameters<typeof createApi>[0], run: object | string) =>
+  createApi(deps).request("/runs/resume", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ env }),
+    body: JSON.stringify({ run: typeof run === "string" ? { id: run } : run }),
   });
 
-describe("POST /runs/:id/resume", () => {
-  test("SC602: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal", async () => {
+describe("POST /runs/resume", () => {
+  test("SC34: resuming a run owned by a connected user, with an empty body env, launches with their GitHub token", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.registry, { run: { source: "slack", user: "u_1" } });
+    const github = { id: 1, login: "ritesh-gh" };
+    await updateUsers(
+      deps.home,
+      (): UsersFile => ({
+        u_1: {
+          name: "R",
+          email: "",
+          accounts: { github: { ...github, token: "gho_u1" } },
+        },
+      }),
+    );
 
-    const res = await resume(deps, run.id, { FOO: "bar" });
+    expect((await resume(deps, run.id)).status).toBe(200);
+
+    expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+  });
+
+  test("SC602, SC7102: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal, with the env the server built from its checkout's .env", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { dotenv: "FOO=bar\n" });
+
+    const res = await resume(deps, run.id);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -2514,6 +2814,110 @@ describe("POST /runs/:id/resume", () => {
     expect(options?.cwd).toBe(run.cwd);
     expect(options?.env).toMatchObject({ FOO: "bar", YOK_RUN_ID: run.id, YOK_HOME: deps.home });
     expect(await deps.registry.findRun(run.id)).toEqual(run);
+  });
+
+  test("SC7103: a body that still carries an env is 400 bad-request and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+
+    const res = await createApi(deps).request("/runs/resume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ run: { id: run.id }, env: { FOO: "bar" } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("bad-request");
+    expect(launches).toEqual([]);
+  });
+
+  test("SC7104: a run named demo inside project demo, registered at its checkout, resumes continuing its s-1", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    addProjectEntry(deps.home, "demo", run.cwd);
+
+    const res = await resume(deps, { project: "demo", name: "demo" });
+
+    expect(res.status).toBe(200);
+    expect(launches.map((options) => options.continueSession?.id)).toEqual(["s-1"]);
+  });
+
+  test.each([
+    ["an unknown project", { project: "nope", name: "demo" }, 'unknown project "nope"'],
+    ["an unknown run name", { project: "demo", name: "other" }, 'no run named "other"'],
+  ])("SC7105: %s is 404 not-found and nothing launches", async (_label, pick, holds) => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry);
+    addProjectEntry(deps.home, "demo", run.cwd);
+
+    const res = await resume(deps, pick);
+
+    expect(res.status).toBe(404);
+    const error = await errorOf(res);
+    expect(error.code).toBe("not-found");
+    expect(error.message).toContain(holds);
+    expect(launches).toEqual([]);
+  });
+
+  test("SC7106: a resume whose workflow's doctor needs YOK_RELAUNCH_KEY is 400 with the doctor's report until the checkout's .env holds it", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = {
+      ...base,
+      checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
+    };
+    const run = await seedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    passBuiltInChecks(run.cwd);
+
+    const blocked = await resume(deps, run.id);
+
+    expect(blocked.status).toBe(400);
+    const { error }: { error: { code: string; message: string; details: DoctorReport } } =
+      await blocked.json();
+    expect(error.code).toBe("bad-request");
+    expect(error.message).toStartWith("BLOCKED");
+    expect(error.details.failed).toEqual([`env:${RELAUNCH_KEY}`]);
+    expect(launches).toEqual([]);
+
+    writeFileSync(join(run.cwd, ".env"), `${RELAUNCH_KEY}=1\n`);
+    expect((await resume(deps, run.id)).status).toBe(200);
+    expect(launches).toHaveLength(1);
+  });
+
+  test("a resume whose run folder's workflow.yaml no longer compiles is 409 conflict and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { workflow: "name: ok\nnodes: 3\n" });
+
+    const res = await resume(deps, run.id);
+
+    expect(res.status).toBe(409);
+    const error = await errorOf(res);
+    expect(error.code).toBe("conflict");
+    expect(error.message).toStartWith("run demo cannot start a session: ");
+    expect(launches).toEqual([]);
+  });
+
+  test("a claude workflow's run whose last session was codex runs its doctor for codex, the agent it resumes on", async () => {
+    const { deps: base } = await resumeDeps();
+    const checked: string[] = [];
+    const deps = {
+      ...base,
+      checkCheckout: (async (input) => {
+        checked.push(input.plan?.agent ?? "none");
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    const run = await seedRun(deps.registry, {
+      run: {
+        sessions: [
+          { agent: "claude", sessionId: "s-0" },
+          { agent: "codex", sessionId: "s-1" },
+        ],
+      },
+    });
+
+    expect((await resume(deps, run.id)).status).toBe(200);
+
+    expect(checked).toEqual(["codex"]);
   });
 
   test.each([
@@ -2795,5 +3199,216 @@ describe("POST /runs/:id/resume", () => {
     });
     expect(launches).toEqual([]);
     expect(existsSync(lock)).toBe(true);
+  });
+});
+
+// demo, failed on its workflow's exec node two: two started, two failed, then the run failed.
+const seedFailedRun = async (
+  registry: Registry,
+  seed: Seed = {},
+  error: Readonly<{ kind: string; message: string }> = { kind: "exit", message: "exit 1" },
+): Promise<WorkflowRun> => {
+  const run = await seedRun(registry, { status: "failed", ...seed });
+  const runDir = runDirOf(run.cwd, "demo");
+  const store = jsonlEventStore(runDir);
+  const two = { nodeId: "two", nodeRunId: "nr-two" };
+  const events = [
+    { type: "workflow.node.started", ...two, payload: { nodeType: "exec" } },
+    {
+      type: "workflow.node.failed",
+      ...two,
+      payload: { nodeType: "exec", attempts: 1, error },
+    },
+    { type: "workflow.failed", payload: {} },
+  ];
+  for (const [index, event] of events.entries()) {
+    const stored = await store.append({
+      id: `e-fail-${index}`,
+      ts: "2026-01-01T00:00:03.000Z",
+      source: "workflow",
+      runId: run.id,
+      ...event,
+    });
+    if (!stored.ok) throw new Error(stored.error);
+  }
+  return run;
+};
+
+const retry = (deps: Parameters<typeof createApi>[0], runId: string, answered?: boolean) =>
+  createApi(deps).request("/runs/retry", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ run: { id: runId }, ...(answered === undefined ? {} : { answered }) }),
+  });
+
+const stateOf = (run: WorkflowRun): State =>
+  JSON.parse(readFileSync(join(runDirOf(run.cwd, "demo"), "state.json"), "utf8"));
+
+describe("POST /runs/retry", () => {
+  test("SC12: a failed run gets its failed step two reopened and continues s-1 with the resume prompt", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry, { dotenv: "FOO=bar\n" });
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      run,
+      attach: ["tmux", "attach-session", "-t", "%9"],
+      view: `http://localhost:1/runs/${run.id}`,
+    });
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.prompt).toBe("/orchestrate --resume demo");
+    expect(launches[0]?.continueSession).toEqual({ id: "s-1", terminalName: "claude-demo-3c4d" });
+    expect(launches[0]?.env).toMatchObject({ FOO: "bar" });
+    const state = stateOf(run);
+    expect(state.status).toBe("running");
+    expect(state.nodeRuns.two?.status).toBe("interrupted");
+  });
+
+  test("a failed run the runs list already showed is listed as no longer failed once it is retried", async () => {
+    const { deps } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry);
+    const listedStatus = async () => {
+      const res = await createApi(deps).request("/runs");
+      const body: { runs: readonly { id: string; status: string }[] } = await res.json();
+      return body.runs.find((listed) => listed.id === run.id)?.status;
+    };
+    expect(await listedStatus()).toBe("failed");
+
+    expect((await retry(deps, run.id)).status).toBe(200);
+
+    // Running again, with no agent session behind it: the fake launch starts none.
+    expect(await listedStatus()).toBe("gone");
+  });
+
+  test("a run whose step two failed needing an answer is 409 and stays failed until answered: true, which reopens it and launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(
+      deps.registry,
+      {},
+      {
+        kind: "needs-input",
+        message: "Which database?",
+      },
+    );
+
+    const refused = await retry(deps, run.id);
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(await refused.json())).toContain("Which database?");
+    expect(launches).toEqual([]);
+    expect(stateOf(run).status).toBe("failed");
+
+    expect((await retry(deps, run.id, true)).status).toBe(200);
+    expect(launches).toHaveLength(1);
+    expect(stateOf(run).status).toBe("running");
+  });
+
+  test("SC7107: a retry the doctor refuses is 400, leaves the run and its step two failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = {
+      ...base,
+      checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
+    };
+    const run = await seedFailedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    passBuiltInChecks(run.cwd);
+    const before = stateOf(run);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("bad-request");
+    expect(stateOf(run)).toEqual(before);
+    expect(before.status).toBe("failed");
+    expect(launches).toEqual([]);
+  });
+
+  test("a retry whose agent session comes back while its doctor runs is 409, leaves step two failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    let alive = false;
+    const deps = {
+      ...base,
+      host: {
+        ...base.host,
+        find: (name: string) => ({ ...base.host.find(name), isAlive: async () => alive }),
+      },
+      // another resume launches the session while this request's doctor runs
+      checkCheckout: (async (input) => {
+        alive = true;
+        return readyCheckout(input);
+      }) satisfies CheckCheckout,
+    };
+    const run = await seedFailedRun(deps.registry);
+    const before = stateOf(run);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toContain("still has its agent session");
+    expect(stateOf(run)).toEqual(before);
+    expect(launches).toEqual([]);
+  });
+
+  test("SC13:a failed codex run asks for the codex provider and prompts $orchestrate --resume demo", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedFailedRun(deps.registry, {
+      run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },
+    });
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(200);
+    expect(deps.asked).toEqual(["codex"]);
+    expect(launches.map((options) => options.prompt)).toEqual(["$orchestrate --resume demo"]);
+  });
+
+  test("SC14: a completed run is 409 conflict saying retry brings back only a failed run, and nothing launches", async () => {
+    const { deps, launches } = await resumeDeps();
+    const run = await seedRun(deps.registry, { status: "completed" });
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo is completed; retry brings back only a failed run",
+      },
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test("SC15: a failed run whose tmux session is still alive is 409 pointing at yok attach demo, stays failed, and nothing launches", async () => {
+    const { deps: base, launches } = await resumeDeps();
+    const deps = { ...base, host: fakeHost("", true).host };
+    const run = await seedFailedRun(deps.registry);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "run demo still has its agent session; use yok attach demo",
+      },
+    });
+    expect(launches).toEqual([]);
+    expect(stateOf(run).status).toBe("failed");
+  });
+
+  test("SC16: a launch that fails after the retry is 502 saying yok resume demo starts the reopened run", async () => {
+    const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
+    const run = await seedFailedRun(deps.registry);
+
+    const res = await retry(deps, run.id);
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "agent-failed",
+        message: "boom; its failed steps are reopened, so yok resume demo starts it",
+      },
+    });
+    expect(stateOf(run).status).toBe("running");
   });
 });

@@ -17,10 +17,12 @@ import type { Check, IAgentProvider, ILogger, ITerminalHost, Result } from "@yok
 import { createGit, execWithTimeout, noopLogger, registryPath } from "@yok/sdk";
 import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
 import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import prettyFactory from "pino-pretty";
 import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
+import { identityRoutes } from "./identity.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { pidPath, portPath, publicOrigin, readPort, serverBind, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
@@ -28,7 +30,13 @@ import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
 
 export type CheckCheckout = (
-  input: Readonly<{ cwd: string; config?: string; plan?: WorkflowPlan }>,
+  // env: the env the session will get, checked instead of the checkout's when given
+  input: Readonly<{
+    cwd: string;
+    config?: string;
+    plan?: WorkflowPlan;
+    env?: Result<Record<string, string>>;
+  }>,
 ) => Promise<Readonly<{ env: Result<Record<string, string>>; report: DoctorReport }>>;
 
 export type Runtime = Readonly<{
@@ -55,10 +63,10 @@ export const runtimeChecks = (agent: WorkflowAgent): readonly Check[] => {
 // env checks fall back to process.env, which is the server's.
 export const checkCheckoutWith = async (
   runtime: readonly Check[],
-  { cwd, config, plan }: Parameters<CheckCheckout>[0],
+  { cwd, config, plan, ...given }: Parameters<CheckCheckout>[0],
 ): ReturnType<CheckCheckout> => {
   const agent = plan?.agent ?? "claude";
-  const env = await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent });
+  const env = given.env ?? (await loadStartEnv(config ?? null, cwd, plan ?? { env: {}, agent }));
   const declared = plan === undefined ? [] : workflowChecks(plan.doctor, env);
   const report = await runDoctor({
     cwd,
@@ -73,7 +81,12 @@ const checkCheckout: CheckCheckout = (input) =>
 
 export type RootDeps = ApiDeps &
   ViewerDeps &
-  Readonly<{ port: number; domain: string; slackFetch?: notifierHooks.Fetch }>;
+  Readonly<{
+    port: number;
+    domain: string;
+    slackFetch?: notifierHooks.Fetch;
+    githubFetch?: notifierHooks.Fetch;
+  }>;
 
 // The API sits under /api so its routes never shadow a dashboard page: the API's GET /runs/view
 // once also matched the dashboard's GET /runs/:id. The Slack hook is added before the API, whose
@@ -91,6 +104,14 @@ export const createRoot = (deps: RootDeps) => {
     .use("*", hostGuard(deps.port, deps.domain))
     .route("/api/hooks/slack", slackHookRoutes({ ...deps, client }))
     .route("/api", api)
+    .route(
+      "/",
+      identityRoutes({
+        ...deps,
+        publicOrigin: publicOrigin(deps.domain),
+        log: deps.log.child({ component: "identity" }),
+      }),
+    )
     .route("/", viewerRoutes({ ...deps, log: deps.log.child({ component: "viewer" }) }));
 };
 
@@ -104,6 +125,7 @@ const listen = (hostname: string, port: number | undefined, saved: number | null
       port: at,
       idleTimeout: 0,
       fetch: () => new Response("starting", { status: 503 }),
+      websocket,
     });
   if (port !== undefined) return serve(port);
   try {
@@ -166,6 +188,7 @@ export const startServer = async ({
   await adoptLegacyTriggers(home, { triggers, log: triggersLog }).catch((error: unknown) =>
     triggersLog.error({ err: error }, "triggers saved with a folder were not moved to projects"),
   );
+  const stopping = new AbortController();
   const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS, { GIT_TERMINAL_PROMPT: "0" }));
   startScheduler({
     triggers,
@@ -190,6 +213,7 @@ export const startServer = async ({
     pid: process.pid,
     version,
     startedAt: Date.now(),
+    stopping: stopping.signal,
     git,
     checkCheckout,
     port: boundPort,
@@ -197,7 +221,7 @@ export const startServer = async ({
     now: () => new Date(),
     openInEditor: (target) => openInEditor({ ...target, env: process.env }),
   });
-  server.reload({ fetch: root.fetch });
+  server.reload({ fetch: root.fetch, websocket });
   await writeFile(portPath(home), String(boundPort));
   await writeFile(pidPath(home), String(process.pid));
   serverLog.info({ port: boundPort, pid: process.pid, version, origin }, "server listening");
@@ -205,7 +229,10 @@ export const startServer = async ({
   const stop = async (): Promise<void> => {
     stopDeliveries();
     await stopScheduler();
-    // stop() resolves once in-flight requests finish, so a run still launching gets recorded.
+    // The live streams and terminal sockets never finish on their own; end them first. stop()
+    // then resolves once the other in-flight requests finish, so a run still launching gets
+    // recorded.
+    stopping.abort();
     await server.stop();
     await removeOwnPid(home);
   };

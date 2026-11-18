@@ -1,20 +1,11 @@
 import { basename, resolve } from "node:path";
 import { Command, type CommandUnknownOpts } from "@commander-js/extra-typings";
-import {
-  builtInChecks,
-  compileRunWorkflow,
-  isWorkflowFile,
-  runDoctor,
-  verdict,
-  type WorkflowPlan,
-  workflowChecks,
-} from "@yok/core";
+import { isWorkflowFile } from "@yok/core";
 import {
   createGit,
+  createRegistryReader,
   type ILogger,
   type JsonObject,
-  loadEnv,
-  loadRunConfig,
   POLICY_NAMES,
   PoliciesSchema,
   type Result,
@@ -22,20 +13,16 @@ import {
   requireRun,
   spawnInteractive,
 } from "@yok/sdk";
-import { createRegistry, isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
-import { blockedText, folderSlug, runtimeChecks, startError } from "@yok/server";
+import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
+import { folderSlug, type RunPick, startError } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
   apiErrorText,
-  cliLog,
   commandLog,
-  ensureServer,
-  errorText,
   fail,
   isRemote,
   openForPerson,
   resolveClient,
-  yokClient,
 } from "./client.ts";
 import { PROJECT_REQUIRED } from "./project.ts";
 import { writeProjectTypes } from "./types.ts";
@@ -56,27 +43,6 @@ export const followUps = ({
   attach: boolean;
   hasTerminal: boolean;
 }): { noOpen: boolean; attach: boolean } => ({ noOpen: !open, attach: attach && hasTerminal });
-
-// The doctor yok run and yok resume run before the server: the runtime, workflow and built-in
-// checks over the env the session will get. Returns why the run is blocked, or null.
-const checkBeforeStart = async (
-  cwd: string,
-  config: string | undefined,
-  plan: WorkflowPlan,
-  env: Result<Record<string, string>>,
-): Promise<string | null> => {
-  const report = await runDoctor({
-    cwd,
-    config,
-    extraChecks: [
-      ...runtimeChecks(plan.agent),
-      ...workflowChecks(plan.doctor, env),
-      ...builtInChecks(plan, env),
-    ],
-    log: cliLog(),
-  });
-  return verdict(report).startsWith("BLOCKED") ? blockedText(verdict(report), report) : null;
-};
 
 // Only what is read here: the server client's JSON type for a run is looser than WorkflowRun.
 type StartedRun = Readonly<{
@@ -107,6 +73,44 @@ const showStartedRun = async (
   });
   log.info({ runId: run.id, terminal: run.terminal, exitCode }, "detached from the session");
   process.exitCode = exitCode;
+};
+
+// What a remote command that starts a session prints: nobody here attaches to it.
+const printRemoteRun = ({ run, view }: StartedRun): void => console.log(`${run.id}\nview: ${view}`);
+
+type RunFlags = Readonly<{ runId?: string; project?: string }>;
+
+// The run as the server is asked for it, or a bare name, which only this checkout's runs can
+// resolve, together with any --run-id. Otherwise --run-id wins over a name.
+export const runPick = (
+  name: string | undefined,
+  flags: RunFlags,
+  env: Readonly<Record<string, string | undefined>>,
+  remote: boolean,
+): Result<RunPick | string> => {
+  if (name !== undefined && flags.project === undefined && !remote) {
+    return { ok: true, value: name };
+  }
+  // the session's own run lives on this machine's server, never on a remote one
+  const sessionRun = name === undefined && !remote ? env.YOK_RUN_ID || undefined : undefined;
+  const id = flags.runId ?? sessionRun;
+  if (id !== undefined) return { ok: true, value: { id } };
+  if (name === undefined) return { ok: false, error: "no run: pass a run name or --run-id" };
+  if (flags.project !== undefined) return { ok: true, value: { project: flags.project, name } };
+  return { ok: false, error: PROJECT_REQUIRED };
+};
+
+// A bare name is looked up among this checkout's runs, as yok view does; with an id as well, a
+// pair naming different runs is refused.
+const localPick = async (name: string, id: string | undefined): Promise<Result<RunPick>> => {
+  const run = await requireRun({
+    registry: createRegistryReader(registryPath()),
+    name,
+    id,
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  return run.ok ? { ok: true, value: { id: run.value.id } } : run;
 };
 
 export const projectAt = async (
@@ -245,11 +249,50 @@ export const runCommand = () => {
       const { run } = result.value;
       const { terminal } = run;
       log.info({ runId: run.id, workflow: run.workflow, cwd: run.cwd, terminal }, "run started");
-      if (remote) return console.log(`${run.id}\nview: ${result.value.view}`);
+      if (remote) return printRemoteRun(result.value);
       await showStartedRun(result.value, opts, cwd, log);
     });
   addPolicyOptions(command);
   return command;
+};
+
+type RelaunchFlags = Readonly<{
+  runId?: string;
+  project?: string;
+  answered?: boolean;
+  attach: boolean;
+  open: boolean;
+}>;
+
+// Starts a new agent session on a run that has none: resume as it stopped, or retry its failed
+// steps first. The server loads the run's env and runs the doctor, as it does for yok run.
+const relaunch = async (
+  action: "resume" | "retry",
+  name: string | undefined,
+  opts: RelaunchFlags,
+  command: CommandUnknownOpts,
+): Promise<void> => {
+  const log = commandLog(action);
+  const remote = isRemote(command);
+  const typed = runPick(name, opts, process.env, remote);
+  if (!typed.ok) return fail(typed.error);
+  // An id goes to the server as it is: one that never ran orchestrate init has no folder here,
+  // and the server says how to start it again.
+  const pick =
+    typeof typed.value === "string"
+      ? await localPick(typed.value, opts.runId)
+      : { ok: true as const, value: typed.value };
+  if (!pick.ok) return fail(pick.error);
+  const client = await resolveClient(remote);
+  const result =
+    action === "retry"
+      ? await client.retry({ run: pick.value, answered: opts.answered === true })
+      : await client.resume({ run: pick.value });
+  if (!result.ok) return fail(startError(result.error));
+  const done = action === "retry" ? "run retried" : "run resumed";
+  log.info({ runId: result.value.run.id, terminal: result.value.run.terminal }, done);
+  if (remote) return printRemoteRun(result.value);
+  await showStartedRun(result.value, opts, process.cwd(), log);
 };
 
 export const resumeCommand = () =>
@@ -257,45 +300,18 @@ export const resumeCommand = () =>
     .description("Bring back a run whose agent session is gone, after a reboot or a crash")
     .argument("[name]", "run name in this repo (default: $YOK_RUN_ID)")
     .option("--run-id <id>", "resume by run id instead of name")
+    .option("--project <name>", "project the named run is in (required with --remote)")
     .option("--no-attach", "do not attach to the session's terminal once it starts")
     .option("--no-open", "do not open the run's page in the browser")
-    .action(async (name, opts) => {
-      const log = commandLog("resume");
-      const registry = createRegistry(registryPath());
-      const picked = await requireRun({
-        registry,
-        name,
-        id: opts.runId,
-        env: process.env,
-        cwd: process.cwd(),
-      });
-      if (!picked.ok) {
-        // A run that died before orchestrate init has no folder to resume from.
-        const found = opts.runId === undefined ? undefined : await registry.findRun(opts.runId);
-        return fail(
-          found?.name === null
-            ? `run ${found.id} never started its agent session; start it again with yok run`
-            : picked.error,
-        );
-      }
-      const run = picked.value;
-      const config = await loadRunConfig(run);
-      if (!config.ok) return fail(config.error);
-      const plan = await compileRunWorkflow(run, config.value).catch((error: unknown) => {
-        fail(errorText(error));
-        return null;
-      });
-      if (plan === null) return;
+    .action((name, opts, command) => relaunch("resume", name, opts, command));
 
-      // the env every later session of the run gets, from the config init recorded
-      const env = await loadEnv(config.value, plan, run.cwd);
-      const blocked = await checkBeforeStart(run.cwd, config.value.path ?? undefined, plan, env);
-      if (blocked !== null) return fail(blocked);
-      if (!env.ok) return fail(env.error);
-
-      await ensureServer();
-      const result = await yokClient().resume(run.id, { env: env.value });
-      if (!result.ok) return fail(apiErrorText(result.error));
-      log.info({ runId: run.id, terminal: result.value.run.terminal }, "run resumed");
-      await showStartedRun(result.value, opts, process.cwd(), log);
-    });
+export const retryCommand = () =>
+  new Command("retry")
+    .description("Bring back a failed run from the step that failed, in a new agent session")
+    .argument("[name]", "run name in this repo (default: $YOK_RUN_ID)")
+    .option("--run-id <id>", "retry by run id instead of name")
+    .option("--project <name>", "project the named run is in (required with --remote)")
+    .option("--answered", "retry a step that failed waiting on a person, once it is dealt with")
+    .option("--no-attach", "do not attach to the session's terminal once it starts")
+    .option("--no-open", "do not open the run's page in the browser")
+    .action((name, opts, command) => relaunch("retry", name, opts, command));

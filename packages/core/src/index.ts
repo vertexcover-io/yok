@@ -3,6 +3,7 @@ export { type CodexProviderOptions, codexProvider } from "./agents/codex.ts";
 export { unwrap } from "./agents/common.ts";
 export { type AgentProviderOptions, agentBinary, agentProvider } from "./agents/index.ts";
 export { yokTerminalHost } from "./agents/tmux.ts";
+export { answerClaudeDialogs } from "./agents/trust.ts";
 export {
   addComments,
   addUserReply,
@@ -60,7 +61,7 @@ export {
   uninstallPlugin,
   YOK_REPO,
 } from "./plugin.ts";
-export { getNodeFacts, loadStartEnv } from "./runs.ts";
+export { getNodeFacts, loadStartEnv, retryFailedSteps } from "./runs.ts";
 export * as samskaraHooks from "./samskara.ts";
 export {
   findPluginSkills,

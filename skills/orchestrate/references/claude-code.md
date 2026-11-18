@@ -9,6 +9,14 @@ Read this when you are Claude Code. It names the tools that SKILL.md describes b
   `mode: background` command, or an inline one that timed out, runs with Bash's
   `run_in_background: true`. Claude Code sends a task-finished notice when it ends. Start every
   background entry of a `steps` reply before you begin the inline one.
+
+  The same holds for any command a stage runs, `skill run` commands and shell commands included:
+  give a slow one an explicit Bash `timeout`. If Bash still moves it to the background, end the
+  turn and wait for the task-finished notice, then read its output. A command is never dead
+  because it is slow: a node fails only on a non-zero exit or an error in its output. Tell
+  whether a parked command is still running only by that notice or its output file, never
+  with `pgrep` on a script name: `yok orchestrate skill run` loads the script inside the yok
+  process, so no process's command line holds the script's file name.
 - **Subagents:**
   - Start one with the `Agent` tool, `subagent_type: "general-purpose"` and
     `run_in_background: true`.

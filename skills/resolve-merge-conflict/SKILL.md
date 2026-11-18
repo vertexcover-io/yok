@@ -1,12 +1,33 @@
 ---
 name: resolve-merge-conflict
 description: "Resolves git merge and rebase conflicts, stopped locally or reported on an open pull request, by recovering the intent behind each conflicting change, then finishing the merge. Use when a merge, rebase, cherry-pick or stash pop has stopped with conflicts, when git reports 'CONFLICT', 'Unmerged paths', 'fix conflicts and then commit', or 'could not apply', when a pull request shows 'This branch has conflicts that must be resolved', and whenever the user says 'resolve the conflicts', 'fix the merge', 'the PR has conflicts', 'the rebase onto main stopped', 'rebase conflict', 'this won't merge' or asks what to keep from which side. Handles conflicts only — git-commit writes ordinary commits. Pushes only to return an open PR's resolution, and asks first."
+summary: Say whether the base was merged, how many files conflicted, and which side won each clash.
+mode: inline
+allowed-tools: [Bash, Read, Edit, Grep, Glob]
+tier: deep
+protocols: []
+scopes: []
 ---
 
 # Resolving merge conflicts
 
 A conflict is two intents meeting, not two texts. Recover both intents before touching a hunk, or
 the resolution compiles and means the wrong thing.
+
+## In a run
+
+The input holds `workspace` (the create-workspace stage's output), `base` (the branch the pull
+request merges into) and `hasConflicts`. Do these steps in each repo's `worktreeDir`.
+
+1. **Finish at once when nothing conflicts.** When `hasConflicts` is false, finish the stage with
+   the output `No conflict with BASE; nothing merged.` and change nothing.
+2. **Merge the base.** Run `git fetch origin BASE` and `git merge origin/BASE`. Merge, never
+   rebase: the branch belongs to an open pull request.
+3. **Resolve.** Follow the steps below, from **See the current state** to **Finish the merge**.
+   The run is unattended for this stage: commit without asking.
+4. **Push.** Push as the Push section of `yok orchestrate skill ref implement.working-instructions`
+   says.
+5. **Finish.** Finish the stage with the Reporting lines below as the output.
 
 ## When the conflict is on an open PR
 

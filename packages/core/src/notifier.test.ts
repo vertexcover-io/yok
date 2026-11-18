@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { EmitInput, Event, emitRunEvent, JsonValue, NodeRun, RunRef, State } from "@yok/sdk";
 import {
+  callSlack,
   createSlackNotifier,
   describeEvent,
   findMissingNotifierKeys,
@@ -249,12 +250,12 @@ describe("describeEvent", () => {
       }),
     ],
     [
-      "SC814: a failed run names the first failed node, the first line of its error, then the resume line",
+      "SC814: a failed run names the first failed node, the first line of its error, then the retry line",
       event("workflow.failed"),
       failedBuild,
       notice("❌ Run failed at build · 12m", {
         mention: true,
-        body: "tsc exit 2\nRun demo failed. Resume it with: yok resume demo",
+        body: "tsc exit 2\nRun demo failed. Retry it from the failed step with: yok retry demo",
       }),
     ],
     [
@@ -564,6 +565,7 @@ describe("the notifier's Slack variables", () => {
 // An opener whose notifier records what it was asked to do and starts thread 171.1.
 const fakeOpener = () => {
   const opened: string[] = [];
+  const envs: Readonly<Record<string, string | undefined>>[] = [];
   const posts: (string | undefined)[] = [];
   const notices: Notice[] = [];
   const uploads: (readonly [string, string])[] = [];
@@ -577,11 +579,12 @@ const fakeOpener = () => {
       uploads.push([file, threadId]);
     },
   };
-  const open: OpenNotifier = (type) => {
+  const open: OpenNotifier = (type, env = {}) => {
     opened.push(type);
+    envs.push(env);
     return { ok: true, value: notifier };
   };
-  return { calls: { opened, posts, notices, uploads }, open };
+  return { calls: { opened, envs, posts, notices, uploads }, open };
 };
 
 const inThread171: State = { ...state, notification: { provider: "slack", threadId: "171.1" } };
@@ -631,6 +634,35 @@ describe("notify", () => {
         payload: { provider: "slack", threadId: "171.1" },
       },
     ]);
+  });
+
+  test("SC917: a run whose thread names channel C1 and requester U7 opens the notifier with them over the env's channel and member", async () => {
+    const { calls, open } = fakeOpener();
+    const inRequesterThread: State = {
+      ...state,
+      notification: { provider: "slack", threadId: "100.1", channel: "C1", user: "U7" },
+    };
+    const started = event("workflow.node.started", { nodeType: "agent", notify: true }, "design");
+
+    await notify(
+      "slack",
+      { event: started, state: inRequesterThread, run },
+      open,
+      fakeRecorder().record,
+    );
+
+    expect(calls.posts).toEqual(["100.1"]);
+    expect(calls.envs[0]).toMatchObject({ SLACK_CHANNEL_ID: "C1", SLACK_MEMBER_ID: "U7" });
+  });
+
+  test("SC918 (regression): a run whose thread names no channel or requester opens the notifier with the env's own", async () => {
+    const { calls, open } = fakeOpener();
+    const started = event("workflow.node.started", { nodeType: "agent", notify: true }, "design");
+
+    await notify("slack", { event: started, state: inThread171, run }, open, fakeRecorder().record);
+
+    expect(calls.envs[0]?.SLACK_CHANNEL_ID).toBe(process.env.SLACK_CHANNEL_ID);
+    expect(calls.envs[0]?.SLACK_MEMBER_ID).toBe(process.env.SLACK_MEMBER_ID);
   });
 
   // A run folder holding artifacts/design.md, a 2 MB artifacts/page.html, artifacts/big.html over
@@ -701,5 +733,24 @@ describe("notify", () => {
 
     expect(result).toBeUndefined();
     expect(calls.opened).toEqual([]);
+  });
+});
+
+describe("callSlack", () => {
+  test("SC35: a GitHub token in the text reaches Slack as [redacted], and in no recorded call", async () => {
+    const token = `gho_${"a1B2".repeat(9)}`;
+    const calls: string[] = [];
+    const fetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      calls.push(`${String(url)} ${String(init?.body)}`);
+      return Response.json({ ok: true });
+    };
+    const config = { token: "xoxb-t", channel: "C1", memberId: undefined, fetch };
+
+    await callSlack(config, "chat.postMessage", { channel: "C1", text: `push failed: ${token}` });
+
+    expect(new URLSearchParams(calls[0]?.split(" ")[1]).get("text")).toBe(
+      "push failed: [redacted]",
+    );
+    expect(calls.join("\n")).not.toContain(token);
   });
 });

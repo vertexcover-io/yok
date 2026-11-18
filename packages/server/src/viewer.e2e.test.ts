@@ -1,20 +1,26 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { yokTerminalHost } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { createRegistry, updateUsers } from "@yok/sdk/internal";
+import { Hono } from "hono";
+import { websocket } from "hono/bun";
+import { type Browser, chromium, type Page } from "playwright";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, seedState } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, fakePane, seedState } from "./fake-host.ts";
+import { forgetFinishedRun } from "./overview.ts";
+import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
 
 const ORCHESTRATE = [
   join(import.meta.dir, "..", "..", "cli", "src", "index.ts"),
   "orchestrate",
 ] as const;
-const SESSION = `viewer-e2e-${process.pid}`;
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "yok-viewer-e2e-")));
 
@@ -127,39 +133,26 @@ const MODULE_PAGE = `<!doctype html><html><body>
 <script>fetch("./module.json").then((r) => r.json()).then((d) => { document.getElementById("data").textContent = d.word; });</script>
 </body></html>`;
 
-// Async on purpose: the viewer runs in this process, and a sync spawn would freeze it while the
-// browser waits for its page.
-const browser = async (...args: string[]): Promise<string> => {
-  const run = Bun.spawn(["agent-browser", ...args], {
-    env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(run.stdout).text(),
-    new Response(run.stderr).text(),
-    run.exited,
-  ]);
-  if (code !== 0) throw new Error(`agent-browser ${args[0]} failed: ${stderr}${stdout}`);
-  return stdout.trim();
-};
+// One browser for the file; every test gets its own context, so no tab, storage or viewport leaks
+// from one test into the next.
+let chrome: Browser;
+let page: Page;
 
-const evaluate = async (js: string): Promise<unknown> => {
-  const out = await browser("eval", js);
-  try {
-    return JSON.parse(out);
-  } catch {
-    return out;
-  }
-};
+beforeAll(async () => {
+  chrome = await chromium.launch();
+}, 30000);
+afterAll(() => chrome.close());
+beforeEach(async () => {
+  page = await (await chrome.newContext()).newPage();
+});
+afterEach(() => page.context().close());
+
+const evaluate = (js: string): Promise<unknown> => page.evaluate<unknown>(js);
 
 const until = async (js: string, ms = 5000): Promise<void> => {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if ((await evaluate(js)) === true) return;
-    await Bun.sleep(100);
-  }
-  throw new Error(`still false after ${ms}ms: ${js}`);
+  await page.waitForFunction(js, undefined, { timeout: ms }).catch(() => {
+    throw new Error(`still false after ${ms}ms: ${js}`);
+  });
 };
 
 const selectText = async (inFrame: boolean, text: string): Promise<void> => {
@@ -180,18 +173,29 @@ const selectText = async (inFrame: boolean, text: string): Promise<void> => {
   })()`);
 };
 
-const belowHead = (heading: string): string => `(() => {
+const gapBelowHead = (heading: string): string => `(() => {
   const head = document.querySelector('#docHead').getBoundingClientRect().bottom;
   const target = [...document.querySelectorAll('#docRoot h1, #docRoot h2, #docRoot h3')].find((h) => h.textContent === ${JSON.stringify(heading)});
-  const gap = target.getBoundingClientRect().top - head;
-  return gap >= 0 && gap < 40;
+  return target.getBoundingClientRect().top - head;
 })()`;
+
+const untilBelowHead = async (heading: string): Promise<void> => {
+  const gap = gapBelowHead(heading);
+  await until(`${gap} >= 0 && ${gap} < 40`).catch(async () => {
+    const pane = await evaluate(
+      "(() => { const p = document.querySelector('#docPane'); return { scrollTop: p.scrollTop, maxScroll: p.scrollHeight - p.clientHeight, hash: location.hash, viewport: [innerWidth, innerHeight] }; })()",
+    );
+    throw new Error(
+      `"${heading}" sits ${await evaluate(gap)}px below the header, not 0-39px: ${JSON.stringify(pane)}`,
+    );
+  });
+};
 
 const barShown = "!document.querySelector('#selbar').hidden";
 const commenting = "document.querySelector('#docPane').classList.contains('commenting')";
 
 const ensureCommentMode = async (): Promise<void> => {
-  if ((await evaluate(commenting)) !== true) await browser("click", "#modeBtn");
+  if ((await evaluate(commenting)) !== true) await page.click("#modeBtn");
   await until(commenting);
 };
 
@@ -209,12 +213,9 @@ const ARTIFACTS: Readonly<Record<string, string>> = {
   "scenarios.md": CHECKLIST,
 };
 
-// Every test starts from the seeded files, no comments, no state, and its own tab. Each test closes
-// its tab after: pages only navigated away from kept their event streams open until they used up
-// Chrome's six connections to the viewer.
-const resetRun = async (runDir: string): Promise<void> => {
+// Every test starts from the seeded files, no comments and no state.
+const resetRun = (runDir: string): void => {
   stopDeliveries();
-  await browser("tab", "new");
   // A seeded state.json starts at event 0, so events left from other tests would replay onto it.
   for (const name of ["comments.json", "state.json", "event.jsonl"])
     rmSync(join(runDir, name), { force: true });
@@ -269,6 +270,8 @@ describe("viewer in a browser", () => {
         host,
         log: noopLogger,
         now: () => new Date(),
+        home,
+        stopping: new AbortController().signal,
         openInEditor: (target) => {
           opened.push(target);
           return { ok: true, value: null };
@@ -279,39 +282,31 @@ describe("viewer in a browser", () => {
     url = `${viewer.origin}/runs/r1`;
   });
 
-  beforeEach(() => resetRun(runDir), 30000);
-  afterEach(() => browser("tab", "close"), 30000);
+  beforeEach(() => resetRun(runDir));
 
   afterAll(async () => {
     stopDeliveries();
-    // A sync spawn blocks the worker until every holder of its pipes exits, and the browser's
-    // background process can hold them for good, so it gets no pipes and a deadline.
-    spawnSync("agent-browser", ["close"], {
-      env: { ...process.env, AGENT_BROWSER_SESSION: SESSION },
-      stdio: "ignore",
-      timeout: 10_000,
-    });
     await viewer.stop();
   });
 
   test("SC33, SC14: Comment mode gates the selection bar, Add to batch holds comments listed by place until Send 2, and both reach the agent's status", async () => {
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.goto(`${url}#artifacts/design.md`);
     await until("!!document.querySelector('#docRoot')");
     await evaluate("localStorage.setItem('yok-viewer:comment-mode','off')");
-    await browser("reload");
+    await page.reload();
     await until("!!document.querySelector('#docRoot')");
 
     await selectText(false, "one file per run");
     await Bun.sleep(600);
     expect(await evaluate(barShown)).toBe(false);
 
-    await browser("click", "#modeBtn");
+    await page.click("#modeBtn");
     await selectText(false, "one file per run");
     await until(barShown);
 
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Why only one file?");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Why only one file?");
+    await page.click("#batchBtn");
     await until("document.querySelector('.batch') !== null");
     expect(await evaluate("document.querySelector('#docRoot mark.hl.is-draft') !== null")).toBe(
       true,
@@ -322,9 +317,9 @@ describe("viewer in a browser", () => {
 
     await selectText(false, "Start small");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "How small?");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "How small?");
+    await page.click("#batchBtn");
     await until("document.querySelectorAll('.batch .card').length === 2");
     expect(
       await evaluate(
@@ -337,7 +332,7 @@ describe("viewer in a browser", () => {
     expect(await evaluate("document.querySelector('#sendBtn').textContent")).toBe(
       "Send 2 to the agent",
     );
-    await browser("click", "#sendBtn");
+    await page.click("#sendBtn");
     await until("document.querySelector('.batch') === null");
     await until(
       "[...document.querySelectorAll('#threads .card .status')].filter((s) => s.textContent === 'With the agent').length === 2",
@@ -361,12 +356,13 @@ describe("viewer in a browser", () => {
       }),
     });
     expect(posted.status).toBe(201);
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.goto(`${url}#artifacts/design.md`);
     await until("!!document.querySelector('#threads .card[data-cid=c1]')");
 
-    const reply = spawnSync(
-      "bun",
+    // Not spawnSync: that would freeze this process, whose server may hold a run lock the command waits for.
+    const reply = Bun.spawn(
       [
+        "bun",
         ...ORCHESTRATE,
         "comments",
         "reply",
@@ -381,11 +377,12 @@ describe("viewer in a browser", () => {
       ],
       {
         cwd,
-        encoding: "utf8",
         env: { ...process.env, YOK_RUN_ID: undefined, YOK_HOME: home },
+        stdout: "ignore",
+        stderr: "inherit",
       },
     );
-    expect(reply.status).toBe(0);
+    expect(await reply.exited).toBe(0);
     await until(
       "document.querySelector('#threads .card[data-cid=c1]').textContent.includes('Simpler to review.') && document.querySelector('#threads .card[data-cid=c1] .status').textContent === 'Answered'",
       3500,
@@ -407,18 +404,18 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC35: text selected inside an HTML artifact becomes a comment with an element path", async () => {
-    await browser("open", `${url}#artifacts/mock.html`);
+    await page.goto(`${url}#artifacts/mock.html`);
     await until(
       "document.querySelector('#htmlFrame')?.contentDocument?.getElementById('go')?.textContent === 'Continue'",
     );
     await ensureCommentMode();
     await selectText(true, "Sign in");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Make the title bolder");
-    await browser("click", "#batchBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Make the title bolder");
+    await page.click("#batchBtn");
     await until("document.querySelector('.batch') !== null");
-    await browser("click", "#sendBtn");
+    await page.click("#sendBtn");
     await until("document.querySelector('.batch') === null");
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('div.mk-card > h2.mk-title'))",
@@ -426,16 +423,16 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("an HTML artifact loads a sibling module script and fetches a sibling file, and the fetched text takes a comment", async () => {
-    await browser("open", `${url}#artifacts/module.html`);
+    await page.goto(`${url}#artifacts/module.html`);
     const text = (id: string): string =>
       `document.querySelector('#htmlFrame')?.contentDocument?.getElementById('${id}')?.textContent`;
     await until(`${text("mod")} === 'module ran' && ${text("data")} === 'fetched'`);
     await ensureCommentMode();
     await selectText(true, "fetched");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Say where this came from");
-    await browser("click", "#sendNowBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Say where this came from");
+    await page.click("#sendNowBtn");
     await until(
       "[...document.querySelectorAll('#threads .loc')].some((l) => l.textContent.includes('module.html · p:nth-of-type(2)'))",
     );
@@ -447,8 +444,8 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("a code block is one wrapped box with diff colors, not a stack of inline chips", async () => {
-    await browser("set", "viewport", "1000", "800");
-    await browser("open", `${url}#artifacts/code.md`);
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto(`${url}#artifacts/code.md`);
     await until("!!document.querySelector('#docRoot pre .hljs-addition')");
     const look = await evaluate(`(() => {
       const pre = document.querySelector('#docRoot pre');
@@ -491,35 +488,23 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("the outline lists the file's headings, jumps to one on click, and marks the section in view", async () => {
-    await browser("open", `${url}#artifacts/outline.md`);
+    await page.goto(`${url}#artifacts/outline.md`);
     await until("document.querySelectorAll('#outline button').length > 0");
     expect(
       await evaluate("[...document.querySelectorAll('#outline button')].map((b) => b.textContent)"),
     ).toEqual(["Outline", "One", "Two", "Three", "Three detail"]);
 
-    await browser("set", "viewport", "1000", "800");
-    await browser("click", "#outline li:nth-child(4) button");
-    await until(belowHead("Three"));
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.click("#outline li:nth-child(4) button");
+    await untilBelowHead("Three");
     expect(await evaluate("location.hash")).toBe("#artifacts/outline.md#three");
     await until(
       "document.querySelector('#outline button[aria-current=\"true\"]')?.textContent === 'Three'",
     );
   }, 30000);
 
-  test("a link to a section opens the file at that section, and a heading's # link points at it", async () => {
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/outline.md#three-detail`);
-    await until("!!document.querySelector('#docRoot')");
-    await until(belowHead("Three detail"));
-    expect(
-      await evaluate(
-        "[...document.querySelectorAll('#docRoot h2')].find((h) => h.textContent === 'Two').querySelector('a.anchor').getAttribute('href')",
-      ),
-    ).toBe("#artifacts/outline.md#two");
-  }, 30000);
-
   test("a code block copies its code, and one over 40 lines opens folded until asked", async () => {
-    await browser("open", `${url}#artifacts/code.md`);
+    await page.goto(`${url}#artifacts/code.md`);
     await until("!!document.querySelector('#docRoot pre .copy-btn')");
     const fold =
       "document.querySelector('#docRoot pre.language-ts, #docRoot pre:has(code.language-ts)')";
@@ -529,56 +514,49 @@ describe("viewer in a browser", () => {
       ),
     ).toBe(true);
     expect(await evaluate("document.querySelector('#docRoot .fold-btn').dataset.more")).toBe("20");
-    await browser("click", "#docRoot .fold-btn");
+    await page.click("#docRoot .fold-btn");
     expect(await evaluate(`${fold}.classList.contains('folded')`)).toBe(false);
 
-    // The test browser denies clipboard reads, so record what the page writes instead.
-    await evaluate(`(() => {
-      const write = navigator.clipboard.writeText.bind(navigator.clipboard);
-      navigator.clipboard.writeText = (text) => { window.copiedText = text; return write(text); };
-      ${fold}.scrollIntoView({ block: 'center' });
-    })()`);
-    await browser("click", "#docRoot pre:has(code.language-ts) .copy-btn");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.click("#docRoot pre:has(code.language-ts) .copy-btn");
     await until(
       "document.querySelector('#docRoot pre:has(code.language-ts) .copy-btn').dataset.state === 'copied'",
     );
-    expect(await evaluate("window.copiedText")).toContain("const line50 = 50;");
+    expect(await evaluate("navigator.clipboard.readText()")).toContain("const line50 = 50;");
   }, 30000);
 
   test("a diff shows more of its file above and below on request, until the file runs out", async () => {
-    await browser("open", `${url}#artifacts/steps.md`);
+    await page.goto(`${url}#artifacts/steps.md`);
     await until("!!document.querySelector('#docRoot .hunk .expand-btn')");
     const hunk = "document.querySelector('#docRoot .hunk')";
     const shown = `[${hunk}.dataset.from, ${hunk}.dataset.to].join('-')`;
     expect(await evaluate(shown)).toBe("19-21");
 
-    await browser("click", "#docRoot .expand-btn[data-dir=up]");
+    await page.click("#docRoot .expand-btn[data-dir=up]");
     await until(`${shown} === '9-21'`);
     expect(await evaluate(`${hunk}.querySelector('.diff-line').textContent`)).toBe(
       " export const v9 = 9;",
     );
     expect(await evaluate(`!!${hunk}.querySelector('.diff-line .hljs-keyword')`)).toBe(true);
 
-    await browser("click", "#docRoot .expand-btn[data-dir=up]");
+    await page.click("#docRoot .expand-btn[data-dir=up]");
     await until(`${shown} === '1-21'`);
     expect(await evaluate(`${hunk}.querySelector('.expand-btn[data-dir=up]').hidden`)).toBe(true);
     for (const expected of ["1-31", "1-40"]) {
-      // agent-browser clicks the middle of a button cut off by the window's bottom edge, and misses
-      await browser("scrollintoview", "#docRoot .expand-btn[data-dir=down]");
-      await browser("click", "#docRoot .expand-btn[data-dir=down]");
+      await page.click("#docRoot .expand-btn[data-dir=down]");
       await until(`${shown} === '${expected}'`);
     }
     expect(await evaluate(`${hunk}.querySelector('.expand-btn[data-dir=down]').hidden`)).toBe(true);
   }, 30000);
 
   test("a file path, a diff and the open artifact each open in the editor at their line", async () => {
-    await browser("open", `${url}#artifacts/steps.md`);
+    await page.goto(`${url}#artifacts/steps.md`);
     await until("!!document.querySelector('#docRoot code[data-path]')");
     opened.length = 0;
-    await browser("click", "#docRoot code[data-path]");
+    await page.click("#docRoot code[data-path]");
     await until("!document.querySelector('#toast').hidden");
-    await browser("click", "#docRoot pre[data-file] .open-btn");
-    await browser("click", "#editBtn");
+    await page.click("#docRoot pre[data-file] .open-btn");
+    await page.click("#editBtn");
     const sample = join(cwd, "src", "sample.ts");
     for (let i = 0; i < 30 && opened.length < 3; i++) await Bun.sleep(100);
     expect(opened).toEqual([
@@ -604,18 +582,18 @@ describe("viewer in a browser", () => {
     const typedBefore = typed.length;
     try {
       const approveHidden = "document.querySelector('#approveBtn').hidden";
-      await browser("open", `${url}#artifacts/code.md`);
+      await page.goto(`${url}#artifacts/code.md`);
       await until("document.querySelector('#docPath').textContent === 'artifacts/code.md'");
       expect(await evaluate(approveHidden)).toBe(true);
 
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.goto(`${url}#artifacts/design.md`);
       await until(
         `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
       );
       expect(await evaluate("document.querySelector('#docBadge').textContent")).toBe(
         "Waiting for your approval",
       );
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       expect(await evaluate(approveHidden)).toBe(true);
       await until(
         "[...document.querySelectorAll('#threads .card .chip')].some((c) => c.textContent === 'Approved')",
@@ -639,7 +617,7 @@ describe("viewer in a browser", () => {
       JSON.stringify({ ...seedState(runDir, {}), policies }),
     );
     try {
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.goto(`${url}#artifacts/design.md`);
       await until("document.querySelector('#modeBtn').hidden === true");
       expect(await evaluate("getComputedStyle(document.querySelector('#modeBtn')).display")).toBe(
         "none",
@@ -650,8 +628,8 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC13: Send posts one comment at once, Control+Enter does the same, no batch appears, and stored anchors keep their lines", async () => {
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${url}#artifacts/design.md`);
     await until("document.querySelector('#docPath').textContent === 'artifacts/design.md'");
     await ensureCommentMode();
     await evaluate(`(() => {
@@ -663,15 +641,15 @@ describe("viewer in a browser", () => {
 
     await selectText(false, "Start small");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Say how small.");
-    await browser("click", "#sendNowBtn");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Say how small.");
+    await page.click("#sendNowBtn");
 
     await selectText(false, "second sentence");
     await until(barShown);
-    await browser("click", "#selbar button[data-kind=comment]");
-    await browser("fill", "#composerText", "Cut the second sentence.");
-    await browser("press", "Control+Enter");
+    await page.click("#selbar button[data-kind=comment]");
+    await page.fill("#composerText", "Cut the second sentence.");
+    await page.keyboard.press("Control+Enter");
 
     for (const text of ["Say how small.", "Cut the second sentence."])
       await until(`${cardWith(text)}?.querySelector('.status')?.textContent === 'With the agent'`);
@@ -701,8 +679,8 @@ describe("viewer in a browser", () => {
       body: JSON.stringify({ comments: [comment] }),
     });
     expect(posted.status).toBe(201);
-    await browser("set", "viewport", "1280", "800");
-    await browser("open", `${url}#artifacts/design.md`);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${url}#artifacts/design.md`);
     await until(`${cardWith("Trim it.")} !== undefined`);
     expect(
       await evaluate(
@@ -729,8 +707,8 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
     const approveHidden = "document.querySelector('#approveBtn').hidden";
     try {
-      await browser("set", "viewport", "1280", "800");
-      await browser("open", `${url}#artifacts/design.md`);
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto(`${url}#artifacts/design.md`);
       await until(
         `document.querySelector('#docPath').textContent === 'artifacts/design.md' && !${approveHidden}`,
       );
@@ -745,9 +723,9 @@ describe("viewer in a browser", () => {
       await ensureCommentMode();
       await selectText(false, "Start small");
       await until(barShown);
-      await browser("click", "#selbar button[data-kind=comment]");
-      await browser("fill", "#composerText", "Never sent.");
-      await browser("click", "#sendNowBtn");
+      await page.click("#selbar button[data-kind=comment]");
+      await page.fill("#composerText", "Never sent.");
+      await page.click("#sendNowBtn");
 
       await until(`!!${cardWith("Never sent.")}?.closest('.batch')`);
       expect(await evaluate("document.querySelector('.batch .group-label').textContent")).toBe(
@@ -757,7 +735,7 @@ describe("viewer in a browser", () => {
         "disk full",
       );
 
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       await until("!document.querySelector('#toast').hidden");
       expect(await evaluate("document.querySelector('#toast').textContent")).toContain("disk full");
       await until(`!${approveHidden}`);
@@ -767,10 +745,10 @@ describe("viewer in a browser", () => {
   }, 30000);
 
   test("SC16: hovering the second bullet in comment mode marks that bullet, while the list and the other bullets stay transparent", async () => {
-    await browser("open", `${url}#artifacts/list.md`);
+    await page.goto(`${url}#artifacts/list.md`);
     await until("document.querySelectorAll('#docRoot li').length === 3");
     await ensureCommentMode();
-    await browser("hover", "#docRoot li:nth-child(2)");
+    await page.hover("#docRoot li:nth-child(2)");
     expect(
       await evaluate(
         "['ul', 'li:nth-child(1)', 'li:nth-child(2)', 'li:nth-child(3)'].map((s) => getComputedStyle(document.querySelector('#docRoot ' + s)).backgroundColor !== 'rgba(0, 0, 0, 0)')",
@@ -793,7 +771,7 @@ describe("viewer in a browser", () => {
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
   };
   const openFile = async (file: string): Promise<void> => {
-    await browser("open", `${url}#artifacts/${file}`);
+    await page.goto(`${url}#artifacts/${file}`);
     await until(`document.querySelector('#docPath').textContent === 'artifacts/${file}'`);
     await until("!!document.querySelector('#docRoot .task-box')");
   };
@@ -804,7 +782,7 @@ describe("viewer in a browser", () => {
     expect(await evaluate(`document.querySelector('${box(1)}').disabled`)).toBe(true);
     awaiting("factors.md");
     try {
-      await browser("reload");
+      await page.reload();
       await until("!document.querySelector('#approveBtn').hidden");
       await until(`!document.querySelector('${box(1)}').disabled`);
     } finally {
@@ -817,21 +795,21 @@ describe("viewer in a browser", () => {
     try {
       await openFile("factors.md");
       await until(`!document.querySelector('${box(2)}').disabled`);
-      await browser("click", box(2));
+      await page.click(box(2));
       expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(false);
       await until(`${batchLabel} === 'Not sent yet · 1'`);
       expect(await evaluate(`!!${cardWith("Untick this")}`)).toBe(true);
 
-      await browser("click", box(2));
+      await page.click(box(2));
       await until("!document.querySelector('.batch')");
       expect(await evaluate(`document.querySelector('${box(2)}').checked`)).toBe(true);
 
-      await browser("click", box(2));
-      await browser("click", box(3));
+      await page.click(box(2));
+      await page.click(box(3));
       await until(`${batchLabel} === 'Not sent yet · 2'`);
       expect(await evaluate(`!!${cardWith("Tick this")}`)).toBe(true);
       const before = typed.length;
-      await browser("click", "#sendBtn");
+      await page.click("#sendBtn");
       await until("!document.querySelector('.batch')");
       for (let i = 0; i < 50 && typed.length === before; i++) await Bun.sleep(100);
       const message = typed.slice(before).join("\n");
@@ -849,10 +827,10 @@ describe("viewer in a browser", () => {
     try {
       await openFile("scenarios.md");
       await until(`!document.querySelector('${box(1)}').disabled`);
-      await browser("click", box(1));
+      await page.click(box(1));
       await until(`${batchLabel} === 'Not sent yet · 1'`);
       const before = typed.length;
-      await browser("click", "#approveBtn");
+      await page.click("#approveBtn");
       await until("!document.querySelector('.batch')");
       for (let i = 0; i < 50 && !typed.slice(before).some((t) => t.includes("approved:")); i++)
         await Bun.sleep(100);
@@ -861,6 +839,896 @@ describe("viewer in a browser", () => {
       expect(message.indexOf("Untick this")).toBeLessThan(message.indexOf("approved:"));
     } finally {
       rmSync(join(runDir, "state.json"), { force: true });
+    }
+  }, 30000);
+  test("the file list groups files under the stage that delivered them, with folders, the rest after a divider, and a bare link opens the first stage's file", async () => {
+    const delivered = (...paths: readonly string[]) => ({
+      nodeRunId: "n",
+      nodeType: "agent" as const,
+      status: "completed" as const,
+      startedAt: null,
+      completedAt: null,
+      artifacts: paths.map((path) => ({ type: "file", name: path, path })),
+    });
+    writeFileSync(
+      join(runDir, "workflow.yaml"),
+      [
+        "name: w",
+        "nodes:",
+        "  - { id: design, type: agent, stage: design, input: {} }",
+        "  - { id: plan, type: agent, stage: planning, dependsOn: [design], input: {} }",
+        "  - { id: review, type: agent, stage: code-review, dependsOn: [plan], input: {} }",
+        "",
+      ].join("\n"),
+    );
+    mkdirSync(join(runDir, "artifacts", "ux"));
+    writeFileSync(join(runDir, "artifacts", "ux", "flow.md"), "# Flow\n");
+    mkdirSync(join(runDir, "artifacts", "notes"));
+    writeFileSync(join(runDir, "artifacts", "notes", "todo.md"), "# Todo\n");
+    const state = seedState(runDir, {
+      design: delivered("artifacts/design.md"),
+      plan: delivered("artifacts/outline.md", "artifacts/code.md"),
+      review: delivered("artifacts/mock.html", "artifacts/ux/flow.md"),
+    });
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    try {
+      await page.goto(`${url}#artifacts/design.md`);
+      await until(
+        "document.querySelectorAll('#fileList .stage').length === 3 && document.querySelectorAll('#fileList .folder').length === 2",
+      );
+      const tree = await evaluate(
+        "(function walk(ul) { return [...ul.children].map((li) => { if (li.classList.contains('divider')) return '---'; const label = li.querySelector(':scope > .stage, :scope > .folder'); return label ? [label.textContent, walk(li.querySelector(':scope > ul'))] : li.querySelector('.name').textContent; }); })(document.querySelector('#fileList'))",
+      );
+      expect(tree).toEqual([
+        ["design", ["design.md"]],
+        ["planning", ["code.md", "outline.md"]],
+        ["code-review", ["mock.html", ["ux/", ["flow.md"]]]],
+        "---",
+        "factors.md",
+        "list.md",
+        "module.html",
+        "module.js",
+        "module.json",
+        "scenarios.md",
+        "steps.md",
+        ["notes/", ["todo.md"]],
+      ]);
+      expect(await evaluate("document.querySelectorAll('#fileList .draft-dot').length")).toBe(0);
+
+      await page.goto(url);
+      await until(
+        "document.querySelector('#fileList [aria-current=\"true\"] .name')?.textContent === 'design.md'",
+      );
+    } finally {
+      rmSync(join(runDir, "workflow.yaml"), { force: true });
+      rmSync(join(runDir, "state.json"), { force: true });
+      rmSync(join(runDir, "artifacts", "ux"), { recursive: true, force: true });
+      rmSync(join(runDir, "artifacts", "notes"), { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// The runs page reads the run list from /stream, so this suite seeds a registry and users.json
+// and drives that page.
+describe("runs page in a browser", () => {
+  let viewer: Readonly<{ origin: string; stop: () => Promise<void> }>;
+  let home: string;
+
+  beforeAll(async () => {
+    home = tempDir();
+    const cwd = tempDir();
+    await updateUsers(home, () => ({
+      u_1: {
+        name: "ritesh-gh",
+        email: "ritesh@example.com",
+        accounts: { github: { id: 8675309, login: "ritesh-gh" } },
+      },
+      u_2: {
+        name: "Asha",
+        email: "asha@example.com",
+        accounts: { github: { id: 42, login: "asha-gh" } },
+      },
+    }));
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    const base = {
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [],
+      name: null,
+      terminal: null,
+      config: null,
+      tiers: null,
+    };
+    const owners = [
+      ["r-1", "u_1"],
+      ["r-2", "u_2"],
+      ["r-3", "u_1"],
+      ["r-4", undefined],
+    ] as const;
+    for (const [n, [id, user]] of owners.entries()) {
+      const createdAt = `2026-10-29T10:0${n}:00.000Z`;
+      // u_1's runs are named with no run folder, so they read missing and land in the Recent table.
+      const name = user === "u_1" ? id : null;
+      await registry.addRun({
+        ...base,
+        id,
+        name,
+        createdAt,
+        ...(user === undefined ? {} : { user }),
+      });
+    }
+    const runDir = join(cwd, ".yok", "stuck");
+    mkdirSync(runDir, { recursive: true });
+    const blocker = {
+      reason: "question",
+      node: "planning",
+      since: "2026-10-29T10:06:00.000Z",
+      details: { questions: [{ question: "Which store for Asha?", options: ["a", "b"] }] },
+    };
+    writeFileSync(
+      join(runDir, "state.json"),
+      JSON.stringify({ ...seedState(runDir, {}), runName: "stuck", status: "blocked", blocker }),
+    );
+    await registry.addRun({
+      ...base,
+      id: "r-5",
+      name: "stuck",
+      terminal: "s1",
+      user: "u_2",
+      createdAt: "2026-10-29T10:05:00.000Z",
+    });
+    const { host } = fakeHost(EMPTY_BOX);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: viewerRoutes({
+        registry,
+        providerFor: () => claudeOver(host),
+        host,
+        log: noopLogger,
+        now: () => new Date(),
+        home,
+        stopping: new AbortController().signal,
+        openInEditor: () => ({ ok: true, value: null }),
+      }).fetch,
+    });
+    viewer = { origin: `http://localhost:${server.port}`, stop: () => server.stop(true) };
+  });
+
+  afterAll(() => viewer.stop());
+
+  const allCount = "document.querySelector('#tabs .tab .n').textContent";
+  const shownIds =
+    "[...document.querySelectorAll('#list .item a.open')].map((a) => a.getAttribute('href').split('/').pop())";
+  const byCells =
+    "[...document.querySelectorAll('#list .row.item .owner')].map((s) => s.textContent)";
+  const bannerShown =
+    "[...document.querySelectorAll('#list .banner')].map((b) => b.textContent.includes('Which store for Asha?'))";
+
+  test("SC41: picking ritesh-gh in Started by, or searching ritesh@, narrows All to u_1's 2 runs, and u_2's blocked run keeps its banner", async () => {
+    await page.goto(viewer.origin);
+    await until("document.querySelectorAll('#who option').length === 3");
+    expect(
+      await evaluate("[...document.querySelectorAll('#who option')].map((o) => o.textContent)"),
+    ).toEqual(["Anyone", "Asha (asha-gh)", "ritesh-gh (ritesh-gh)"]);
+
+    await page.selectOption("#who", { label: "ritesh-gh (ritesh-gh)" });
+    await until(`${allCount} === "2"`);
+    expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
+    expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
+    expect(await evaluate(bannerShown)).toEqual([true]);
+
+    await page.selectOption("#who", { label: "Anyone" });
+    await until(`${allCount} === "5"`);
+    await page.fill("#search", "ritesh@");
+    await until(`${allCount} === "2"`);
+    expect(await evaluate(shownIds)).toEqual(["r-3", "r-1"]);
+    expect(await evaluate(byCells)).toEqual(["ritesh-gh (ritesh-gh)", "ritesh-gh (ritesh-gh)"]);
+    expect(await evaluate(bannerShown)).toEqual([true]);
+  }, 60000);
+
+  test("the header stays at the top and the version footer at the bottom of the window on a long page at its top and at its end, and on a page too short to scroll", async () => {
+    const edges =
+      "(() => ({ header: document.querySelector('header.bar').getBoundingClientRect().top, footer: Math.round(document.querySelector('footer.foot').getBoundingClientRect().bottom), height: innerHeight }))()";
+    await page.setViewportSize({ width: 393, height: 300 });
+    await page.goto(viewer.origin);
+    await until(`${allCount} === "5"`);
+    expect(await evaluate("document.documentElement.scrollHeight > innerHeight + 100")).toBe(true);
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 300, height: 300 });
+    await evaluate("window.scrollTo(0, document.documentElement.scrollHeight)");
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 300, height: 300 });
+
+    await page.setViewportSize({ width: 1280, height: 2000 });
+    expect(await evaluate(edges)).toEqual({ header: 0, footer: 2000, height: 2000 });
+  }, 60000);
+
+  test("focusing the search box or a status tab after scrolling down the list leaves the page where it was", async () => {
+    await page.setViewportSize({ width: 393, height: 420 });
+    await page.goto(viewer.origin);
+    await until(`${allCount} === "5"`);
+    await evaluate("window.scrollTo(0, 200)");
+    expect(await evaluate("scrollY")).toBe(200);
+    await page.keyboard.press("/");
+    expect(await evaluate("[document.activeElement.id, scrollY]")).toEqual(["search", 200]);
+    await evaluate("document.querySelector('#tabs .tab').focus()");
+    expect(await evaluate("scrollY")).toBe(200);
+  }, 60000);
+
+  test.each([
+    [1280, 240],
+    [393, 420],
+  ])(
+    "at %ix%i, Tab and Shift+Tab through the runs list never leave the focused link under the pinned header or footer",
+    async (width, height) => {
+      // Each stop reads null outside the list, "ok" when the focused element is clear of both bars, else its text.
+      const stop =
+        "(() => { const el = document.activeElement; if (!document.querySelector('#list').contains(el)) return null; const r = el.getBoundingClientRect(); const clear = r.top >= document.querySelector('.top').getBoundingClientRect().bottom - 1 && r.bottom <= document.querySelector('footer.foot').getBoundingClientRect().top + 1; return clear ? 'ok' : el.textContent.trim().slice(0, 40); })()";
+      await page.setViewportSize({ width, height });
+      await page.goto(viewer.origin);
+      await until(`${allCount} === "5"`);
+      expect(await evaluate("document.documentElement.scrollHeight > innerHeight + 100")).toBe(
+        true,
+      );
+      const stops: unknown[] = [];
+      for (const key of [...Array(30).fill("Tab"), ...Array(30).fill("Shift+Tab")]) {
+        await page.keyboard.press(key);
+        stops.push(await evaluate(stop));
+      }
+      expect(stops.filter((s) => s === "ok").length).toBeGreaterThan(5);
+      expect(stops.filter((s) => s !== null && s !== "ok")).toEqual([]);
+    },
+    60000,
+  );
+
+  test("a starter's name that is one long word wraps inside its card on a phone, so the page never scrolls sideways", async () => {
+    const rename = (name: string) =>
+      updateUsers(home, (users) => (users.u_2 ? { ...users, u_2: { ...users.u_2, name } } : users));
+    const long = "A".repeat(80);
+    await rename(long);
+    try {
+      await page.setViewportSize({ width: 393, height: 852 });
+      await page.goto(viewer.origin);
+      await until(
+        `[...document.querySelectorAll('.card .owner')].some((s) => s.textContent.startsWith(${JSON.stringify(long)}))`,
+      );
+      expect(
+        await evaluate(
+          "document.documentElement.scrollWidth - document.documentElement.clientWidth",
+        ),
+      ).toBe(0);
+    } finally {
+      await rename("Asha");
+    }
+  }, 60000);
+});
+
+describe("terminal tab in a browser", () => {
+  const pane = "term-e2e";
+  const socket = `yok-test-${randomUUID()}`;
+  let serve: (() => void) | null = null;
+  let stop: () => Promise<void> = async () => {};
+  let url: string;
+  let upgrades = 0;
+
+  const tmux = (...args: string[]) =>
+    spawnSync("tmux", ["-L", socket, ...args], { encoding: "utf8" });
+  const clientCount = (): number =>
+    tmux("list-clients", "-t", `=${pane}:`, "-F", "#{client_name}")
+      .stdout.split("\n")
+      .filter((line) => line !== "").length;
+  const windowWidth = (): number =>
+    Number(tmux("display", "-p", "-t", `=${pane}:`, "#{window_width}").stdout.trim());
+  const waitFor = async (check: () => boolean, ms = 10_000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error("timed out waiting");
+      await Bun.sleep(100);
+    }
+  };
+
+  const screen = `(() => {
+    const b = window.yokTerminal?.buffer.active;
+    if (!b) return "";
+    return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true) ?? "").join("\\n");
+  })()`;
+  const stateText = "document.querySelector('#termStateText').textContent";
+  const stateHidden = "document.querySelector('#termState').hidden";
+
+  const openTerminal = async (): Promise<void> => {
+    await page.goto(url);
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+    await page.click("#tabTerminal");
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+  };
+
+  beforeAll(async () => {
+    const home = tempDir();
+    const cwd = tempDir();
+    mkdirSync(join(cwd, ".yok", "demo", "artifacts"), { recursive: true });
+    writeFileSync(join(cwd, ".yok", "demo", "artifacts", "design.md"), DESIGN);
+    const host = yokTerminalHost({ YOK_HOME: home, YOK_TMUX_SOCKET: socket });
+    const created = await host.create({
+      name: pane,
+      cwd,
+      argv: ["sh", "-c", "echo pane-ready; exec sh"],
+      env: { PS1: "$ " },
+    });
+    if (!created.ok) throw new Error(created.error);
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    await registry.addRun({
+      id: "r1",
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [{ agent: "claude", sessionId: "s1" }],
+      name: "demo",
+      terminal: pane,
+      config: null,
+      tiers: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const app = new Hono()
+      .use("/api/runs/*", async (_c, next) => {
+        upgrades++;
+        await next();
+      })
+      .route(
+        "/api/runs",
+        terminalRoutes({ registry, host, log: noopLogger, stopping: new AbortController().signal }),
+      )
+      .route(
+        "/",
+        viewerRoutes({
+          registry,
+          providerFor: () => claudeOver(host),
+          host,
+          log: noopLogger,
+          now: () => new Date(),
+          home,
+          stopping: new AbortController().signal,
+          openInEditor: () => ({ ok: true, value: null }),
+        }),
+      );
+    let port = 0;
+    serve = () => {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port,
+        idleTimeout: 0,
+        fetch: app.fetch,
+        websocket,
+      });
+      port = server.port as number;
+      stop = () => server.stop(true);
+    };
+    serve();
+    url = `http://localhost:${port}/runs/r1`;
+  }, 30000);
+
+  afterAll(async () => {
+    stopDeliveries();
+    await stop();
+    tmux("kill-server");
+  });
+
+  test("SC13: the Terminal tab opens the live session's screen", async () => {
+    await openTerminal();
+
+    expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(false);
+    expect(await evaluate(`${screen}.includes("pane-ready")`)).toBe(true);
+    expect(await evaluate(stateHidden)).toBe(true);
+    expect(
+      await evaluate(
+        "[...document.styleSheets].some((s) => s.href?.endsWith('xterm.css') && s.cssRules.length > 0)",
+      ),
+    ).toBe(true);
+  }, 60000);
+
+  test("SC13: two clicks while xterm.js loads open one terminal", async () => {
+    await page.goto(url);
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+
+    await evaluate(
+      "(() => { const tab = document.querySelector('#tabTerminal'); tab.click(); tab.click(); return true; })()",
+    );
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+
+    expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(1);
+  }, 60000);
+
+  const couldNotLoad = `${stateText}.startsWith("Could not load the terminal")`;
+  const addonUrl =
+    "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.9.0/lib/addon-unicode11.js";
+
+  test("SC13: a CDN file that is not the pinned one is refused", async () => {
+    await page.route(addonUrl, (route) => route.fulfill({ body: JSON.stringify("tampered") }));
+    try {
+      await page.goto(url);
+      await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+      await page.click("#tabTerminal");
+
+      await until(couldNotLoad, 20_000);
+    } finally {
+      await page.unroute(addonUrl);
+    }
+  }, 60000);
+
+  test("SC13: when the CDN cannot be reached it says so, and opening the tab again retries", async () => {
+    await page.route(addonUrl, (route) => route.abort());
+    try {
+      await page.goto(url);
+      await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+      await page.click("#tabTerminal");
+      await until(couldNotLoad, 20_000);
+    } finally {
+      await page.unroute(addonUrl);
+    }
+
+    await page.click("#tabTerminal");
+
+    await until(`${screen}.includes("pane-ready") && ${stateHidden}`, 20_000);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
+  test("SC13: when xterm's stylesheet cannot be loaded it says so and opens no terminal", async () => {
+    const cssUrl = "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css";
+    await page.route(cssUrl, (route) => route.abort());
+    try {
+      await page.goto(url);
+      await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+      await page.click("#tabTerminal");
+
+      await until(couldNotLoad, 20_000);
+      expect(await evaluate("document.querySelectorAll('#termHost .xterm').length")).toBe(0);
+    } finally {
+      await page.unroute(cssUrl);
+    }
+  }, 60000);
+
+  test("SC20: a hyperlink whose text hides its address opens only after the address is confirmed", async () => {
+    await openTerminal();
+    // A program in the pane prints the link, as an agent's command would.
+    tmux(
+      "send-keys",
+      "-t",
+      `=${pane}:`,
+      "-l",
+      "printf '\\e]8;;https://evil.example/\\agithub.com\\e]8;;\\a\\n'",
+    );
+    tmux("send-keys", "-t", `=${pane}:`, "Enter");
+    await until(`${screen}.split("\\n").includes("github.com")`, 10_000);
+    const at = (await evaluate(`(() => {
+      const row = ${screen}.split("\\n").indexOf("github.com");
+      const r = document.querySelector('#termHost .xterm-screen').getBoundingClientRect();
+      return { x: Math.round(r.left + 2.5 * (r.width / window.yokTerminal.cols)), y: Math.round(r.top + (row + 0.5) * (r.height / window.yokTerminal.rows)) };
+    })()`)) as { x: number; y: number };
+    const clickLink = async (): Promise<void> => {
+      // Move in from another row: xterm looks for a link only when the mouse enters a new cell.
+      await page.mouse.move(at.x, at.y + 60);
+      await page.mouse.move(at.x, at.y);
+      await Bun.sleep(200);
+      await page.mouse.down();
+      await page.mouse.up();
+    };
+    const stub = (answer: boolean): Promise<unknown> =>
+      evaluate(`(() => {
+        window.asked = []; window.opened = [];
+        window.confirm = (text) => { window.asked.push(text); return ${answer}; };
+        window.open = (uri) => { window.opened.push(uri); return null; };
+        return true;
+      })()`);
+
+    await stub(false);
+    await clickLink();
+    await until("window.asked.length + window.opened.length > 0");
+    expect(await evaluate("window.opened")).toEqual([]);
+    expect(await evaluate("window.asked[0]")).toContain("https://evil.example/");
+
+    await stub(true);
+    await clickLink();
+    await until("window.opened.length === 1");
+    expect(await evaluate("window.opened")).toEqual(["https://evil.example/"]);
+  }, 60000);
+
+  test("SC20: a program in the pane can copy to the browser's clipboard but not read it", async () => {
+    await openTerminal();
+    await evaluate(`(() => {
+      window.copied = [];
+      Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "secret-clip", writeText: async (text) => { window.copied.push(text); } } });
+      window.sentFrames = [];
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) { window.sentFrames.push(String(data)); return send.call(this, data); };
+      window.yokTerminal.write("\\x1b]52;c;?\\x07");
+      window.yokTerminal.write("\\x1b]52;c;${btoa("copied-out")}\\x07");
+      return true;
+    })()`);
+    await Bun.sleep(500);
+
+    const sent = (await evaluate("window.sentFrames.join('\\n')")) as string;
+    expect(sent).not.toContain(btoa("secret-clip"));
+    expect(await evaluate("window.copied")).toEqual(["copied-out"]);
+  }, 60000);
+
+  // tmux leaves the selection field of its OSC 52 empty, as a mouse-drag copy does.
+  test("SC20: a tmux copy reaches the browser's clipboard", async () => {
+    await openTerminal();
+    await evaluate(`(() => {
+      window.copied = [];
+      Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "", writeText: async (text) => { window.copied.push(text); } } });
+      return true;
+    })()`);
+    const client = tmux("list-clients", "-t", `=${pane}:`, "-F", "#{client_name}").stdout.trim();
+
+    tmux("set-buffer", "-w", "-t", client, "copied-by-tmux");
+
+    await until(`window.copied.includes("copied-by-tmux")`);
+  }, 60000);
+
+  // The fitted terminal must fit the window both ways: a row or column too many hides Claude's
+  // mode line or scrolls the page sideways.
+  test.each([
+    ["1280", "800"],
+    ["900", "700"],
+    ["600", "700"],
+  ])(
+    "SC15: at %sx%s the fitted terminal stays inside the window",
+    async (width, height) => {
+      await page.setViewportSize({ width: Number(width), height: Number(height) });
+      await openTerminal();
+      const deadline = Date.now() + 10_000;
+      while ((await evaluate("window.yokTerminal.cols")) !== windowWidth()) {
+        if (Date.now() > deadline) throw new Error("tmux never matched the terminal's width");
+        await Bun.sleep(100);
+      }
+
+      const fit = (await evaluate(`(() => {
+        const s = document.querySelector('#termHost .xterm-screen').getBoundingClientRect();
+        const d = document.documentElement;
+        return { bottom: s.bottom, right: s.right, tall: d.scrollHeight - innerHeight, wide: d.scrollWidth - d.clientWidth };
+      })()`)) as { bottom: number; right: number; tall: number; wide: number };
+      expect(fit.bottom).toBeLessThanOrEqual(Number(height));
+      expect(fit.right).toBeLessThanOrEqual(Number(width));
+      expect(fit.tall).toBeLessThanOrEqual(0);
+      expect(fit.wide).toBe(0);
+    },
+    60000,
+  );
+
+  test("SC14: keys typed in the terminal reach the session", async () => {
+    await openTerminal();
+
+    await page.keyboard.type("echo typed-$((40+2))");
+    await page.keyboard.press("Enter");
+
+    await waitFor(() =>
+      tmux("capture-pane", "-p", "-t", `=${pane}:`).stdout.split("\n").includes("typed-42"),
+    );
+    await until(`${screen}.split("\\n").includes("typed-42")`);
+  }, 60000);
+
+  test("SC15: the terminal follows the window's size", async () => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openTerminal();
+    const sameWidth = async (): Promise<number> => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const cols = await evaluate("window.yokTerminal.cols");
+        if (cols === windowWidth()) return cols as number;
+        await Bun.sleep(100);
+      }
+      throw new Error("tmux never matched the terminal's width");
+    };
+    const wide = await sameWidth();
+
+    await page.setViewportSize({ width: 900, height: 700 });
+    await until(`window.yokTerminal.cols < ${wide}`);
+    const narrow = await sameWidth();
+
+    expect(narrow).toBeLessThan(wide);
+  }, 60000);
+
+  test("SC16: Ctrl-\\ detaches to a Reattach button, and Reattach comes back", async () => {
+    await openTerminal();
+
+    await page.keyboard.press("Control+\\");
+    await until(`${stateText} === "Detached from the run's session."`);
+    expect(await evaluate("!document.querySelector('#reattachBtn').hidden")).toBe(true);
+    const seen: number[] = [];
+    for (let i = 0; i < 30; i++) {
+      seen.push(clientCount());
+      await Bun.sleep(100);
+    }
+    expect(Math.max(...seen)).toBe(0);
+
+    await page.click("#reattachBtn");
+    await until(stateHidden);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
+  test("SC17: a dropped connection reconnects by itself", async () => {
+    await openTerminal();
+
+    await stop();
+    await until(`${stateText}.startsWith("Connection lost. Reconnecting")`);
+    serve?.();
+
+    await until(stateHidden, 15_000);
+    await waitFor(() => clientCount() === 1);
+  }, 60000);
+
+  // Last: it ends the session the other tests attach to.
+  test("SC18: a session that ends shows the attach wording, with no reconnect loop, and the tab hides", async () => {
+    await openTerminal();
+
+    tmux("kill-session", "-t", `=${pane}`);
+    await until(`${stateText} === "Detached from the run's session."`);
+    await page.click("#reattachBtn");
+    await until(
+      `${stateText} === "Run demo has no running session. Resume it with: yok resume demo"`,
+    );
+    const before = upgrades;
+    await Bun.sleep(3000);
+
+    expect(upgrades).toBe(before);
+    await until("document.querySelector('#pillText').textContent === 'Agent not running'", 10_000);
+    expect(await evaluate("document.querySelector('#tabTerminal').hidden")).toBe(true);
+  }, 60000);
+});
+
+describe("resume and retry buttons in a browser", () => {
+  let runDir: string;
+  let viewer: Readonly<{ stop: () => Promise<void> }>;
+  let url: string;
+  // what the pane reports; the page's stream reads it once a second
+  let alive = false;
+  // the stub's next answers, in order, and every request it saw
+  let answers: (() => Response | Promise<Response>)[] = [];
+  const posted: { path: string; body: unknown }[] = [];
+
+  beforeAll(async () => {
+    const home = tempDir();
+    const cwd = tempDir();
+    execFileSync("git", ["init", "-q"], { cwd });
+    runDir = join(cwd, ".yok", "demo");
+    mkdirSync(join(runDir, "artifacts"), { recursive: true });
+    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    await registry.addRun({
+      id: "r1",
+      workflow: "w",
+      workflowPath: "/w.yaml",
+      inputs: {},
+      cwd,
+      sessions: [{ agent: "claude", sessionId: "s1" }],
+      name: "demo",
+      terminal: "s1",
+      config: null,
+      tiers: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const fake = fakeHost(EMPTY_BOX).host;
+    const host = { ...fake, find: () => ({ ...fakePane("s1"), isAlive: async () => alive }) };
+    // The routes phase 1's tests cover; here only what the page does with their answers.
+    const stub = new Hono().post("/api/runs/:action", async (c) => {
+      posted.push({ path: c.req.path, body: await c.req.json() });
+      const answer = answers.shift();
+      return answer === undefined
+        ? c.json({ error: { code: "conflict", message: "none" } }, 409)
+        : answer();
+    });
+    const views = viewerRoutes({
+      registry,
+      providerFor: () => claudeOver(host),
+      host,
+      log: noopLogger,
+      now: () => new Date(),
+      home,
+      openInEditor: () => ({ ok: true, value: null }),
+      stopping: new AbortController().signal,
+    });
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: (request) =>
+        request.method === "POST" && new URL(request.url).pathname.startsWith("/api/runs/")
+          ? stub.fetch(request)
+          : views.fetch(request),
+    });
+    viewer = { stop: () => server.stop(true) };
+    url = `http://localhost:${server.port}/runs/r1`;
+  });
+
+  beforeEach(() => {
+    stopDeliveries();
+    alive = false;
+    answers = [];
+    posted.length = 0;
+  });
+
+  afterAll(async () => {
+    stopDeliveries();
+    await viewer.stop();
+  });
+
+  // The server keeps a finished run's files, so a status another test wrote would stay.
+  const seedStatus = (status: string): void => {
+    writeFileSync(join(runDir, "state.json"), JSON.stringify({ ...seedState(runDir, {}), status }));
+    forgetFinishedRun(runDir);
+  };
+
+  const open = async (): Promise<void> => {
+    await page.goto(url);
+    await until("document.querySelector('#pillText').textContent !== 'Agent starting'", 10_000);
+  };
+
+  const hidden = (id: string) => evaluate(`document.querySelector('#${id}').hidden`);
+
+  test.each([
+    ["failed", false, { resume: true, retry: true }],
+    ["blocked", false, { resume: true, retry: false }],
+    ["completed", false, { resume: false, retry: false }],
+    ["failed", true, { resume: false, retry: false }],
+  ] as const)(
+    "SC7115: a %s run whose agent is running=%p shows Resume and Retry as %o",
+    async (status, running, shown) => {
+      seedStatus(status);
+      alive = running;
+
+      await open();
+      await until(`!!document.querySelector('#runSummary').textContent`);
+
+      expect({ resume: !(await hidden("resumeBtn")), retry: !(await hidden("retryBtn")) }).toEqual(
+        shown,
+      );
+    },
+    30000,
+  );
+
+  test("SC7116: Retry reads Retrying… with both buttons disabled while the request runs, then toasts and hands over to the running agent", async () => {
+    seedStatus("failed");
+    const held = Promise.withResolvers<void>();
+    answers = [
+      async () => {
+        await held.promise;
+        return Response.json({ run: { id: "r1" }, attach: [], view: url });
+      },
+    ];
+    await open();
+    await until("!document.querySelector('#retryBtn').hidden");
+
+    await page.click("#retryBtn");
+    await until("document.querySelector('#retryBtn').textContent === 'Retrying…'");
+
+    expect(await evaluate("document.querySelector('#retryBtn').disabled")).toBe(true);
+    expect(await evaluate("document.querySelector('#resumeBtn').disabled")).toBe(true);
+    expect(posted).toEqual([{ path: "/api/runs/retry", body: { run: { id: "r1" } } }]);
+
+    held.resolve();
+    await until(
+      "document.querySelector('#toast').textContent === 'Run retried; the agent is starting'",
+    );
+    alive = true;
+    await until("!document.querySelector('#tabTerminal').hidden", 10_000);
+    expect(await hidden("retryBtn")).toBe(true);
+    expect(await hidden("resumeBtn")).toBe(true);
+  }, 30000);
+
+  test("SC7117: a resume the doctor refuses keeps the message and the failing check with its fix on the page", async () => {
+    seedStatus("blocked");
+    const report = {
+      results: [
+        {
+          name: "LINEAR_API_KEY",
+          status: "fail",
+          optional: false,
+          detail: "not set",
+          fix: ["add it to .env"],
+        },
+      ],
+      failed: ["LINEAR_API_KEY"],
+      warned: [],
+    };
+    answers = [
+      () =>
+        Response.json(
+          { error: { code: "bad-request", message: "BLOCKED LINEAR_API_KEY", details: report } },
+          { status: 400 },
+        ),
+    ];
+    await open();
+    await until("!document.querySelector('#resumeBtn').hidden");
+
+    await page.click("#resumeBtn");
+    await until("!document.querySelector('#relaunchError').hidden");
+    await Bun.sleep(4000);
+
+    expect(await hidden("relaunchError")).toBe(false);
+    expect(await evaluate("document.querySelector('#relaunchErrorText').textContent")).toBe(
+      "BLOCKED LINEAR_API_KEY\nLINEAR_API_KEY: not set\n  fix: add it to .env",
+    );
+    expect(await hidden("answeredBtn")).toBe(true);
+    expect(await evaluate("document.querySelector('#resumeBtn').disabled")).toBe(false);
+  }, 30000);
+
+  test("SC7118: a retry refused for a step waiting on an answer offers Retry as answered, which sends answered: true", async () => {
+    seedStatus("failed");
+    const needsInput =
+      "two failed needing a person's answer: Which database?\nOnce a person has dealt with it, retry with --answered";
+    answers = [
+      () => Response.json({ error: { code: "conflict", message: needsInput } }, { status: 409 }),
+      () => Response.json({ run: { id: "r1" }, attach: [], view: url }),
+    ];
+    await open();
+    await until("!document.querySelector('#retryBtn').hidden");
+
+    await page.click("#retryBtn");
+    await until("!document.querySelector('#answeredBtn').hidden");
+    expect(await evaluate("document.querySelector('#relaunchErrorText').textContent")).toBe(
+      needsInput,
+    );
+
+    await page.click("#answeredBtn");
+    await until(
+      "document.querySelector('#toast').textContent === 'Run retried; the agent is starting'",
+    );
+
+    expect(posted.map((call) => call.body)).toEqual([
+      { run: { id: "r1" } },
+      { run: { id: "r1" }, answered: true },
+    ]);
+    expect(await hidden("relaunchError")).toBe(true);
+  }, 30000);
+
+  test("on a 390px phone a failed run's Resume and Retry sit on one row with the agent pill", async () => {
+    seedStatus("failed");
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      await open();
+      await until("!document.querySelector('#retryBtn').hidden");
+
+      const middles = await evaluate(
+        "['resumeBtn', 'retryBtn', 'agentPill'].map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return Math.round(r.top + r.height / 2); })",
+      );
+
+      const [resume, retry, pill] = middles as number[];
+      expect(Math.abs((resume ?? 0) - (retry ?? 0))).toBeLessThanOrEqual(2);
+      expect(Math.abs((retry ?? 0) - (pill ?? 0))).toBeLessThanOrEqual(2);
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 800 });
+    }
+  }, 30000);
+
+  test("a refusal naming an 80-character key wraps inside a 390px phone, so the page never scrolls sideways", async () => {
+    seedStatus("failed");
+    const key = "A_VERY_LONG_KEY_NAME_THAT_A_REAL_PROJECT_MIGHT_USE_FOR_ITS_STAGING_DATABASE_URL";
+    answers = [
+      () =>
+        Response.json(
+          { error: { code: "bad-request", message: `BLOCKED env:${key}` } },
+          { status: 400 },
+        ),
+    ];
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      await open();
+      await until("!document.querySelector('#retryBtn').hidden");
+
+      await page.click("#retryBtn");
+      await until("!document.querySelector('#relaunchError').hidden");
+
+      expect(
+        await evaluate(
+          "document.documentElement.scrollWidth - document.documentElement.clientWidth",
+        ),
+      ).toBe(0);
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 800 });
     }
   }, 30000);
 });

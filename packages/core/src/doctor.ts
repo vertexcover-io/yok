@@ -224,6 +224,12 @@ export const CHECKS: readonly Check[] = [
     run: checkBinary("agent-browser"),
   },
   {
+    name: "agent-device",
+    optional: true,
+    fix: ["npm i -g agent-device@latest", "agent-device doctor"],
+    run: checkBinary("agent-device"),
+  },
+  {
     name: "ffmpeg",
     fix: ["brew install ffmpeg", "apt install ffmpeg", "dnf install ffmpeg"],
     run: checkBinary("ffmpeg", ["-version"]),

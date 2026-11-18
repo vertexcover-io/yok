@@ -18,6 +18,7 @@ macOS or Linux. Install what is missing:
 | Claude Code | current | see claude.com/claude-code | the agent |
 | GitHub CLI | any, logged in | `brew install gh && gh auth login` | the pr stage |
 | ffmpeg, agent-browser | any | `brew install ffmpeg`, `npm i -g agent-browser && agent-browser install` | the qa stage films proof |
+| agent-device | any, optional | `npm i -g agent-device@latest && agent-device doctor` | the qa stage drives iOS and Android apps |
 
 Codex works too. Install it with `npm i -g @openai/codex`. The rest of this page says Claude.
 
@@ -110,6 +111,17 @@ on the model and in the conversation it had:
 yok-dev resume step-demo
 ```
 
+A run that failed, on a test that would not pass or a stage that gave up, can pick up at the step
+that failed instead of starting over. Every step that finished stays finished; the failed one runs
+again in a new agent session, which reads the run's artifacts in `.yok/step-demo/artifacts`:
+
+```bash
+yok-dev retry step-demo
+```
+
+When the step failed waiting on a person's answer (every agent step's error is recorded that way
+when the run's `interaction` policy is off), deal with what it asked first, then pass `--answered`.
+
 You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
 
 Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.
@@ -128,7 +140,7 @@ This one uses agent nodes with demo stages, a loop that fails its first pass on 
 yok-dev run task --prompt "Describe a small change to this repo"
 ```
 
-This needs `LINEAR_API_KEY` in `.env` (the workflow's doctor block asks for it even for a plain prompt), `gh` logged in, and about an hour. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
+This takes about an hour. The doctor runs first and names anything the run is missing, with its fix, such as `gh` not logged in. The design and planning stages will ask you questions in the agent's terminal and show you pages in the viewer to approve. Follow [One task, end to end](05-one-task-end-to-end.md) while it runs.
 
 ## 9. Run yok on a server
 
@@ -208,13 +220,25 @@ yok-remote run task --prompt "fix login" --project web
 yok-remote server status
 ```
 
-`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
+`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login`, `ls`, `resume`, `retry` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. `ls` takes `--project` only as a filter, and `resume` and `retry` need it only with a run name, not with `--run-id`. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
 
 `login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
 
 Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
 
-A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. To answer its questions anyway, SSH into the server and attach to the run there.
+A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. While its agent runs, answer it from the run's page: the Terminal tab attaches to the run's tmux session in the browser, as `yok attach` does on the server.
+
+With `interaction: false`, a step that needs an answer fails the run instead of waiting. Deal with what it asked, then click Retry on the run's page and choose Retry as answered, or run:
+
+```bash
+yok-remote retry fix-login --project web --answered
+```
+
+When the agent stopped on a run that did not fail, after a reboot or a crash, Resume on the page, or `yok-remote resume fix-login --project web`, starts it again where it stopped. Either command takes `--run-id ID` instead of a name and `--project`, and prints the run's id and link as `yok-remote run` does. The server checks the run as it checks a new one, so a resume the doctor blocks names the failing checks and their fixes.
+
+The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same login and the same Host and Origin check as the rest of the page. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
+
+On Linux and Windows the browser keeps Ctrl-W and Ctrl-T for itself: they close or open a tab instead of reaching the agent. Install the page as an app (Chrome's "Install page as app") to get them back. On macOS those keys reach the agent, and Cmd-W closes the window either way.
 
 You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
 
@@ -234,7 +258,17 @@ You know it worked when `yok-remote server status` prints the server's version a
 
 A command is typed as on the command line, quotes included: `@yok run task --project web --prompt "fix login"`. Curly quotes, which Slack often types for you, work the same. A prompt without `--prompt` is refused. `--input KEY=VALUE` and the policy flags work as with `yok run`, except that `interaction` stays off whatever you pass: nobody sits at a Slack-started run's terminal to answer it.
 
-A run started from Slack posts its updates in the thread under the message only when its project's notifier posts to that same channel (`SLACK_CHANNEL_ID` in the project's `.env`).
+A run started from Slack posts its updates in the thread under the message, in whichever channel the message was typed, whenever the project's Slack notifier is on. The channel in the project's `.env` (`SLACK_CHANNEL_ID`) is used by runs started elsewhere.
+
+### Start runs from pull request comments
+
+1. Register the repo on the server: `yok --remote project add web --git git@github.com:ORG/web.git`.
+2. Copy [.github/workflows/yok.yml](../../.github/workflows/yok.yml) from this repo to the same path in the repo, on its default branch. The yok repo runs the same file on its own pull requests.
+3. Under the repo's Settings > Secrets and variables > Actions, add the variables `YOK_SERVER_URL` and `YOK_PROJECT` (`web`) and the secrets `YOK_USER` and `YOK_PASSWORD` (Caddy's login).
+
+Comment `/yok fix the review comments` on a pull request. The comment can be in the conversation, in a review thread, where the prompt carries the comment's link so `/yok fix this` works, or in a review's summary. A review starts one run for its summary and one for each line comment that starts with `/yok`, so put `/yok` in one place. The job replies where `/yok` was typed, in the review thread or on the conversation, with a link to the run's page, posted as github-actions[bot]; its log prints the same link. Only people with write access to the repo start runs, with `interaction` off; the job checks the commenter's permission with GitHub. The run pushes and replies with the server's own `gh` login.
+
+`/yok --workflow NAME …` starts any workflow that takes a prompt, such as `/yok --workflow quick fix the failing test`. `/yok` matches in any case, and a prompt wrapped whole in quotes, such as `/yok "fix CI"`, loses the quotes. The prompt the Action sends ends with a `Pull request: URL` line, so the workflow's workspace starts from the pull request's own branch, its commits land there with no force push, and it replies on the pull request instead of opening another.
 
 ## Useful commands
 
@@ -247,6 +281,7 @@ yok-dev project remove NAME     # forget one; --purge also deletes a folder yok 
 yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
+yok-dev --remote retry NAME --project P --answered  # bring a failed run back there
 yok-dev --remote project list   # the server's projects; also doctor, trigger
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
@@ -263,7 +298,7 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 
 **The doctor says `.yok/` is not gitignored.** Add `.yok/*` to `.gitignore`. This repo already has it.
 
-**BLOCKED on LINEAR_API_KEY.** You ran `task` without a Linear key. Add it to `.env`, or run a demo workflow. The doctor reads a key missing from `.env` from the server's environment, not your shell's, so on a remote server the key belongs in the project's `.env`.
+**The ticket-fetcher stage stops on a missing API key.** Your prompt names a ticket and the key for its platform is not set: `LINEAR_API_KEY` for Linear, `ASANA_API_KEY` for Asana, or the key a project-added provider names. Add it to `.env`, or describe the task in a plain prompt. The stage reads the key from the project's `.env`, then the environment, so on a remote server the key belongs in the project's `.env`.
 
 **Two servers, two registries.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`. A run started by one is invisible to the other. Pick one for the day.
 

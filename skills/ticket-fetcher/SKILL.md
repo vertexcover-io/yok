@@ -73,6 +73,9 @@ this skill and the provider's reference list.
 1. **Decide what the request is.** It is a ticket request when it holds a tracker URL (such as
    `linear.app/...` or `app.asana.com/...`), an issue key like `ENG-123`, or asks to work on a
    ticket. Otherwise it is a plain task: reply `{ "task": REQUEST }` with no artifact, and stop.
+   A `Pull request: URL` or `Asked in URL` line names the pull request a comment started the
+   run from, not a ticket: decide from the rest of the request, and when the request is a ticket,
+   end the task with those lines unchanged so the later stages still see them.
 2. **Choose PROVIDER.** When the `provider` variable is anything but `auto`, it is PROVIDER. When it
    is `auto`, run `yok orchestrate skill ref --list ticket-fetcher`: it prints every
    reference as `{ name, description }`, the project's added ones included, and each description

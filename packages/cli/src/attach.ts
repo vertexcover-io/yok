@@ -1,16 +1,14 @@
 import { Command } from "@commander-js/extra-typings";
 import { yokTerminalHost } from "@yok/core";
 import {
-  closingLine,
+  findRunPane,
   type Result,
-  readState,
   registryPath,
   requireRun,
-  runDirOf,
   spawnInteractive,
   type WorkflowRun,
 } from "@yok/sdk";
-import { createRegistry, isRunLive, type Registry } from "@yok/sdk/internal";
+import { createRegistry, type Registry } from "@yok/sdk/internal";
 import { commandLog, fail } from "./client.ts";
 
 const findById = async (registry: Registry, id: string): Promise<Result<WorkflowRun>> => {
@@ -36,21 +34,9 @@ const findRunToAttach = async (
   return picked.ok ? findById(registry, picked.value.id) : picked;
 };
 
-// The session is gone: a finished run says how it ended, any other run how to bring it back.
-// readState throws on a broken state.json; that run is treated as one still going.
-const goneMessage = async (run: WorkflowRun): Promise<string> => {
-  const name = run.name ?? run.id;
-  const state =
-    run.name === null ? null : await readState(runDirOf(run.cwd, run.name)).catch(() => null);
-  if (state !== null && !isRunLive(state.status)) return closingLine(name, state.status);
-  return `Run ${name} has no running session. Resume it with: yok resume ${name}`;
-};
-
 const attachArgv = async (run: WorkflowRun): Promise<Result<readonly string[]>> => {
-  if (run.terminal === null) return { ok: false, error: `run ${run.id} has no terminal yet` };
-  const terminal = yokTerminalHost().find(run.terminal);
-  if (await terminal.isAlive()) return { ok: true, value: terminal.attachCommand() };
-  return { ok: false, error: await goneMessage(run) };
+  const pane = await findRunPane(yokTerminalHost(), run);
+  return pane.ok ? { ok: true, value: pane.value.attachCommand() } : pane;
 };
 
 export const attachCommand = () =>

@@ -18,7 +18,6 @@ export type SlackHookDeps = DispatchDeps &
     home: string;
     // what calls Slack's Web API; the network's fetch unless a test records the calls
     slackFetch?: notifierHooks.Fetch | undefined;
-    now: () => Date;
   }>;
 
 // ~/.yok/.env first, then the process environment: a deploy delivers the keys through the unit's
@@ -68,6 +67,8 @@ const MentionSchema = z.looseObject({
   channel: z.string(),
   ts: z.string(),
   text: z.string(),
+  // who typed the mention; a run started by it addresses them
+  user: z.string().optional(),
   // set when the mention was typed inside a thread
   thread_ts: z.string().optional(),
 });
@@ -145,10 +146,13 @@ export const toBlocks = (reply: Reply): readonly object[] => {
 };
 
 // The text notifications show; the blocks carry the reply itself.
-const postReply = async (config: notifierHooks.SlackConfig, ts: string, reply: Reply) => {
-  await notifierHooks.callSlack(config, "chat.postMessage", {
+// A private reply needs someone to show it to; Slack always names the member on a person's mention.
+const postReply = async (config: notifierHooks.SlackConfig, thread: ChatThread, reply: Reply) => {
+  const ephemeralTo = reply.private === true ? thread.user : undefined;
+  await notifierHooks.callSlack(config, ephemeralTo ? "chat.postEphemeral" : "chat.postMessage", {
     channel: config.channel,
-    thread_ts: ts,
+    thread_ts: thread.ts,
+    ...(ephemeralTo === undefined ? {} : { user: ephemeralTo }),
     text: notifierHooks.escapeSlack(reply.text.split("\n")[0] ?? ""),
     blocks: JSON.stringify(toBlocks(reply)),
   });
@@ -158,7 +162,11 @@ const postReply = async (config: notifierHooks.SlackConfig, ts: string, reply: R
 const commandText = (text: string): string => text.replace(/^\s*<@[A-Z0-9]+>\s*/, "");
 
 const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<void> => {
-  const thread: ChatThread = { channel: mention.channel, ts: mention.thread_ts ?? mention.ts };
+  const thread: ChatThread = {
+    channel: mention.channel,
+    ts: mention.thread_ts ?? mention.ts,
+    ...(mention.user ? { user: mention.user } : {}),
+  };
   const log = deps.log.child({ component: "slack", thread: thread.ts });
   const token = slackKey(deps.home, "SLACK_BOT_TOKEN");
   if (!token) {
@@ -171,7 +179,7 @@ const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<voi
     memberId: undefined,
     fetch: deps.slackFetch ?? fetch,
   };
-  const say = (reply: Reply) => postReply(config, thread.ts, reply);
+  const say = (reply: Reply) => postReply(config, thread, reply);
   try {
     await say(await dispatchCommand(commandText(mention.text), thread, deps, say));
   } catch (error) {

@@ -24,6 +24,7 @@ import {
   loadRecordedConfig,
   loadRunConfig,
   loadStartConfig,
+  NodeIteratedEvent,
   type NodeRun,
   NodeStartedEvent,
   type Policies,
@@ -31,6 +32,7 @@ import {
   type Result,
   type RunRef,
   readPolicies,
+  readState,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -50,7 +52,9 @@ import {
   appendRunEventIf,
   createState,
   type DoneStatus,
+  findRunningLeaf as findRunningNode,
   foldModelSwitch,
+  isRunLive,
   jsonlEventStore,
   nodePath,
   type Registry,
@@ -83,9 +87,14 @@ import {
   type Decision,
   decideNext,
   type Emit,
+  findRetryTargets,
   findRunningLeaf,
   findRunningLeaves,
+  findStuckContainer,
+  isLeaf,
+  NeedsInputSchema,
   pickNodeTier,
+  type RetryTarget,
   type RunningLeaf,
   type StartedLeaf,
 } from "./workflow/next.ts";
@@ -114,8 +123,21 @@ export type InitOptions = Readonly<{
   // the agents whose session yok can switch to another model between stages
   modelSwitchAgents: ReadonlySet<AgentType>;
   // the Slack thread the run's updates reply in
-  notifyThread?: string | undefined;
+  notifyThread?: NotifyThread | undefined;
 }>;
+
+type NotifyThread = Readonly<{ threadId: string; channel?: string; user?: string }>;
+
+// The Slack thread a run started from chat replies in. The server hands it to the run's first
+// session as YOK_SLACK_THREAD, with the thread's channel and the requester laid over SLACK_CHANNEL_ID
+// and SLACK_MEMBER_ID; init keeps all three in the run's events, which every later session reads.
+export const notifyThreadFromEnv = (
+  env: Readonly<Record<string, string | undefined>>,
+): NotifyThread | undefined => {
+  const { YOK_SLACK_THREAD: threadId, SLACK_CHANNEL_ID: channel, SLACK_MEMBER_ID: user } = env;
+  if (!threadId) return undefined;
+  return { threadId, ...(channel ? { channel } : {}), ...(user ? { user } : {}) };
+};
 
 export const terminalName = (agent: string, runName: string, runId: string): string =>
   `${agent}-${runName}-${runId.slice(-4)}`;
@@ -255,7 +277,7 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     const seeded = await appendRunEvent(ref, {
       type: "notification.thread.started",
       source: "orchestrate",
-      payload: { provider: "slack", threadId: options.notifyThread },
+      payload: { provider: "slack", ...options.notifyThread },
     });
     if (!seeded.ok) throw new Error(seeded.error);
   }
@@ -318,6 +340,17 @@ const checkNodeTiers = async (
   return { ok: false, error: `${[...unmapped].join(", ")}; the ${plan.agent} tiers are ${names}` };
 };
 
+const takenNameMessage = async (dir: string, name: string): Promise<string> => {
+  const state = await readState(dir).catch(() => null);
+  if (state === null) return `run ${name} already exists`;
+  const node = findRunningNode(state.nodeRuns)?.path;
+  const at = node === undefined ? "" : `, at ${node}`;
+  const hint = isRunLive(state.status)
+    ? `attach with \`yok attach ${name}\``
+    : `resume it with \`yok resume ${name}\``;
+  return `run ${name} already exists (${state.status}${at}); ${hint}`;
+};
+
 const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => {
   const { registry, runId, name, git } = options;
   const parsed = SlugSchema.safeParse(name);
@@ -333,9 +366,7 @@ const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => 
     () => true,
     () => false,
   );
-  if (taken) {
-    return { ok: false, error: `.yok/${name} already exists` };
-  }
+  if (taken) return { ok: false, error: await takenNameMessage(runDirOf(run.cwd, name), name) };
   if ((await git.repoRoot(run.cwd)) === null) {
     return { ok: false, error: `${run.cwd} is not inside a git repository` };
   }
@@ -373,7 +404,7 @@ export const initializeRun = async (
     options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
     return { ok: true, value: { dir, state } };
   } catch (error) {
-    // A half-built folder would make every retry answer "already exists".
+    // A half-built folder would make every retry find its name taken.
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
@@ -433,7 +464,10 @@ export type StepReply =
   | Readonly<{ kind: "context"; nodeRunId: string; nodeId: string; action: ContextNode["action"] }>
   | Exclude<Decision, { kind: "steps" | "context" }>;
 
-type Call = Readonly<{ command: "next" | "exec" | "done" | "resume"; input: JsonValue }>;
+type Call = Readonly<{
+  command: "next" | "exec" | "done" | "resume" | "retry";
+  input: JsonValue;
+}>;
 
 // Parsing gives the reply the type an event payload needs.
 const replyOf = (outcome: Result<unknown, string | DoneError> | Error): JsonValue => {
@@ -691,6 +725,99 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
 
 export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
   logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
+
+export type RetryReport = Readonly<{
+  retried: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
+}>;
+
+// What a loop's failed pass read as iteration.previous: the output its last iterated event
+// carried. A first pass read none.
+const findPassPrevious = (events: readonly Event[], nodeRunId: string): JsonValue | undefined => {
+  const iterated = events.findLast(
+    (event) => event.type === "workflow.node.iterated" && event.nodeRunId === nodeRunId,
+  );
+  return iterated === undefined ? undefined : NodeIteratedEvent.parse(iterated).payload.output;
+};
+
+const buildRetriedEvent = ({ node, nodeRun }: RetryTarget, events: readonly Event[]): EmitInput => {
+  const previous = node.type === "loop" ? findPassPrevious(events, nodeRun.nodeRunId) : undefined;
+  return {
+    type: "workflow.node.retried",
+    source: "workflow",
+    nodeId: node.id,
+    nodeRunId: nodeRun.nodeRunId,
+    payload: {
+      nodeType: node.type,
+      attempts: 1,
+      ...buildParentsField(node.parents),
+      ...(previous === undefined ? {} : { previous }),
+    },
+  };
+};
+
+// Why retry would not help, or undefined when it would. `stuck` is a failed container that stopped
+// on its own, which retry cannot reopen.
+const findRetryRefusal = ({
+  name,
+  targets,
+  stuck,
+  answered,
+}: Readonly<{
+  name: string;
+  targets: readonly RetryTarget[];
+  stuck: string | undefined;
+  answered: boolean;
+}>): string | undefined => {
+  if (stuck !== undefined || targets.length === 0) {
+    return `run ${name} has no failed step to retry: ${stuck ?? "a step"} failed on its own, so it would fail again`;
+  }
+  if (answered) return undefined;
+  const asking = targets.find(
+    ({ node, nodeRun }) => isLeaf(node) && NeedsInputSchema.safeParse(nodeRun.output).success,
+  );
+  if (asking === undefined) return undefined;
+  const asked = NeedsInputSchema.extend({ message: z.string() }).safeParse(asking.nodeRun.output);
+  const message = asked.success ? asked.data.message : "";
+  return `${asking.node.id} failed needing a person's answer: ${message}\nOnce a person has dealt with it, retry with --answered`;
+};
+
+const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result<RetryReport>> => {
+  const runDir = runDirOf(run.cwd, run.name);
+  const state = await readRunState(runDir);
+  if (state.status !== "failed") {
+    return {
+      ok: false,
+      error: `run ${run.name} is ${state.status}; retry brings back only a failed run`,
+    };
+  }
+  const plan = await loadRunPlan(run, state);
+  if (!plan.ok) return plan;
+  const targets = findRetryTargets(plan.value.nodes, state.nodeRuns);
+  const stuck = findStuckContainer(plan.value.nodes, state.nodeRuns);
+  const refusal = findRetryRefusal({ name: run.name, targets, stuck, answered });
+  if (refusal !== undefined) return { ok: false, error: refusal };
+  const events = await jsonlEventStore(runDir).read();
+  // The run's status changes only on the last event, so every event checks it is still failed:
+  // a retry racing another stops at the first event the other already stored.
+  const isFailed = (current: State | null): boolean => current?.status === "failed";
+  const reopenEvents: readonly EmitInput[] = [
+    ...targets
+      .filter(({ nodeRun }) => nodeRun.status === "failed")
+      .map((target) => buildRetriedEvent(target, events)),
+    { type: "workflow.resumed", source: "workflow", payload: {} },
+  ];
+  for (const event of reopenEvents) {
+    const stored = await appendRunEventIf(run, event, isFailed);
+    if (!stored.ok) return { ok: false, error: `run ${run.name} was not retried: ${stored.error}` };
+  }
+  const retried = targets
+    .filter(({ node }) => isLeaf(node))
+    .map(({ node, nodeRun }) => ({ nodeRunId: nodeRun.nodeRunId, nodeId: node.id }));
+  return { ok: true, value: { retried } };
+};
+
+export const retryFailedSteps = (run: RunRef, answered: boolean): Promise<Result<RetryReport>> =>
+  logCall(run, { command: "retry", input: { answered } }, reopenFailedSteps(run, answered));
 
 // The running step, with the run's policies read from the same state.
 const loadRunningLeaf = async (

@@ -424,6 +424,98 @@ describe("builtInHandlers", () => {
     expect(project([ended("workflow.failed")]).status).toBe("failed");
   });
 
+  const runEvent = (seq: number, type: string): Event => ({
+    schemaVersion: 1,
+    seq,
+    id: `evt-${seq}`,
+    ts: `2026-09-26T10:00:0${seq}Z`,
+    type,
+    source: "workflow",
+    runId: "r-1",
+    payload: {},
+  });
+
+  test("SC1: a retried leaf folds to interrupted with no output, and workflow.resumed sets the failed run running again", () => {
+    const state = project([
+      nodeEvent(1, "started", build, { nodeType: "agent" }),
+      nodeEvent(2, "failed", build, {
+        nodeType: "agent",
+        attempts: 1,
+        error: { kind: "needs-input", message: "Which database?" },
+      }),
+      runEvent(3, "workflow.failed"),
+      nodeEvent(4, "retried", build, { nodeType: "agent", attempts: 1 }),
+      runEvent(5, "workflow.resumed"),
+    ]);
+    expect(state.nodeRuns.build).toMatchObject({
+      status: "interrupted",
+      completedAt: "2026-09-26T10:00:04Z",
+    });
+    expect(state.nodeRuns.build).not.toHaveProperty("output");
+    expect(state).toMatchObject({ status: "running", completedAt: null });
+    expect(StateSchema.safeParse(state).success).toBe(true);
+  });
+
+  test("SC2: a retried loop runs again in place, keeping its pass, its finished children and the output its pass read as previous", () => {
+    const fix = { nodeId: "fix", nodeRunId: "nr-1" };
+    const lint = { nodeId: "lint", nodeRunId: "nr-3" };
+    const failedTest = { nodeId: "test", nodeRunId: "nr-4" };
+    const state = project([
+      nodeEvent(1, "started", fix, { nodeType: "loop", input: {} }),
+      nodeEvent(2, "iterated", fix, { nodeType: "loop", iteration: 2, output: { test: "p1" } }),
+      nodeEvent(3, "completed", lint, { nodeType: "exec", attempts: 1, parents: ["fix"] }),
+      nodeEvent(4, "failed", failedTest, {
+        nodeType: "exec",
+        attempts: 1,
+        parents: ["fix"],
+        error: { kind: "exit", message: "exit 1" },
+      }),
+      nodeEvent(5, "failed", fix, {
+        nodeType: "loop",
+        attempts: 1,
+        error: { kind: "exit", message: "test failed" },
+      }),
+      nodeEvent(6, "retried", failedTest, { nodeType: "exec", attempts: 1, parents: ["fix"] }),
+      nodeEvent(7, "retried", fix, { nodeType: "loop", attempts: 1, previous: { test: "p1" } }),
+    ]);
+    expect(state.nodeRuns.fix).toMatchObject({
+      status: "running",
+      completedAt: null,
+      iteration: 2,
+      output: { test: "p1" },
+    });
+    expect(state.nodeRuns.fix?.nodes?.test?.status).toBe("interrupted");
+    expect(state.nodeRuns.fix?.nodes?.lint?.status).toBe("completed");
+    expect(StateSchema.safeParse(state).success).toBe(true);
+  });
+
+  test("SC3: a retried event naming an older run of the node leaves the node's latest run alone", () => {
+    const events = [
+      nodeEvent(1, "started", { nodeId: "build", nodeRunId: "nr-2" }, { nodeType: "exec" }),
+      nodeEvent(
+        2,
+        "failed",
+        { nodeId: "build", nodeRunId: "nr-2" },
+        {
+          nodeType: "exec",
+          attempts: 1,
+          error: { kind: "exit", message: "exit 1" },
+        },
+      ),
+    ];
+    const before = project(events);
+    const after = project([
+      ...events,
+      nodeEvent(
+        3,
+        "retried",
+        { nodeId: "build", nodeRunId: "nr-1" },
+        { nodeType: "exec", attempts: 1 },
+      ),
+    ]);
+    expect(after.nodeRuns.build).toEqual(before.nodeRuns.build);
+  });
+
   test("SC9: a node started again replaces its entry, so state keeps only its latest run", () => {
     const state = project([
       nodeEvent(1, "started", { nodeId: "x", nodeRunId: "nr-1" }, { nodeType: "exec" }),

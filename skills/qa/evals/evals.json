@@ -1,0 +1,212 @@
+{
+  "skill_name": "qa",
+  "evals": [
+    {
+      "id": 1,
+      "name": "device-entry-drives-the-app",
+      "prompt": "You are running the qa stage of run feat-x against environment ios. orchestrate.config.yaml's environments.entries.ios has platform ios, app com.example.app, and the steps stackUp (builds, installs and runs the app on the simulator), stackDown (uninstalls it), seed and auth. The plan lists R1, a settings toggle that persists after the app is reopened. agent-device and ffmpeg are installed.",
+      "expected_output": "Exports AGENT_DEVICE_SESSION before stackUp, runs stackUp, seed and auth, opens the app with agent-device open com.example.app --platform ios --relaunch, drives the toggle through agent-device with snapshot -i and press --settle, cites get or is output as evidence, names the device and its OS version on the scenario's recording, runs no phone replay, closes with agent-device close, and ends with the return contract's JSON block.",
+      "files": [],
+      "expectations": [
+        "Exports AGENT_DEVICE_SESSION before running stackUp",
+        "Opens the app with agent-device open com.example.app --platform ios --relaunch after seed and auth, built from the entry's app and platform fields",
+        "Every check's result rests on the output of an agent-device get, is or wait command, quoted in the raw of the proof it cites",
+        "The scenario's recording names the device and its OS version, and the return names the app id and platform",
+        "Step 7 runs agent-device close",
+        "No scenario carries a phone replay recording"
+      ],
+      "anti_expectations": ["Runs agent-browser", "Asserts through eval"]
+    },
+    {
+      "id": 2,
+      "name": "missing-agent-device-blocks-with-the-token",
+      "prompt": "You are running the qa stage of run feat-x against environment android, whose entry has platform android and app com.example.app. agent-device is not installed on this machine.",
+      "expected_output": "Returns status BLOCKED with report null and a reason opening no-agent-device: that names the install hint npm i -g agent-device@latest, and lists every scenario it could not prove in gaps[] against its requirement.",
+      "files": [],
+      "expectations": [
+        "The JSON block's status is exactly BLOCKED",
+        "The reason opens with no-agent-device:",
+        "The reason contains npm i -g agent-device@latest",
+        "report is null and every unproven requirement has a gaps[] entry"
+      ],
+      "anti_expectations": [
+        "Writes BLOCKED:no-agent-device as the status",
+        "Prints the agent-browser install hint",
+        "Writes a proof report"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "device-attacks-and-visual-answers",
+      "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios and app com.example.app, verifying a form screen the plan builds to a frame drawn at phone width. The app and drivers are installed and Step 2 has filmed the form scenario.",
+      "expected_output": "Step 4 drives background-and-return (agent-device home, then agent-device open com.example.app --platform ios without --relaunch) and rotate (agent-device orientation landscape-left, then portrait) on the form screen; the scenario's visualMatch records contrast and sideways scroll as not measurable on this surface and measures every driven control's short side from get attrs against 44px.",
+      "files": [],
+      "expectations": [
+        "Runs agent-device home followed by agent-device open com.example.app --platform ios without --relaunch, and asserts the form state survived",
+        "Runs agent-device orientation landscape-left, shoots the screen, then restores portrait",
+        "visualMatch answers contrast and sideways scroll as not measurable on this surface",
+        "Every control the walk drove has a get attrs rect cited against the 44px rule"
+      ],
+      "anti_expectations": [
+        "Marks contrast or sideways scroll as clean on a device scenario",
+        "Uses set viewport or set device on a device scenario",
+        "Skips the rotate or the background-and-return attack"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "stack-that-will-not-start-blocks-with-no-infra",
+      "prompt": "You are running the qa stage of run feat-x against environment local, whose stackUp command exits non-zero twice with a port-in-use error and whose stackStatus keeps reporting the stack down.",
+      "expected_output": "Returns status BLOCKED with report null, a reason opening no-infra: that names the service and quotes the command as it ran, and no proof report, prose report-back or scenario walk.",
+      "files": [],
+      "expectations": [
+        "The JSON block's status is exactly BLOCKED and report is null",
+        "The reason opens with no-infra: and names the service and the command that failed",
+        "Retries stackUp once and stops after the second failure"
+      ],
+      "anti_expectations": [
+        "Writes BLOCKED:no-infra as the status",
+        "Drives any scenario or writes a proof report",
+        "Assumes a port and continues"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "verdict-is-derived-from-coverage",
+      "prompt": "You are running the qa stage of run feat-x on the last round. The docs list R1, R2 and R3. Your walks proved R1 and R2 with SUCCESS scenarios and R3 could not be reached because its feature flag is off in this environment, and every walk you drove felt like a pass.",
+      "expected_output": "coverage[] holds one row per requirement, R3 is NOT VERIFIED with a gaps[] entry naming the flag, and verdict is PARTIAL with the status PARTIAL and the summary sentence that QA could not verify 1 of 3 requirements.",
+      "files": [],
+      "expectations": [
+        "coverage[] has exactly one row for each of R1, R2 and R3",
+        "verdict is PARTIAL because a requirement is NOT VERIFIED and no scenario is a FAILURE",
+        "gaps[] has one entry for R3 whose mechanism names the feature flag and the line that reads it"
+      ],
+      "anti_expectations": [
+        "Writes verdict PASS because the driven walks passed",
+        "Drops R3 from coverage[]",
+        "Backfills R3 with an adjacent passing check"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "fail-with-rounds-left-defers-the-report",
+      "prompt": "You are running the qa stage of run feat-x with round 1 of rounds 3. One scenario reproduces a bug: the total is wrong after a discount is applied.",
+      "expected_output": "Writes the bug's scenario and ledger line, returns status FAIL with report null and one bugs[] entry carrying id, summary, trigger and hint, builds no videos, writes no proof report, and leaves the stack, fixtures and staging dir in place for the fix round.",
+      "files": [],
+      "expectations": [
+        "status is FAIL and report is null",
+        "bugs[] has one entry whose id is the scenario number and whose askUser is false",
+        "No report-media run and no proof-report.html",
+        "The stack is left running and the return says so"
+      ],
+      "anti_expectations": [
+        "Writes proof-report.html on this round",
+        "Tears down the stack or deletes verify-staging",
+        "Returns FAIL with an empty bugs[]"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "run-log-is-append-only",
+      "prompt": "You are running the qa stage of run feat-x on round 2. verification/run-log.jsonl holds round 1 lines for scenarios 01 and 02; 02 was a FAILURE and the fix round closed its bug. Nothing else changed in git.",
+      "expected_output": "Re-drives 02 only, clears its old frames first, appends a new line for 02 with round 2, carries 01 unchanged from its ledger line into the report, and never edits or removes an existing line.",
+      "files": [],
+      "expectations": [
+        "Deletes verification/screenshots/02_* before driving 02 again",
+        "Appends one new line for 02 carrying round 2 and the current commits",
+        "Scenario 01 is transcribed from its round 1 line without being driven",
+        "Every round 1 line is still present and unchanged"
+      ],
+      "anti_expectations": [
+        "Rewrites or truncates run-log.jsonl",
+        "Re-drives 01",
+        "Restamps 01's line with round 2"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "browser-walk-replays-on-a-phone",
+      "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change added a filter to a list page and the project says the app serves phones.",
+      "expected_output": "Drives the filter flow on desktop, then, once every desktop scenario is filmed, opens a second named session, sets it to agent-browser set device \"iPhone 14\" and signs in again there, and drives the same flow to its closing assert as one more recording of the same scenario, under that scenario's number with the recording's prefix. The replay's crop reads as a portrait picture in Step 5, and Step 7 closes both sessions by name.",
+      "files": [],
+      "expectations": [
+        "The flow is replayed after set device \"iPhone 14\", and the replay is a second entry in the same scenario's recordings[], its files named NN_SLUG-NAME",
+        "The replay runs after every desktop scenario, in a named session of its own that ran its own setup",
+        "The replay is driven from its first click to the same closing assert as desktop",
+        "The replay asserts documentElement.scrollWidth minus clientWidth is 0",
+        "Step 7 closes the desktop session and the phone session, each by name"
+      ],
+      "anti_expectations": [
+        "Narrows the viewport instead of setting a device",
+        "Shoots only the final screen on the phone",
+        "Skips the replay because desktop passed",
+        "Lists the phone replay as a scenario of its own",
+        "Sets the phone device in the desktop session and tries to restore it afterwards"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "device-walk-replays-on-each-listed-device",
+      "prompt": "You are running the qa stage of run feat-x against environment ios, an entry with platform ios, app com.example.app, devices [\"iPhone 17 Pro\", \"iPad Pro 13-inch (M4)\"] and a stackUp of make ios-run DEVICE={DEVICE}. The plan lists R1, a list screen with a detail view. Both simulators exist and agent-device and ffmpeg are installed.",
+      "expected_output": "Runs stackUp twice, once per device name, opens the app on each device in its own session (feat-x-iphone-17-pro and feat-x-ipad-pro-13-inch-m4) with --device, drives the list-to-detail flow on the iPhone and again on the iPad as a second recording of the same scenario, keeps one coverage row for R1 naming that scenario, names each device and its OS version on its recording, and closes both sessions.",
+      "files": [],
+      "expectations": [
+        "Runs make ios-run DEVICE=iPhone 17 Pro and make ios-run DEVICE=iPad Pro 13-inch (M4), with the placeholder filled",
+        "Exports a different AGENT_DEVICE_SESSION per device and opens the app with --device on each",
+        "The iPad replay is driven from its first press to the same closing assert and joins the scenario's recordings[], naming the iPad as its device",
+        "coverage[] has one row for R1 naming the one scenario",
+        "Each recording names its device and OS version",
+        "Runs agent-device close once per device session"
+      ],
+      "anti_expectations": [
+        "Drives the iPad by shooting only the final screen",
+        "Opens both devices in one session",
+        "Writes two coverage rows for R1",
+        "Lists the iPad replay as a scenario of its own"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "browser-scenario-is-scouted-then-filmed-in-one-take",
+      "prompt": "You are running the qa stage of run feat-x, the only round, against a web environment. The feature adds a filter to a list page: choosing a status narrows the rows to that status. Verify it.",
+      "expected_output": "Scouts the filter flow with the recorder off, returns the page to its opening state, then films the scenario as one take: agent-browser record start with --cursor writing NN_SLUG.mp4 beside the report, one batch with --bail that holds the opening state for about a second and a half, in which every click is click SELECTOR --human followed by a wait on a condition, an assert and a screenshot to staging, a closing hold of about a second and a half on the final state, then record stop as its own command. Promotes the take's frames after reading them, writes the scenario's steps as a summary of the take in order, each with the checks it brings about and each check's result from the take's asserts, adds the take to recordings[] with its video named on the scenario's ledger line, and in Step 5 the report-media script prints ok NN_SLUG.mp4 recorded for it, with the sizes where it compressed the recording.",
+      "files": [],
+      "expectations": [
+        "The recorder starts only after the flow has been driven once without it",
+        "The take is one batch, and record stop runs as a separate command after it",
+        "Every click in the take is written as click with --human, and the recording is started with --cursor",
+        "Each step in the take waits on a condition before its assert and screenshot",
+        "The scenario's ledger line names NN_SLUG.mp4 as its recording's video before Step 5 runs",
+        "The scenario's title, its given and the text of every check are written from the docs before the flow is driven",
+        "The scenario's steps summarise the take's user actions in the order the take ran them, written after the take counted, and every step carries at least one check",
+        "Every check has a result of pass or fail from the take's asserts, and what an assert returned sits in the raw of a proof the check cites",
+        "The title is the question the scenario answers, given is a list with one setup fact a line, and each step and each check is one plain sentence",
+        "The take holds on the opening state before its first action and on the final state after its last, about a second and a half each",
+        "A design drawn at another width for a state the take passed through is re-shot after the take, recorder off, by replaying the scouted steps to that state",
+        "Every sentence in the scenario reads to a Product or QA person who has never seen the code: told from the user's side, naming controls by their on-screen labels and records, users and values by their kind",
+        "Each proof has an id, a label and a raw of at most fifteen lines holding only the values its checks rest on, is cited by the checks it shows and by those only, and its found says why it counts",
+        "The primary journeys have the group journey, every other scenario sits under a short broad heading naming the kind of check it is, free of this feature's own terms, and a behaviour an e2e test already asserts is filmed from that test with no browser walk of its own",
+        "Before any text is typed in the take, the pointer travels to the field and clicks it, and the text arrives a few words at a time",
+        "A target off screen is brought into view by a smooth scroll before the pointer travels to it",
+        "Where a step opens another tab, the take restarts the recorder there as the next numbered part, and Step 5 joins the parts into one video",
+        "Every frame the recording lists was shot during the take, so it is also in the video"
+      ],
+      "anti_expectations": [
+        "Starts the recorder before the flow is known, so retries and dead ends are in the video",
+        "Uses snapshot refs as targets inside the take",
+        "Keeps the video of a take in which a step failed or an assert returned an unexpected value",
+        "Builds the browser scenario's video from its screenshots while its recorder works",
+        "Writes the scenario's steps before the take, or as a summary that does not follow the video",
+        "Marks a check passed on an interpretation instead of on what an assert returned",
+        "Writes given, the steps or the checks as paragraphs",
+        "Names the ids, names or amounts the run used in title, given, a step or a check",
+        "Says how the run was filmed or driven in title, given, a step or a check",
+        "Starts or ends the video mid-motion, with no time to read the first or the last state",
+        "Changes the take, or cuts the video, to get the design re-shoot",
+        "Puts field names, status codes, selectors, identifiers or an assert's raw return in title, given, a step, a check, claim or found",
+        "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take",
+        "Leaves the recording on the first tab and shoots the new tab only as a screenshot after the take"
+      ]
+    }
+  ]
+}

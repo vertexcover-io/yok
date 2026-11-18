@@ -23,55 +23,7 @@ permissions:
 jobs:
   # Runs first, so a manual release never pushes a tag for code that fails its tests.
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-
-      # A hand-pushed tag already exists, so the earliest a mismatch can stop it is here.
-      # A manual run checks its own tag in cut, before pushing it.
-      - name: Check the pushed tag matches the files at it
-        if: github.event_name == 'push'
-        run: bash scripts/check-release-tag.sh "$GITHUB_REF_NAME"
-
-      # Both runtimes, because the release script is meant to run under either
-      # and only CI can catch one of them drifting.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          # setup-node caches on its own from v5, and a cache needs a lockfile
-          # this repo does not have. Nothing here installs dependencies anyway.
-          package-manager-cache: false
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.4
-
-      - run: npm run test:scripts
-
-      - run: npm run test:scripts:bun
-
-      - run: npm run test:hooks
-
-      - run: npm run test:python
-
-      # The e2e tests drive tmux sessions, yok run's doctor needs ffmpeg and agent-browser, the
-      # viewer tests drive a real browser, and the bash guard calls rg and ast-grep.
-      - run: sudo apt-get update && sudo apt-get install -y tmux ffmpeg ripgrep
-      - run: npm i -g agent-browser @ast-grep/cli && agent-browser install --with-deps
-
-      # Tests commit in temp repos, and a runner has no git identity of its own.
-      - run: git config --global user.name "yok ci" && git config --global user.email "ci@yok.invalid"
-
-      - run: bun install --frozen-lockfile
-
-      - run: bun run typecheck
-
-      - run: bun run test
-
-      - run: bun run lint
+    uses: ./.github/workflows/test.yml
 
   # A tag pushed with GITHUB_TOKEN starts no workflow run, so a manual release cuts its tag
   # here and the release job below publishes it in this same run.

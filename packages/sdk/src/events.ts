@@ -102,6 +102,12 @@ const nodeEndedEvents = {
   interrupted: nodeEvent(z.strictObject(endFields)),
 };
 
+// A failed node that retry reopens. `previous` is what a loop's failed pass read as
+// iteration.previous: the failure replaced the loop's output with its error.
+export const NodeRetriedEvent = nodeEvent(
+  z.strictObject({ ...endFields, previous: z.json().optional() }),
+);
+
 // A loop starting its next pass: the pass number, and the result of the pass that just ended.
 export const NodeIteratedEvent = nodeEvent(
   z.strictObject({
@@ -339,9 +345,16 @@ export const WorkflowBlockedEvent = z.object({
   }),
 });
 
-// The notifier opened the run's conversation; its later posts reply in this thread.
+// The notifier opened the run's conversation; its later posts reply in this thread. A run started
+// from a chat thread also keeps the thread's channel and whoever typed the command, so every later
+// post goes to that channel and tags them, whatever the session's env names.
 export const NotificationThreadStartedEvent = z.object({
-  payload: z.strictObject({ provider: NonEmptyStringSchema, threadId: NonEmptyStringSchema }),
+  payload: z.strictObject({
+    provider: NonEmptyStringSchema,
+    threadId: NonEmptyStringSchema,
+    channel: NonEmptyStringSchema.optional(),
+    user: NonEmptyStringSchema.optional(),
+  }),
 });
 
 // Values a subscriber or skill keeps between calls. Each top-level key replaces the one in state.custom,
@@ -449,6 +462,7 @@ const reportOrError = z.union([StepReportSchema, ErrorSchema.extend({ kind: z.li
 
 const OrchestrateNextEvent = callEvent(z.strictObject({}), z.json());
 const OrchestrateResumeEvent = callEvent(z.strictObject({}), z.json());
+const OrchestrateRetryEvent = callEvent(z.strictObject({ answered: z.boolean() }), z.json());
 const OrchestrateExecEvent = callEvent(
   z.strictObject({ nodeRunId: NonEmptyStringSchema }),
   reportOrError,
@@ -541,11 +555,13 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "workflow.started": WorkflowStartedEvent,
   "workflow.completed": WorkflowEndedEvent,
   "workflow.failed": WorkflowEndedEvent,
+  "workflow.resumed": WorkflowEndedEvent,
   "workflow.node.started": NodeStartedEvent,
   "workflow.node.completed": nodeEndedEvents.completed,
   "workflow.node.skipped": nodeEndedEvents.skipped,
   "workflow.node.cancelled": nodeEndedEvents.cancelled,
   "workflow.node.interrupted": nodeEndedEvents.interrupted,
+  "workflow.node.retried": NodeRetriedEvent,
   "workflow.node.failed": nodeEndedEvents.failed,
   "workflow.node.iterated": NodeIteratedEvent,
   "workflow.session.replaced": SessionReplacedEvent,
@@ -566,6 +582,7 @@ const catalog: Readonly<Record<string, z.ZodType>> = {
   "orchestrate.done": OrchestrateDoneEvent,
   "orchestrate.verifier": OrchestrateVerifierEvent,
   "orchestrate.resume": OrchestrateResumeEvent,
+  "orchestrate.retry": OrchestrateRetryEvent,
   "hooks.stop.called": StopCalledEvent,
   "hooks.pre-tool-use.called": PreToolUseCalledEvent,
   "hooks.session-start.called": SessionStartCalledEvent,
@@ -823,6 +840,35 @@ const onIterated: EventHandler = (state, event) => {
   };
 };
 
+// A retried leaf ends interrupted, so next starts it again as a new run. A retried container runs
+// again in place: its pass and its finished children stay, so only what failed inside it reruns.
+const onRetried: EventHandler = (state, event) => {
+  const parsed = NodeRetriedEvent.safeParse(event);
+  if (!parsed.success) return state;
+  const { nodeId, nodeRunId, payload } = parsed.data;
+  const reopen = (current: NodeRun | undefined): NodeRun => {
+    if (current === undefined)
+      throw new Error(`${nodeId}: a node that never ran cannot be retried`);
+    if (current.nodeRunId !== nodeRunId) return current;
+    const cleared = withoutOutput(current);
+    if (!CONTAINER_TYPES.has(current.nodeType)) {
+      return { ...cleared, status: "interrupted", completedAt: event.ts };
+    }
+    const running: NodeRun = { ...cleared, status: "running", completedAt: null };
+    return payload.previous === undefined ? running : { ...running, output: payload.previous };
+  };
+  return {
+    ...state,
+    nodeRuns: updateNode(state.nodeRuns, payload.parents ?? [], nodeId, reopen),
+  };
+};
+
+const onWorkflowResumed: EventHandler = (state) => ({
+  ...state,
+  status: "running",
+  completedAt: null,
+});
+
 type WorkspaceRepository = z.infer<typeof WorkspaceRepositorySchema>;
 
 // state.json keeps its own `path` names; only payloads use the worktreeDir naming.
@@ -902,7 +948,14 @@ const onSessionReplaced: EventHandler = (state, event) => {
 const onThreadStarted: EventHandler = (state, event) => {
   const parsed = NotificationThreadStartedEvent.safeParse(event);
   if (!parsed.success) return state;
-  return { ...state, notification: { ...state.notification, ...parsed.data.payload } };
+  const { provider, threadId, channel, user } = parsed.data.payload;
+  const thread = {
+    provider,
+    threadId,
+    ...(channel === undefined ? {} : { channel }),
+    ...(user === undefined ? {} : { user }),
+  };
+  return { ...state, notification: { ...state.notification, ...thread } };
 };
 
 const onCustomStateUpdated: EventHandler = (state, event) => {
@@ -1054,12 +1107,14 @@ export const builtInHandlers: EventHandlers = {
   "workflow.started": onWorkflowStarted,
   "workflow.completed": (state, event) => onWorkflowEnded("completed", state, event),
   "workflow.failed": (state, event) => onWorkflowEnded("failed", state, event),
+  "workflow.resumed": onWorkflowResumed,
   "workflow.node.started": onStarted,
   "workflow.node.completed": (state, event) => onEnded("completed", state, event),
   "workflow.node.failed": (state, event) => onEnded("failed", state, event),
   "workflow.node.skipped": (state, event) => onEnded("skipped", state, event),
   "workflow.node.cancelled": (state, event) => onEnded("cancelled", state, event),
   "workflow.node.interrupted": (state, event) => onEnded("interrupted", state, event),
+  "workflow.node.retried": onRetried,
   "workflow.node.iterated": onIterated,
   "agent.question.asked": onQuestionAsked,
   "agent.question.answered": (state) => unblock(state, "question"),

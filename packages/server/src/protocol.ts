@@ -8,6 +8,7 @@ import {
   NonEmptyStringSchema,
   PolicyLayerSchema,
   SlugSchema,
+  withLock,
   yokHome,
 } from "@yok/sdk";
 import * as z from "zod";
@@ -56,23 +57,31 @@ export const publicOrigin = (domain: string): string =>
 
 const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
 
-// Replaces the named keys' lines and drops the ones set to null; every other line stays.
+type EnvValues = Record<string, string | null>;
+
+// Replaces the named keys' lines and drops the ones set to null; every other line stays. Given a
+// function, the values are worked out from the file as it is once the lock is held.
 export const updateHomeEnv = async (
   home: string,
-  values: Record<string, string | null>,
+  values: EnvValues | ((env: Record<string, string | undefined>) => EnvValues),
 ): Promise<void> => {
-  const kept = readHomeFile(homeEnvPath(home))
-    .split("\n")
-    .filter((line) => line.trim() !== "" && !(envLineKey(line) in values));
-  const added = Object.entries(values).flatMap(([key, value]) =>
-    value === null ? [] : [`${key}=${value}`],
-  );
+  // before the lock, which would otherwise create the home with the umask's permissions
   await mkdir(home, { recursive: true, mode: 0o700 });
-  await writeFile(homeEnvPath(home), [...kept, ...added].map((line) => `${line}\n`).join(""), {
-    mode: 0o600,
+  await withLock(`${homeEnvPath(home)}.lock`, async () => {
+    const text = readHomeFile(homeEnvPath(home));
+    const changes = typeof values === "function" ? values(parseEnv(text)) : values;
+    const kept = text
+      .split("\n")
+      .filter((line) => line.trim() !== "" && !(envLineKey(line) in changes));
+    const added = Object.entries(changes).flatMap(([key, value]) =>
+      value === null ? [] : [`${key}=${value}`],
+    );
+    await writeFile(homeEnvPath(home), [...kept, ...added].map((line) => `${line}\n`).join(""), {
+      mode: 0o600,
+    });
+    // writeFile's mode applies only when it creates the file.
+    await chmod(homeEnvPath(home), 0o600);
   });
-  // writeFile's mode applies only when it creates the file.
-  await chmod(homeEnvPath(home), 0o600);
 };
 
 export const ErrorBodySchema = z.strictObject({
@@ -138,9 +147,20 @@ export const folderSlug = (folder: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-// The env the resumed session starts with, which yok resume builds the way yok run does
-export const ResumeRunBodySchema = z.strictObject({ env: z.record(z.string(), z.string()) });
+// The run a resume or retry brings back: by id, or by its name inside a registered project.
+export const RunPickSchema = z.union([
+  z.strictObject({ id: NonEmptyStringSchema }),
+  z.strictObject({ project: SlugSchema, name: SlugSchema }),
+]);
+export type RunPick = z.infer<typeof RunPickSchema>;
+
+// The server builds the session's env and runs the doctor itself, as it does for a new run.
+export const ResumeRunBodySchema = z.strictObject({ run: RunPickSchema });
 export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
+
+// answered: a person has dealt with what a needs-input failure asked, so retry may rerun it
+export const RetryRunBodySchema = ResumeRunBodySchema.extend({ answered: z.boolean().optional() });
+export type RetryRunBody = z.infer<typeof RetryRunBodySchema>;
 
 // GET /runs. Query values arrive as text; status is one comma list.
 export const ListRunsQuerySchema = z
@@ -157,6 +177,8 @@ export const ListRunsQuerySchema = z
       .transform(Number)
       .optional(),
     all: z.enum(["true", "false"]).optional(),
+    // a yok user id, GitHub login, GitHub id or email
+    by: NonEmptyStringSchema.optional(),
   })
   .refine((query) => query.all !== "true" || query.limit === undefined, {
     message: "--all and --limit cannot be used together",

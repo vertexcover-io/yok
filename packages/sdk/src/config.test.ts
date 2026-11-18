@@ -210,7 +210,8 @@ describe("ConfigSchema", () => {
     });
     expect(config.packages.api?.timeoutSeconds).toBe(600);
     expect(config.environments?.default).toBe("local");
-    expect(Object.keys(config.environments?.entries.local ?? {})).toEqual([
+    expect(config.environments?.entries.local?.platform).toBe("web");
+    expect(Object.keys(config.environments?.entries.local?.steps ?? {})).toEqual([
       "stackUp",
       "stackStatus",
       "stackDown",
@@ -305,6 +306,49 @@ describe("ConfigSchema", () => {
     expect(errorOf({ version: 2, environments: { default: selected, entries } })).toContain(
       "Must name one of the entries",
     );
+  });
+
+  test("SC13 — a device environment entry keeps its platform, app and steps", () => {
+    const config = ConfigSchema.parse({
+      version: 2,
+      environments: {
+        default: "ios",
+        entries: {
+          ios: {
+            platform: "ios",
+            app: "com.example.app",
+            devices: ["iPhone 17 Pro", "iPad Pro 13-inch (M4)"],
+            stackUp: "make ios-run DEVICE={DEVICE}",
+          },
+        },
+      },
+    });
+    expect(config.environments?.entries.ios).toEqual({
+      platform: "ios",
+      app: "com.example.app",
+      devices: ["iPhone 17 Pro", "iPad Pro 13-inch (M4)"],
+      steps: { stackUp: { command: "make ios-run DEVICE={DEVICE}" } },
+    });
+  });
+
+  test.each([
+    [
+      "a device platform with no app",
+      { platform: "android" },
+      "Required when platform is ios or android",
+    ],
+    ["an unknown platform", { platform: "tv", app: "x" }, "platform"],
+    ["devices on a web entry", { devices: ["iPhone 17 Pro"] }, "Only on ios or android"],
+    ["an empty devices list", { platform: "ios", app: "x", devices: [] }, "devices"],
+    [
+      "a step name in the wrong format",
+      { platform: "web", stack_up: "x" },
+      'Invalid key "stack_up"',
+    ],
+  ])("SC14 — an environment entry with %s is rejected", (_label, entry, reason) => {
+    expect(
+      errorOf({ version: 2, environments: { default: "local", entries: { local: entry } } }),
+    ).toContain(reason);
   });
 
   test.each([

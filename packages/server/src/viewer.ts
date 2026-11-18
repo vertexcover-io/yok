@@ -26,7 +26,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
-import { CommentDraftSchema, type Registry } from "@yok/sdk/internal";
+import { CommentDraftSchema, type Registry, readUsers, VERSION } from "@yok/sdk/internal";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
@@ -50,6 +50,7 @@ import VIEWER_HTML from "./viewer.html" with { type: "text" };
 
 // The document styles live in core, shared with the plan page; the viewer page carries a slot for them.
 const VIEWER_PAGE = (VIEWER_HTML as unknown as string).replace("/* {{DOC_STYLES}} */", DOC_STYLES);
+const RUNS_PAGE = (RUNS_HTML as unknown as string).replace("{{VERSION}}", VERSION);
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 const ANCHOR_JS = transpiler.transformSync(ANCHOR_SOURCE as string);
@@ -64,6 +65,9 @@ export type ViewerDeps = Readonly<{
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   now: () => Date;
+  home: string;
+  // Aborted when the server stops, so the live streams end instead of holding it open.
+  stopping: AbortSignal;
 }>;
 export type FileType = "md" | "html" | "image" | "text" | "binary";
 export type ArtifactEntry = Readonly<{
@@ -331,20 +335,41 @@ const inRunQueue = <T>(runId: string, work: () => Promise<T>): Promise<T> => {
 
 const POLL_MS = 1000;
 
+type StagedFile = ArtifactEntry & Readonly<{ stage: string | null }>;
 type FilesBody = Readonly<{
   state: "starting" | "ready";
   run: Readonly<{ id: string; name: string | null }>;
-  files: readonly ArtifactEntry[];
+  files: readonly StagedFile[];
 }>;
 type CommentsBody = Readonly<{ comments: readonly unknown[]; delivery: unknown }>;
 
+const flatSteps = (steps: readonly Step[]): readonly Step[] =>
+  steps.flatMap((step) => [step, ...flatSteps(step.children)]);
+
+// A file belongs to the first stage, in workflow order, that delivered it; the rest come last.
+const withStages = (
+  files: readonly ArtifactEntry[],
+  steps: readonly Step[],
+): readonly StagedFile[] => {
+  const staged = flatSteps(steps).filter((step) => step.stage !== null);
+  const order = [...new Set(staged.map((step) => step.stage))];
+  const stageOf = (path: string): string | null =>
+    staged.find((step) => step.artifacts.includes(path))?.stage ?? null;
+  const rank = (file: StagedFile): number =>
+    file.stage === null ? order.length : order.indexOf(file.stage);
+  return files
+    .map((file) => ({ ...file, stage: stageOf(file.path) }))
+    .sort((a, b) => rank(a) - rank(b));
+};
+
 const filesBody = async (
   page: Exclude<ViewedRun, { kind: "missing" }>,
-  state: State | null,
+  runFiles: RunFiles,
 ): Promise<FilesBody> => {
   const run = { id: page.run.id, name: page.run.name };
   if (page.kind === "starting") return { state: "starting", run, files: [] };
-  return { state: "ready", run, files: await listArtifacts(page.runDir, state) };
+  const files = await listArtifacts(page.runDir, runFiles.state);
+  return { state: "ready", run, files: withStages(files, stepsBody(runFiles).steps) };
 };
 
 const stepsBody = ({ state, workflow }: RunFiles): Readonly<{ steps: readonly Step[] }> => {
@@ -413,7 +438,7 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
   const sent = new Map<string, string>();
   // null until the first look at the folder: files already there on connect are not "changed".
   let stamps: ReadonlyMap<string, Stamp> | null = null;
-  while (!stream.aborted) {
+  while (!stream.aborted && !deps.stopping.aborted) {
     const page = await findViewedRun(deps.registry, id);
     if (page.kind === "missing") {
       await stream.sleep(POLL_MS);
@@ -421,7 +446,7 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
     }
     const runFiles = await readRunFiles(page.run);
     const agentAlive = page.kind === "ready" ? await isAgentAlive(page.run, deps.host) : null;
-    const files = await filesBody(page, runFiles.state);
+    const files = await filesBody(page, runFiles);
     await sendChanged(stream, sent, "files", files);
     if (page.kind === "ready") {
       const now = await fileStamps(page.runDir, files.files);
@@ -433,7 +458,12 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
       stamps = now;
       await sendChanged(stream, sent, "steps", stepsBody(runFiles));
     }
-    await sendChanged(stream, sent, "summary", summarizeRun(page.run, runFiles, agentAlive));
+    await sendChanged(
+      stream,
+      sent,
+      "summary",
+      summarizeRun(page.run, runFiles, agentAlive, await readUsers(deps.home)),
+    );
     await sendChanged(stream, sent, "agent", agentStatus(page.run.id, agentAlive));
     const comments = await commentsBody(page);
     if (comments !== null) await sendChanged(stream, sent, "comments", comments);
@@ -443,8 +473,10 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
 
 const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<void> => {
   let sent = "";
-  while (!stream.aborted) {
-    const json = JSON.stringify({ runs: await listRunSummaries(deps.registry, deps.host) });
+  while (!stream.aborted && !deps.stopping.aborted) {
+    const json = JSON.stringify({
+      runs: await listRunSummaries(deps.registry, deps.host, deps.home),
+    });
     if (json !== sent) {
       sent = json;
       await stream.writeSSE({ event: "runs", data: json });
@@ -456,8 +488,10 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
 // createRoot (server.ts) puts hostGuard in front of these routes.
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
-    .get("/", (c) => c.html(RUNS_HTML as unknown as string))
-    .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.registry, deps.host) }))
+    .get("/", (c) => c.html(RUNS_PAGE))
+    .get("/runs", async (c) =>
+      c.json({ runs: await listRunSummaries(deps.registry, deps.host, deps.home) }),
+    )
     .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
     .get("/runs/:id", (c) => c.html(VIEWER_PAGE))
     .get("/assets/anchor.js", (c) =>
@@ -469,7 +503,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
     .get("/runs/:id/files", async (c) => {
       const page = await findViewedRun(deps.registry, c.req.param("id"));
       if (page.kind === "missing") return notFound(c);
-      return c.json(await filesBody(page, (await readRunFiles(page.run)).state));
+      return c.json(await filesBody(page, await readRunFiles(page.run)));
     })
     .get("/runs/:id/stream", async (c) => {
       const id = c.req.param("id");

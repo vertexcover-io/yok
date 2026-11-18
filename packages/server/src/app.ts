@@ -6,6 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
 import { doctorRoutes, runRoutes } from "./run.ts";
+import { terminalRoutes } from "./terminal.ts";
 import { type TriggerRouteDeps, triggerRoutes } from "./trigger.ts";
 
 const requestLogger =
@@ -32,6 +33,8 @@ export type ApiDeps = TriggerRouteDeps &
     pid: number;
     version: string;
     startedAt: number;
+    // Aborted when the server stops; open terminal sockets close on it.
+    stopping: AbortSignal;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the
@@ -50,6 +53,7 @@ export const createApi = (deps: ApiDeps) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
     .route("/runs", runRoutes(deps))
+    .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))
     .route("/triggers", triggerRoutes(deps))
     .route("/doctor", doctorRoutes(deps));

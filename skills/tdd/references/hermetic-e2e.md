@@ -136,6 +136,18 @@ file**; each runner names its destination differently:
 Where the project wraps its runner (an `e2e` script, a custom entry point), pass the same env var
 or flag through it. The file on disk is what the gate reads, not the console output.
 
+## Recording video of a run
+
+The `qa` stage turns the runner's video recording on for one run, with the project's committed files left as
+they are:
+
+| Runner | Turning video on for one run | Where each video is |
+|---|---|---|
+| Playwright | a scratch config beside the project's own that spreads it and sets `use.video` to `'on'`, passed with `--config` and deleted after the run | one per test, at the `path` of the `video` entry in that test's `attachments` in the JSON report |
+| Cypress | `cypress run --config video=true` | one per spec file, in the `videosFolder` |
+
+Another runner follows its own documentation for the same two facts.
+
 ## Checklist before calling an e2e suite "done"
 
 - [ ] No hardcoded host port or credential anywhere in `tests/` — a grep for the project's port range / `localhost:` comes back empty

@@ -104,7 +104,7 @@ describe("SC26: orchestrate hook stop", () => {
     return { run, input: JSON.stringify({ session_id: "s1", transcript_path: transcript }) };
   };
 
-  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and a stop while the review runs in the background sends the agent back to write's done once, then lets the turn end with no agent.stuck", async () => {
+  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and every stop while the review runs in the background lets the turn end as background-task with no agent.stuck", async () => {
     const run = startedRun(`name: mixed
 inputs:
   prompt: { type: string, required: true }
@@ -130,16 +130,13 @@ nodes:
     const first = stop(run, waiting);
     const second = stop(run, waiting);
 
-    expect(JSON.parse(first.stdout)).toEqual({
-      decision: "block",
-      reason: expect.stringContaining(`yok orchestrate done ${write.nodeRunId} --run feat-x`),
-    });
+    expect(first).toMatchObject({ code: 0, stdout: "" });
     expect(second).toMatchObject({ code: 0, stdout: "" });
     const events = await eventsOf(run.repo);
     const stops = events.filter((event) => event.type === "hooks.stop.called");
     expect(stops.map((event) => event.payload)).toEqual([
-      expect.objectContaining({ reason: "node-not-done" }),
-      expect.objectContaining({ reason: "background-task" }),
+      expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
+      expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
     ]);
     expect(events.map((event) => event.type)).not.toContain("agent.stuck");
   });
@@ -749,7 +746,7 @@ nodes:
     }
   }, 30_000);
 
-  test("SC12: compact: /compact is typed once; its SessionStart completes the node, the resume line is typed once and the run's orchestrate resume confirms it, and next moves on", async () => {
+  test("SC50: compact: session A is relaunched with /compact as its last argument; the resume SessionStart is ignored, the compact one completes the node, the resume line is the only line typed, and next moves on", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
     const COMPACT = "/compact keep the plan";
     try {
@@ -758,13 +755,17 @@ nodes:
       const sessionsBefore = stateOf(flow.run.repo).activeSessions;
 
       expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
-      await waitFor(() => flow.typed().includes(COMPACT));
+      await waitFor(() => flow.launches().length === 2);
+      const argv = flow.launches()[1]?.argv as string[];
+      expect(argv.slice(0, 2)).toEqual(["--resume", "A"]);
+      expect(argv.at(-1)).toBe(COMPACT);
+      expect(flow.sessionStart("A", "resume")).toMatchObject({ code: 0, stdout: "" });
       expect(flow.sessionStart("A", "compact")).toMatchObject({ code: 0, stdout: "" });
       await waitFor(() => flow.typed().includes(RESUME));
       // what the --resume skill runs first
       expect(flow.step(["resume", "--run", "feat-x"]).code).toBe(0);
 
-      expect(flow.typed()).toEqual([COMPACT, RESUME]);
+      expect(flow.typed()).toEqual([RESUME]);
       expect(stateOf(flow.run.repo).activeSessions).toEqual(sessionsBefore);
       expect(await contextOutput(flow.run.repo)).toMatchObject({
         output: { action: "compact", applied: true, sessionId: "A" },

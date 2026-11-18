@@ -20,6 +20,8 @@ import {
 } from "./claude.ts";
 import { claudeSettings } from "./claude-hooks.ts";
 
+const SESSION_KEYS = { skipAutoPermissionPrompt: true, enableAllProjectMcpServers: true };
+
 describe("claudeArgs", () => {
   test("SC1: every option present puts the flags in order with prompt last", () => {
     expect(
@@ -30,6 +32,7 @@ describe("claudeArgs", () => {
         systemPrompt: "be terse",
         name: "fix-login",
         prompt: "fix the bug",
+        unattended: true,
       }),
     ).toEqual([
       "--model",
@@ -42,44 +45,80 @@ describe("claudeArgs", () => {
       "be terse",
       "--name",
       "fix-login",
+      "--settings",
+      JSON.stringify(SESSION_KEYS),
       "fix the bug",
     ]);
   });
 
   test("SC2: omitted options add nothing, and no --session-id is ever passed", () => {
     expect(claudeArgs({})).toEqual([]);
+    expect(claudeArgs({ unattended: true })).toEqual(["--settings", JSON.stringify(SESSION_KEYS)]);
+  });
+
+  test("SC709: without unattended, --settings never carries the two session keys, so a human-run claude does not auto-approve a repo's .mcp.json", () => {
+    const args = claudeArgs({ pluginDir: "/repo", orchestrateArgv: ["/b", "o"], prompt: "go" });
+    const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "");
+    expect(settings).not.toHaveProperty("skipAutoPermissionPrompt");
+    expect(settings).not.toHaveProperty("enableAllProjectMcpServers");
+  });
+
+  test("SC706: a launch with only a prompt carries --settings with skipAutoPermissionPrompt and enableAllProjectMcpServers", () => {
+    const args = claudeArgs({ prompt: "go", unattended: true });
+    expect(args).toEqual(["--settings", expect.any(String), "go"]);
+    expect(JSON.parse(args[1] ?? "")).toEqual(SESSION_KEYS);
   });
 
   test("SC24 — a hook command adds Claude settings with the Stop hook before the prompt", () => {
     const orchestrateArgv = ["/b", "/o.ts"];
-    const args = claudeArgs({ orchestrateArgv, prompt: "go" });
+    const args = claudeArgs({ orchestrateArgv, prompt: "go", unattended: true });
     expect(args).toEqual(["--settings", expect.any(String), "go"]);
-    expect(JSON.parse(args[1] ?? "")).toEqual(claudeSettings(orchestrateArgv));
+    expect(JSON.parse(args[1] ?? "")).toEqual({
+      ...SESSION_KEYS,
+      ...claudeSettings(orchestrateArgv),
+    });
   });
 
-  test("SC63: a plugin folder adds --plugin-dir after --settings and before the prompt, and no plugin folder adds nothing", () => {
+  test("SC63: a plugin folder adds --plugin-dir after --settings and before the prompt, and no plugin folder adds no --plugin-dir", () => {
     const args = claudeArgs({
       pluginDir: "/repo",
       orchestrateArgv: ["/b", "orchestrate"],
       prompt: "go",
     });
     expect(args).toEqual(["--settings", expect.any(String), "--plugin-dir", "/repo", "go"]);
-    expect(claudeArgs({ prompt: "go" })).toEqual(["go"]);
+    expect(claudeArgs({ prompt: "go" })).not.toContain("--plugin-dir");
   });
 
   test("SC63: a plugin folder turns the installed yok@yok off in the one --settings, so only the folder's copy loads", () => {
     const orchestrateArgv = ["/b", "orchestrate"];
-    const withHooks = claudeArgs({ pluginDir: "/repo", orchestrateArgv });
+    const withHooks = claudeArgs({ pluginDir: "/repo", orchestrateArgv, unattended: true });
     expect(JSON.parse(withHooks[1] ?? "")).toEqual({
+      ...SESSION_KEYS,
       ...claudeSettings(orchestrateArgv),
       enabledPlugins: { "yok@yok": false },
     });
-    expect(claudeArgs({ pluginDir: "/repo" })).toEqual([
+    expect(claudeArgs({ pluginDir: "/repo", unattended: true })).toEqual([
       "--settings",
-      JSON.stringify({ enabledPlugins: { "yok@yok": false } }),
+      JSON.stringify({ ...SESSION_KEYS, enabledPlugins: { "yok@yok": false } }),
       "--plugin-dir",
       "/repo",
     ]);
+  });
+
+  test("SC707: hooks, the plugin switch and both session keys share exactly one --settings, followed by --plugin-dir /repo and go", () => {
+    const orchestrateArgv = ["/b", "orchestrate"];
+    const args = claudeArgs({
+      orchestrateArgv,
+      pluginDir: "/repo",
+      prompt: "go",
+      unattended: true,
+    });
+    expect(args).toEqual(["--settings", expect.any(String), "--plugin-dir", "/repo", "go"]);
+    expect(JSON.parse(args[1] ?? "")).toEqual({
+      ...SESSION_KEYS,
+      ...claudeSettings(orchestrateArgv),
+      enabledPlugins: { "yok@yok": false },
+    });
   });
 });
 
@@ -113,6 +152,7 @@ const fakePane = (
   calls: Call[],
   alive: boolean,
   screens: readonly string[] = [""],
+  onStart: () => void = () => undefined,
 ): ITerminal => {
   let captures = 0;
   return {
@@ -132,6 +172,7 @@ const fakePane = (
       Promise.resolve({ ok: true, value: screens[Math.min(captures++, screens.length - 1)] ?? "" }),
     rename: () => Promise.resolve(ok),
     respawn: (spec) => {
+      onStart();
       calls.push({ method: "respawn", pane, spec, at: Date.now() });
       return Promise.resolve(ok);
     },
@@ -141,7 +182,7 @@ const fakePane = (
 };
 
 const fakeHost = (
-  options: { alive?: boolean; createOk?: boolean } = {},
+  options: { alive?: boolean; createOk?: boolean; onStart?: () => void } = {},
 ): ITerminalHost & { calls: Call[] } => {
   const calls: Call[] = [];
   const alive = options.alive ?? true;
@@ -149,6 +190,7 @@ const fakeHost = (
     calls,
     checks: [],
     create: (spec) => {
+      options.onStart?.();
       calls.push({ method: "create", spec, at: Date.now() });
       return Promise.resolve(
         options.createOk === false
@@ -156,10 +198,31 @@ const fakeHost = (
           : { ok: true, value: fakePane(spec.name, calls, alive) },
       );
     },
-    find: (name) => fakePane(name, calls, alive),
+    find: (name) => fakePane(name, calls, alive, [""], options.onStart),
     list: () => Promise.resolve([]),
   };
 };
+
+const readConfig = (home: string): unknown => {
+  try {
+    return JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
+};
+
+const sixFlags = (cwd: string): unknown => ({
+  hasCompletedOnboarding: true,
+  hasSeenAutoDefaultNotice: true,
+  hasSeenAutoModeOutsideReadPrompt: true,
+  projects: {
+    [cwd]: {
+      hasTrustDialogAccepted: true,
+      hasClaudeMdExternalIncludesApproved: true,
+      hasClaudeMdExternalIncludesWarningShown: true,
+    },
+  },
+});
 
 describe("claudeProvider.prompt", () => {
   test("SC6: a session whose isAlive is false returns ok:false and sends nothing", async () => {
@@ -243,16 +306,32 @@ describe("claudeProvider.launch", () => {
     expect(spec?.argv.at(-1)).toBe("/yok:orchestrate --resume demo");
     expect(minted).toEqual([]);
   });
-  test("puts the folder in the session's Claude config as trusted before the pane starts", async () => {
+  test("SC708: a launched session's Claude config holds all six flags before the pane starts, and the pane's argv carries both session keys", async () => {
     const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
-    const provider = claudeProvider({ host: fakeHost(), newId: () => "s1" });
+    const seen: unknown[] = [];
+    const host = fakeHost({ onStart: () => seen.push(readConfig(home)) });
+    const provider = claudeProvider({ host, newId: () => "s1" });
 
     await provider.launch({ cwd, env: { CLAUDE_CONFIG_DIR: home } });
 
-    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual({
-      projects: { [cwd]: { hasTrustDialogAccepted: true } },
-    });
+    expect(seen).toEqual([sixFlags(cwd)]);
+    const [call] = host.calls;
+    const argv = call?.method === "create" ? call.spec.argv : [];
+    const settings = argv[argv.indexOf("--settings") + 1] ?? "";
+    expect(JSON.parse(settings)).toMatchObject(SESSION_KEYS);
+  });
+
+  test("SC708: a relaunched session's Claude config holds all six flags before the pane respawns", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-claude-home-"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-claude-cwd-")));
+    const seen: unknown[] = [];
+    const host = fakeHost({ onStart: () => seen.push(readConfig(home)) });
+    const provider = claudeProvider({ host, newId: () => "unused" });
+
+    await provider.relaunch(host.find("%3"), "s-new", { cwd, env: { CLAUDE_CONFIG_DIR: home } });
+
+    expect(seen).toEqual([sixFlags(cwd)]);
   });
 });
 
@@ -275,8 +354,9 @@ describe("claudeProvider.relaunch", () => {
     expect(spec?.cwd).toBe("/repo");
     expect(spec?.env).toEqual({ YOK_RUN_ID: "r-1" });
     expect(spec?.argv.slice(0, 3)).toEqual(["/bin/claude", "--session-id", "s-new"]);
-    expect(spec?.argv).toContain("--settings");
-    expect(spec?.argv.at(-1)).toBe("/orchestrate --resume feat-x");
+    const argv = spec?.argv ?? [];
+    expect(JSON.parse(argv[argv.indexOf("--settings") + 1] ?? "")).toMatchObject(SESSION_KEYS);
+    expect(argv.at(-1)).toBe("/orchestrate --resume feat-x");
   });
 
   test("SC28: with resume it respawns claude --resume s-1 --model opus-x, without it claude --session-id s-1", async () => {

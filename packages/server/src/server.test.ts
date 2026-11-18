@@ -83,6 +83,21 @@ test("SC102: updateHomeEnv sets and removes keys in .env, keeps the other lines,
 
   expect(readFileSync(join(home, ".env"), "utf8")).toBe("LINEAR_API_KEY=lin\nYOK_API_KEY=key-b\n");
   expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
+  expect(statSync(home).mode & 0o777).toBe(0o700);
+});
+
+test("updateHomeEnv calls made at once each keep their key", async () => {
+  const home = join(mkdtempSync(join(tmpdir(), "yok-env-")), "home");
+
+  await Promise.all(["A", "B", "C", "D"].map((key) => updateHomeEnv(home, { [key]: "1" })));
+
+  expect(readFileSync(join(home, ".env"), "utf8").split("\n").sort()).toEqual([
+    "",
+    "A=1",
+    "B=1",
+    "C=1",
+    "D=1",
+  ]);
 });
 
 test("SC26: a restarted server types the comments an earlier one left behind, with no viewer request", async () => {
@@ -128,6 +143,12 @@ test("SC128: each agent's runtime checks carry its plugin check, run against the
   expect(agentBinary("claude", { YOK_CLAUDE_BIN: "/x/claude" })).toBe("/x/claude");
   expect(agentBinary("codex", { YOK_CODEX_BIN: "/x/codex" })).toBe("/x/codex");
   expect([agentBinary("claude", {}), agentBinary("codex", {})]).toEqual(["claude", "codex"]);
+});
+
+test("SC716: claude's runtime checks, which a run start and yok doctor run, carry claude-config beside claude-plugin", () => {
+  expect(runtimeChecks("claude").map((check) => check.name)).toEqual(
+    expect.arrayContaining(["claude-plugin", "claude-config"]),
+  );
 });
 
 test("SC106: a named port is bound or the start fails, and an unnamed start falls back from a taken saved port", async () => {

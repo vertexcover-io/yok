@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { addComments, readComments, replyToComment } from "@yok/core";
 import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, type Registry } from "@yok/sdk/internal";
+import { createRegistry, type Registry, updateUsers, VERSION } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -133,6 +133,8 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
     providerFor: () => claudeOver(host),
     host,
     now,
+    home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: (target) => {
       opened.push(target);
       return { ok: true, value: null };
@@ -169,6 +171,20 @@ const statusesOf = async (runDir: string): Promise<readonly string[]> => {
 };
 
 describe("viewer routes", () => {
+  test("the dashboard's header links to the person's settings", async () => {
+    const { get } = await setup();
+    const page = await (await get("/")).text();
+    expect(page).toMatch(
+      /<header class="bar">[\s\S]*<a class="nav" href="\/settings">Settings<\/a>[\s\S]*<\/header>/,
+    );
+  });
+
+  test("the dashboard's footer names the running yok version", async () => {
+    const { get } = await setup();
+    const page = await (await get("/")).text();
+    expect(page).toContain(`<footer class="foot">yok v${VERSION}</footer>`);
+  });
+
   test("SC6: the file list shows every artifact with type and draft flag, top-level first", async () => {
     const { get, runDir } = await setup();
     put(runDir, "artifacts/design.md", "# d");
@@ -186,6 +202,52 @@ describe("viewer routes", () => {
       ["artifacts/history/v1.md", "md"],
       ["artifacts/logs/run.log", "text"],
       ["artifacts/mockups/login.png", "image"],
+    ]);
+  });
+
+  test("each file names the first stage, in workflow order, that delivered it, and files no stage delivered come last", async () => {
+    const { get, cwd, runDir } = await setup();
+    put(
+      runDir,
+      "workflow.yaml",
+      [
+        "name: w",
+        "nodes:",
+        "  - { id: design, type: agent, stage: design, input: {} }",
+        "  - { id: plan, type: agent, stage: planning, dependsOn: [design], input: {} }",
+        "  - { id: tidy, type: exec, input: {}, runtime: sh, script: 'true', dependsOn: [plan] }",
+        "  - { id: review, type: agent, stage: code-review, dependsOn: [tidy], input: {} }",
+        "",
+      ].join("\n"),
+    );
+    for (const name of ["a.md", "design.md", "outline.md", "review.md", "tidy.md"]) {
+      put(runDir, `artifacts/${name}`, "# x");
+    }
+    const delivered = (...paths: readonly string[]) => ({
+      ...nodeRun([]),
+      artifacts: paths.map((path) => ({ type: "file", name: path, path })),
+    });
+    put(
+      runDir,
+      "state.json",
+      stateWithRuns(cwd, {
+        review: delivered("artifacts/review.md", "artifacts/design.md"),
+        tidy: delivered("artifacts/tidy.md"),
+        plan: delivered("artifacts/outline.md"),
+        design: delivered("artifacts/design.md"),
+      }),
+    );
+
+    const body = (await (await get("/runs/r-named/files")).json()) as {
+      files: { path: string; stage: string | null }[];
+    };
+
+    expect(body.files.map((f) => [f.path, f.stage])).toEqual([
+      ["artifacts/design.md", "design"],
+      ["artifacts/outline.md", "planning"],
+      ["artifacts/review.md", "code-review"],
+      ["artifacts/a.md", null],
+      ["artifacts/tidy.md", null],
     ]);
   });
 
@@ -807,6 +869,8 @@ const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host)
     providerFor: () => claudeOver(host),
     host,
     now: () => new Date(),
+    home: tempDir("viewer-home"),
+    stopping: new AbortController().signal,
     openInEditor: () => ({ ok: true, value: null }),
   });
 };
@@ -1056,6 +1120,35 @@ describe("summary on the run stream", () => {
       const summary = await sse.waitFor(statusIs("blocked"));
       expect(summary.data).toMatchObject({ id: "r-named", blocker: QUESTION_BLOCKER });
       expect(sse.seen.filter((e) => e.event === "steps")).toHaveLength(1);
+    } finally {
+      await sse.close();
+    }
+  }, 10000);
+
+  test("the run stream's summary names the yok user who started the run, not just their id", async () => {
+    const cwd = tempDir("viewer-cwd");
+    const home = tempDir("viewer-home");
+    const registry = createRegistry(join(tempDir("viewer-reg"), "registry.json"), noopLogger);
+    await registry.addRun({ ...runRecord("r-owned", cwd, "demo"), source: "slack", user: "u_1" });
+    await updateUsers(home, () => ({ u_1: { name: "Ritesh", email: "", accounts: {} } }));
+    const { host } = fakeHost("");
+    const app = viewerRoutes({
+      registry,
+      log: noopLogger,
+      providerFor: () => claudeOver(host),
+      host,
+      now: () => new Date(),
+      home,
+      stopping: new AbortController().signal,
+      openInEditor: () => ({ ok: true, value: null }),
+    });
+
+    const sse = sseReader(
+      await app.request("/runs/r-owned/stream", { headers: { host: "localhost:4000" } }),
+    );
+    try {
+      const summary = await sse.waitFor((e) => e.event === "summary", 1000);
+      expect(summary.data).toMatchObject({ startedBy: { user: "u_1", name: "Ritesh" } });
     } finally {
       await sse.close();
     }

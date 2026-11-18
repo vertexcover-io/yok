@@ -62,7 +62,9 @@ import {
   interruptOpenSteps,
   linkRunSession,
   nextStep,
+  notifyThreadFromEnv,
   requestApproval,
+  retryFailedSteps,
 } from "./runs.ts";
 import {
   findReference,
@@ -163,7 +165,7 @@ const initCommand = () =>
           terminal: currentTerminal(),
           provider: sessionProvider(linked, linked?.sessions[0]?.sessionId ?? "", log),
           modelSwitchAgents: MODEL_SWITCH_AGENTS,
-          notifyThread: process.env.YOK_SLACK_THREAD || undefined,
+          notifyThread: notifyThreadFromEnv(process.env),
         });
         printResult(result.ok ? { ok: true, value: { runId, dir: result.value.dir } } : result);
       });
@@ -244,6 +246,31 @@ const resumeCommand = () =>
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
         printResult(await interruptOpenSteps(run.value));
+      }),
+    );
+
+const retryCommand = () =>
+  new Command("retry")
+    .description(
+      "Reopen the steps a failed run failed on and set it running again, so next hands them out. Refuses a failure that waits on a person's answer unless --answered",
+    )
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .option("--answered", "a person has dealt with what the failed step asked")
+    .action(async (opts) =>
+      runWorkflowCommand(async () => {
+        const run = await requireRun(runInputFromFlags(opts));
+        if (!run.ok) return fail(run.error);
+        // The run's own agent must not reopen the step it failed: that would reset its done cap.
+        const terminal = (await registry().findRun(run.value.id))?.terminal ?? null;
+        if (
+          terminal !== null &&
+          (await yokTerminalHost(process.env, log).find(terminal).isAlive())
+        ) {
+          const { name } = run.value;
+          return fail(`run ${name} still has its agent session; use yok attach ${name}`);
+        }
+        printResult(await retryFailedSteps(run.value, opts.answered === true));
       }),
     );
 
@@ -914,6 +941,7 @@ export const orchestrateCommand = () =>
     .addCommand(emitCommand())
     .addCommand(nextCommand())
     .addCommand(resumeCommand())
+    .addCommand(retryCommand())
     .addCommand(execCommand())
     .addCommand(doneCommand())
     .addCommand(awaitApprovalCommand())

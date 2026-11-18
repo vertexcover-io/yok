@@ -17,6 +17,8 @@ import { compileWorkflow } from "./compile.ts";
 import {
   type Decision,
   decideNext,
+  findRetryTargets,
+  findStuckContainer,
   type Leaf,
   type ModelInputs,
   type StartedLeaf,
@@ -1312,6 +1314,89 @@ nodes:
   });
 });
 
+describe("findRetryTargets", () => {
+  const retryTargetIds = (plan: WorkflowPlan, state: State): readonly string[] =>
+    findRetryTargets(plan.nodes, state.nodeRuns).map(({ node }) => node.id);
+
+  test("SC4: a leaf that failed inside a loop is listed before the loop it failed", async () => {
+    const plan = await compilePlan(loop("{{ iteration.index >= 3 }}", 5));
+    const { state } = await runLeaves(plan, start(), ["failed"]);
+    const done = await advance(plan, state);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(retryTargetIds(plan, done.state)).toEqual(["test", "fix"]);
+  });
+
+  test("SC5: an allowFailure node whose failure the run moved past is not listed, only the failure that ended the run", async () => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("a", "\n    allowFailure: true\n    input: {}")}${exec("b", "\n    input: {}")}
+`);
+    const { state } = await runLeaves(plan, start(), ["failed", "failed"]);
+    const done = await advance(plan, state);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    expect(retryTargetIds(plan, done.state)).toEqual(["b"]);
+  });
+
+  test("a retry stopped after reopening test, and again after reopening fix, still lists the reopened test so a second retry can finish", async () => {
+    const plan = await compilePlan(loop("{{ iteration.index >= 3 }}", 5));
+    const { state } = await runLeaves(plan, start(), ["failed"]);
+    const failed = (await advance(plan, state)).state;
+    const retried = (nodeId: string, current: State, parents: Record<string, JsonValue>) =>
+      apply(current, {
+        type: "workflow.node.retried",
+        source: "workflow",
+        nodeId,
+        nodeRunId: findRun(current, ...(nodeId === "test" ? ["fix", "test"] : ["fix"]))?.nodeRunId,
+        payload: { nodeType: nodeId === "test" ? "exec" : "loop", attempts: 1, ...parents },
+      });
+    const leafReopened = retried("test", failed, { parents: ["fix"] });
+    expect(leafReopened.status).toBe("failed");
+    expect(retryTargetIds(plan, leafReopened)).toEqual(["test", "fix"]);
+    const loopReopened = retried("fix", leafReopened, {});
+    expect(retryTargetIds(plan, loopReopened)).toEqual(["test"]);
+  });
+
+  // r, then a and the loop fix side by side; fix's only pass completes before a fails.
+  const besideLoop = async (closeLoopFirst: boolean) => {
+    const plan = await compilePlan(`name: t
+nodes:${exec("r", "\n    input: {}")}${exec("a", "\n    dependsOn: [r]\n    input: {}")}
+  - id: fix
+    type: loop
+    until: "{{ false }}"
+    maxIterations: 1
+    dependsOn: [r]
+    input: {}
+    nodes:
+      - { id: test, type: exec, runtime: sh, script: "true", input: {} }
+`);
+    const root = await advance(plan, start());
+    const afterR = end(root.state, expectLeaf(root.stop).nodeRunId, "completed", { output: {} });
+    const first = await advance(plan, afterR);
+    const [a, test] = expectSteps(first.stop);
+    if (a === undefined || test === undefined) throw new Error("expected a and test");
+    const tested = end(first.state, test.nodeRunId, "completed", { output: "ok" });
+    const beforeA = closeLoopFirst ? (await advance(plan, tested)).state : tested;
+    const failedA = end(beforeA, a.nodeRunId, "failed", {
+      error: { kind: "exit", message: "exited with code 1" },
+    });
+    const done = await advance(plan, failedA);
+    expect(done.stop).toEqual({ kind: "finished", status: "failed" });
+    return { plan, state: done.state };
+  };
+
+  test("a loop that stopped only because a failed beside it is listed after a, so retry reopens both and the run can go on", async () => {
+    const { plan, state } = await besideLoop(false);
+    expect(findRun(state, "fix")?.output).toMatchObject({ kind: "drained" });
+    expect(retryTargetIds(plan, state)).toEqual(["a", "fix"]);
+    expect(findStuckContainer(plan.nodes, state.nodeRuns)).toBeUndefined();
+  });
+
+  test("a loop that ran out of passes before a failed beside it is the stuck container retry refuses on", async () => {
+    const { plan, state } = await besideLoop(true);
+    expect(findRun(state, "fix")?.output).toMatchObject({ kind: "exhausted" });
+    expect(findStuckContainer(plan.nodes, state.nodeRuns)).toBe("fix");
+  });
+});
+
 // outer holds inner, then f; inner holds the producer stage x, then the consumer stage y after it.
 const NESTED = `name: t
 nodes:
@@ -2147,5 +2232,83 @@ nodes:${stage("s", "plain", "\n    mode: subagent\n    input: {}")}
 `);
     const { state } = await advance(plan, start(), { subagents: false });
     expect(findRun(state, "s")?.mode).toBe("inline");
+  });
+});
+
+describe("the shipped pr-fix workflow", () => {
+  const PR_FIX = join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml");
+  const workspace = { path: "/work/ws" };
+  const OUTPUTS: Readonly<Record<string, JsonObject>> = {
+    "pr-triage": {
+      task: "fix PR 42",
+      pr: {
+        repo: "o/r",
+        number: 42,
+        url: "https://github.com/o/r/pull/42",
+        branch: "feat",
+        base: "main",
+        head: "a".repeat(40),
+      },
+      hasConflicts: false,
+      items: [],
+      leftOut: [],
+    },
+    "create-workspace": workspace,
+  };
+
+  test("SC37: with no conflict, resolve-conflicts finishes at once and design is the next step, no node dependency-skipped", async () => {
+    const plan = await compileWorkflow(PR_FIX);
+    let state = start({ pr: "42", prompt: "p" });
+    const ids: string[] = [];
+    for (let guard = 0; guard < 6; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      ids.push(leaf.node.id);
+      if (leaf.node.id === "design") {
+        expect(leaf.input).toMatchObject({ task: "fix PR 42" });
+        state = next.state;
+        break;
+      }
+      const output =
+        leaf.node.id === "resolve-conflicts"
+          ? "No conflict with main; nothing merged."
+          : (OUTPUTS[leaf.node.id] ?? {});
+      state = end(next.state, leaf.nodeRunId, "completed", { nodeType: "agent", output });
+    }
+
+    expect(ids).toEqual(["pr-triage", "create-workspace", "resolve-conflicts", "design"]);
+    expect(JSON.stringify(state.nodeRuns)).not.toContain("dependency-skipped");
+  });
+
+  test("SC43: with planning failed, pr-reply is the next step handed out and no other node starts", async () => {
+    const plan = await compileWorkflow(PR_FIX);
+    let state = start({ pr: "42", prompt: "p" });
+    for (let guard = 0; guard < 8; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      if (leaf.node.id === "planning") {
+        state = end(next.state, leaf.nodeRunId, "failed", {
+          nodeType: "agent",
+          error: { kind: "exit", message: "planning failed" },
+        });
+        break;
+      }
+      const output =
+        leaf.node.id === "resolve-conflicts" ? "nothing merged." : (OUTPUTS[leaf.node.id] ?? {});
+      const artifacts =
+        leaf.node.id === "design"
+          ? [{ type: "design", name: "design", path: "artifacts/design.md" }]
+          : [];
+      state = end(next.state, leaf.nodeRunId, "completed", {
+        nodeType: "agent",
+        output,
+        artifacts,
+      });
+    }
+
+    const after = await advance(plan, state);
+    expect(stepIds(after.stop)).toEqual(["pr-reply"]);
   });
 });

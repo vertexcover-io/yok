@@ -16,6 +16,8 @@ export interface IGit {
   hasRemote(cwd: string, remote: string): Promise<boolean>;
   remoteHasBranch(cwd: string, remote: string, branch: string): Promise<Result<boolean>>;
   fetch(cwd: string, target: { remote: string; ref: string }): Promise<Result<void>>;
+  // Makes BRANCH track UPSTREAM, a remote-tracking branch such as origin/feat-sync.
+  setUpstream(cwd: string, branch: string, upstream: string): Promise<Result<void>>;
   // With a base, creates the branch from it; without one, checks the existing branch out.
   addWorktree(
     cwd: string,
@@ -120,6 +122,11 @@ export const createGit = (
     fetch: async (cwd, target) => {
       // "--" ends the options, so a ref such as "--upload-pack=CMD" can never be read as one.
       const { code, stderr } = await run(cwd, ["fetch", target.remote, "--", target.ref]);
+      return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
+    },
+
+    setUpstream: async (cwd, branch, upstream) => {
+      const { code, stderr } = await run(cwd, ["branch", `--set-upstream-to=${upstream}`, branch]);
       return code === 0 ? { ok: true, value: undefined } : { ok: false, error: stderr.trim() };
     },
 

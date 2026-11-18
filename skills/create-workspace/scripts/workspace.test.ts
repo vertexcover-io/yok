@@ -22,6 +22,7 @@ import {
   addRepositories as addWith,
   createWorkspace as createWith,
   type OutputLine,
+  prBranches,
   type RepoOutcome,
   removeWorkspace as removeWith,
   type WorkspaceOptions,
@@ -483,6 +484,93 @@ describe("fetching the base branch", () => {
   });
 });
 
+describe("starting from an upstream branch on origin", () => {
+  // A remote whose feat-sync is one commit past main, in a clone that has never fetched it.
+  const remoteWithFeat = (): { remote: Remote; tip: string } => {
+    const remote = makeRemote();
+    const tip = pushCommit(remote, "feat-sync");
+    return { remote, tip };
+  };
+  const upstreamOf = (cwd: string, branch: string): string =>
+    git(cwd, "rev-parse", "--abbrev-ref", `${branch}@{upstream}`);
+
+  test("SC17 — a run with an upstream starts from origin's copy of that branch and tracks it", async () => {
+    const { remote, tip } = remoteWithFeat();
+    const result = await createWorkspace({
+      root: remote.clone,
+      branch: "run-a",
+      base: "main",
+      upstream: "feat-sync",
+    });
+    if (!result.ok) throw new Error(result.error);
+    const repo = result.value.repos[0];
+    expect(repo).toMatchObject({ status: "ready", startSha: tip, baseBranch: "main" });
+    const worktree = join(remote.clone, ".worktrees/run-a");
+    expect(git(worktree, "branch", "--show-current")).toBe("run-a");
+    expect(upstreamOf(remote.clone, "run-a")).toBe("origin/feat-sync");
+  });
+
+  test("SC18 — a stale local branch of the upstream's name is ignored", async () => {
+    const { remote, tip } = remoteWithFeat();
+    git(remote.clone, "branch", "feat-sync", "main");
+    const result = await createWorkspace({
+      root: remote.clone,
+      branch: "run-a",
+      upstream: "feat-sync",
+    });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.repos[0]).toMatchObject({ status: "ready", startSha: tip });
+  });
+
+  test("SC19 — two runs on the same upstream each get their own worktree", async () => {
+    const { remote } = remoteWithFeat();
+    const first = await createWorkspace({
+      root: remote.clone,
+      branch: "run-a",
+      upstream: "feat-sync",
+    });
+    const second = await createWorkspace({
+      root: remote.clone,
+      branch: "run-b",
+      upstream: "feat-sync",
+    });
+    if (!first.ok || !second.ok) throw new Error("create failed");
+    const [a, b] = [first.value.repos[0], second.value.repos[0]];
+    expect([a?.status, b?.status]).toEqual(["ready", "ready"]);
+    expect(a?.worktreeDir).not.toBe(b?.worktreeDir);
+    expect(upstreamOf(remote.clone, "run-a")).toBe("origin/feat-sync");
+    expect(upstreamOf(remote.clone, "run-b")).toBe("origin/feat-sync");
+  });
+
+  test("SC20 — an upstream origin lacks fails the repo at fetch, with no worktree and no branch made", async () => {
+    const remote = makeRemote();
+    git(remote.clone, "branch", "gone", "main");
+    const result = await createWorkspace({ root: remote.clone, branch: "run-a", upstream: "gone" });
+    const repo = result.ok ? result.value.repos[0] : undefined;
+    expect(repo?.status).toBe("failed");
+    expect(failure(repo)?.kind).toBe("fetch");
+    expect(failure(repo)?.message).toContain("gone");
+    expect(existsSync(join(remote.clone, ".worktrees/run-a"))).toBe(false);
+    expect(git(remote.clone, "branch", "--list", "run-a")).toBe("");
+  });
+
+  test("SC21 — pushing HEAD:NAME from the run's branch lands on the upstream and makes no remote run branch", async () => {
+    const { remote } = remoteWithFeat();
+    const result = await createWorkspace({
+      root: remote.clone,
+      branch: "run-a",
+      upstream: "feat-sync",
+    });
+    if (!result.ok) throw new Error(result.error);
+    const worktree = join(remote.clone, ".worktrees/run-a");
+    const target = upstreamOf(worktree, "HEAD").replace(/^origin\//, "");
+    const head = commit(worktree, "run work");
+    git(worktree, "push", "-q", "origin", `HEAD:${target}`);
+    expect(git(remote.origin, "rev-parse", "feat-sync")).toBe(head);
+    expect(git(remote.origin, "branch", "--list", "run-a")).toBe("");
+  });
+});
+
 type Rejection = Readonly<{
   name: string;
   root: () => string;
@@ -828,5 +916,67 @@ describe("remove events", () => {
     const result = await removeWorkspace({ run, root, branch: "b" });
     expect(result.ok).toBe(false);
     expect(await eventsOf(run)).toEqual([]);
+  });
+});
+
+describe("--pr: starting from a pull request's branch", () => {
+  const view = (fields: Record<string, unknown>) => () => ({ ok: true as const, value: fields });
+
+  test("SC60: a same-repo pull request gives its head branch as the upstream and its base as the base", () => {
+    const seen: string[][] = [];
+    const gh = (args: readonly string[]) => {
+      seen.push([...args]);
+      return view({ headRefName: "fix-footer", baseRefName: "master", isCrossRepository: false })();
+    };
+
+    expect(prBranches("https://github.com/o/r/pull/86", gh)).toEqual({
+      ok: true,
+      value: { upstream: "fix-footer", base: "master" },
+    });
+    expect(seen).toEqual([
+      [
+        "pr",
+        "view",
+        "--json",
+        "headRefName,baseRefName,isCrossRepository",
+        "--",
+        "https://github.com/o/r/pull/86",
+      ],
+    ]);
+  });
+
+  test("SC61: a pull request from a fork is refused", () => {
+    const gh = view({ headRefName: "main", baseRefName: "main", isCrossRepository: true });
+    const result = prBranches("https://github.com/o/r/pull/9", gh);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("fork");
+  });
+
+  test.each([
+    "--repo other/x",
+    "42",
+    "https://github.com/o/r/issues/5",
+    "https://evil.example/o/r/pull/1",
+  ])("SC64: %j is not a pull request URL and gh is never called", (url) => {
+    const seen: string[][] = [];
+    const gh = (args: readonly string[]) => {
+      seen.push([...args]);
+      return { ok: true as const, value: {} };
+    };
+    const result = prBranches(url, gh);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not a GitHub pull request URL");
+    expect(seen).toEqual([]);
+  });
+
+  test("SC62: a failed lookup is reported with gh's reason", () => {
+    const gh = () => ({ ok: false as const, error: "no pull requests found" });
+
+    expect(prBranches("https://github.com/o/r/pull/1", gh)).toEqual({
+      ok: false,
+      error: "could not read pull request https://github.com/o/r/pull/1: no pull requests found",
+    });
   });
 });

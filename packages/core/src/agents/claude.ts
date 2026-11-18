@@ -28,7 +28,7 @@ import {
   summarize,
   typeLine,
 } from "./common.ts";
-import { trustLaunchFolder } from "./trust.ts";
+import { claudeConfigCheck, trustLaunchFolder } from "./trust.ts";
 
 // What Claude Code 2.1.285 shows in its pane. While it works, a spinner line (`✻ Compacting…`)
 // or the hint under a queued prompt is on screen.
@@ -153,11 +153,18 @@ export type ClaudeArgOptions = Readonly<{
   prompt?: string;
   orchestrateArgv?: readonly string[];
   pluginDir?: string | undefined;
+  // Set only for a pane no one watches; a human-run claude must not auto-approve a repo's .mcp.json.
+  unattended?: boolean;
 }>;
 
 // A plugin folder loads as yok@inline, and Claude keeps an installed yok@yok on beside
 // it, so the installed one is turned off. Claude reads only the last --settings, hence one object.
+// The first two keys answer the auto-mode warning and the project .mcp.json prompt, since no one
+// watches the pane; only an unattended launch carries them.
 const sessionSettings = (options: ClaudeArgOptions): Record<string, unknown> => ({
+  ...(options.unattended === true
+    ? { skipAutoPermissionPrompt: true, enableAllProjectMcpServers: true }
+    : {}),
   ...(options.orchestrateArgv !== undefined ? claudeSettings(options.orchestrateArgv) : {}),
   ...(options.pluginDir !== undefined ? { enabledPlugins: { "yok@yok": false } } : {}),
 });
@@ -273,7 +280,7 @@ export const claudeProvider = ({
     const created = await host.create({
       name: terminalName,
       cwd: options.cwd,
-      argv: [binary, ...session, ...claudeArgs(options)],
+      argv: [binary, ...session, ...claudeArgs({ ...options, unattended: true })],
       env: options.env ?? {},
     });
     if (!created.ok) {
@@ -292,7 +299,7 @@ export const claudeProvider = ({
     const session = options.resume === true ? ["--resume", sessionId] : ["--session-id", sessionId];
     const spec = {
       cwd: options.cwd,
-      argv: [binary, ...session, ...claudeArgs(options)],
+      argv: [binary, ...session, ...claudeArgs({ ...options, unattended: true })],
       env: options.env ?? {},
     };
     await trustLaunchFolder(options, log.child({ sessionId }));
@@ -341,6 +348,7 @@ export const claudeProvider = ({
         run: checkBinary(binary),
       },
       pluginCheck("claude", binary, VERSION),
+      claudeConfigCheck(process.env),
     ],
     launch,
     relaunch,

@@ -12,7 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigPath, trustClaudeFolder, trustRoot } from "./trust.ts";
+import {
+  answerClaudeDialogs,
+  claudeConfigCheck,
+  claudeConfigPath,
+  trustClaudeFolder,
+  trustRoot,
+} from "./trust.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "yok-trust-")));
 
@@ -73,11 +79,38 @@ describe("claudeConfigPath", () => {
   });
 });
 
+const MACHINE_FLAGS = {
+  hasCompletedOnboarding: true,
+  hasSeenAutoDefaultNotice: true,
+  hasSeenAutoModeOutsideReadPrompt: true,
+};
+const PROJECT_FLAGS = {
+  hasTrustDialogAccepted: true,
+  hasClaudeMdExternalIncludesApproved: true,
+  hasClaudeMdExternalIncludesWarningShown: true,
+};
+
 describe("trustClaudeFolder", () => {
-  test("adds the folder to an existing config and keeps every other key", async () => {
+  test("SC701: a launch with no Claude config writes the three machine-wide flags and the folder's three project flags", async () => {
+    const home = tempDir();
+    const folder = tempDir();
+
+    expect(await trustClaudeFolder(folder, { CLAUDE_CONFIG_DIR: home })).toEqual({
+      ok: true,
+      value: true,
+    });
+
+    expect(readJson(join(home, ".claude.json"))).toEqual({
+      ...MACHINE_FLAGS,
+      projects: { [folder]: PROJECT_FLAGS },
+    });
+  });
+
+  test("SC702: a machine-wide flag the user set to false stays false, the other two are added, and other keys and projects are unchanged", async () => {
     const home = tempDir();
     const file = join(home, ".claude.json");
     const before = {
+      hasCompletedOnboarding: false,
       numStartups: 4,
       projects: { "/other": { allowedTools: ["Bash"], hasTrustDialogAccepted: true } },
     };
@@ -91,21 +124,29 @@ describe("trustClaudeFolder", () => {
 
     expect(readJson(file)).toEqual({
       ...before,
-      projects: { ...before.projects, [folder]: { hasTrustDialogAccepted: true } },
+      hasSeenAutoDefaultNotice: true,
+      hasSeenAutoModeOutsideReadPrompt: true,
+      projects: { ...before.projects, [folder]: PROJECT_FLAGS },
     });
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("keeps the folder's own keys when it was seen but never trusted", async () => {
+  test("SC703: project flags Claude wrote as false become true, and the folder's allowedTools stays", async () => {
     const home = tempDir();
     const file = join(home, ".claude.json");
     const folder = tempDir();
-    writeFileSync(file, JSON.stringify({ projects: { [folder]: { allowedTools: ["Read"] } } }));
+    const record = {
+      allowedTools: ["Read"],
+      hasTrustDialogAccepted: false,
+      hasClaudeMdExternalIncludesApproved: false,
+    };
+    writeFileSync(file, JSON.stringify({ projects: { [folder]: record } }));
 
     await trustClaudeFolder(folder, { CLAUDE_CONFIG_DIR: home });
 
     expect(readJson(file)).toEqual({
-      projects: { [folder]: { allowedTools: ["Read"], hasTrustDialogAccepted: true } },
+      ...MACHINE_FLAGS,
+      projects: { [folder]: { allowedTools: ["Read"], ...PROJECT_FLAGS } },
     });
   });
 
@@ -116,15 +157,16 @@ describe("trustClaudeFolder", () => {
     await trustClaudeFolder(folder, { HOME: home });
 
     expect(readJson(join(home, ".claude.json"))).toEqual({
-      projects: { [folder]: { hasTrustDialogAccepted: true } },
+      ...MACHINE_FLAGS,
+      projects: { [folder]: PROJECT_FLAGS },
     });
   });
 
-  test("leaves the file byte for byte when the folder is already trusted", async () => {
+  test("SC704: a compact config that already holds all six flags returns value false and stays byte for byte", async () => {
     const home = tempDir();
     const file = join(home, ".claude.json");
     const folder = tempDir();
-    const text = `{"projects":{${JSON.stringify(folder)}:{"hasTrustDialogAccepted":true}}}`;
+    const text = JSON.stringify({ ...MACHINE_FLAGS, projects: { [folder]: PROJECT_FLAGS } });
     writeFileSync(file, text);
 
     expect(await trustClaudeFolder(folder, { CLAUDE_CONFIG_DIR: home })).toEqual({
@@ -145,6 +187,19 @@ describe("trustClaudeFolder", () => {
     expect(readFileSync(file, "utf8")).toBe("{oops");
   });
 
+  test("SC705: a config reading [1] is refused with an error naming its path, and still reads [1]", async () => {
+    const home = tempDir();
+    const file = join(home, ".claude.json");
+    writeFileSync(file, "[1]");
+
+    const result = await trustClaudeFolder(tempDir(), { CLAUDE_CONFIG_DIR: home });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain(file);
+    expect(readFileSync(file, "utf8")).toBe("[1]");
+  });
+
   test("writes through a symlinked config instead of replacing the link", async () => {
     const home = tempDir();
     const real = join(tempDir(), "claude.json");
@@ -154,7 +209,7 @@ describe("trustClaudeFolder", () => {
 
     await trustClaudeFolder(folder, { CLAUDE_CONFIG_DIR: home });
 
-    expect(readJson(real)).toEqual({ projects: { [folder]: { hasTrustDialogAccepted: true } } });
+    expect(readJson(real)).toEqual({ ...MACHINE_FLAGS, projects: { [folder]: PROJECT_FLAGS } });
   });
 
   test("runs started at once each keep their folder", async () => {
@@ -197,5 +252,71 @@ describe("trustClaudeFolder", () => {
       ok: true,
       value: true,
     });
+  });
+});
+
+describe("answerClaudeDialogs", () => {
+  test("SC709: answering the dialogs on a machine with no Claude config writes only the three machine-wide flags, with no projects key", async () => {
+    const home = tempDir();
+
+    expect(await answerClaudeDialogs({ CLAUDE_CONFIG_DIR: home })).toEqual({
+      ok: true,
+      value: true,
+    });
+
+    expect(readJson(join(home, ".claude.json"))).toEqual(MACHINE_FLAGS);
+  });
+});
+
+const runCheck = (env: Readonly<Record<string, string>>) =>
+  claudeConfigCheck(env).run({
+    root: "/",
+    exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+  });
+
+describe("claudeConfigCheck", () => {
+  test("SC710: a config lacking only hasSeenAutoModeOutsideReadPrompt warns naming that flag alone, with yok plugin install as the fix", async () => {
+    const home = tempDir();
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ hasCompletedOnboarding: true, hasSeenAutoDefaultNotice: true }),
+    );
+
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: home });
+
+    expect(outcome.status).toBe("warn");
+    expect(outcome.detail).toContain("hasSeenAutoModeOutsideReadPrompt");
+    expect(outcome.detail).not.toContain("hasCompletedOnboarding");
+    expect(outcome.detail).not.toContain("hasSeenAutoDefaultNotice");
+    expect(claudeConfigCheck({ CLAUDE_CONFIG_DIR: home }).fix).toEqual(["yok plugin install"]);
+  });
+
+  test("SC711: a config holding all three machine-wide flags, one of them false, passes", async () => {
+    const home = tempDir();
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ ...MACHINE_FLAGS, hasSeenAutoDefaultNotice: false }),
+    );
+
+    expect((await runCheck({ CLAUDE_CONFIG_DIR: home })).status).toBe("ok");
+  });
+
+  test("SC712: a machine with no Claude config warns, not fails, naming all three machine-wide flags", async () => {
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: tempDir() });
+
+    expect(outcome.status).toBe("warn");
+    for (const flag of Object.keys(MACHINE_FLAGS)) expect(outcome.detail).toContain(flag);
+  });
+
+  test("SC717: a config reading [1] warns, not fails, naming its path and that it is not a JSON object", async () => {
+    const home = tempDir();
+    const file = join(home, ".claude.json");
+    writeFileSync(file, "[1]");
+
+    const outcome = await runCheck({ CLAUDE_CONFIG_DIR: home });
+
+    expect(outcome.status).toBe("warn");
+    expect(outcome.detail).toContain(file);
+    expect(outcome.detail).toContain("not a JSON object");
   });
 });

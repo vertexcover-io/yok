@@ -544,4 +544,34 @@ describe("what subscribers keep in state.json", () => {
     expect(state.notification).toEqual({ provider: "slack", threadId: "171.1" });
     expect(state.custom).toEqual({ asana: { taskId: "777" }, linear: { issue: "VER-1" } });
   });
+
+  test("SC919: a thread started with channel C1 and requester U7 keeps both in state.notification", async () => {
+    const { run, stateJson } = await runWithHandlers({});
+
+    const appended = await appendRunEvent(run, {
+      type: "notification.thread.started",
+      source: "orchestrate",
+      payload: { provider: "slack", threadId: "100.1", channel: "C1", user: "U7" },
+    });
+
+    if (!appended.ok) throw new Error(appended.error);
+    expect((await stateJson()).notification).toEqual({
+      provider: "slack",
+      threadId: "100.1",
+      channel: "C1",
+      user: "U7",
+    });
+  });
+
+  test("SC920: a thread event with an empty channel is refused, so no empty value reaches the notifier", async () => {
+    const { run } = await runWithHandlers({});
+
+    const appended = await appendRunEvent(run, {
+      type: "notification.thread.started",
+      source: "orchestrate",
+      payload: { provider: "slack", threadId: "100.1", channel: "" },
+    });
+
+    expect(appended.ok).toBe(false);
+  });
 });

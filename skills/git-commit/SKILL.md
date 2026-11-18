@@ -87,6 +87,9 @@ run finish the stage with `--error`:
 **Skip the squash**, commit only what is dirty, and say why in the summary, when any of these
 holds:
 
+- the branch tracks a branch other than its own (`git rev-parse --abbrev-ref @{upstream}`
+  prints `origin/NAME` and NAME is not BRANCH): the run works on a pull request's branch, its
+  commits are already on that pull request, and a squash would need a force push over it;
 - `BASE` is not an ancestor of `HEAD`;
 - `git rev-list --merges "$BASE..HEAD"` prints anything: a merge carries the base branch's
   changes, and a squash would put them in this change's diff;

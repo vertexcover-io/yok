@@ -16,6 +16,8 @@ export {
   type ProjectView,
   pidPath,
   portPath,
+  type RunPick,
+  RunPickSchema,
   readHomeEnv,
   readPort,
   type StartRunBody,

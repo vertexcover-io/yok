@@ -15,7 +15,9 @@ Load `code-quality` before edits and `tdd` before changing code.
 
 ## Push
 
-In a run, push each repo's branch. The stage is done only when every repo has no dirty tracked
-file and `HEAD` equals `origin/BRANCH`. Outside a run, never push: say what is ready to push and
-let the user do it. Never force-push; when the remote holds commits this checkout
-lacks, finish the stage with `--error -` naming them.
+In a run, push each repo's branch to its remote branch: the branch's upstream when it has one
+(`git rev-parse --abbrev-ref @{upstream}` prints `origin/NAME`; push with
+`git push origin HEAD:NAME`), else `origin/BRANCH`. The stage is done only when every repo has
+no dirty tracked file and `HEAD` equals that remote branch. Outside a run, never push: say what
+is ready to push and let the user do it. Never force-push; when the remote holds commits this
+checkout lacks, finish the stage with `--error -` naming them.

@@ -560,6 +560,82 @@ describe("installPlugins", () => {
   });
 });
 
+const MACHINE_FLAGS = {
+  hasCompletedOnboarding: true,
+  hasSeenAutoDefaultNotice: true,
+  hasSeenAutoModeOutsideReadPrompt: true,
+};
+
+// A claude stub that logs every call and exits with the given code.
+const claudeStub = (dir: string, log: string, code: number): string => {
+  const path = join(dir, "claude");
+  writeFileSync(path, `#!/bin/sh\necho "claude $*" >> "${log}"\nexit ${code}\n`);
+  chmodSync(path, 0o755);
+  return path;
+};
+
+describe("installPlugins and Claude's first-run dialogs", () => {
+  test("SC713: installing for claude writes the three machine-wide flags even when the plugin install fails, and still returns 1", async () => {
+    const dir = temp("yok-agents-");
+    const home = temp("yok-claude-home-");
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const code = await installPlugins(["claude"], {
+        YOK_CLAUDE_BIN: claudeStub(dir, join(dir, "log"), 1),
+        CLAUDE_CONFIG_DIR: home,
+      });
+
+      expect(code).toBe(1);
+      expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual(MACHINE_FLAGS);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("SC714: a codex-only install leaves Claude's config alone and returns 0", async () => {
+    const dir = binDir([]);
+    const home = temp("yok-claude-home-");
+    writeFileSync(join(dir, "codex"), codexStub(join(dir, "log")));
+    chmodSync(join(dir, "codex"), 0o755);
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
+    const logs = spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const code = await installPlugins(undefined, { PATH: dir, CLAUDE_CONFIG_DIR: home });
+
+      expect(code).toBe(0);
+      expect(existsSync(join(home, ".claude.json"))).toBe(false);
+    } finally {
+      process.env.PATH = saved;
+      logs.mockRestore();
+    }
+  });
+
+  test("SC715: a Claude config reading [1] stays [1], the printed error names its path, and the plugin install still runs", async () => {
+    const dir = temp("yok-agents-");
+    const log = join(dir, "log");
+    const home = temp("yok-claude-home-");
+    const file = join(home, ".claude.json");
+    writeFileSync(file, "[1]");
+    const errors = spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await installPlugins(["claude"], {
+        YOK_CLAUDE_BIN: claudeStub(dir, log, 1),
+        CLAUDE_CONFIG_DIR: home,
+      });
+
+      expect(readFileSync(file, "utf8")).toBe("[1]");
+      expect(errors.mock.calls.flat().join("\n")).toContain(file);
+      expect(logLines(log)).toContain("claude plugin list --json");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
 const INSTALL_SH = join(import.meta.dir, "..", "..", "..", "install.sh");
 
 describe("removeInstall", () => {

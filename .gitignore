@@ -7,9 +7,7 @@ docs/*
 !docs/guide/
 code-review-workspace
 dev-docs
-.yok/*
-!.yok/knowledge/
-!.yok/README.md
+.yok/
 .env
 .env.local
 .env.yok

@@ -127,6 +127,7 @@ const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Pr
     deps,
     deps.log,
     {
+      source: "trigger",
       permissionMode: plan.trigger.permissionMode,
       // `yok trigger rm` may have run while the doctor was checking; don't start a removed trigger.
       // The id, not the name: a trigger removed and re-added meanwhile is another trigger.

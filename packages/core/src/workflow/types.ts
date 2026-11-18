@@ -293,6 +293,8 @@ export const FailureKindSchema = z.enum([
   "validation",
   "exception",
   "exhausted",
+  // a container the engine stopped because a node beside it failed; retry reopens it
+  "drained",
   // a stage stopped because only a person can answer; it stops the run even under allowFailure
   "needs-input",
 ]);

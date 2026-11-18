@@ -31,7 +31,14 @@ import corePackage from "../package.json";
 import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
 import { NOTIFIER_EVENTS, NOTIFIER_MODULE } from "./notifier.ts";
-import { type InitOptions, initializeRun, linkRunSession, nextStep, terminalName } from "./runs.ts";
+import {
+  type InitOptions,
+  initializeRun,
+  linkRunSession,
+  nextStep,
+  notifyThreadFromEnv,
+  terminalName,
+} from "./runs.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
@@ -131,7 +138,7 @@ describe("initializeRun", () => {
   test("SC18: init given notifyThread 100.1 stores notification.thread.started before workflow.started, so state.notification.threadId is 100.1", async () => {
     const { cwd, init } = await savedRun();
 
-    const result = await init("fix-login", undefined, { notifyThread: "100.1" });
+    const result = await init("fix-login", undefined, { notifyThread: { threadId: "100.1" } });
 
     if (!result.ok) throw new Error(result.error);
     const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
@@ -140,6 +147,42 @@ describe("initializeRun", () => {
       "workflow.started",
     ]);
     expect(result.value.state.notification).toEqual({ provider: "slack", threadId: "100.1" });
+  });
+
+  test("SC915: init given a Slack thread with channel C1 and requester U7 stores both beside the thread id, so state.notification names them", async () => {
+    const { init } = await savedRun();
+
+    const result = await init("fix-login", undefined, {
+      notifyThread: { threadId: "100.1", channel: "C1", user: "U7" },
+    });
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.state.notification).toEqual({
+      provider: "slack",
+      threadId: "100.1",
+      channel: "C1",
+      user: "U7",
+    });
+  });
+
+  test.each([
+    [
+      "the thread ts, its channel and the requester",
+      { YOK_SLACK_THREAD: "100.1", SLACK_CHANNEL_ID: "C1", SLACK_MEMBER_ID: "U7" },
+      { threadId: "100.1", channel: "C1", user: "U7" },
+    ],
+    [
+      "only the thread ts when the channel and member are empty",
+      { YOK_SLACK_THREAD: "100.1", SLACK_CHANNEL_ID: "", SLACK_MEMBER_ID: "" },
+      { threadId: "100.1" },
+    ],
+    [
+      "no thread without YOK_SLACK_THREAD",
+      { SLACK_CHANNEL_ID: "C9", SLACK_MEMBER_ID: "U9" },
+      undefined,
+    ],
+  ])("SC916: the thread init stores from a session env holds %s", (_case, env, expected) => {
+    expect(notifyThreadFromEnv(env)).toEqual(expected);
   });
 
   test("SC19 (regression): init without notifyThread stores no thread event and leaves state.notification unset", async () => {
@@ -165,7 +208,7 @@ describe("initializeRun", () => {
     expect(stored.activeSessions).toEqual([session]);
   });
 
-  test("SC20: a second init, a run folder that already exists, a bad name, and an unknown run are each refused", async () => {
+  test("SC20: a second init, a bad name, and an unknown run are each refused", async () => {
     const { cwd, init, registry, workflowPath } = await savedRun();
     expect((await init("fix-login")).ok).toBe(true);
 
@@ -175,8 +218,6 @@ describe("initializeRun", () => {
     });
 
     await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
-    mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
-    expect(await init("dupe", "r-2")).toEqual({ ok: false, error: ".yok/dupe already exists" });
 
     const badName = await init("Bad Name", "r-2");
     expect(badName.ok ? "" : badName.error).toContain("Bad Name");
@@ -186,6 +227,40 @@ describe("initializeRun", () => {
       ok: false,
       error: "run r-missing not found",
     });
+  });
+
+  test("a taken name is refused with the old run's status, its node, and the command that reaches it", async () => {
+    const { cwd, init, registry, run, workflowPath } = await savedRun();
+    expect((await init("fix-login")).ok).toBe(true);
+    const old = { id: run.id, cwd, name: "fix-login" };
+    const opened = await nextStep(old, agentAdapters);
+    if (!opened.ok) throw new Error(opened.error);
+    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+
+    expect(await init("fix-login", "r-2")).toEqual({
+      ok: false,
+      error: "run fix-login already exists (running, at a); attach with `yok attach fix-login`",
+    });
+
+    const failed = await appendRunEvent(old, {
+      type: "workflow.failed",
+      payload: {},
+      source: "test",
+    });
+    if (!failed.ok) throw new Error(failed.error);
+    expect(await init("fix-login", "r-2")).toEqual({
+      ok: false,
+      error: "run fix-login already exists (failed, at a); resume it with `yok resume fix-login`",
+    });
+    expect((await registry.findRun("r-2"))?.name).toBeNull();
+  });
+
+  test("a taken name whose folder holds no run is refused without a command", async () => {
+    const { cwd, init, registry, workflowPath } = await savedRun();
+    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+    mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
+
+    expect(await init("dupe", "r-2")).toEqual({ ok: false, error: "run dupe already exists" });
   });
 
   test("SC20: a run whose repo has an invalid config is refused, leaving no run folder and no name", async () => {

@@ -5,14 +5,16 @@
     "": {
       "name": "harness-engineering",
       "devDependencies": {
+        "@ast-grep/cli": "^0.51.1",
         "@biomejs/biome": "^2.5.14",
         "@types/bun": "^1.4.2",
+        "playwright": "1.64.1",
         "typescript": "^7.0.2",
       },
     },
     "packages/cli": {
       "name": "@yok/cli",
-      "version": "0.0.10-rc.1",
+      "version": "0.0.11",
       "bin": {
         "yok-dev": "./src/index.ts",
       },
@@ -27,7 +29,7 @@
     },
     "packages/core": {
       "name": "@yok/core",
-      "version": "0.0.10-rc.1",
+      "version": "0.0.11",
       "dependencies": {
         "@commander-js/extra-typings": "^15.0.0",
         "@yok/sdk": "workspace:*",
@@ -45,14 +47,14 @@
     },
     "packages/plugins": {
       "name": "@yok/plugins",
-      "version": "0.0.10-rc.1",
+      "version": "0.0.11",
       "dependencies": {
         "@yok/core": "workspace:*",
       },
     },
     "packages/sdk": {
       "name": "@yok/sdk",
-      "version": "0.0.10-rc.1",
+      "version": "0.0.11",
       "dependencies": {
         "yaml": "^2.9.1",
         "zod": "^4",
@@ -60,7 +62,7 @@
     },
     "packages/server": {
       "name": "@yok/server",
-      "version": "0.0.10-rc.1",
+      "version": "0.0.11",
       "dependencies": {
         "@hono/zod-validator": "^0.9.1",
         "@yok/core": "workspace:*",
@@ -72,7 +74,26 @@
       },
     },
   },
+  "trustedDependencies": [
+    "@ast-grep/cli",
+  ],
   "packages": {
+    "@ast-grep/cli": ["@ast-grep/cli@0.51.1", "", { "dependencies": { "detect-libc": "2.1.2" }, "optionalDependencies": { "@ast-grep/cli-darwin-arm64": "0.51.1", "@ast-grep/cli-darwin-x64": "0.51.1", "@ast-grep/cli-linux-arm64-gnu": "0.51.1", "@ast-grep/cli-linux-x64-gnu": "0.51.1", "@ast-grep/cli-win32-arm64-msvc": "0.51.1", "@ast-grep/cli-win32-ia32-msvc": "0.51.1", "@ast-grep/cli-win32-x64-msvc": "0.51.1" }, "bin": { "sg": "sg", "ast-grep": "ast-grep" } }, "sha512-xdX9+jHTZLwpYtHFRmK4Zzoe0UPmZrn037wwCHKBqaFJPC12xiGTwrZEZDMbBwRwmsGYcG1yHsb7yvEFU8EzNw=="],
+
+    "@ast-grep/cli-darwin-arm64": ["@ast-grep/cli-darwin-arm64@0.51.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-C279HR4eytYkHrmqudMi+eUG3ZvuAqWc0zp9i5aPugFF389AE6N6SbiSFdKeVZXMaUVpwRbmBQbBTr5cA0Tugw=="],
+
+    "@ast-grep/cli-darwin-x64": ["@ast-grep/cli-darwin-x64@0.51.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-i8wJd4amxXCvEgZDcU8QDnVE92oqJyDFPyTjaT1PVtBQ0Vb7Y55iTu1dwBwXVi0inFM2OJ4Ze57yCz1uNuXTbg=="],
+
+    "@ast-grep/cli-linux-arm64-gnu": ["@ast-grep/cli-linux-arm64-gnu@0.51.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-ix/97iBUPGvf9KrhKRcooSJLmwBgAo7GhKHm7VH30kpxOMUrNLqiTXJj2eZVLiO2xQdUFnbwhVn+A7blSlYLJQ=="],
+
+    "@ast-grep/cli-linux-x64-gnu": ["@ast-grep/cli-linux-x64-gnu@0.51.1", "", { "os": "linux", "cpu": "x64" }, "sha512-FlaaRLyopXet+zFrWOdlTbyJb+QqZzgV9jxIbgz0FoVsJSaJ6jsenO/6bgYJk4zPOCUODuvoQ1/XFlB4r6BdcQ=="],
+
+    "@ast-grep/cli-win32-arm64-msvc": ["@ast-grep/cli-win32-arm64-msvc@0.51.1", "", { "os": "win32", "cpu": "arm64" }, "sha512-WRgt7DX/APxJ6KwGopM0jiC1SN4okxXh2kXY5/YliNy0oPc7ayE5FdG7Dqz40iyOE3EpQN6SZVRquvkpJEagnQ=="],
+
+    "@ast-grep/cli-win32-ia32-msvc": ["@ast-grep/cli-win32-ia32-msvc@0.51.1", "", { "os": "win32", "cpu": "ia32" }, "sha512-Nclj/nsZmiT1bg1jfVL9sqpv0dzcZv6lZu1uk/UrjtvXw832yewmJucvmpAOd0fcb6l57SQ69Jqvt9MNzKwFSQ=="],
+
+    "@ast-grep/cli-win32-x64-msvc": ["@ast-grep/cli-win32-x64-msvc@0.51.1", "", { "os": "win32", "cpu": "x64" }, "sha512-98fN1gUWJ6AMcwfFdUAQV+4haq5HAzDZWyu3W5zCZXkhhvcT3GLY9oRcACrr7yefIQohHpj5GG0rUZNlwukrMQ=="],
+
     "@biomejs/biome": ["@biomejs/biome@2.5.14", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.14", "@biomejs/cli-darwin-x64": "2.5.14", "@biomejs/cli-linux-arm64": "2.5.14", "@biomejs/cli-linux-arm64-musl": "2.5.14", "@biomejs/cli-linux-x64": "2.5.14", "@biomejs/cli-linux-x64-musl": "2.5.14", "@biomejs/cli-win32-arm64": "2.5.14", "@biomejs/cli-win32-x64": "2.5.14" }, "bin": { "biome": "bin/biome" } }, "sha512-0FabLIjd4M/dm8VFI86RMaLLdgepzbdfiAL2R8cr7V81OYYrP1w7Z73KfAwPK5h9SrEBXTzNG2y+mBwPo9xRnw=="],
 
     "@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.5.14", "", { "os": "darwin", "cpu": "arm64" }, "sha512-UnzaXO65L4tsZimFITFP2M121GyhDcWFrT3pL5ZJ5U4XcS/0L5VHYytVohdCf/gnDUFHgl2I9xnt5bV/J1kxHQ=="],
@@ -171,6 +192,8 @@
 
     "dateformat": ["dateformat@4.6.3", "", {}, "sha512-2P0p0pFGzHS5EMnhdxQi7aJN+iMheud0UhG4dlE1DLAlvL8JHjJJTX/CSm4JXwV0Ka5nGk3zC5mcb5bUQUxxMA=="],
 
+    "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
+
     "end-of-stream": ["end-of-stream@1.4.5", "", { "dependencies": { "once": "^1.4.0" } }, "sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg=="],
 
     "entities": ["entities@4.5.0", "", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
@@ -206,6 +229,10 @@
     "pino-pretty": ["pino-pretty@13.1.3", "", { "dependencies": { "colorette": "^2.0.7", "dateformat": "^4.6.3", "fast-copy": "^4.0.0", "fast-safe-stringify": "^2.1.1", "help-me": "^5.0.0", "joycon": "^3.1.1", "minimist": "^1.2.6", "on-exit-leak-free": "^2.1.0", "pino-abstract-transport": "^3.0.0", "pump": "^3.0.0", "secure-json-parse": "^4.0.0", "sonic-boom": "^4.0.1", "strip-json-comments": "^5.0.2" }, "bin": { "pino-pretty": "bin.js" } }, "sha512-ttXRkkOz6WWC95KeY9+xxWL6AtImwbyMHrL1mSwqwW9u+vLp/WIElvHvCSDg0xO/Dzrggz1zv3rN5ovTRVowKg=="],
 
     "pino-std-serializers": ["pino-std-serializers@7.1.0", "", {}, "sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw=="],
+
+    "playwright": ["playwright@1.64.1", "", { "dependencies": { "playwright-core": "1.64.1" }, "bin": { "playwright": "cli.js" } }, "sha512-HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA=="],
+
+    "playwright-core": ["playwright-core@1.64.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=="],
 
     "process-warning": ["process-warning@5.1.0", "", {}, "sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw=="],
 

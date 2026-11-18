@@ -63,6 +63,7 @@ const allToolsOk = (root: string): Record<string, { code: number; stdout: string
   "gh --version": { code: 0, stdout: "gh version 2.40.0" },
   "gh auth status": { code: 0, stdout: "Logged in to github.com" },
   "agent-browser --version": { code: 0, stdout: "agent-browser 1.0.0" },
+  "agent-device --version": { code: 0, stdout: "0.21.35" },
   "ffmpeg -version": { code: 0, stdout: "ffmpeg version 6.0" },
   "samskara --version": { code: 0, stdout: "1.4.0" },
   "samskara status": { code: 0, stdout: "paired as ritesh" },
@@ -77,6 +78,7 @@ const BUILT_IN_NAMES = [
   "orchestrate-config",
   "gh",
   "agent-browser",
+  "agent-device",
   "ffmpeg",
   "samskara",
 ];
@@ -186,6 +188,20 @@ describe("runDoctor", () => {
     expect(ghRow).toMatchObject({ status: "warn", detail: "not on PATH" });
     expect(ghRow?.fix[0]).toBe("brew install gh");
     expect(verdict(report)).not.toMatch(/^BLOCKED/);
+  });
+
+  test("a missing agent-device is a WARN, not a FAIL, because it is optional", async () => {
+    const report = await runDoctor({
+      cwd: cleanRoot,
+      exec: fakeExec({
+        ...allToolsOk(cleanRoot),
+        "agent-device --version": { code: 127, stdout: "" },
+      }),
+    });
+    const row = report.results.find((r) => r.name === "agent-device");
+    expect(row).toMatchObject({ status: "warn", detail: "not on PATH" });
+    expect(row?.fix).toEqual(["npm i -g agent-device@latest", "agent-device doctor"]);
+    expect(verdict(report)).toBe("DEGRADED agent-device");
   });
 
   test("SC14: samskara is OK only when its status says it is paired", async () => {

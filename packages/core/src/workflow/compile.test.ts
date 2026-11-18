@@ -1314,16 +1314,12 @@ describe("the shipped skill workflow", () => {
 });
 
 describe("the shipped task workflow", () => {
-  test("declares the Linear key, bun and gh as its doctor checks", async () => {
+  test("declares bun and gh as its doctor checks, and no ticket key", async () => {
     const plan = await compileWorkflow(
       join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
     );
 
-    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual([
-      "env:LINEAR_API_KEY",
-      "binary:bun",
-      "binary:gh",
-    ]);
+    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual(["binary:bun", "binary:gh"]);
   });
 
   test("runs learn after planning, before the compact, and a learn failure never stops the run", async () => {
@@ -1355,7 +1351,7 @@ describe("the shipped task workflow", () => {
     });
   });
 
-  test("SC19 (design): the qa stage inside qa-loop loads the design-coverage function verifier and consumes design-refs as optional", async () => {
+  test("SC19 (design): the qa stage inside qa-loop loads the design-coverage and report-shape function verifiers and consumes design-refs as optional", async () => {
     const plan = await compileWorkflow(
       join(import.meta.dir, "..", "..", "..", "..", "workflows", "task.yaml"),
     );
@@ -1365,11 +1361,47 @@ describe("the shipped task workflow", () => {
         expect.objectContaining({
           id: "qa",
           stage: expect.objectContaining({
-            verifiers: [expect.objectContaining({ id: "design-coverage", kind: "function" })],
+            verifiers: [
+              expect.objectContaining({ id: "design-coverage", kind: "function" }),
+              expect.objectContaining({ id: "report-shape", kind: "function" }),
+            ],
             consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
           }),
         }),
       ]),
+    });
+  });
+});
+
+describe("the shipped pr-fix workflow", () => {
+  test("SC31: requires the prompt, takes pr optionally (else from the prompt's Pull request line), checks bun and gh, and design depends on an unconditional resolve-conflicts, with no git-commit or visual-pr stage", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
+    );
+
+    expect(plan.inputs).toMatchObject({ pr: { default: "" }, prompt: { required: true } });
+    expect(plan.inputs.pr).not.toHaveProperty("required", true);
+    expect(plan.doctor.map((d) => `${d.check}:${d.key}`)).toEqual(["binary:bun", "binary:gh"]);
+    expect(plan.nodes.find((node) => node.id === "design")?.dependsOn).toEqual([
+      "resolve-conflicts",
+    ]);
+    expect(plan.nodes.find((node) => node.id === "resolve-conflicts")).not.toHaveProperty("when");
+    const stages = JSON.stringify(plan.nodes);
+    expect(stages).not.toContain('"ref":"git-commit"');
+    expect(stages).not.toContain('"ref":"visual-pr"');
+  });
+
+  test("SC42: pr-reply compiles as an always, allowFailure node after qa-loop that reads only the workflow's inputs", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "pr-fix.yaml"),
+    );
+
+    expect(plan.nodes.find((node) => node.id === "pr-reply")).toMatchObject({
+      stage: { ref: "pr-reply" },
+      dependsOn: ["qa-loop"],
+      always: true,
+      allowFailure: true,
+      input: { pr: "{{ inputs.pr }}", prompt: "{{ inputs.prompt }}" },
     });
   });
 });

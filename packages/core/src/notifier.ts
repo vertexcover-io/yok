@@ -321,6 +321,11 @@ export type SlackConfig = Readonly<{
 
 const SlackReplySchema = z.looseObject({ ok: z.boolean(), error: z.string().optional() });
 
+// GitHub's token formats: gho_ (OAuth), ghp_, ghu_, ghs_, ghr_, and fine-grained github_pat_.
+const GITHUB_TOKEN = /\b(?:gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+
+export const redactTokens = (text: string): string => text.replace(GITHUB_TOKEN, "[redacted]");
+
 export const callSlack = async (
   config: SlackConfig,
   method: string,
@@ -332,7 +337,10 @@ export const callSlack = async (
       Authorization: `Bearer ${config.token}`,
       "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     },
-    body: new URLSearchParams(form).toString(),
+    // every message yok sends to Slack passes here, so an agent echoing its env cannot leak a token
+    body: new URLSearchParams(
+      Object.fromEntries(Object.entries(form).map(([key, value]) => [key, redactTokens(value)])),
+    ).toString(),
   });
   const reply = SlackReplySchema.safeParse(await res.json()).data;
   if (reply?.ok !== true) {
@@ -427,6 +435,16 @@ const withLargeFiles = (notice: Notice, large: readonly string[]): Notice => {
   return { ...notice, body: [notice.body, ...lines].filter((line) => line !== "").join("\n") };
 };
 
+// A run started from a chat thread posts to that thread's channel and tags whoever typed the
+// command, both kept in its events, over the channel and member its session's env names.
+const threadEnv = (state: State): Readonly<Record<string, string>> => {
+  const { channel, user } = state.notification ?? {};
+  return {
+    ...(typeof channel === "string" ? { SLACK_CHANNEL_ID: channel } : {}),
+    ...(typeof user === "string" ? { SLACK_MEMBER_ID: user } : {}),
+  };
+};
+
 // Posts the event's message into the run's thread and uploads its files. The first post opens the
 // thread, recorded as notification.thread.started so later posts reply in it. A failure throws,
 // so the SDK records a failed call.
@@ -438,7 +456,7 @@ export const notify = async (
 ): Promise<{ threadId: string } | undefined> => {
   const described = describeEvent(event, state);
   if (described === undefined) return undefined;
-  const opened = open(type);
+  const opened = open(type, { ...process.env, ...threadEnv(state) });
   if (!opened.ok) throw new Error(opened.error);
   const files = await realPathsInArtifacts(state.runDir, described.files);
   const { small, large } = await splitBySize(files);

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "./config.ts";
 import { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
+import { createRegistry, registryPath } from "./registry.ts";
+import { setAccountToken, type User, updateUsers } from "./users.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "sdk-env-")));
 
@@ -252,7 +254,78 @@ describe("sessionEnv", () => {
       {},
       { PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
     ],
-  ])("%s", (_label, runEnv, expected) => {
-    expect(sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(expected);
+  ])("%s", async (_label, runEnv, expected) => {
+    expect(await sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(expected);
+  });
+});
+
+describe("sessionEnv for an owned run", () => {
+  const github = { id: 1, login: "ritesh-gh" };
+  const connected: User = {
+    name: "R",
+    email: "",
+    accounts: { github: { ...github, token: "gho_u1" } },
+  };
+
+  type Started = { source?: "api" | "slack" | "trigger"; user?: string };
+
+  const homeWith = async (runs: Record<string, Started>): Promise<string> => {
+    const home = tempDir();
+    const registry = createRegistry(registryPath(home));
+    for (const [id, started] of Object.entries(runs)) {
+      await registry.addRun({
+        id,
+        workflow: "demo",
+        workflowPath: "/abs/workflow.yaml",
+        inputs: {},
+        cwd: "/abs/repo",
+        sessions: [],
+        name: null,
+        terminal: null,
+        config: null,
+        tiers: null,
+        ...started,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return home;
+  };
+
+  test("SC26: Slack run A by a connected user gets their token, Slack run B by no yok user gets none, API run C and pre-source run D keep their env", async () => {
+    const home = await homeWith({
+      A: { source: "slack", user: "u_1" },
+      B: { source: "slack" },
+      C: { source: "api" },
+      D: {},
+    });
+    await updateUsers(home, () => ({ u_1: connected }));
+    const runEnv = { GH_TOKEN: "server", FOO: "1" };
+
+    const [a, b, c, d] = await Promise.all(
+      ["A", "B", "C", "D"].map((id) => sessionEnv(runEnv, id, home, "/shims")),
+    );
+
+    expect(a?.GH_TOKEN).toBe("gho_u1");
+    expect(b?.GH_TOKEN).toBe("");
+    expect(b?.GH_CONFIG_DIR).toBe(join(home, "gh-owned"));
+    expect(c).toEqual({
+      ...runEnv,
+      PATH: `/shims:${process.env.PATH}`,
+      YOK_RUN_ID: "C",
+      YOK_HOME: home,
+    });
+    expect(d?.GH_TOKEN).toBe("server");
+  });
+
+  test("SC27: a GitHub token connected after the run started reaches the run's next session", async () => {
+    const home = await homeWith({ A: { source: "slack", user: "u_1" } });
+    await updateUsers(home, () => ({ u_1: { ...connected, accounts: { github } } }));
+    const before = await sessionEnv({}, "A", home, "/shims");
+
+    await updateUsers(home, (users) => setAccountToken(users, "u_1", "github", "gho_new"));
+    const after = await sessionEnv({}, "A", home, "/shims");
+
+    expect(before.GH_TOKEN).toBe("");
+    expect(after.GH_TOKEN).toBe("gho_new");
   });
 });

@@ -2,7 +2,13 @@ import { realpathSync } from "node:fs";
 import { chmod, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Command, InvalidArgumentError, Option } from "@commander-js/extra-typings";
-import { agentBinary, installPlugin, type WorkflowAgent, WorkflowAgentSchema } from "@yok/core";
+import {
+  agentBinary,
+  answerClaudeDialogs,
+  installPlugin,
+  type WorkflowAgent,
+  WorkflowAgentSchema,
+} from "@yok/core";
 import { execWithTimeout, type Result } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import { fail } from "./client.ts";
@@ -80,6 +86,12 @@ export const installAll = async (agents: readonly WorkflowAgent[], env: Env): Pr
   return 1;
 };
 
+// Runs start Claude in panes nobody watches, so its one-time dialogs are answered at install.
+const answerDialogs = async (env: Env): Promise<void> => {
+  const answered = await answerClaudeDialogs({ ...process.env, ...env });
+  if (!answered.ok) console.error(`Claude's first-run dialogs stay unanswered: ${answered.error}`);
+};
+
 // A bare call that finds no agent is not a failure: install.sh runs it on every machine, and a
 // binary without an agent is still a working install.
 export const installPlugins = async (
@@ -87,9 +99,12 @@ export const installPlugins = async (
   env: Env,
 ): Promise<number> => {
   const agents = named ?? agentsOnPath(env);
-  if (agents.length > 0) return installAll(agents, env);
-  console.log("No claude or codex found. Install one, then run: yok plugin install");
-  return 0;
+  if (agents.length === 0) {
+    console.log("No claude or codex found. Install one, then run: yok plugin install");
+    return 0;
+  }
+  if (agents.includes("claude")) await answerDialogs(env);
+  return installAll(agents, env);
 };
 
 export type PackageManager = "homebrew" | "npm";
