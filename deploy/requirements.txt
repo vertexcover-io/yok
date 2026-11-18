@@ -1,0 +1,2 @@
+pyinfra>=3.10,<4
+bcrypt>=4

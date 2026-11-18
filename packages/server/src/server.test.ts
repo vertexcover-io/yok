@@ -16,7 +16,7 @@ import { noopLogger, registryPath, runDirOf } from "@yok/sdk";
 import { createRegistry, VERSION } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
 import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
-import { publicOrigin, readPort, serverDomain, updateHomeEnv } from "./protocol.ts";
+import { publicOrigin, readPort, serverBind, serverDomain, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
 const readyCheckout: CheckCheckout = () =>
@@ -44,6 +44,21 @@ test.each([
       if (before === undefined) delete process.env.SERVER_DOMAIN;
       else process.env.SERVER_DOMAIN = before;
     }
+  },
+);
+
+test.each([
+  ["YOK_BIND=0.0.0.0\n", "0.0.0.0"],
+  ["YOK_BIND= 10.42.0.42 \n", "10.42.0.42"],
+  ["YOK_BIND=\n", "127.0.0.1"],
+  [null, "127.0.0.1"],
+  ["SERVER_DOMAIN=yok.example.com\n", "127.0.0.1"],
+])(
+  "SC1004: a home whose .env holds %p binds the server to %p, loopback unless YOK_BIND says otherwise",
+  (env, bind) => {
+    const home = mkdtempSync(join(tmpdir(), "yok-bind-"));
+    if (env !== null) writeFileSync(join(home, ".env"), env);
+    expect(serverBind(home)).toBe(bind);
   },
 );
 

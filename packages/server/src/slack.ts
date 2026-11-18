@@ -20,6 +20,11 @@ export type SlackHookDeps = DispatchDeps &
     slackFetch?: notifierHooks.Fetch | undefined;
   }>;
 
+// ~/.yok/.env first, then the process environment: a deploy delivers the keys through the unit's
+// EnvironmentFile, and a hand-run server has them in .env.
+const slackKey = (home: string, key: string): string | undefined =>
+  readHomeEnv(home)[key] ?? process.env[key];
+
 // Slack signs every request: v0= and the hex HMAC-SHA256 of "v0:TIMESTAMP:BODY" under the
 // app's signing secret.
 export const isSlackSigned = (
@@ -43,7 +48,7 @@ export const isSlackSigned = (
 const verifySlack =
   (deps: SlackHookDeps): MiddlewareHandler =>
   async (c, next) => {
-    const secret = readHomeEnv(deps.home).SLACK_SIGNING_SECRET;
+    const secret = slackKey(deps.home, "SLACK_SIGNING_SECRET");
     if (!secret)
       return c.text("the Slack hook is not set up: SLACK_SIGNING_SECRET is missing", 503);
     const signed = isSlackSigned(
@@ -163,7 +168,7 @@ const answerMention = async (mention: Mention, deps: SlackHookDeps): Promise<voi
     ...(mention.user ? { user: mention.user } : {}),
   };
   const log = deps.log.child({ component: "slack", thread: thread.ts });
-  const token = readHomeEnv(deps.home).SLACK_BOT_TOKEN;
+  const token = slackKey(deps.home, "SLACK_BOT_TOKEN");
   if (!token) {
     log.error({}, "SLACK_BOT_TOKEN is not set, so the mention gets no reply");
     return;
@@ -196,7 +201,7 @@ export const slackHookRoutes = (deps: SlackHookDeps) => {
       return c.json({ challenge: payload.data.challenge }, 200);
     }
     const { event_id: eventId, event } = payload.data;
-    const allowed = readHomeEnv(deps.home).SLACK_COMMAND_CHANNEL;
+    const allowed = slackKey(deps.home, "SLACK_COMMAND_CHANNEL");
     if (event.type !== "app_mention" || event.channel !== allowed || seen.has(eventId)) {
       return c.body(null, 200);
     }

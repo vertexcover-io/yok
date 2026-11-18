@@ -46,6 +46,11 @@ export const serverDomain = (home: string, port: number): string => {
   return domain || `localhost:${port}`;
 };
 
+// The address the server listens on. Loopback, unless a proxy that is not on this machine must
+// reach it, such as a hosting provider's edge; then the home's .env names the interface.
+export const serverBind = (home: string): string =>
+  (readHomeEnv(home).YOK_BIND ?? "").trim() || "127.0.0.1";
+
 // Plain http only for this machine: any other domain is reached through a proxy doing https.
 export const publicOrigin = (domain: string): string =>
   `${/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(domain) ? "http" : "https"}://${domain}`;
