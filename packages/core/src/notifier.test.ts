@@ -463,7 +463,7 @@ type Sent = Readonly<{ url: string; body: RequestInit["body"] }>;
 
 // Answers each Slack method with the reply given for it, and records every request.
 const fakeSlack = (
-  replies: Readonly<Record<string, object>>,
+  replies: Readonly<Record<string, object | string>>,
   statuses: Readonly<Record<string, number>> = {},
 ) => {
   const sent: Sent[] = [];
@@ -596,6 +596,46 @@ describe("createSlackNotifier", () => {
       "https://slack.com/api/files.getUploadURLExternal",
       "https://files.test/up",
     ]);
+  });
+
+  test("an upload URL answering 400 invalid length, Slack's refusal over its 1 GB limit, turns an upload into too-large", async () => {
+    const slack = fakeSlack(
+      {
+        "files.getUploadURLExternal": {
+          ok: true,
+          upload_url: "https://files.test/up",
+          file_id: "F1",
+        },
+        up: "invalid length",
+      },
+      { up: 400 },
+    );
+
+    const outcome = await slack.notifier.upload(await bigFile(), "171.1");
+
+    expect(outcome).toBe("too-large");
+    expect(slack.sent.map((request) => request.url)).toEqual([
+      "https://slack.com/api/files.getUploadURLExternal",
+      "https://files.test/up",
+    ]);
+  });
+
+  test("an upload URL answering 400 for another reason still fails the upload", async () => {
+    const slack = fakeSlack(
+      {
+        "files.getUploadURLExternal": {
+          ok: true,
+          upload_url: "https://files.test/up",
+          file_id: "F1",
+        },
+        up: "bad request",
+      },
+      { up: 400 },
+    );
+
+    await expect(slack.notifier.upload(await bigFile(), "171.1")).rejects.toThrow(
+      "slack file upload failed: 400",
+    );
   });
 
   test("SC10: any other Slack refusal still fails the upload", async () => {

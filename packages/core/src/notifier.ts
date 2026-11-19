@@ -382,6 +382,13 @@ const requestUploadUrl = async (
   }
 };
 
+// Slack's upload address answers 400 "invalid length" to a file over its 1 GB limit, though it
+// hands out the address for any size; a proxy in front of it answers 413.
+const refusedForSize = async (put: Response): Promise<boolean> => {
+  if (put.status === 413) return true;
+  return put.status === 400 && (await put.text()).includes("invalid length");
+};
+
 export const createSlackNotifier = (config: SlackConfig): INotifier => ({
   post: async (notice, threadId) => {
     const text = formatSlackText(notice, config.memberId);
@@ -408,7 +415,7 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
       throw new Error("slack files.getUploadURLExternal returned no upload url");
     }
     const put = await config.fetch(uploadUrl, { method: "POST", body: Bun.file(file) });
-    if (put.status === 413) return "too-large";
+    if (await refusedForSize(put)) return "too-large";
     if (!put.ok) throw new Error(`slack file upload failed: ${put.status}`);
     await callSlack(config, "files.completeUploadExternal", {
       files: JSON.stringify([{ id: fileId, title: name }]),
