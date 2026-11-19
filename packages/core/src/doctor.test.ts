@@ -14,9 +14,12 @@ import {
   type Result,
   type Samskara,
 } from "@yok/sdk";
+import { checkSqliteVersion, sqliteVersion } from "@yok/sdk/internal";
 import {
   buildNotifierCheck,
   buildSamskaraCheck,
+  CHECKS,
+  checkSqlite,
   evaluate,
   runDoctor,
   summarize,
@@ -74,6 +77,7 @@ const BUILT_IN_NAMES = [
   "git-repo",
   "jq",
   "curl",
+  "sqlite",
   "yok-gitignored",
   "orchestrate-config",
   "gh",
@@ -84,6 +88,25 @@ const BUILT_IN_NAMES = [
 ];
 
 describe("runDoctor", () => {
+  test("SC103: the sqlite row passes on this machine with SQLite and its version, after curl", async () => {
+    const report = await runDoctor({ cwd: cleanRoot, exec: fakeExec(allToolsOk(cleanRoot)) });
+    expect(report.results.map((row) => row.name)).toEqual(BUILT_IN_NAMES);
+    expect(report.results.find((row) => row.name === "sqlite")).toMatchObject({
+      status: "ok",
+      detail: `SQLite ${sqliteVersion()}`,
+    });
+  });
+
+  test("SC104: checkSqlite(3.37.2) fails with the open's message, and the sqlite row names both fixes", () => {
+    const refused = checkSqliteVersion("3.37.2");
+    expect(refused.ok).toBe(false);
+    expect(checkSqlite("3.37.2")).toEqual(fail(refused.ok ? "" : refused.error));
+    expect(CHECKS.find((check) => check.name === "sqlite")?.fix).toEqual([
+      "on macOS, update macOS",
+      "on Linux, update yok",
+    ]);
+  });
+
   test("SC1: READY when every built-in check passes", async () => {
     const report = await runDoctor({ cwd: cleanRoot, exec: fakeExec(allToolsOk(cleanRoot)) });
     expect(verdict(report)).toBe("READY");

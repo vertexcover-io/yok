@@ -1,13 +1,17 @@
 // The engine's side of the sdk: core, server and cli import these. Extension code uses
 // @yok/sdk; a skill script never imports this file.
+export {
+  type AgentReply,
+  type Comment,
+  CommentSchema,
+  commentRepliedEvent,
+  commentsAddedEvent,
+  deliveryMessage,
+  isOpen,
+} from "./comments.ts";
 export { resolveTiers, uniqueNames } from "./config.ts";
 export { AgentModeSchema, isRunLive, pickTierModel } from "./contracts.ts";
-export {
-  type EventDraft,
-  type IEventStore,
-  jsonlEventStore,
-  memoryEventStore,
-} from "./event-store.ts";
+export { checkSqliteVersion, sqliteVersion } from "./db.ts";
 export {
   AgentStatusSchema,
   type Anchor,
@@ -19,11 +23,9 @@ export {
   CommentStatusSchema,
   type DoneStatus,
   DoneStatusSchema,
-  emitEvent,
   findNodeRuns,
   findRunningLeaf,
   foldModelSwitch,
-  type IEventEmitter,
   type ModelSwitch,
   nodePath,
   type StepOutcome,
@@ -45,11 +47,28 @@ export {
 } from "./policies.ts";
 export { devPluginDir, isCompiled, prependPath, selfArgv, writeShim } from "./process.ts";
 export {
-  createRegistry,
-  type Registry,
-  type RegistryFile,
-  RegistryFileSchema,
+  findProjectConflict,
+  folderSlug,
+  type Project,
+  ProjectSchema,
+  type RunDraft,
+  RunDraftSchema,
 } from "./registry.ts";
+export type {
+  Appended,
+  AppendInput,
+  EventDraft,
+  GitHubSignIn,
+  IEventStore,
+  ImportedRun,
+  ImportedUser,
+  IProjectRepository,
+  IRunRepository,
+  IStorage,
+  IUserRepository,
+  UserAccount,
+} from "./repositories.ts";
+export { belongsTo } from "./runs.ts";
 export {
   appendRunEvent,
   appendRunEventIf,
@@ -60,9 +79,9 @@ export {
   readGit,
   syncState,
 } from "./state.ts";
+export { memoryStorage, openStorage, useStorage, withStorage } from "./storage.ts";
 export { callMode, runMode } from "./subscribers.ts";
 export {
-  createTriggerStore,
   type Fire,
   FireSchema,
   type LegacyTrigger,
@@ -70,25 +89,6 @@ export {
   type Trigger,
   type TriggerDraft,
   TriggerSchema,
-  type TriggerStore,
-  TriggersFileSchema,
-  triggerFiresPath,
-  triggersPath,
 } from "./triggers.ts";
-export {
-  type Accounts,
-  findUserByGitHub,
-  findUserBySlack,
-  linkSlack,
-  readUsers,
-  setAccountToken,
-  type User,
-  type UserEntry,
-  UserSchema,
-  type UsersFile,
-  UsersFileSchema,
-  unlinkSlack,
-  updateUsers,
-  usersPath,
-} from "./users.ts";
+export { type Accounts, type User, type UserEntry, UserSchema } from "./users.ts";
 export { VERSION } from "./version.ts";

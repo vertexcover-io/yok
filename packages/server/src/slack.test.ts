@@ -4,11 +4,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { summarize } from "@yok/core";
-import { createGit, type LaunchOptions, noopLogger } from "@yok/sdk";
-import { createRegistry, readUsers, type UsersFile, updateUsers } from "@yok/sdk/internal";
+import { createGit, type IStorage, type LaunchOptions, noopLogger } from "@yok/sdk";
+import { memoryStorage } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
 import { type DispatchDeps, dispatchCommand, splitWords } from "./dispatch.ts";
-import { fakeHost, fakeProvider } from "./fake-host.ts";
+import { fakeHost, fakeProvider, seedUser } from "./fake-host.ts";
 import { sessionSecret, verifyValue } from "./identity.ts";
 import { replyText, startError } from "./render.ts";
 import { isSlackSigned, toBlocks } from "./slack.ts";
@@ -18,10 +18,10 @@ const NOW = new Date("2026-11-04T00:00:00Z");
 // None of these commands reaches the server, so the client points nowhere; launched records
 // every agent launch.
 const launched: LaunchOptions[] = [];
-const chatDeps = (home: string): DispatchDeps => ({
+const chatDeps = (home: string, storage: IStorage = memoryStorage()): DispatchDeps => ({
   client: createYokClient({ url: "http://127.0.0.1:1" }),
   log: noopLogger,
-  registry: createRegistry(join(tmpdir(), "yok-unused", "registry.json")),
+  storage,
   providerFor: (agent) =>
     fakeProvider(agent, async (options) => {
       launched.push(options);
@@ -148,17 +148,18 @@ describe("dispatchCommand", () => {
   });
 });
 
-const ritesh = {
-  name: "ritesh-gh",
-  email: "r@example.com",
-  accounts: { github: { id: 1, login: "ritesh-gh" } },
-};
-
-// A temp home holding USERS, and a dispatch from Slack member MEMBER.
-const linkSetup = async (users: UsersFile) => {
+// A temp home with ritesh-gh stored, linked to Slack member SLACK when given, and a dispatch from
+// Slack member MEMBER.
+const linkSetup = async (slack?: string) => {
   const home = await mkdtemp(join(tmpdir(), "slack-link-"));
-  await updateUsers(home, () => users);
-  const deps = chatDeps(home);
+  const storage = memoryStorage();
+  const userId = await seedUser(storage, {
+    name: "ritesh-gh",
+    email: "r@example.com",
+    github: { id: 1, login: "ritesh-gh" },
+    ...(slack === undefined ? {} : { slack }),
+  });
+  const deps = chatDeps(home, storage);
   const from = (member: string, text: string) =>
     dispatchCommand(
       text,
@@ -166,12 +167,12 @@ const linkSetup = async (users: UsersFile) => {
       deps,
       async () => undefined,
     );
-  return { home, from };
+  return { home, storage, userId, from };
 };
 
 describe("Slack link commands", () => {
-  test("SC10: login from unlinked member U7 replies privately with a /link/slack URL whose state verifies as a link for U7", async () => {
-    const { home, from } = await linkSetup({});
+  test("SC124 (SC10): login from unlinked member U7 replies privately with a /link/slack URL whose state verifies as a link for U7", async () => {
+    const { home, from } = await linkSetup();
 
     const reply = await from("U7", "login");
 
@@ -182,8 +183,8 @@ describe("Slack link commands", () => {
     expect(verifyValue(await sessionSecret(home), state, "link", NOW)?.sub).toBe("U7");
   });
 
-  test("SC11: login from U7, already linked to ritesh-gh, says so and carries no link", async () => {
-    const { from } = await linkSetup({ u_1: { ...ritesh, slack: "U7" } });
+  test("SC124 (SC11): login from U7, already linked to ritesh-gh, says so and carries no link", async () => {
+    const { from } = await linkSetup("U7");
 
     const reply = await from("U7", "login");
 
@@ -191,8 +192,8 @@ describe("Slack link commands", () => {
     expect(reply.private).toBeUndefined();
   });
 
-  test("SC12: whoami names the linked user and their GitHub state, and tells an unlinked member to @yok login", async () => {
-    const { home, from } = await linkSetup({ u_1: { ...ritesh, slack: "U7" } });
+  test("SC124 (SC12): whoami names the linked user and their GitHub state, and tells an unlinked member to @yok login", async () => {
+    const { storage, from } = await linkSetup("U7");
 
     const unconnected = (await from("U7", "whoami")).text;
     expect(unconnected).toContain("You are *ritesh-gh*");
@@ -200,11 +201,13 @@ describe("Slack link commands", () => {
       "GitHub not connected; connect it at http://localhost:1/settings",
     );
 
-    const github = { id: 1, login: "ritesh-gh", token: "gho_a" };
-    await updateUsers(home, (users) => ({
-      ...users,
-      u_1: { ...ritesh, slack: "U7", accounts: { github } },
-    }));
+    await storage.users.saveGitHubUser({
+      id: 1,
+      login: "ritesh-gh",
+      name: "ritesh-gh",
+      email: "r@example.com",
+      token: "gho_a",
+    });
     const connected = (await from("U7", "whoami")).text;
     expect(connected).toContain("GitHub connected as `ritesh-gh`");
     expect(connected).not.toContain("gho_a");
@@ -214,13 +217,17 @@ describe("Slack link commands", () => {
     );
   });
 
-  test("SC13: logout from U7 unlinks it from ritesh-gh and names that user", async () => {
-    const { home, from } = await linkSetup({ u_1: { ...ritesh, slack: "U7" } });
+  test("SC124 (SC13): logout from U7 unlinks it from ritesh-gh and names that user", async () => {
+    const { storage, userId, from } = await linkSetup("U7");
 
     const reply = await from("U7", "logout");
 
     expect(reply.text).toBe("Unlinked this Slack account from yok user *ritesh-gh*.");
-    expect((await readUsers(home)).u_1).toEqual(ritesh);
+    expect(await storage.users.find(userId)).toEqual({
+      name: "ritesh-gh",
+      email: "r@example.com",
+      accounts: { github: { id: 1, login: "ritesh-gh" } },
+    });
   });
 });
 

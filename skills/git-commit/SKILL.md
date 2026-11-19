@@ -61,10 +61,11 @@ make it and name it in the closing summary:
 Only on the squash way in. RUN below is the run's spec name.
 
 **Where.** In a run, the input's `workspace` is the create-workspace stage's output: do this
-step and the rest of the workflow once per repo, in its `worktreeDir`. The repo's base is
-`workspace.repositories.NAME.git.startSha` in `.yok/RUN/state.json`. Outside a run, work in
-the current checkout, and the base is where the branch left the base branch: the one the user
-names, else origin's default branch:
+step and the rest of the workflow once per repo, in its `worktreeDir`. The repo's base is the
+commit `yok orchestrate get workspace.repositories.NAME.git.startSha --run RUN` prints, a JSON
+string: drop its quotes before passing it to git. Outside a run, work in the current checkout,
+and the base is where the branch left the base branch: the one the user names, else origin's
+default branch:
 
 ```bash
 BRANCH=$(git branch --show-current)

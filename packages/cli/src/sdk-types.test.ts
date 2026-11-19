@@ -11,4 +11,16 @@ describe("sdk-types.json", () => {
       "packages/cli/src/sdk-types.json is stale: run `bun run sdk-types`",
     ).toStrictEqual(buildSdkTypes());
   });
+
+  test("SC106, SC215: the public types hold the run, project and event repository interfaces, sessionEnv takes an IStorage, and nothing names drizzle-orm, bun:sqlite or the store", () => {
+    const { files } = buildSdkTypes();
+    expect(Object.keys(files)).toContain("repositories.d.ts");
+    expect(Object.keys(files)).not.toContain("storage.d.ts");
+    for (const name of ["IStorage", "IRunRepository", "IProjectRepository", "IEventStore"]) {
+      expect(files["repositories.d.ts"]).toContain(`export interface ${name}`);
+    }
+    expect(files["env.d.ts"]).toContain("sessionEnv: (storage: IStorage,");
+    const leaking = Object.entries(files).filter(([, text]) => /drizzle-orm|bun:sqlite/.test(text));
+    expect(leaking.map(([name]) => name)).toEqual([]);
+  });
 });

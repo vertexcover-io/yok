@@ -2,14 +2,9 @@ import { realpathSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import {
-  addComments,
-  addUserReply,
   colorFile,
-  commentRepliedEvent,
-  commentsAddedEvent,
   DOC_STYLES,
   isInsideDir,
-  readComments,
   renderMarkdown,
   repoFiles,
   resolveRepoPath,
@@ -19,6 +14,7 @@ import type {
   EmitInput,
   IAgentProvider,
   ILogger,
+  IStorage,
   ITerminalHost,
   NodeRun,
   Result,
@@ -26,7 +22,12 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent, NonEmptyStringSchema, readPolicies, runDirOf } from "@yok/sdk";
-import { CommentDraftSchema, type Registry, readUsers, VERSION } from "@yok/sdk/internal";
+import {
+  CommentDraftSchema,
+  commentRepliedEvent,
+  commentsAddedEvent,
+  VERSION,
+} from "@yok/sdk/internal";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
@@ -41,6 +42,7 @@ import {
   readRunFiles,
   type Step,
   summarizeRun,
+  usersById,
 } from "./overview.ts";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import SHARED_SOURCE from "./page-shared.ts" with { type: "text" };
@@ -60,12 +62,11 @@ type EditorTarget = Readonly<{ file: string; line: number | null }>;
 
 export type ViewerDeps = Readonly<{
   openInEditor: (target: EditorTarget) => Result<null>;
-  registry: Registry;
+  storage: IStorage;
   log: ILogger;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   now: () => Date;
-  home: string;
   // Aborted when the server stops, so the live streams end instead of holding it open.
   stopping: AbortSignal;
 }>;
@@ -236,8 +237,8 @@ export const listArtifacts = async (
     });
 };
 
-export const findViewedRun = async (registry: Registry, runId: string): Promise<ViewedRun> => {
-  const run = await registry.findRun(runId);
+export const findViewedRun = async (storage: IStorage, runId: string): Promise<ViewedRun> => {
+  const run = await storage.runs.findRun(runId);
   if (run === undefined) return { kind: "missing" };
   if (run.name === null) return { kind: "starting", run };
   return { kind: "ready", run, runDir: runDirOf(run.cwd, run.name) };
@@ -288,8 +289,8 @@ const fileReply = async (c: Context, page: ReadyRun, entry: ArtifactEntry) => {
   return c.json(entry);
 };
 
-// The registry keeps the policies the run launched with, so a missing or unreadable state.json
-// cannot open an unattended run to comments; state.json covers runs saved before policies.
+// The run row keeps the policies the run launched with, so a missing or unreadable state
+// cannot open an unattended run to comments; the state covers runs saved before policies.
 const takesComments = (page: ReadyRun, state: State | null): boolean =>
   readPolicies(page.run.policies ?? state?.policies).interaction;
 
@@ -297,7 +298,7 @@ const refuseUnattended = (c: Context): Response =>
   c.text("this run takes no comments: its interaction policy is off", 409);
 
 const requireReadyRun = async (c: Context, deps: ViewerDeps): Promise<ReadyRun | Response> => {
-  const page = await findViewedRun(deps.registry, c.req.param("id") ?? "");
+  const page = await findViewedRun(deps.storage, c.req.param("id") ?? "");
   if (page.kind === "missing") return notFound(c);
   if (page.kind === "starting") return c.text("run has no name yet", 409);
   return page;
@@ -310,18 +311,15 @@ const OpenSchema = z.strictObject({
   line: z.number().int().positive().optional(),
 });
 
-const storeFailure = (c: Context, error: string) =>
-  error.startsWith("no comment ") ? notFound(c) : c.text(error, 500);
-
 const logEvent = async (deps: ViewerDeps, page: ReadyRun, event: EmitInput): Promise<void> => {
   const { id, cwd } = page.run;
-  const logged = await emitRunEvent({ id, cwd, name: basename(page.runDir) }, event);
+  const logged = await emitRunEvent({ id, cwd, name: basename(page.runDir) }, event, deps.storage);
   if (!logged.ok) deps.log.error({ runId: id, error: logged.error }, "comment event not logged");
 };
 
 const runQueues = new Map<string, Promise<unknown>>();
 
-// The approve check reads state.json and the logged event clears the wait; two batches for one
+// The approve check reads the run's state and the logged event clears the wait; two batches for one
 // run running between those steps would both pass, so a run's batches go one at a time.
 const inRunQueue = <T>(runId: string, work: () => Promise<T>): Promise<T> => {
   const next = (runQueues.get(runId) ?? Promise.resolve()).then(work);
@@ -378,12 +376,12 @@ const stepsBody = ({ state, workflow }: RunFiles): Readonly<{ steps: readonly St
 };
 
 const commentsBody = async (
+  deps: ViewerDeps,
   page: Exclude<ViewedRun, { kind: "missing" }>,
-): Promise<CommentsBody | null> => {
+): Promise<CommentsBody> => {
   if (page.kind === "starting") return { comments: [], delivery: null };
-  const read = await readComments(page.runDir);
-  if (!read.ok) return null;
-  return { comments: read.value.comments, delivery: lastDelivery(page.run.id) ?? null };
+  const comments = await deps.storage.comments.list(page.run.id);
+  return { comments, delivery: lastDelivery(page.run.id) ?? null };
 };
 
 export type AgentStatus = Readonly<{
@@ -439,12 +437,12 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
   // null until the first look at the folder: files already there on connect are not "changed".
   let stamps: ReadonlyMap<string, Stamp> | null = null;
   while (!stream.aborted && !deps.stopping.aborted) {
-    const page = await findViewedRun(deps.registry, id);
+    const page = await findViewedRun(deps.storage, id);
     if (page.kind === "missing") {
       await stream.sleep(POLL_MS);
       continue;
     }
-    const runFiles = await readRunFiles(page.run);
+    const runFiles = await readRunFiles(deps.storage, page.run);
     const agentAlive = page.kind === "ready" ? await isAgentAlive(page.run, deps.host) : null;
     const files = await filesBody(page, runFiles);
     await sendChanged(stream, sent, "files", files);
@@ -462,11 +460,10 @@ const streamRun = async (stream: SSEStreamingApi, deps: ViewerDeps, id: string):
       stream,
       sent,
       "summary",
-      summarizeRun(page.run, runFiles, agentAlive, await readUsers(deps.home)),
+      summarizeRun(page.run, runFiles, agentAlive, await usersById(deps.storage)),
     );
     await sendChanged(stream, sent, "agent", agentStatus(page.run.id, agentAlive));
-    const comments = await commentsBody(page);
-    if (comments !== null) await sendChanged(stream, sent, "comments", comments);
+    await sendChanged(stream, sent, "comments", await commentsBody(deps, page));
     await stream.sleep(POLL_MS);
   }
 };
@@ -475,7 +472,7 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
   let sent = "";
   while (!stream.aborted && !deps.stopping.aborted) {
     const json = JSON.stringify({
-      runs: await listRunSummaries(deps.registry, deps.host, deps.home),
+      runs: await listRunSummaries(deps.storage, deps.host),
     });
     if (json !== sent) {
       sent = json;
@@ -489,9 +486,7 @@ const streamRuns = async (stream: SSEStreamingApi, deps: ViewerDeps): Promise<vo
 export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
     .get("/", (c) => c.html(RUNS_PAGE))
-    .get("/runs", async (c) =>
-      c.json({ runs: await listRunSummaries(deps.registry, deps.host, deps.home) }),
-    )
+    .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.storage, deps.host) }))
     .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
     .get("/runs/:id", (c) => c.html(VIEWER_PAGE))
     .get("/assets/anchor.js", (c) =>
@@ -501,26 +496,26 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       c.body(SHARED_JS, 200, { "content-type": "text/javascript; charset=utf-8" }),
     )
     .get("/runs/:id/files", async (c) => {
-      const page = await findViewedRun(deps.registry, c.req.param("id"));
+      const page = await findViewedRun(deps.storage, c.req.param("id"));
       if (page.kind === "missing") return notFound(c);
-      return c.json(await filesBody(page, await readRunFiles(page.run)));
+      return c.json(await filesBody(page, await readRunFiles(deps.storage, page.run)));
     })
     .get("/runs/:id/stream", async (c) => {
       const id = c.req.param("id");
-      if ((await findViewedRun(deps.registry, id)).kind === "missing") return notFound(c);
+      if ((await findViewedRun(deps.storage, id)).kind === "missing") return notFound(c);
       return streamSSE(c, (stream) => streamRun(stream, deps, id));
     })
     .get("/runs/:id/file", async (c) => {
       const id = c.req.param("id");
-      const page = await findViewedRun(deps.registry, id);
+      const page = await findViewedRun(deps.storage, id);
       if (page.kind !== "ready") return notFound(c);
       const relPath = c.req.query("path") ?? "";
-      const files = await listArtifacts(page.runDir, await readStateOrNull(page.runDir));
+      const files = await listArtifacts(page.runDir, await readStateOrNull(deps.storage, id));
       const entry = files.find((file) => file.path === relPath);
       return entry === undefined ? notFound(c) : fileReply(c, page, entry);
     })
     .get("/runs/:id/source", async (c) => {
-      const page = await findViewedRun(deps.registry, c.req.param("id"));
+      const page = await findViewedRun(deps.storage, c.req.param("id"));
       if (page.kind !== "ready") return notFound(c);
       const path = c.req.query("path") ?? "";
       const text = repoFiles(page.run.cwd).read(path);
@@ -532,7 +527,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
     })
     .get("/runs/:id/raw/*", async (c) => {
       const id = c.req.param("id");
-      const page = await findViewedRun(deps.registry, id);
+      const page = await findViewedRun(deps.storage, id);
       if (page.kind !== "ready") return notFound(c);
       const relPath = decodeURIComponent(c.req.path.slice(`/runs/${id}/raw/`.length));
       const abs = resolveArtifactPath(page.runDir, relPath);
@@ -542,8 +537,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
     .get("/runs/:id/comments", async (c) => {
       const page = await requireReadyRun(c, deps);
       if (page instanceof Response) return page;
-      const body = await commentsBody(page);
-      return body === null ? c.text("comments.json is unreadable", 500) : c.json(body);
+      return c.json(await commentsBody(deps, page));
     })
     .post("/runs/:id/comments", async (c) => {
       const id = c.req.param("id");
@@ -562,18 +556,17 @@ export const viewerRoutes = (deps: ViewerDeps) =>
         return c.text("a batch can approve each file only once", 409);
       }
       return inRunQueue(id, async () => {
-        const state = await readStateOrNull(page.runDir);
+        const state = await readStateOrNull(deps.storage, id);
         if (!takesComments(page, state)) return refuseUnattended(c);
         const awaited = new Set(findAwaitedFiles(state));
         const unawaited = approved.find((file) => !awaited.has(file));
         if (unawaited !== undefined) {
           return c.text(`nothing waits for approval on ${unawaited}`, 409);
         }
-        const added = await addComments(page.runDir, drafts, deps.now());
-        if (!added.ok) return c.text(added.error, 500);
-        await logEvent(deps, page, commentsAddedEvent(added.value));
+        const added = await deps.storage.comments.add(id, drafts);
+        await logEvent(deps, page, commentsAddedEvent(added));
         void scheduleDelivery(id, deps);
-        return c.json({ comments: added.value }, 201);
+        return c.json({ comments: added }, 201);
       });
     })
     .post("/runs/:id/open", async (c) => {
@@ -600,14 +593,13 @@ export const viewerRoutes = (deps: ViewerDeps) =>
       if (page instanceof Response) return page;
       const body = FollowUpSchema.safeParse(await c.req.json().catch(() => null));
       if (!body.success) return c.text("invalid reply", 400);
-      if (!takesComments(page, await readStateOrNull(page.runDir))) return refuseUnattended(c);
-      const replied = await addUserReply(
-        page.runDir,
+      if (!takesComments(page, await readStateOrNull(deps.storage, id))) return refuseUnattended(c);
+      const replied = await deps.storage.comments.addUserReply(
+        id,
         c.req.param("cid"),
         body.data.text,
-        deps.now(),
       );
-      if (!replied.ok) return storeFailure(c, replied.error);
+      if (!replied.ok) return notFound(c);
       await logEvent(deps, page, commentRepliedEvent("viewer", replied.value));
       void scheduleDelivery(id, deps);
       return c.json({ comment: replied.value });

@@ -1,17 +1,10 @@
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import { DoctorReportSchema, type notifierHooks } from "@yok/core";
 import { type ILogger, POLICY_NAMES, type Result } from "@yok/sdk";
-import {
-  findUserBySlack,
-  parsePolicyFlags,
-  readUsers,
-  setAccountToken,
-  unlinkSlack,
-  updateUsers,
-} from "@yok/sdk/internal";
+import { parsePolicyFlags } from "@yok/sdk/internal";
 import * as z from "zod";
 import { apiErrorText, type YokClient } from "./client.ts";
-import { sessionSecret, signValue, tokenAlive } from "./identity.ts";
+import { dropGitHubToken, sessionSecret, signValue, tokenAlive } from "./identity.ts";
 import { type ApiError, StartRunBodySchema } from "./protocol.ts";
 import {
   doctorReply,
@@ -117,7 +110,7 @@ const runOwner = async (thread: ChatThread, deps: DispatchDeps): Promise<Owner> 
   const linked =
     thread.user === undefined
       ? undefined
-      : findUserBySlack(await readUsers(deps.home), thread.user);
+      : await deps.storage.users.findByAccount("slack", thread.user);
   if (linked === undefined) {
     return {
       note: "this Slack account is not linked to a yok user, so the run cannot push or open a pull request; type `@yok login` to link it",
@@ -126,9 +119,7 @@ const runOwner = async (thread: ChatThread, deps: DispatchDeps): Promise<Owner> 
   const [id, user] = linked;
   const token = user.accounts.github?.token;
   if (token !== undefined && (await tokenAlive(deps, token))) return { user: id, note: null };
-  if (token !== undefined) {
-    await updateUsers(deps.home, (users) => setAccountToken(users, id, "github", undefined));
-  }
+  if (token !== undefined) await dropGitHubToken(deps.storage, linked);
   return {
     user: id,
     note: `GitHub is not connected for ${user.name}, so the run will stop at push; connect it at ${deps.publicOrigin}/settings`,
@@ -208,10 +199,14 @@ const addProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) =
 const removeProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
   const [name] = args.positionals;
   if (name === undefined) throw needsUsage();
-  const { removed, note } = unwrapApi(
-    await deps.client.removeProject(name, args.values.purge === true),
+  const { removed, runs, note } = unwrapApi(
+    await deps.client.removeProject(name, {
+      purge: args.values.purge === true,
+      force: args.values.force === true,
+    }),
   );
-  return { text: [`Removed *${removed}*`, ...(note === null ? [] : [note])].join("\n") };
+  const head = `Removed *${removed}*${runs.length === 0 ? "" : ` and its runs ${runs.join(", ")}`}`;
+  return { text: [head, ...(note === null ? [] : [note])].join("\n") };
 };
 
 const runDoctor = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
@@ -342,7 +337,7 @@ const memberOf = (thread: ChatThread): string => {
 
 const linkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
   const member = memberOf(thread);
-  const linked = findUserBySlack(await readUsers(deps.home), member);
+  const linked = await deps.storage.users.findByAccount("slack", member);
   if (linked !== undefined) return { text: `Already linked to yok user *${linked[1].name}*.` };
   const exp = deps.now().getTime() + LINK_TTL_MS;
   const state = signValue(await sessionSecret(deps.home), { sub: member, purpose: "link", exp });
@@ -354,7 +349,7 @@ const linkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): P
 };
 
 const whoAmI = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
-  const linked = findUserBySlack(await readUsers(deps.home), memberOf(thread));
+  const linked = await deps.storage.users.findByAccount("slack", memberOf(thread));
   if (linked === undefined) return { text: NOT_LINKED };
   const [, user] = linked;
   const account = user.accounts.github;
@@ -366,9 +361,9 @@ const whoAmI = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Prom
 };
 
 const unlinkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
-  const linked = findUserBySlack(await readUsers(deps.home), memberOf(thread));
+  const linked = await deps.storage.users.findByAccount("slack", memberOf(thread));
   if (linked === undefined) return { text: NOT_LINKED };
-  await updateUsers(deps.home, (users) => unlinkSlack(users, linked[0]));
+  await deps.storage.users.removeUserAccount(linked[0], "slack");
   return { text: `Unlinked this Slack account from yok user *${linked[1].name}*.` };
 };
 
@@ -418,8 +413,8 @@ const COMMANDS: readonly ChatCommand[] = [
   },
   {
     words: ["project", "remove"],
-    usage: "project remove NAME [--purge]",
-    options: { purge: { type: "boolean" } },
+    usage: "project remove NAME [--force] [--purge]",
+    options: { force: { type: "boolean" }, purge: { type: "boolean" } },
     run: removeProject,
   },
   {

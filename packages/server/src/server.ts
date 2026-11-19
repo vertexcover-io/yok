@@ -14,8 +14,8 @@ import {
   yokTerminalHost,
 } from "@yok/core";
 import type { Check, IAgentProvider, ILogger, ITerminalHost, Result } from "@yok/sdk";
-import { createGit, execWithTimeout, noopLogger, registryPath } from "@yok/sdk";
-import { createRegistry, createTriggerStore, VERSION } from "@yok/sdk/internal";
+import { createGit, execWithTimeout, noopLogger } from "@yok/sdk";
+import { openStorage, VERSION } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import prettyFactory from "pino-pretty";
@@ -26,7 +26,7 @@ import { identityRoutes } from "./identity.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
-import { adoptLegacyTriggers, startScheduler, stopScheduler } from "./trigger.ts";
+import { startScheduler, stopScheduler } from "./trigger.ts";
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
 
 export type CheckCheckout = (
@@ -170,6 +170,9 @@ export const startServer = async ({
   const serverLog = log.child({ component: "server" });
   // Only a home this creates gets 0700; one that exists keeps the mode its owner gave it.
   await mkdir(home, { recursive: true, mode: 0o700 });
+  // Opened before the port is bound, so an SQLite too old or a yok.db from a newer yok stops the
+  // start with nothing listening.
+  const storage = openStorage(home);
   // Bound before anything starts, so a named port that is taken leaves nothing running.
   const server = listen(port, readPort(home));
   const boundPort = server.port as number;
@@ -177,22 +180,14 @@ export const startServer = async ({
   const origin = publicOrigin(domain);
 
   const { host, providerFor, checkCheckout } = runtime ?? defaultRuntime(log);
-  const registry = createRegistry(registryPath(home), log);
   const version = VERSION;
   const viewerLog = log.child({ component: "viewer" });
-  void resumeDeliveries({ registry, providerFor, host, log: viewerLog, now: () => new Date() });
-  const triggers = createTriggerStore(home, log);
+  void resumeDeliveries({ storage, providerFor, host, log: viewerLog });
   const triggersLog = log.child({ component: "triggers" });
-  // Before the first tick and before the routes are served, so nothing sees an unmoved trigger.
-  // Those that fail to move stay in the file and do not fire.
-  await adoptLegacyTriggers(home, { triggers, log: triggersLog }).catch((error: unknown) =>
-    triggersLog.error({ err: error }, "triggers saved with a folder were not moved to projects"),
-  );
   const stopping = new AbortController();
   const git = createGit(execWithTimeout(CLONE_TIMEOUT_MS, { GIT_TERMINAL_PROMPT: "0" }));
   startScheduler({
-    triggers,
-    registry,
+    storage,
     providerFor,
     host,
     home,
@@ -203,8 +198,7 @@ export const startServer = async ({
     now: () => new Date(),
   });
   const root = createRoot({
-    registry,
-    triggers,
+    storage,
     providerFor,
     host,
     log,
@@ -234,6 +228,7 @@ export const startServer = async ({
     // recorded.
     stopping.abort();
     await server.stop();
+    await storage.close();
     await removeOwnPid(home);
   };
 

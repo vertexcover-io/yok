@@ -171,8 +171,8 @@ export const ContextOutputSchema = z.discriminatedUnion("applied", [
 ]);
 export type ContextOutput = z.infer<typeof ContextOutputSchema>;
 
-// A node's current run: state.json is the graph as it stands now, not its history (that is
-// event.jsonl). A loop, switch or include holds its children in `nodes`, keyed by the ids
+// A node's current run: the run's state is the graph as it stands now, not its history (that is
+// the event log). A loop, switch or include holds its children in `nodes`, keyed by the ids
 // workflow.yaml gives them; a loop holds only its current pass, numbered by `iteration`, with the
 // last finished pass's result in `output`.
 const NodeRunFieldsSchema = z.strictObject({

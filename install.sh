@@ -56,8 +56,13 @@ install_binary() {
   want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/checksums.txt")
   [ -n "$want" ] || die "checksums.txt has no line for $asset; nothing installed"
   [ "$(sha256_of "$tmp/$asset")" = "$want" ] || die "checksum mismatch for $asset; nothing installed"
-  mkdir -p "$BIN_DIR"
   chmod 755 "$tmp/$asset"
+  # The binary refuses to open yok.db on an older SQLite, so it is never installed there.
+  if ! reason=$("$tmp/$asset" sqlite-check 2>&1); then
+    rm -f "$tmp/$asset"
+    die "$reason Nothing installed."
+  fi
+  mkdir -p "$BIN_DIR"
   mv "$tmp/$asset" "$BIN_DIR/yok"
   say "Installed $BIN_DIR/yok"
 }

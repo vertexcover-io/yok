@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registryPath, type WorkflowRun } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import type { WorkflowRun } from "@yok/sdk";
+import { seedRuns } from "./test-runs.ts";
 
 const CLI = join(import.meta.dir, "index.ts");
 
@@ -21,6 +21,7 @@ const setup = async () => {
   mkdirSync(join(cwd, ".yok", "fix-login"), { recursive: true });
   const record: WorkflowRun = {
     id: "r-1a2b3c4d",
+    project: "repo",
     workflow: "ok",
     workflowPath: join(cwd, "ok.yaml"),
     inputs: {},
@@ -32,7 +33,7 @@ const setup = async () => {
     tiers: null,
     createdAt: new Date().toISOString(),
   };
-  await createRegistry(registryPath(home)).addRun(record);
+  await seedRuns(home, [record]);
   // This pipeline exports YOK_RUN_ID; left in, yok view would open that run instead of the list.
   const { YOK_RUN_ID: _session, ...parentEnv } = process.env;
   const env = { ...parentEnv, YOK_HOME: home };

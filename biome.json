@@ -23,6 +23,7 @@
       "!skills/learn/evals",
       "*.json",
       "!packages/cli/src/sdk-types.json",
+      "!packages/sdk/src/migrations",
       "!!.worktrees"
     ]
   },

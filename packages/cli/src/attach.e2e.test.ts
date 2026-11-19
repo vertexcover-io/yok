@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registryPath, type WorkflowRun } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { type State, StateSchema, type WorkflowRun } from "@yok/sdk";
+import { seedRuns } from "./test-runs.ts";
 
 const CLI = join(import.meta.dir, "index.ts");
 
@@ -18,10 +18,10 @@ const runFolder = (cwd: string, name: string): void => {
   mkdirSync(join(cwd, ".yok", name), { recursive: true });
 };
 
-// A state.json that parses, for the run named fix-login, at the given status.
-const writeState = (cwd: string, status: "running" | "completed"): void => {
+// A valid state for the run named fix-login, at the given status.
+const stateFor = (cwd: string, status: "running" | "completed"): State => {
   const runDir = join(cwd, ".yok", "fix-login");
-  const state = {
+  return StateSchema.parse({
     schemaVersion: 1,
     lastEventSeq: 0,
     runId: "r-1a2b3c4d",
@@ -44,8 +44,7 @@ const writeState = (cwd: string, status: "running" | "completed"): void => {
     tiers: null,
     eventHandlers: {},
     subscribers: {},
-  };
-  writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+  });
 };
 
 const TMUX = ["-L", "attach-test"];
@@ -57,6 +56,7 @@ const startSession = (name: string): void => {
 
 const run = (id: string, name: string, cwd: string, terminal: string | null): WorkflowRun => ({
   id,
+  project: "repo",
   workflow: "ok",
   workflowPath: join(cwd, "ok.yaml"),
   inputs: {},
@@ -87,9 +87,10 @@ describe("yok attach", () => {
     const cwd = makeRepo();
     const home = mkdtempSync(join(tmpdir(), "yok-attach-home-"));
     writeFileSync(join(home, ".keep"), "");
-    const registry = createRegistry(registryPath(home));
-    await registry.addRun(run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d"));
-    await registry.addRun(run("r-5e6f7a8b", "pending", cwd, null));
+    await seedRuns(home, [
+      run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d"),
+      run("r-5e6f7a8b", "pending", cwd, null),
+    ]);
     runFolder(cwd, "fix-login");
     runFolder(cwd, "pending");
     startSession("claude-fix-login-3c4d");
@@ -110,8 +111,7 @@ describe("yok attach", () => {
   test("takes a run id only through --run-id, and refuses a name and --run-id that disagree", async () => {
     const cwd = makeRepo();
     const home = mkdtempSync(join(tmpdir(), "yok-attach-home-"));
-    const registry = createRegistry(registryPath(home));
-    await registry.addRun(run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d"));
+    await seedRuns(home, [run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d")]);
     runFolder(cwd, "fix-login");
     startSession("claude-fix-login-3c4d");
 
@@ -141,10 +141,10 @@ describe("yok attach", () => {
     async (status, message) => {
       const cwd = makeRepo();
       const home = mkdtempSync(join(tmpdir(), "yok-attach-home-"));
-      const registry = createRegistry(registryPath(home));
-      await registry.addRun(run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d"));
       runFolder(cwd, "fix-login");
-      writeState(cwd, status);
+      await seedRuns(home, [run("r-1a2b3c4d", "fix-login", cwd, "claude-fix-login-3c4d")], {
+        "r-1a2b3c4d": stateFor(cwd, status),
+      });
 
       const gone = attach(cwd, home, "fix-login");
 

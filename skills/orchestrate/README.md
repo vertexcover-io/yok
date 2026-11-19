@@ -19,7 +19,7 @@ Nobody types it. `yok run WORKFLOW --prompt "…"` starts a Claude Code or Codex
   - `blocked`, `waiting`, `finished`: reports and waits or stops.
 - Retries `done` when the engine rejects the output as fixable (a schema or verifier issue); the third rejection fails the node for good.
 - Reads references and scripts through `yok orchestrate skill ref STAGE.REF` and `yok orchestrate skill run STAGE.REF ARGS`, so a project's overrides apply.
-- Mirrors each node into the agent's task list. Never edits `state.json`, `event.jsonl` or the registry by hand; a hook refuses those writes.
+- Mirrors each node into the agent's task list. Reads a run through `yok orchestrate get`, `events` and `sessions`, and never writes `yok.db` by hand; a hook refuses the common ways to write it.
 
 ## Files
 

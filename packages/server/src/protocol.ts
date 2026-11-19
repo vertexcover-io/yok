@@ -11,8 +11,11 @@ import {
   withLock,
   yokHome,
 } from "@yok/sdk";
+import type { Project } from "@yok/sdk/internal";
 import * as z from "zod";
 import { RunStatusSchema } from "./overview.ts";
+
+export { folderSlug, type Project, ProjectSchema } from "@yok/sdk/internal";
 
 export const portPath = (home: string = yokHome()): string => join(home, "server.port");
 export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
@@ -132,16 +135,6 @@ export type AddTriggerBody = z.infer<typeof AddTriggerBodySchema>;
 export const TriggerRefSchema = z.strictObject({ project: SlugSchema, name: SlugSchema });
 export type TriggerRef = z.infer<typeof TriggerRefSchema>;
 
-// "Refrens_Main" -> "refrens-main": the project name `yok run` gives a new checkout, and the
-// server gives the folder of a trigger saved on main. Empty or digit-first when the folder has
-// no usable name.
-export const folderSlug = (folder: string): string =>
-  folder
-    .replace(/\.git$/, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
 // The run a resume or retry brings back: by id, or by its name inside a registered project.
 export const RunPickSchema = z.union([
   z.strictObject({ id: NonEmptyStringSchema }),
@@ -189,14 +182,6 @@ export const AddedBySchema = z.strictObject({
   id: z.string().optional(),
   name: z.string().optional(),
 });
-
-export const ProjectSchema = z.strictObject({
-  path: AbsolutePathSchema,
-  git: z.string().optional(),
-  addedBy: AddedBySchema,
-  addedAt: z.iso.datetime(),
-});
-export type Project = z.infer<typeof ProjectSchema>;
 
 // Any other form, file:// or a transport helper such as ext::, would let any caller read the
 // server's own files through a clone. The URL is saved and listed to every caller, so it holds

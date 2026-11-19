@@ -9,7 +9,6 @@ import {
   test,
 } from "bun:test";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,16 +24,17 @@ import { dirname, join } from "node:path";
 import {
   type IAgentProvider,
   type ILogger,
+  type IStorage,
   type ITerminal,
   type LaunchOptions,
   type NodeRun,
   noopLogger,
   type RunRef,
-  registryPath,
+  readState,
   runDirOf,
   type State,
 } from "@yok/sdk";
-import { appendRunEvent, createRegistry, jsonlEventStore, updateUsers } from "@yok/sdk/internal";
+import { appendRunEvent, memoryStorage, type RunDraft } from "@yok/sdk/internal";
 import {
   clearDeadSwitchLocks,
   completeContextOnSessionStart,
@@ -90,8 +90,18 @@ const seed = (runDir: string): State => ({
   subscribers: {},
 });
 
+type SetUpOptions = Readonly<{
+  storage?: IStorage;
+  run?: Partial<RunDraft>;
+  state?: Partial<State>;
+}>;
+
 // A run whose one open step is a context node with the given fields.
-const setUp = async (node: string, header = "") => {
+const setUp = async (
+  node: string,
+  header = "",
+  { storage = memoryStorage(), run: draft = {}, state = {} }: SetUpOptions = {},
+) => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "context-step-")));
   const run: RunRef = { id: "r-1", cwd, name: "feat-x" };
   const runDir = runDirOf(cwd, "feat-x");
@@ -100,22 +110,25 @@ const setUp = async (node: string, header = "") => {
     join(runDir, "workflow.yaml"),
     `name: t\n${header}nodes:\n  - { id: step, ${node} }\n`,
   );
-  writeFileSync(join(runDir, "state.json"), JSON.stringify(seed(runDir)));
-  const registry = createRegistry(join(cwd, "registry.json"));
-  await registry.addRun({
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
     id: "r-1",
+    project: "repo",
     workflow: "t",
     workflowPath: join(runDir, "workflow.yaml"),
     inputs: {},
-    cwd,
     sessions: [{ agent: "claude", sessionId: "A" }],
-    name: "feat-x",
+    name: null,
     terminal: "claude-feat-x-r-1",
     config: null,
     tiers: null,
-    createdAt: new Date().toISOString(),
+    createdAt: addedAt,
+    ...draft,
   });
-  return { run, runDir, registry };
+  const claimed = await storage.runs.initRun("r-1", "feat-x", { ...seed(runDir), ...state });
+  if (!claimed.ok) throw new Error(claimed.error);
+  return { run, runDir, storage };
 };
 
 type Typed = string | readonly string[];
@@ -207,21 +220,22 @@ const helper = async (
     nodeRunId: "nr-1",
     oldSessionId: "A",
     terminal,
-    registry: context.registry,
+    storage: context.storage,
     provider,
     launch: LAUNCH,
     home: HOME,
     log,
   });
 
-const eventsOf = (runDir: string) => jsonlEventStore(runDir).read();
+type Stored = Readonly<{ run: RunRef; storage: IStorage }>;
+
+const eventsOf = ({ run, storage }: Stored) => storage.events(run.id).read();
 const typesOf = (log: readonly Typed[]) =>
   log.map((entry) => (typeof entry === "string" ? entry : entry[0]));
-const typesIn = async (runDir: string) => (await eventsOf(runDir)).map((event) => event.type);
-const stateOf = (runDir: string): State =>
-  JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
-const stepOutput = async (runDir: string) =>
-  (await eventsOf(runDir)).find((event) => event.type === "workflow.node.completed")?.payload;
+const typesIn = async (context: Stored) => (await eventsOf(context)).map((event) => event.type);
+const stateOf = async ({ run, storage }: Stored) => readState(run, storage);
+const stepOutput = async (context: Stored) =>
+  (await eventsOf(context)).find((event) => event.type === "workflow.node.completed")?.payload;
 
 // A provider whose relaunch plays the fresh Claude: its SessionStart hook fires with the new id.
 const startingProvider = (context: Context) => {
@@ -230,7 +244,7 @@ const startingProvider = (context: Context) => {
     ...fake.provider,
     relaunch: async (terminal, sessionId, options) => {
       const relaunched = await fake.provider.relaunch(terminal, sessionId, options);
-      await completeContextOnSessionStart(context.run, sessionId, "startup");
+      await completeContextOnSessionStart(context.storage, context.run, sessionId, "startup");
       return relaunched;
     },
   };
@@ -238,8 +252,8 @@ const startingProvider = (context: Context) => {
 };
 
 // What the --resume skill records first, once Claude takes the resume line.
-const resumed = (run: RunRef) =>
-  appendRunEvent(run, {
+const resumed = ({ run, storage }: Stored) =>
+  appendRunEvent(storage, run, {
     type: "orchestrate.resume",
     source: "orchestrate",
     payload: { input: {}, output: { interrupted: [] } },
@@ -261,11 +275,11 @@ const isEscape = (entry: Typed) => typeof entry !== "string" && entry[0] === "Es
 const escapesIn = (typed: readonly Typed[]) => typed.filter(isEscape).length;
 
 // An idle Claude that runs the --resume skill when the resume line is typed.
-const resumingTerminal = (run: RunRef) =>
+const resumingTerminal = (context: Stored) =>
   fakeTerminal(
     () => IDLE,
     async (text) => {
-      if (text === RESUME) await resumed(run);
+      if (text === RESUME) await resumed(context);
     },
   );
 
@@ -280,7 +294,7 @@ describe("runContextStep: new", () => {
       ...starting.provider,
       relaunch: async (terminal, sessionId, options) => {
         capturesAtRelaunch = fake.captureCount();
-        typesAtRelaunch = await typesIn(context.runDir);
+        typesAtRelaunch = await typesIn(context);
         return starting.provider.relaunch(terminal, sessionId, options);
       },
     };
@@ -296,33 +310,33 @@ describe("runContextStep: new", () => {
     });
     const sessionId = relaunch?.sessionId ?? "";
     expect(fake.typed).toEqual([]);
-    expect((await context.registry.findRun("r-1"))?.sessions).toContainEqual({
+    expect((await context.storage.runs.findRun("r-1"))?.sessions).toContainEqual({
       agent: "claude",
       sessionId,
     });
-    expect(await typesIn(context.runDir)).toEqual([
+    expect(await typesIn(context)).toEqual([
       "workflow.session.replaced",
       "workflow.context.started",
       "workflow.node.completed",
     ]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: true, sessionId },
     });
   });
 
   test("a relaunch that fails undoes the swap, completes unapplied and resumes the old session", async () => {
     const context = await setUp("type: context, action: new");
-    const fake = resumingTerminal(context.run);
+    const fake = resumingTerminal(context);
 
     await helper(context, fake.terminal, fakeProvider(false).provider);
 
-    const replaced = (await eventsOf(context.runDir))
+    const replaced = (await eventsOf(context))
       .filter((event) => event.type === "workflow.session.replaced")
       .map((event) => event.payload as { previousSessionId: string; sessionId: string });
     const newId = replaced[0]?.sessionId ?? "";
     expect(replaced.map((event) => event.previousSessionId)).toEqual(["A", newId]);
     expect(replaced[1]?.sessionId).toBe("A");
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: false, reason: "no pane" },
     });
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
@@ -346,21 +360,21 @@ describe("runContextStep: new", () => {
 
   test("a run env that fails to load completes unapplied and resumes the old session, launching nothing", async () => {
     const context = await setUp("type: context, action: new", "envFile: gone.env\n");
-    const fake = resumingTerminal(context.run);
+    const fake = resumingTerminal(context);
     const { provider, relaunches } = fakeProvider();
 
     await helper(context, fake.terminal, provider);
 
     expect(relaunches).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: false },
     });
-    expect(JSON.stringify(await stepOutput(context.runDir))).toContain("gone.env");
+    expect(JSON.stringify(await stepOutput(context))).toContain("gone.env");
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect((await context.registry.findRun("r-1"))?.sessions).toEqual([
+    expect((await context.storage.runs.findRun("r-1"))?.sessions).toEqual([
       { agent: "claude", sessionId: "A" },
     ]);
-    expect(await typesIn(context.runDir)).not.toContain("workflow.context.started");
+    expect(await typesIn(context)).not.toContain("workflow.context.started");
   });
 
   test("a new session that never starts completes the node unapplied after the timeout", async () => {
@@ -368,7 +382,7 @@ describe("runContextStep: new", () => {
 
     await helper(context, fakeTerminal(() => IDLE).terminal);
 
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: false, reason: expect.stringContaining("SessionStart") },
     });
   });
@@ -381,7 +395,7 @@ describe("runContextStep: new", () => {
     await helper(context, fake.terminal, provider);
 
     expect(fake.typed).toEqual([]);
-    const unreachable = (await eventsOf(context.runDir)).filter(
+    const unreachable = (await eventsOf(context)).filter(
       (event) => event.type === "agent.input.unreachable",
     );
     expect(unreachable.map((event) => event.payload)).toEqual([
@@ -397,7 +411,7 @@ describe("runContextStep: new", () => {
       ...fake.terminal,
       capture: async () => {
         // the slow session runs its prompt once the helper has given up on its SessionStart
-        if (fake.captureCount() === 3) await resumed(context.run);
+        if (fake.captureCount() === 3) await resumed(context);
         return fake.terminal.capture();
       },
     };
@@ -405,27 +419,36 @@ describe("runContextStep: new", () => {
     await helper(context, terminal, provider);
 
     expect(fake.typed).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: false },
     });
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   });
 
   test("a run log that cannot be read after a failed step still ends the helper, with the old session assumed", async () => {
     const context = await setUp("type: context, action: new");
+    let broken = false;
+    const storage: IStorage = {
+      ...context.storage,
+      events: (runId) => ({
+        ...context.storage.events(runId),
+        read: async () => {
+          if (broken) throw new Error("yok.db unreadable");
+          return context.storage.events(runId).read();
+        },
+      }),
+    };
     const { provider } = fakeProvider(false);
     const fake = fakeTerminal(() => IDLE);
     const terminal: ITerminal = {
       ...fake.terminal,
       capture: async () => {
-        if (fake.captureCount() === 0) {
-          appendFileSync(join(context.runDir, "event.jsonl"), "{not json\n");
-        }
+        if (fake.captureCount() === 0) broken = true;
         return fake.terminal.capture();
       },
     };
 
-    await expect(helper(context, terminal, provider)).resolves.toBeUndefined();
+    await expect(helper({ ...context, storage }, terminal, provider)).resolves.toBeUndefined();
   });
 });
 
@@ -440,7 +463,7 @@ const losingTerminal = (
   const fake = fakeTerminal(screen, async (text) => {
     const attempt = (attempts.get(text) ?? 0) + 1;
     attempts.set(text, attempt);
-    if (takes(text, attempt) && text === RESUME) await resumed(context.run);
+    if (takes(text, attempt) && text === RESUME) await resumed(context);
   });
   return { ...fake, attempts };
 };
@@ -458,7 +481,7 @@ const compactingProvider = (
     relaunch: async (terminal, sessionId, options) => {
       const relaunched = await fake.provider.relaunch(terminal, sessionId, options);
       for (const source of sources) {
-        await completeContextOnSessionStart(context.run, sessionId, source);
+        await completeContextOnSessionStart(context.storage, context.run, sessionId, source);
       }
       return relaunched;
     },
@@ -482,8 +505,8 @@ const warningsLogger = (warnings: LoggedWarning[]): ILogger => ({
 const compactHelper = (context: Context, terminal: ITerminal, sources?: readonly string[]) =>
   helper(context, terminal, compactingProvider(context, sources).provider);
 
-const completions = async (runDir: string) =>
-  (await typesIn(runDir)).filter((type) => type === "workflow.node.completed").length;
+const completions = async (context: Stored) =>
+  (await typesIn(context)).filter((type) => type === "workflow.node.completed").length;
 
 describe("runContextStep: compact", () => {
   test("SC40: a compact node relaunches session A with /compact and its prompt once Claude is idle, and types only the resume line", async () => {
@@ -517,15 +540,15 @@ describe("runContextStep: compact", () => {
       env: { YOK_RUN_ID: "r-1" },
     });
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await typesIn(context.runDir)).toEqual([
+    expect(await typesIn(context)).toEqual([
       "workflow.context.started",
       "workflow.node.completed",
       "orchestrate.resume",
     ]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
-    expect((await context.registry.findRun("r-1"))?.sessions).toEqual([
+    expect((await context.storage.runs.findRun("r-1"))?.sessions).toEqual([
       { agent: "claude", sessionId: "A" },
     ]);
   });
@@ -538,7 +561,7 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal, provider);
 
     expect(relaunches.map((relaunch) => relaunch.options.prompt)).toEqual(["/compact"]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true },
     });
   });
@@ -581,7 +604,7 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual(["Escape", "Escape", ...typedLine(RESUME)]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true },
     });
   });
@@ -610,10 +633,10 @@ describe("runContextStep: compact", () => {
       expect(relaunches).toEqual([]);
       expect(fake.typed).toEqual([]);
       expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3 * 30_000);
-      expect(await stepOutput(context.runDir)).toMatchObject({
+      expect(await stepOutput(context)).toMatchObject({
         output: { action: "compact", applied: false, reason: "Claude did not go idle" },
       });
-      expect(await typesIn(context.runDir)).toContain("agent.input.unreachable");
+      expect(await typesIn(context)).toContain("agent.input.unreachable");
     },
   );
 
@@ -656,10 +679,10 @@ describe("runContextStep: compact", () => {
 
     expect(relaunches).toEqual([]);
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "Claude did not go idle" },
     });
-    expect(await typesIn(context.runDir)).toContain("orchestrate.resume");
+    expect(await typesIn(context)).toContain("orchestrate.resume");
   });
 
   test("a dialog footer quoted in the transcript above a real input box does not hide the box: the compact relaunches with no Escape", async () => {
@@ -684,7 +707,7 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, fake.terminal);
 
     expect(fake.typed).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "Claude did not go idle" },
     });
   });
@@ -700,10 +723,10 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, terminal);
 
     expect(fake.typed).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "tmux hung" },
     });
-    const unreachable = (await eventsOf(context.runDir)).filter(
+    const unreachable = (await eventsOf(context)).filter(
       (event) => event.type === "agent.input.unreachable",
     );
     expect(unreachable.map((event) => event.payload)).toEqual([
@@ -723,7 +746,7 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, terminal);
 
     expect(typesOf(fake.typed).filter((entry) => entry === RESUME)).toEqual([RESUME]);
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   });
 
   test("a popup that hides the input box after the relaunch, gone after the resume line's fourth Escape, sends no notice and leaves the node applied", async () => {
@@ -739,10 +762,10 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual([...Array(4).fill("Escape"), ...typedLine(RESUME)]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true },
     });
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   });
 
   test("SC44: a relaunch that returns an error completes the node unapplied, and the resume line goes to session A without /compact ever typed", async () => {
@@ -752,11 +775,11 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal, provider);
 
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "no pane" },
     });
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await typesIn(context.runDir)).toContain("orchestrate.resume");
+    expect(await typesIn(context)).toContain("orchestrate.resume");
   });
 
   test("SC45: a three-line draft in the box is logged by its size only, never its text, and the compact relaunches anyway with no clearing keys sent", async () => {
@@ -798,13 +821,13 @@ describe("runContextStep: compact", () => {
 
   test("a run env that fails to load leaves the compact unapplied with no relaunch, and only the resume line is typed", async () => {
     const context = await setUp("type: context, action: compact", "envFile: gone.env\n");
-    const fake = resumingTerminal(context.run);
+    const fake = resumingTerminal(context);
     const { provider, relaunches } = compactingProvider(context);
 
     await helper(context, fake.terminal, provider);
 
     expect(relaunches).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false },
     });
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
@@ -813,7 +836,7 @@ describe("runContextStep: compact", () => {
   test("a pane that cannot be captured for the draft check is logged, and the compact relaunches anyway", async () => {
     const context = await setUp("type: context, action: compact");
     const { provider, relaunches } = compactingProvider(context);
-    const fake = resumingTerminal(context.run);
+    const fake = resumingTerminal(context);
     let captures = 0;
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -838,11 +861,11 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, fake.terminal);
 
     expect(typesOf(fake.typed)).toEqual([...typedLine(RESUME), ...typedLine(RESUME)]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
-    expect(await completions(context.runDir)).toBe(1);
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await completions(context)).toBe(1);
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   });
 
   test("SC48: a compact whose SessionStart never comes completes unapplied after 180 seconds, records no lost line, and the resume line is still typed and taken", async () => {
@@ -854,7 +877,7 @@ describe("runContextStep: compact", () => {
 
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180_000);
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: {
         action: "compact",
         applied: false,
@@ -862,8 +885,8 @@ describe("runContextStep: compact", () => {
           "no SessionStart for the compact within 180 seconds, and Claude no longer looks busy",
       },
     });
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
-    expect(stateOf(context.runDir).status).toBe("running");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
+    expect((await stateOf(context))?.status).toBe("running");
     // Its 720 polls each read the event log, which outlasts 5s under a parallel run.
   }, 20_000);
 
@@ -880,7 +903,7 @@ describe("runContextStep: compact", () => {
       ...fake.terminal,
       capture: async (lines) => {
         if (Date.now() - startedAt >= 300_000) {
-          await completeContextOnSessionStart(context.run, "A", "compact");
+          await completeContextOnSessionStart(context.storage, context.run, "A", "compact");
         }
         return fake.terminal.capture(lines);
       },
@@ -889,7 +912,7 @@ describe("runContextStep: compact", () => {
     await helper(context, terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
   }, 30_000);
@@ -907,7 +930,7 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: {
         action: "compact",
         applied: false,
@@ -929,7 +952,7 @@ describe("runContextStep: compact", () => {
     await helper(context, fake.terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: {
         action: "compact",
         applied: false,
@@ -986,14 +1009,14 @@ describe("runContextStep: compact", () => {
 
     expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "Not enough messages to compact." },
     });
   });
 
   test("an orchestrate resume recorded before the helper started does not confirm the resume line, so it is typed again", async () => {
     const context = await setUp("type: context, action: compact");
-    await resumed(context.run);
+    await resumed(context);
     const fake = losingTerminal(context, (line) => line !== RESUME);
 
     await compactHelper(context, fake.terminal);
@@ -1021,7 +1044,7 @@ describe("runContextStep: compact", () => {
       capture: async (lines) => {
         if (!took && typedAt !== undefined && Date.now() >= typedAt + busyFor) {
           took = true;
-          await resumed(context.run);
+          await resumed(context);
         }
         return fake.terminal.capture(lines);
       },
@@ -1030,7 +1053,7 @@ describe("runContextStep: compact", () => {
     await helper(context, terminal, provider);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   }, 20_000);
 
   test("a resume line whose orchestrate resume waits 100 seconds on a permission prompt, which draws no spinner, is not typed again", async () => {
@@ -1049,7 +1072,7 @@ describe("runContextStep: compact", () => {
       capture: async (lines) => {
         if (!took && typedAt !== undefined && Date.now() >= typedAt + heldFor) {
           took = true;
-          await resumed(context.run);
+          await resumed(context);
         }
         return fake.terminal.capture(lines);
       },
@@ -1074,7 +1097,7 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, fake.terminal);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   }, 20_000);
 
   test("a resume line Claude shows idle for one screen after it is typed, then works on for 40 seconds before its orchestrate resume, is typed once: the 30-second window counts only continuous idle", async () => {
@@ -1098,7 +1121,7 @@ describe("runContextStep: compact", () => {
       capture: async (lines) => {
         if (!took && typedAt !== undefined && Date.now() >= typedAt + busyFor) {
           took = true;
-          await resumed(context.run);
+          await resumed(context);
         }
         return fake.terminal.capture(lines);
       },
@@ -1107,7 +1130,7 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, terminal);
 
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   }, 20_000);
 
   test("SC13: a resume line typed on both tries and never taken records no event, leaves the run running with no blocker, and leaves the node applied", async () => {
@@ -1117,11 +1140,11 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, fake.terminal);
 
     expect(typesOf(fake.typed)).toEqual([...typedLine(RESUME), ...typedLine(RESUME)]);
-    const agentEvents = (await typesIn(context.runDir)).filter((type) => type.startsWith("agent."));
+    const agentEvents = (await typesIn(context)).filter((type) => type.startsWith("agent."));
     expect(agentEvents).toEqual([]);
-    expect(stateOf(context.runDir).status).toBe("running");
-    expect(stateOf(context.runDir).blocker).toBeUndefined();
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect((await stateOf(context))?.status).toBe("running");
+    expect((await stateOf(context))?.blocker).toBeUndefined();
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
   });
@@ -1137,7 +1160,7 @@ describe("runContextStep: compact", () => {
     await compactHelper(context, fake.terminal);
 
     expect(typesOf(fake.typed)).toEqual([...typedLine(RESUME), ...Array(3).fill("Escape")]);
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
   });
 
   test("SC14: a compact Claude refuses with nothing to compact, then a resume line it takes, records no notice and leaves the run running", async () => {
@@ -1151,14 +1174,14 @@ describe("runContextStep: compact", () => {
 
     await helper(context, fake.terminal, provider);
 
-    expect(await typesIn(context.runDir)).not.toContain("agent.input.unreachable");
-    expect(stateOf(context.runDir).status).toBe("running");
+    expect(await typesIn(context)).not.toContain("agent.input.unreachable");
+    expect((await stateOf(context))?.status).toBe("running");
   });
 });
 
 describe("completeContextOnSessionStart", () => {
   const started = (context: Context, action: "new" | "compact", sessionId: string) =>
-    appendRunEvent(context.run, {
+    appendRunEvent(context.storage, context.run, {
       type: "workflow.context.started",
       source: "orchestrate",
       payload: { nodeRunId: "nr-1", action, sessionId },
@@ -1166,16 +1189,16 @@ describe("completeContextOnSessionStart", () => {
 
   test("only a session start that matches the started action completes the node", async () => {
     const context = await setUp("type: context, action: new");
-    await completeContextOnSessionStart(context.run, "s-new", "startup");
-    expect(await stepOutput(context.runDir)).toBeUndefined();
+    await completeContextOnSessionStart(context.storage, context.run, "s-new", "startup");
+    expect(await stepOutput(context)).toBeUndefined();
 
     await started(context, "new", "s-new");
-    await completeContextOnSessionStart(context.run, "s-other", "startup");
-    await completeContextOnSessionStart(context.run, "s-new", "compact");
-    expect(await stepOutput(context.runDir)).toBeUndefined();
+    await completeContextOnSessionStart(context.storage, context.run, "s-other", "startup");
+    await completeContextOnSessionStart(context.storage, context.run, "s-new", "compact");
+    expect(await stepOutput(context)).toBeUndefined();
 
-    await completeContextOnSessionStart(context.run, "s-new", "startup");
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    await completeContextOnSessionStart(context.storage, context.run, "s-new", "startup");
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: true, sessionId: "s-new" },
     });
   });
@@ -1184,11 +1207,11 @@ describe("completeContextOnSessionStart", () => {
     const context = await setUp("type: context, action: compact");
     await started(context, "compact", "A");
 
-    await completeContextOnSessionStart(context.run, "A", "resume");
-    expect(await stepOutput(context.runDir)).toBeUndefined();
+    await completeContextOnSessionStart(context.storage, context.run, "A", "resume");
+    expect(await stepOutput(context)).toBeUndefined();
 
-    await completeContextOnSessionStart(context.run, "A", "compact");
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    await completeContextOnSessionStart(context.storage, context.run, "A", "compact");
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: true, sessionId: "A" },
     });
   });
@@ -1218,7 +1241,7 @@ describe("runContextStep: guards", () => {
 
     expect(first.relaunches.length + second.relaunches.length).toBe(1);
     expect(existsSync(join(context.runDir, "locks", "context-nr-1.lock"))).toBe(true);
-    expect(await typesIn(context.runDir)).toEqual([
+    expect(await typesIn(context)).toEqual([
       "workflow.session.replaced",
       "workflow.context.started",
       "workflow.node.completed",
@@ -1232,14 +1255,14 @@ describe("runContextStep: guards", () => {
     await helper(context, undefined, provider);
 
     expect(relaunches).toEqual([]);
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "new", applied: false, reason: "not inside tmux" },
     });
   });
 
   test("a tmux call that throws completes the node unapplied and still resumes the run", async () => {
     const context = await setUp("type: context, action: compact");
-    const fake = resumingTerminal(context.run);
+    const fake = resumingTerminal(context);
     let captures = 0;
     const terminal: ITerminal = {
       ...fake.terminal,
@@ -1252,7 +1275,7 @@ describe("runContextStep: guards", () => {
 
     await helper(context, terminal);
 
-    expect(await stepOutput(context.runDir)).toMatchObject({
+    expect(await stepOutput(context)).toMatchObject({
       output: { action: "compact", applied: false, reason: "tmux timed out after 10s" },
     });
     expect(typesOf(fake.typed)).toEqual(typedLine(RESUME));
@@ -1260,9 +1283,9 @@ describe("runContextStep: guards", () => {
 });
 
 // A run with an open model switch to opus-x (and EFFORT); gives back the request's seq.
-const setUpSwitch = async (effort?: "high") => {
-  const context = await setUp("type: context, action: new");
-  const requested = await appendRunEvent(context.run, {
+const setUpSwitch = async (effort?: "high", options: SetUpOptions = {}) => {
+  const context = await setUp("type: context, action: new", "", options);
+  const requested = await appendRunEvent(context.storage, context.run, {
     type: "workflow.model.requested",
     source: "workflow",
     payload: { node: "think", model: "opus-x", ...(effort === undefined ? {} : { effort }) },
@@ -1284,12 +1307,13 @@ const modelHelper = (
     terminal,
     provider,
     launch: LAUNCH,
+    storage: context.storage,
     home: HOME,
     log: noopLogger,
   });
 
-const sessionStarted = (run: RunRef, sessionId: string, source: string) =>
-  appendRunEvent(run, {
+const sessionStarted = ({ run, storage }: Stored, sessionId: string, source: string) =>
+  appendRunEvent(storage, run, {
     type: "hooks.session-start.called",
     source: "hooks",
     payload: { agent: "claude", sessionId, source },
@@ -1302,33 +1326,28 @@ const resumingProvider = (context: Context) => {
     ...fake.provider,
     relaunch: async (terminal, sessionId, options) => {
       const relaunched = await fake.provider.relaunch(terminal, sessionId, options);
-      await sessionStarted(context.run, sessionId, "resume");
+      await sessionStarted(context, sessionId, "resume");
       return relaunched;
     },
   };
   return { provider, relaunches: fake.relaunches };
 };
 
-const appliedEvents = async (runDir: string) =>
-  (await eventsOf(runDir))
+const appliedEvents = async (context: Stored) =>
+  (await eventsOf(context))
     .filter((event) => event.type === "workflow.model.applied")
     .map((event) => event.payload);
 
 describe("runModelStep", () => {
-  test("SC33: the model-switch relaunch of a run owned by a connected user carries their GitHub token and noreply author", async () => {
-    const context = await setUpSwitch();
+  test("SC127 (SC33): the model-switch relaunch of a run owned by a connected user carries their GitHub token and noreply author", async () => {
     const home = mkdtempSync(join(tmpdir(), "yok-owned-home-"));
-    const owned = await context.registry.findRun(context.run.id);
-    if (owned === undefined) throw new Error("setUp registered no run");
-    await createRegistry(registryPath(home)).addRun({ ...owned, source: "slack", user: "u_1" });
-    const github = { id: 42, login: "ritesh-gh" };
-    await updateUsers(home, () => ({
-      u_1: {
-        name: "R",
-        email: "",
-        accounts: { github: { ...github, token: "gho_u1" } },
-      },
-    }));
+    const storage = memoryStorage();
+    const signIn = { id: 42, login: "ritesh-gh", name: "R", email: "", token: "gho_u1" };
+    const [userId] = await storage.users.saveGitHubUser(signIn);
+    const context = await setUpSwitch(undefined, {
+      storage,
+      run: { source: "slack", user: userId },
+    });
     const { provider, relaunches } = resumingProvider(context);
 
     await runModelStep({
@@ -1338,6 +1357,7 @@ describe("runModelStep", () => {
       terminal: fakeTerminal(() => IDLE).terminal,
       provider,
       launch: LAUNCH,
+      storage,
       home,
       log: noopLogger,
     });
@@ -1364,7 +1384,7 @@ describe("runModelStep", () => {
       prompt: RESUME,
       name: context.run.name,
     });
-    expect(await appliedEvents(context.runDir)).toEqual([
+    expect(await appliedEvents(context)).toEqual([
       { requestSeq: context.seq, node: "think", model: "opus-x", effort: "high", applied: true },
     ]);
     expect(pane.typed).toEqual([]);
@@ -1382,7 +1402,7 @@ describe("runModelStep", () => {
 
   test("SC9, SC27: a relaunch that fails with respawn failed is recorded as failed, and the resume prompt is typed once at the input box and taken", async () => {
     const context = await setUpSwitch("high");
-    const pane = resumingTerminal(context.run);
+    const pane = resumingTerminal(context);
     const provider: IAgentProvider = {
       ...fakeProvider().provider,
       relaunch: async () => ({ ok: false, error: "respawn failed" }),
@@ -1390,7 +1410,7 @@ describe("runModelStep", () => {
 
     await modelHelper(context, pane.terminal, provider);
 
-    expect(await appliedEvents(context.runDir)).toEqual([
+    expect(await appliedEvents(context)).toEqual([
       {
         requestSeq: context.seq,
         node: "think",
@@ -1410,7 +1430,7 @@ describe("runModelStep", () => {
     await modelHelper(context, pane.terminal, fakeProvider(false).provider);
 
     expect(typesOf(pane.typed)).toEqual(Array(6).fill("Escape"));
-    const unreachable = (await eventsOf(context.runDir)).filter(
+    const unreachable = (await eventsOf(context)).filter(
       (event) => event.type === "agent.input.unreachable",
     );
     expect(unreachable.map((event) => event.payload)).toEqual([
@@ -1420,12 +1440,12 @@ describe("runModelStep", () => {
 
   test("a resumed session with no SessionStart within 60 seconds, counting none from before the relaunch, is recorded as failed and the run resumed", async () => {
     const context = await setUpSwitch();
-    await sessionStarted(context.run, "s-1", "resume");
-    const pane = resumingTerminal(context.run);
+    await sessionStarted(context, "s-1", "resume");
+    const pane = resumingTerminal(context);
 
     await modelHelper(context, pane.terminal);
 
-    expect(await appliedEvents(context.runDir)).toEqual([
+    expect(await appliedEvents(context)).toEqual([
       {
         requestSeq: context.seq,
         node: "think",
@@ -1456,7 +1476,7 @@ describe("runModelStep", () => {
     ]);
 
     expect(relaunches).toHaveLength(1);
-    expect(await appliedEvents(context.runDir)).toHaveLength(1);
+    expect(await appliedEvents(context)).toHaveLength(1);
   });
 
   test("a helper whose pid write into model-N.lock fails with ENOSPC still runs the switch it claimed", async () => {
@@ -1472,7 +1492,7 @@ describe("runModelStep", () => {
 
     expect(write).toHaveBeenCalledTimes(1);
     expect(relaunches).toHaveLength(1);
-    expect(await appliedEvents(context.runDir)).toHaveLength(1);
+    expect(await appliedEvents(context)).toHaveLength(1);
   });
 
   test("a helper for a seq that is not the pending request, or for one already answered, relaunches nothing and stores nothing", async () => {
@@ -1482,7 +1502,7 @@ describe("runModelStep", () => {
 
     await modelHelper(context, pane.terminal, provider, context.seq + 1);
     const answer = { requestSeq: context.seq, node: "think", model: "opus-x", applied: true };
-    await appendRunEvent(context.run, {
+    await appendRunEvent(context.storage, context.run, {
       type: "workflow.model.applied",
       source: "t",
       payload: answer,
@@ -1491,24 +1511,21 @@ describe("runModelStep", () => {
 
     expect(relaunches).toEqual([]);
     expect(pane.typed).toEqual([]);
-    expect(await appliedEvents(context.runDir)).toEqual([answer]);
+    expect(await appliedEvents(context)).toEqual([answer]);
   });
 
   test("a result that cannot be stored releases the switch's lock, so the next stop's helper relaunches again", async () => {
-    const context = await setUpSwitch();
-    const module = join(context.run.cwd, "refuse.ts");
+    const module = join(mkdtempSync(join(tmpdir(), "refuse-")), "refuse.ts");
     writeFileSync(module, 'export const refuse = () => { throw new Error("disk full"); };\n');
-    const statePath = join(context.runDir, "state.json");
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
     const eventHandlers = { "workflow.model.applied": [{ module, handler: "refuse" }] };
-    writeFileSync(statePath, JSON.stringify({ ...state, eventHandlers }));
+    const context = await setUpSwitch(undefined, { state: { eventHandlers } });
     const { provider, relaunches } = fakeProvider();
 
     await modelHelper(context, fakeTerminal(() => IDLE).terminal, provider);
     await modelHelper(context, fakeTerminal(() => IDLE).terminal, provider);
 
     expect(relaunches).toHaveLength(2);
-    expect(await appliedEvents(context.runDir)).toEqual([]);
+    expect(await appliedEvents(context)).toEqual([]);
   });
 
   test("outside tmux the switch is recorded as failed: not inside tmux", async () => {
@@ -1516,7 +1533,7 @@ describe("runModelStep", () => {
 
     await modelHelper(context, undefined);
 
-    expect(await appliedEvents(context.runDir)).toEqual([
+    expect(await appliedEvents(context)).toEqual([
       {
         requestSeq: context.seq,
         node: "think",
@@ -1582,7 +1599,7 @@ describe("clearDeadSwitchLocks", () => {
     const context = await setUp("type: context, action: new");
 
     await modelHelper({ ...context, seq: 1 }, fakeTerminal(() => IDLE).terminal);
-    const requested = await appendRunEvent(context.run, {
+    const requested = await appendRunEvent(context.storage, context.run, {
       type: "workflow.model.requested",
       source: "workflow",
       payload: { node: "think", model: "opus-x" },
@@ -1591,7 +1608,7 @@ describe("clearDeadSwitchLocks", () => {
     const lock = join(context.runDir, "locks", "model-1.lock");
     expect(requested.ok && requested.value.event.seq).toBe(1);
     expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
-    const events = await jsonlEventStore(context.runDir).read();
+    const events = await eventsOf(context);
     expect(await clearDeadSwitchLocks(context.runDir, seed(context.runDir), events)).toEqual({
       removed: [],
       held: ["model-1.lock"],
@@ -1601,7 +1618,7 @@ describe("clearDeadSwitchLocks", () => {
 
   test("a model lock whose switch was applied and a context lock whose node completed are removed though both hold this live process's pid, since a finished helper's pid can belong to another process", async () => {
     const context = await setUpSwitch();
-    await appendRunEvent(context.run, {
+    await appendRunEvent(context.storage, context.run, {
       type: "workflow.model.applied",
       source: "t",
       payload: { requestSeq: context.seq, node: "think", model: "opus-x", applied: true },
@@ -1620,7 +1637,7 @@ describe("clearDeadSwitchLocks", () => {
       input: null,
     };
     const state = { ...seed(context.runDir), nodeRuns: { step } };
-    const events = await jsonlEventStore(context.runDir).read();
+    const events = await eventsOf(context);
 
     const { removed, held } = await clearDeadSwitchLocks(context.runDir, state, events);
 

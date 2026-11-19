@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import {
   accessSync,
-  appendFileSync,
   constants,
   existsSync,
   mkdirSync,
@@ -17,7 +16,6 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  addComments,
   captureLogger,
   compilePlan,
   type DoctorReport,
@@ -34,23 +32,31 @@ import type {
   State,
   WorkflowRun,
 } from "@yok/sdk";
-import { createGit, execWithTimeout, noopLogger, runDirOf, WorkflowRunSchema } from "@yok/sdk";
 import {
-  createRegistry,
-  createTriggerStore,
-  jsonlEventStore,
-  type Registry,
-  readUsers,
-  type UsersFile,
-  updateUsers,
-  usersPath,
-} from "@yok/sdk/internal";
+  createGit,
+  type Event,
+  EventSchema,
+  execWithTimeout,
+  type IStorage,
+  noopLogger,
+  runDirOf,
+  WorkflowRunSchema,
+} from "@yok/sdk";
+import { type EventDraft, memoryStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import * as z from "zod";
 import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { type DispatchDeps, dispatchCommand } from "./dispatch.ts";
-import { EMPTY_BOX, fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
+import {
+  EMPTY_BOX,
+  fakeHost,
+  fakePane,
+  fakeProvider,
+  seedState,
+  seedUser,
+  seedRun as storeRun,
+} from "./fake-host.ts";
 import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
 import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
@@ -58,12 +64,16 @@ import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
 
 type Workspace = Readonly<{ workflowPath: string; cwd: string }>;
 
-// Registers PATH as project NAME in HOME, as yok project add would, cloned from GIT when given.
-const addProjectEntry = (home: string, name: string, path: string, git?: string): void =>
-  appendFileSync(
-    join(home, "projects.yaml"),
-    `${name}:\n  path: ${path}\n${git === undefined ? "" : `  git: ${git}\n`}  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
-  );
+// Registers PATH as project NAME, as yok project add would, cloned from GIT when given.
+const addProjectEntry = async (
+  storage: IStorage,
+  name: string,
+  path: string,
+  git?: string,
+): Promise<void> => {
+  const project = { path, ...(git === undefined ? {} : { git }), addedBy: { channel: "api" } };
+  unwrap(await storage.projects.add(name, { ...project, addedAt: "2026-01-01T00:00:00.000Z" }));
+};
 
 const OK_NODES = [{ id: "a", type: "exec", runtime: "sh", script: "true", input: null }];
 const okWorkflow = (extra: object = {}): string =>
@@ -74,13 +84,13 @@ const okWorkflow = (extra: object = {}): string =>
     ...extra,
   });
 
-// A git checkout holding WORKFLOW as ok.yaml, registered in HOME as project "demo".
-const tempWorkspace = (home: string, workflow = okWorkflow()): Workspace => {
+// A git checkout holding WORKFLOW as ok.yaml, registered as project "demo".
+const tempWorkspace = async (storage: IStorage, workflow = okWorkflow()): Promise<Workspace> => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-app-")));
   execFileSync("git", ["init", "-q"], { cwd });
   const workflowPath = join(cwd, "ok.yaml");
   writeFileSync(workflowPath, workflow);
-  addProjectEntry(home, "demo", cwd);
+  await addProjectEntry(storage, "demo", cwd);
   return { workflowPath, cwd };
 };
 
@@ -100,12 +110,8 @@ const buildDeps = async (
 ) => {
   // in the home, as the server keeps it: sessionEnv looks a run's owner up there
   const home = mkdtempSync(join(tmpdir(), "yok-home-"));
-  const registryPath = join(home, "registry.json");
-  const registry = createRegistry(registryPath, log);
   const asked: string[] = [];
   return {
-    registryPath,
-    registry,
     asked,
     providerFor: (agent: IAgentProvider["type"]) => {
       asked.push(agent);
@@ -115,7 +121,7 @@ const buildDeps = async (
     host: fakeHost("", false).host,
     log,
     home,
-    triggers: createTriggerStore(home),
+    storage: memoryStorage(),
     publicOrigin: "http://localhost:1",
     pid: 4242,
     version: "0.0.0-test",
@@ -209,12 +215,12 @@ describe("POST /runs", () => {
       launches.push(options);
       return launchesOk();
     });
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(join(cwd, ".env"), "GH_TOKEN=server\n");
 
     expect((await postRun(createApi(deps))).status).toBe(201);
 
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run).not.toHaveProperty("user");
     expect(launches[0]?.env?.GH_TOKEN).toBe("server");
     expect(launches[0]?.env).not.toHaveProperty("GH_CONFIG_DIR");
@@ -230,7 +236,7 @@ describe("POST /runs", () => {
       launched = true;
       return launchesOk();
     });
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await createApi(deps).request("/runs", {
       method: "POST",
@@ -252,7 +258,7 @@ describe("POST /runs", () => {
         value: { terminalName: "session-xyz", terminal: fakePane("%7") },
       });
     });
-    const { workflowPath, cwd } = tempWorkspace(deps.home);
+    const { workflowPath, cwd } = await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps), { inputs: { prompt: "x" } });
 
@@ -272,7 +278,7 @@ describe("POST /runs", () => {
       `/orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify({ prompt: "x" })}`,
     );
     expect(launchOptions?.env?.YOK_RUN_ID).toBe(json.run.id);
-    expect(await deps.registry.findRun(json.run.id)).toMatchObject({
+    expect(await deps.storage.runs.findRun(json.run.id)).toMatchObject({
       workflow: "ok",
       workflowPath,
       cwd,
@@ -281,7 +287,7 @@ describe("POST /runs", () => {
     });
   });
 
-  test("SC302, SC2013: a doctor that blocks refuses the run with its report, records nothing and leaves projects.yaml unchanged and the project ready", async () => {
+  test("SC302, SC2013: a doctor that blocks refuses the run with its report, records nothing and leaves the projects unchanged and the project ready", async () => {
     let launched = false;
     const report = summarize([
       {
@@ -300,9 +306,9 @@ describe("POST /runs", () => {
       checkCheckout: (() =>
         Promise.resolve({ env: { ok: true, value: {} }, report })) satisfies CheckCheckout,
     };
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
     const app = createApi(deps);
-    const before = readFileSync(join(deps.home, "projects.yaml"));
+    const before = await deps.storage.projects.list();
 
     const res = await postRun(app);
 
@@ -314,8 +320,8 @@ describe("POST /runs", () => {
     expect(error.message).toBe("BLOCKED LINEAR_API_KEY");
     expect(error.details.failed).toEqual(["LINEAR_API_KEY"]);
     expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
-    expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
+    expect(await deps.storage.projects.list()).toEqual(before);
     expect(await listProjects(app)).toEqual([
       expect.objectContaining({ name: "demo", status: "ready" }),
     ]);
@@ -330,7 +336,7 @@ describe("POST /runs", () => {
           report: BLOCKED_REPORT,
         })) satisfies CheckCheckout,
     };
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(join(cwd, "orchestrate.config.yaml"), "version: 2\nnope: 1\n");
 
     const res = await postRun(createApi(deps));
@@ -338,7 +344,7 @@ describe("POST /runs", () => {
     expect(res.status).toBe(400);
     const { error } = (await res.json()) as { error: { details?: DoctorReport } };
     expect(error.details).toEqual(BLOCKED_REPORT);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test.each([
@@ -364,7 +370,7 @@ describe("POST /runs", () => {
       launched = true;
       return launchesOk();
     });
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(join(cwd, "bad.yaml"), "name: [unclosed\n");
     writeFileSync(join(cwd, "envfile.yaml"), okWorkflow({ envFile: "missing.env" }));
 
@@ -373,7 +379,7 @@ describe("POST /runs", () => {
     expect(res.status).toBe(400);
     expect((await errorOf(res)).message).toContain(holds(cwd));
     expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC2003: a start that names no project is 400 and names no project, even when only one exists", async () => {
@@ -382,7 +388,7 @@ describe("POST /runs", () => {
       launched = true;
       return launchesOk();
     });
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await createApi(deps).request("/runs", {
       method: "POST",
@@ -396,7 +402,7 @@ describe("POST /runs", () => {
     expect(error.message).toContain("project");
     expect(error.message).not.toContain("demo");
     expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC2004: a start on an unknown project is 400 naming only that project", async () => {
@@ -405,8 +411,8 @@ describe("POST /runs", () => {
       launched = true;
       return launchesOk();
     });
-    tempWorkspace(deps.home);
-    addProjectEntry(deps.home, "other", gitRepo());
+    await tempWorkspace(deps.storage);
+    await addProjectEntry(deps.storage, "other", gitRepo());
 
     const res = await postRun(createApi(deps), { project: "nope" });
 
@@ -416,16 +422,16 @@ describe("POST /runs", () => {
       message: 'unknown project "nope"',
     });
     expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   // A checkout yok cloned for project web: under HOME/projects and saved with its git URL.
-  const clonedWorkspace = (home: string): string => {
+  const clonedWorkspace = async (storage: IStorage, home: string): Promise<string> => {
     const cwd = join(realpathSync(home), "projects", "web");
     mkdirSync(cwd, { recursive: true });
     execFileSync("git", ["init", "-q"], { cwd });
     writeFileSync(join(cwd, "ok.yaml"), okWorkflow());
-    addProjectEntry(home, "web", cwd, "https://example.test/web.git");
+    await addProjectEntry(storage, "web", cwd, "https://example.test/web.git");
     return cwd;
   };
 
@@ -456,7 +462,7 @@ describe("POST /runs", () => {
 
   test("SC2005: a run on a project yok cloned pulls its checkout before the launch", async () => {
     const { deps, order } = await pullingDeps();
-    const cwd = clonedWorkspace(deps.home);
+    const cwd = await clonedWorkspace(deps.storage, deps.home);
 
     const res = await postRun(createApi(deps), { project: "web" });
 
@@ -467,7 +473,7 @@ describe("POST /runs", () => {
   test("SC2006: a failed pull refuses the run with 422 git-failed without git's message, registering nothing and asking no doctor", async () => {
     const message = "fatal: Not possible to fast-forward, aborting.";
     const { deps, order, doctorAsked } = await pullingDeps({ ok: false, error: message });
-    const cwd = clonedWorkspace(deps.home);
+    const cwd = await clonedWorkspace(deps.storage, deps.home);
 
     const res = await postRun(createApi(deps), { project: "web" });
 
@@ -478,7 +484,7 @@ describe("POST /runs", () => {
     expect(error.message).toContain("see the server log");
     expect(order).toEqual([`pull ${cwd}`]);
     expect(doctorAsked).toEqual([]);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test.each([
@@ -496,7 +502,7 @@ describe("POST /runs", () => {
     const { deps, order } = await pullingDeps();
     const cwd = folder(deps.home);
     writeFileSync(join(cwd, "ok.yaml"), okWorkflow());
-    addProjectEntry(deps.home, "placed", cwd);
+    await addProjectEntry(deps.storage, "placed", cwd);
 
     const res = await postRun(createApi(deps), { project: "placed" });
 
@@ -510,7 +516,7 @@ describe("POST /runs", () => {
       prompt = options.prompt;
       return launchesOk();
     });
-    const { workflowPath } = tempWorkspace(deps.home, okWorkflow({ agent: "codex" }));
+    const { workflowPath } = await tempWorkspace(deps.storage, okWorkflow({ agent: "codex" }));
 
     const res = await postRun(createApi(deps));
 
@@ -518,13 +524,13 @@ describe("POST /runs", () => {
     expect(prompt).toBe(`$orchestrate --workflow ${workflowPath} --inputs {}`);
   });
 
-  test("SC305: the run is in the registry before its agent starts, so the agent's orchestrate init finds it", async () => {
+  test("SC305: the run is stored before its agent starts, so the agent's orchestrate init finds it", async () => {
     let savedAtLaunch: unknown;
     const deps = await buildDeps(async (options) => {
-      savedAtLaunch = await deps.registry.findRun(String(options.env?.YOK_RUN_ID));
+      savedAtLaunch = await deps.storage.runs.findRun(String(options.env?.YOK_RUN_ID));
       return launchesOk();
     });
-    const { workflowPath, cwd } = tempWorkspace(deps.home);
+    const { workflowPath, cwd } = await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
@@ -534,7 +540,7 @@ describe("POST /runs", () => {
 
   test("a config file in the body is resolved against the checkout and saved on the run; with none the run's config is null", async () => {
     const deps = await buildDeps(launchesOk);
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     const app = createApi(deps);
     writeFileSync(join(cwd, "custom.json"), '{"version": 2}');
 
@@ -544,7 +550,7 @@ describe("POST /runs", () => {
     const without = await runOf({});
 
     expect(withConfig.config).toBe(join(cwd, "custom.json"));
-    expect((await deps.registry.findRun(withConfig.id))?.config).toBe(join(cwd, "custom.json"));
+    expect((await deps.storage.runs.findRun(withConfig.id))?.config).toBe(join(cwd, "custom.json"));
     expect(without.config).toBeNull();
   });
 
@@ -557,7 +563,7 @@ describe("POST /runs", () => {
       return launchesOk();
     });
     const workflow = okWorkflow({ agent, ...(tiers === undefined ? {} : { tiers }) });
-    const { cwd } = tempWorkspace(deps.home, workflow);
+    const { cwd } = await tempWorkspace(deps.storage, workflow);
     writeFileSync(join(cwd, "tiers.yaml"), config);
     const res = await postRun(createApi(deps), { config: "tiers.yaml" });
     const launched = seen.map(({ model, effort }) => ({ model, effort }));
@@ -603,7 +609,7 @@ describe("POST /runs", () => {
       default: "fast",
       models: { fast: { model: "haiku-x" }, deep: { model: "opus-y" } },
     };
-    expect((await deps.registry.findRun(run.id))?.tiers).toEqual(tiers);
+    expect((await deps.storage.runs.findRun(run.id))?.tiers).toEqual(tiers);
     expect(launched).toEqual([{ model: "haiku-x", effort: undefined }]);
   });
 
@@ -618,7 +624,7 @@ describe("POST /runs", () => {
       const deps = await buildDeps(launchesOk);
       const layer = (interaction: boolean | undefined) =>
         interaction === undefined ? {} : { policies: { interaction } };
-      const { cwd } = tempWorkspace(deps.home, okWorkflow(layer(workflow)));
+      const { cwd } = await tempWorkspace(deps.storage, okWorkflow(layer(workflow)));
       const configText = config === undefined ? "" : `policies:\n  interaction: ${config}\n`;
       writeFileSync(join(cwd, "policy.yaml"), `version: 2\n${configText}`);
 
@@ -628,7 +634,7 @@ describe("POST /runs", () => {
       const { run } = z.object({ run: WorkflowRunSchema }).parse(await res.json());
       const policies = { values: { interaction: value }, sources: { interaction: source } };
       expect(run.policies).toEqual(policies);
-      expect((await deps.registry.findRun(run.id))?.policies).toEqual(policies);
+      expect((await deps.storage.runs.findRun(run.id))?.policies).toEqual(policies);
     },
   );
 
@@ -636,13 +642,13 @@ describe("POST /runs", () => {
     ["SC602: a policy value that is not a boolean", { policies: { interaction: "maybe" } }],
   ])("%s is 400 bad-request and saves no run", async (_label, extra) => {
     const deps = await buildDeps(launchesOk);
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps), extra);
 
     expect(res.status).toBe(400);
     expect((await errorOf(res)).code).toBe("bad-request");
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC305: the session starts with the checkout's .env, under yok's own variables", async () => {
@@ -651,7 +657,7 @@ describe("POST /runs", () => {
       seen.push(options);
       return launchesOk();
     });
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(join(cwd, ".env"), "API_URL=http://x\nYOK_RUN_ID=spoofed\n");
 
     const res = await postRun(createApi(deps));
@@ -672,7 +678,7 @@ describe("POST /runs", () => {
       seen.push(options);
       return launchesOk();
     });
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
@@ -696,28 +702,25 @@ describe("POST /runs", () => {
     expect(error.code).toBe("bad-request");
     expect(error.message).toContain('default tier "turbo"');
     expect(launched).toEqual([]);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC11: a failing provider is 502 agent-failed and records no run", async () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(502);
     const json = (await res.json()) as { error: { code: string } };
     expect(json.error.code).toBe("agent-failed");
-    const saved = existsSync(deps.registryPath)
-      ? JSON.parse(readFileSync(deps.registryPath, "utf8")).runs
-      : {};
-    expect(saved).toEqual({});
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("a handler that throws answers 500 with an internal error body and logs it", async () => {
     const { log, at } = captureLogger();
     const deps = await buildDeps(() => Promise.reject(new Error("tmux timed out")), log);
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
@@ -726,7 +729,7 @@ describe("POST /runs", () => {
     expect(at("error").some((line) => line.msg === "request failed with an unexpected error")).toBe(
       true,
     );
-    expect(JSON.parse(readFileSync(deps.registryPath, "utf8")).runs).toEqual({});
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 });
 
@@ -747,16 +750,16 @@ describe("POST /doctor", () => {
         return Promise.resolve({ env: { ok: true, value: {} }, report: BLOCKED_REPORT });
       }) satisfies CheckCheckout,
     };
-    const { cwd } = tempWorkspace(deps.home);
-    const before = readFileSync(join(deps.home, "projects.yaml"));
+    const { cwd } = await tempWorkspace(deps.storage);
+    const before = await deps.storage.projects.list();
 
     const res = await postDoctor(createApi(deps), { project: "demo" });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ report: BLOCKED_REPORT });
     expect(asked).toEqual([{ cwd }]);
-    expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.projects.list()).toEqual(before);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC2011: the doctor on request with a workflow adds that workflow's own checks to the report", async () => {
@@ -765,7 +768,7 @@ describe("POST /doctor", () => {
       ...(await buildDeps(launchesOk)),
       checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
     };
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(
       join(cwd, "check.yaml"),
       okWorkflow({ doctor: [{ check: "env", key, fix: "set it" }] }),
@@ -792,12 +795,12 @@ describe("POST /doctor", () => {
     ["a missing workflow", { project: "demo", workflow: "missing.yaml" }, "no workflow at"],
     ["a workflow that is not valid YAML", { project: "demo", workflow: "bad.yaml" }, "yaml:"],
   ])(
-    "SC2012: %s is 400 bad-request and leaves projects.yaml unchanged",
+    "SC2012: %s is 400 bad-request and leaves the projects unchanged",
     async (_label, body, holds) => {
       const deps = await buildDeps(launchesOk);
-      const { cwd } = tempWorkspace(deps.home);
+      const { cwd } = await tempWorkspace(deps.storage);
       writeFileSync(join(cwd, "bad.yaml"), "name: [unclosed\n");
-      const before = readFileSync(join(deps.home, "projects.yaml"));
+      const before = await deps.storage.projects.list();
 
       const res = await postDoctor(createApi(deps), body);
 
@@ -805,7 +808,7 @@ describe("POST /doctor", () => {
       const error = await errorOf(res);
       expect(error.code).toBe("bad-request");
       expect(error.message).toContain(holds);
-      expect(readFileSync(join(deps.home, "projects.yaml"))).toEqual(before);
+      expect(await deps.storage.projects.list()).toEqual(before);
     },
   );
 });
@@ -846,7 +849,7 @@ describe("startProjectRun", () => {
         return readyCheckout(input);
       }) satisfies CheckCheckout,
     };
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
     const stillWanted = () => {
       order.push("stillWanted");
       return Promise.resolve(false);
@@ -862,7 +865,7 @@ describe("startProjectRun", () => {
     expect(started.ok ? null : started.error.status).toBe(409);
     expect(started.ok ? null : started.error.code).toBe("conflict");
     expect(order).toEqual(["doctor", "stillWanted"]);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC2018: a start with a permission mode records it on the run and launches with it", async () => {
@@ -871,7 +874,7 @@ describe("startProjectRun", () => {
       seen.push(options);
       return launchesOk();
     });
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const started = await startProjectRun(
       { project: "demo", workflow: "ok.yaml", inputs: {} },
@@ -881,7 +884,7 @@ describe("startProjectRun", () => {
     );
 
     expect(started.ok).toBe(true);
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.permissionMode).toBe("bypassPermissions");
     expect(seen.map((options) => options.permissionMode)).toEqual(["bypassPermissions"]);
   });
@@ -906,7 +909,7 @@ describe("POST /runs logging", () => {
   test("no log line carries an env value from the checkout's .env", async () => {
     const { log, lines } = captureLogger();
     const deps = await buildDeps(launchesOk, log);
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     writeFileSync(join(cwd, ".env"), "API_KEY=top-secret-value\n");
 
     const res = await postRun(createApi(deps));
@@ -918,7 +921,7 @@ describe("POST /runs logging", () => {
   test("SC36: a working provider logs 'run started' and an http 201 line with x-request-id", async () => {
     const { log, at } = captureLogger();
     const deps = await buildDeps(launchesOk, log);
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
@@ -934,7 +937,7 @@ describe("POST /runs logging", () => {
   test("SC36: a failing provider logs one error line 'launch failed'", async () => {
     const { log, at } = captureLogger();
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }), log);
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     await postRun(createApi(deps));
 
@@ -953,7 +956,7 @@ describe("createYokClient", () => {
 
   test("SC104: calls the real routes over loopback HTTP and returns their typed bodies", async () => {
     const deps = await buildDeps(launchesOk);
-    const { cwd } = tempWorkspace(deps.home);
+    const { cwd } = await tempWorkspace(deps.storage);
     const { url, server } = serveOn(new Hono().route("/api", createApi(deps)).fetch);
     try {
       const client = createYokClient({ url });
@@ -1016,7 +1019,7 @@ describe("createYokClient", () => {
           report: BLOCKED_REPORT,
         })) satisfies CheckCheckout,
     };
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
     const { url, server } = serveOn(new Hono().route("/api", createApi(deps)).fetch);
     try {
       const client = createYokClient({ url });
@@ -1062,9 +1065,10 @@ const rootApp = async (domain: string) => {
     launched += 1;
     return launchesOk();
   });
-  const { cwd } = tempWorkspace(deps.home);
+  const { cwd } = await tempWorkspace(deps.storage);
   const run = WorkflowRunSchema.parse({
     id: "r-1",
+    project: "demo",
     workflow: "ok",
     workflowPath: join(cwd, "ok.yaml"),
     inputs: {},
@@ -1076,7 +1080,7 @@ const rootApp = async (domain: string) => {
     tiers: null,
     createdAt: "2026-01-01T00:00:00.000Z",
   });
-  await deps.registry.addRun(run);
+  await storeRun(deps.storage, run);
   mkdirSync(runDirOf(cwd, "named"), { recursive: true });
   const app = createRoot({
     ...deps,
@@ -1088,7 +1092,6 @@ const rootApp = async (domain: string) => {
   return {
     app,
     deps,
-    commentsPath: join(runDirOf(cwd, "named"), "comments.json"),
     launched: () => launched,
   };
 };
@@ -1117,7 +1120,7 @@ describe("createRoot guard", () => {
     expect(JSON.stringify(await projects.json())).toContain('"demo"');
     const started = await send(app, "POST", "/api/runs", headers);
     expect(started.status).toBe(201);
-    expect((await deps.registry.listRuns()).length).toBe(2);
+    expect((await deps.storage.runs.listRuns()).length).toBe(2);
     for (const path of ["/runs/r-1", "/"]) {
       const page = await send(app, "GET", path, headers);
       expect(page.status).toBe(200);
@@ -1155,13 +1158,13 @@ describe("createRoot guard", () => {
       expect(await res.text()).toContain("evil.example:4000");
     }
     expect(launched()).toBe(0);
-    expect((await deps.registry.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
+    expect((await deps.storage.runs.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
   });
 
   test.each(["http://evil.example", "http://yok.example.com"])(
-    "SC1006: Origin %p gets 403 with an accepted Host, and nothing is written",
+    "SC322 (SC1006): Origin %p gets 403 with an accepted Host, and nothing is written, no comment either",
     async (origin) => {
-      const { app, deps, commentsPath, launched } = await rootApp("yok.example.com");
+      const { app, deps, launched } = await rootApp("yok.example.com");
       const headers = { host: "localhost:4000", origin };
       const requests = [
         ["POST", "/api/runs"],
@@ -1174,8 +1177,8 @@ describe("createRoot guard", () => {
         expect([path, (await send(app, method, path, headers)).status]).toEqual([path, 403]);
       }
       expect(launched()).toBe(0);
-      expect((await deps.registry.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
-      expect(existsSync(commentsPath)).toBe(false);
+      expect((await deps.storage.runs.listRuns()).map((run) => run.id)).toEqual(["r-1"]);
+      expect(await deps.storage.comments.list("r-1")).toEqual([]);
     },
   );
 
@@ -1364,16 +1367,16 @@ describe("Slack hook", () => {
 
   test("a command that throws replies with internal: and the error's message", async () => {
     const { app, deps, posts } = await slackRoot();
-    Object.assign(deps.registry, {
+    Object.assign(deps.storage.runs, {
       listRuns: async () => {
-        throw new Error("EACCES: /srv/secret/registry.json");
+        throw new Error("EACCES: /srv/secret/yok.db");
       },
     });
 
     await signedHook(app, mention("<@UBOT> ls"));
 
     await until(() => posts.length > 0);
-    expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/registry.json"]);
+    expect(replies(posts)).toEqual(["internal: EACCES: /srv/secret/yok.db"]);
   });
 
   test("a reply echoing <!channel> posts it escaped, so it never pings the channel", async () => {
@@ -1436,7 +1439,7 @@ describe("Slack hook", () => {
 
   test("SC16: /api/health and /api/projects answer through the root as the bare API does, and /api/hooks/other is 404", async () => {
     const { app, deps } = await slackRoot();
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
     const bare = new Hono().route("/api", createApi(deps));
     const get = (target: { request: typeof app.request }, path: string) =>
       target.request(path, { headers: { host: "localhost:4000" } });
@@ -1468,7 +1471,7 @@ const slackRunRoot = async (setup: SlackRunSetup = {}) => {
     return launchesOk();
   };
   const root = await slackRoot(SLACK_ENV, recordLaunch, checkCheckout);
-  const { cwd } = tempWorkspace(root.deps.home);
+  const { cwd } = await tempWorkspace(root.deps.storage);
   writeFileSync(join(cwd, "orchestrate.config.yaml"), `version: 2\nnotifier: ${notifier}\n`);
   writeFileSync(join(cwd, ".env"), `SLACK_CHANNEL_ID=${channel}\nSLACK_BOT_TOKEN=xoxb-test\n`);
   return { ...root, launches, cwd };
@@ -1498,7 +1501,7 @@ describe("Slack run command", () => {
     await until(() => posts.length >= 2);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.inputs).toEqual({ prompt: "fix login" });
     expect(run?.policies?.values.interaction).toBe(false);
     const [starting, started] = replies(posts);
@@ -1519,7 +1522,7 @@ describe("Slack run command", () => {
     );
 
     await until(() => posts.length >= 2);
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.policies?.values.interaction).toBe(false);
     expect(replies(posts)[1]).toContain(
       "questions stay off: nobody is at the terminal of a run started from Slack",
@@ -1537,7 +1540,7 @@ describe("Slack run command", () => {
     expect(launches[0]?.env?.SLACK_MEMBER_ID).toBe("U7");
     expect(launches[0]?.env?.YOK_SLACK_THREAD).toBe("100.1");
     expect(replies(posts)[1]).not.toContain("no updates will follow here");
-    expect(await deps.registry.listRuns()).toHaveLength(1);
+    expect(await deps.storage.runs.listRuns()).toHaveLength(1);
   });
 
   test("SC914: a mention whose user is empty sets no SLACK_MEMBER_ID, so the env's member stays the one tagged", async () => {
@@ -1575,7 +1578,7 @@ describe("Slack run command", () => {
     await until(() => posts.length >= 2);
     await Bun.sleep(100);
     expect(launches).toHaveLength(1);
-    expect(await deps.registry.listRuns()).toHaveLength(1);
+    expect(await deps.storage.runs.listRuns()).toHaveLength(1);
   });
 
   test("SC25: a start the doctor blocks on git replies with the check and its fix and registers no run", async () => {
@@ -1592,7 +1595,7 @@ describe("Slack run command", () => {
     await until(() => posts.length >= 2);
     const reply = replies(posts)[1];
     expect(reply).toContain("CHECK  DETAIL  FIX\ngit  not found  install git");
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC27: a run named Bad_Name is refused as bad-request naming name, and no run is registered", async () => {
@@ -1607,7 +1610,7 @@ describe("Slack run command", () => {
     const [reply] = replies(posts);
     expect(reply).toStartWith("bad-request:");
     expect(reply).toContain("name");
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test.each([
@@ -1624,7 +1627,7 @@ describe("Slack run command", () => {
       await until(() => posts.length >= 2);
       expect(replies(posts)[1]).toStartWith("bad-request: ");
       expect(replies(posts)[1]).toContain(problem);
-      expect(await deps.registry.listRuns()).toEqual([]);
+      expect(await deps.storage.runs.listRuns()).toEqual([]);
     },
   );
 
@@ -1634,7 +1637,7 @@ describe("Slack run command", () => {
       launches.push(options);
       return launchesOk();
     });
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
@@ -1670,14 +1673,19 @@ const chat = async (deps: DispatchDeps, text: string): Promise<string> =>
 const firstCells = async (deps: DispatchDeps, text: string): Promise<readonly string[]> =>
   ((await chatReply(deps, text)).table?.rows ?? []).map((row) => row[0] ?? "");
 
-// Registers run ID in CWD as created at CREATEDAT, with no state on disk yet.
-const addRunAt = (
-  registry: Registry,
-  run: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name" | "user">>,
+// Registers run ID in the project at CWD, added when there is none, as created at CREATEDAT,
+// with no state yet.
+const addRunAt = async (
+  storage: IStorage,
+  {
+    cwd,
+    ...run
+  }: Pick<WorkflowRun, "id" | "cwd" | "createdAt"> & Partial<Pick<WorkflowRun, "name" | "user">>,
 ) =>
-  registry.addRun({
+  storage.runs.addRun({
+    project: await storage.projects.findOrAddFolder(cwd),
     workflow: "ok",
-    workflowPath: join(run.cwd, "ok.yaml"),
+    workflowPath: join(cwd, "ok.yaml"),
     inputs: {},
     sessions: [],
     name: null,
@@ -1695,22 +1703,18 @@ const listIds = async (deps: DispatchDeps, query: ListRunsQuery) => {
 };
 
 const ritesh = { id: 7, login: "ritesh-gh" };
-const linkedU7 = (token: string | undefined): UsersFile => ({
-  u_1: {
-    name: "Ritesh",
-    email: "",
-    accounts: { github: token === undefined ? ritesh : { ...ritesh, token } },
-    slack: "U7",
-  },
-});
 const CONNECTED = "gho_u1";
 
-// Project demo, USERS in the home, and a GitHub whose /user answers with STATUS or throws;
-// from(MEMBER) runs `@yok run` as that Slack member.
-const ownedRunSetup = async (users: UsersFile, github: number | "down" = 200) => {
+// Project demo, Ritesh linked to Slack member U7 holding TOKEN, and a GitHub whose /user answers
+// with STATUS or throws; from(MEMBER) runs `@yok run` as that Slack member.
+const ownedRunSetup = async (token: string | undefined, github: number | "down" = 200) => {
   const { deps, launches } = await chatDeps();
-  tempWorkspace(deps.home);
-  await updateUsers(deps.home, () => users);
+  await tempWorkspace(deps.storage);
+  const userId = await seedUser(deps.storage, {
+    name: "Ritesh",
+    github: { ...ritesh, ...(token === undefined ? {} : { token }) },
+    slack: "U7",
+  });
   const githubFetch = async (): Promise<Response> => {
     if (github === "down") throw new Error("ECONNREFUSED");
     return new Response("{}", { status: github });
@@ -1725,27 +1729,30 @@ const ownedRunSetup = async (users: UsersFile, github: number | "down" = 200) =>
         async () => undefined,
       ),
     );
-  return { deps, launches, from };
+  return { deps, launches, userId, from };
 };
 
 describe("Slack run owner", () => {
-  test("SC28: @yok run from U7, linked to u_1 with a live token, records u_1 as owner, launches with u_1's token, and warns about nothing", async () => {
-    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+  test("SC125 (SC28): @yok run from U7, linked to Ritesh with a live token, records Ritesh as owner, launches with Ritesh's token, and warns about nothing", async () => {
+    const { deps, launches, userId, from } = await ownedRunSetup(CONNECTED);
 
     const reply = await from("U7");
 
-    expect((await deps.registry.listRuns())[0]).toMatchObject({ source: "slack", user: "u_1" });
+    expect((await deps.storage.runs.listRuns())[0]).toMatchObject({
+      source: "slack",
+      user: userId,
+    });
     expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
     expect(reply).not.toContain("not linked");
     expect(reply).not.toContain("not connected");
   });
 
-  test("SC29: @yok run from unlinked U8 starts as a Slack run with no user, with no GitHub token, and says to @yok login", async () => {
-    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED));
+  test("SC125 (SC29): @yok run from unlinked U8 starts as a Slack run with no user, with no GitHub token, and says to @yok login", async () => {
+    const { deps, launches, from } = await ownedRunSetup(CONNECTED);
 
     const reply = await from("U8");
 
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.source).toBe("slack");
     expect(run?.user).toBeUndefined();
     expect(launches[0]?.env?.GH_TOKEN).toBe("");
@@ -1753,49 +1760,48 @@ describe("Slack run owner", () => {
     expect(reply).toContain("`@yok login`");
   });
 
-  test("SC30: a token GitHub answers 401 for is dropped, the account kept, and the run starts as u_1 with no token and the settings link", async () => {
-    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), 401);
+  test("SC125 (SC30): a token GitHub answers 401 for is dropped, the account kept, and the run starts as Ritesh with no token and the settings link", async () => {
+    const { deps, launches, userId, from } = await ownedRunSetup(CONNECTED, 401);
 
     const reply = await from("U7");
 
-    const [user] = Object.values(await readUsers(deps.home));
-    expect(user?.accounts.github).toEqual(ritesh);
-    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect((await deps.storage.users.find(userId))?.accounts.github).toEqual(ritesh);
+    expect((await deps.storage.runs.listRuns())[0]?.user).toBe(userId);
     expect(launches[0]?.env?.GH_TOKEN).toBe("");
     expect(reply).toContain("GitHub is not connected for Ritesh");
     expect(reply).toContain("http://localhost:1/settings");
   });
 
-  test("@yok run from U7, linked to u_1 with no GitHub token, starts as u_1 with no token and the settings link, and leaves users.json alone", async () => {
-    const { deps, launches, from } = await ownedRunSetup(linkedU7(undefined), "down");
-    const before = readFileSync(usersPath(deps.home), "utf8");
+  test("SC125: @yok run from U7, linked to Ritesh with no GitHub token, starts as Ritesh with no token and the settings link, and leaves the stored users alone", async () => {
+    const { deps, launches, userId, from } = await ownedRunSetup(undefined, "down");
+    const before = await deps.storage.users.list();
 
     const reply = await from("U7");
 
-    expect((await deps.registry.listRuns())[0]?.user).toBe("u_1");
+    expect((await deps.storage.runs.listRuns())[0]?.user).toBe(userId);
     expect(launches[0]?.env?.GH_TOKEN).toBe("");
     expect(reply).toContain("GitHub is not connected for Ritesh");
     expect(reply).toContain("http://localhost:1/settings");
-    expect(readFileSync(usersPath(deps.home), "utf8")).toBe(before);
+    expect(await deps.storage.users.list()).toEqual(before);
   });
 
-  test("@yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user, told to @yok login", async () => {
-    const { deps } = await ownedRunSetup(linkedU7(CONNECTED));
+  test("SC125: @yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user, told to @yok login", async () => {
+    const { deps } = await ownedRunSetup(CONNECTED);
 
     const reply = await chat(deps, 'run ok.yaml --project demo --prompt "x"');
 
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.source).toBe("slack");
     expect(run?.user).toBeUndefined();
     expect(reply).toContain("`@yok login`");
   });
 
-  test("SC31: when GitHub cannot be reached the token is kept and the run launches with it", async () => {
-    const { deps, launches, from } = await ownedRunSetup(linkedU7(CONNECTED), "down");
+  test("SC125 (SC31): when GitHub cannot be reached the token is kept and the run launches with it", async () => {
+    const { deps, launches, userId, from } = await ownedRunSetup(CONNECTED, "down");
 
     await from("U7");
 
-    expect((await readUsers(deps.home)).u_1?.accounts.github?.token).toBe(CONNECTED);
+    expect((await deps.storage.users.find(userId))?.accounts.github?.token).toBe(CONNECTED);
     expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
   });
 });
@@ -1807,7 +1813,7 @@ describe("GET /runs", () => {
     const { deps } = await chatDeps();
     const cwd = gitRepo();
     for (let n = 0; n < 21; n++) {
-      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+      await addRunAt(deps.storage, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
     }
 
     const byDefault = await listIds(deps, {});
@@ -1826,17 +1832,19 @@ describe("GET /runs", () => {
     expect((await listIds(deps, { all: "false", limit: "5" })).ids).toHaveLength(5);
   });
 
-  test("SC5007: a run in demo's folder carries project demo, and one in an unregistered folder carries null", async () => {
+  test("SC5007: a run in demo's folder carries project demo, and one in another folder carries that folder's project", async () => {
     const { deps } = await chatDeps();
     const registered = gitRepo();
-    addProjectEntry(deps.home, "demo", registered);
-    await addRunAt(deps.registry, { id: "r-a", cwd: registered, createdAt: minute(1) });
-    await addRunAt(deps.registry, { id: "r-b", cwd: gitRepo(), createdAt: minute(2) });
+    const elsewhere = gitRepo();
+    await addProjectEntry(deps.storage, "demo", registered);
+    await addProjectEntry(deps.storage, "other", elsewhere);
+    await addRunAt(deps.storage, { id: "r-a", cwd: registered, createdAt: minute(1) });
+    await addRunAt(deps.storage, { id: "r-b", cwd: elsewhere, createdAt: minute(2) });
 
     const listed = await deps.client.runs({});
 
     expect(listed.ok && listed.value.runs.map((run) => [run.id, run.project])).toEqual([
-      ["r-b", null],
+      ["r-b", "other"],
       ["r-a", "demo"],
     ]);
   });
@@ -1845,11 +1853,11 @@ describe("GET /runs", () => {
     const { deps } = await chatDeps();
     const demo = gitRepo();
     const other = gitRepo();
-    addProjectEntry(deps.home, "demo", demo);
-    addProjectEntry(deps.home, "other", other);
-    await addRunAt(deps.registry, { id: "r-1", cwd: demo, createdAt: minute(1) });
-    await addRunAt(deps.registry, { id: "r-2", cwd: demo, createdAt: minute(2) });
-    await addRunAt(deps.registry, { id: "r-3", cwd: other, createdAt: minute(3) });
+    await addProjectEntry(deps.storage, "demo", demo);
+    await addProjectEntry(deps.storage, "other", other);
+    await addRunAt(deps.storage, { id: "r-1", cwd: demo, createdAt: minute(1) });
+    await addRunAt(deps.storage, { id: "r-2", cwd: demo, createdAt: minute(2) });
+    await addRunAt(deps.storage, { id: "r-3", cwd: other, createdAt: minute(3) });
 
     expect(await listIds(deps, { project: "demo" })).toEqual({ ids: ["r-2", "r-1"], total: 2 });
     const unknown = await deps.client.runs({ project: "nope" });
@@ -1862,9 +1870,9 @@ describe("GET /runs", () => {
   test("SC5009: status filters before the cut, takes a comma list, and bogus is bad-request naming the valid statuses", async () => {
     const { deps } = await chatDeps();
     const cwd = gitRepo();
-    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: minute(0) });
+    await addRunAt(deps.storage, { id: "r-0", cwd, createdAt: minute(0) });
     for (let n = 1; n < 21; n++) {
-      await addRunAt(deps.registry, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
+      await addRunAt(deps.storage, { id: `r-${n}`, name: `run-${n}`, cwd, createdAt: minute(n) });
     }
 
     expect(await listIds(deps, { status: "starting", limit: "5" })).toEqual({
@@ -1873,16 +1881,9 @@ describe("GET /runs", () => {
     });
     const runDir = runDirOf(cwd, "done-run");
     mkdirSync(runDir, { recursive: true });
-    writeFileSync(
-      join(runDir, "state.json"),
-      JSON.stringify({ ...seedState(runDir, {}), status: "completed" }),
-    );
-    await addRunAt(deps.registry, {
-      id: "r-done",
-      name: "done-run",
-      cwd,
-      createdAt: minute(30),
-    });
+    await addRunAt(deps.storage, { id: "r-done", cwd, createdAt: minute(30) });
+    const done = { ...seedState(runDir, {}), status: "completed" as const };
+    unwrap(await deps.storage.runs.initRun("r-done", "done-run", done));
 
     const both = await listIds(deps, { status: "starting,missing", limit: "30" });
     expect(both.ids).toHaveLength(21);
@@ -1897,37 +1898,35 @@ describe("GET /runs", () => {
   });
 });
 
-// Two runs by u_1 (ritesh-gh, GitHub id 8675309), one by u_2 and one with no owner.
+// Two runs by Ritesh (ritesh-gh, GitHub id 8675309), one by Asha and one with no owner.
 const ownedRunsDeps = async () => {
   const { deps } = await chatDeps();
-  await updateUsers(deps.home, () => ({
-    u_1: {
-      name: "Ritesh",
-      email: "ritesh@example.com",
-      accounts: { github: { id: 8675309, login: "ritesh-gh" } },
-    },
-    u_2: {
-      name: "Asha",
-      email: "asha@example.com",
-      accounts: { github: { id: 42, login: "asha-gh" } },
-    },
-  }));
+  const ritesh = await seedUser(deps.storage, {
+    name: "Ritesh",
+    email: "ritesh@example.com",
+    github: { id: 8675309, login: "ritesh-gh" },
+  });
+  const asha = await seedUser(deps.storage, {
+    name: "Asha",
+    email: "asha@example.com",
+    github: { id: 42, login: "asha-gh" },
+  });
   const cwd = gitRepo();
   const owners = [
-    ["r-1", "u_1"],
-    ["r-2", "u_2"],
-    ["r-3", "u_1"],
+    ["r-1", ritesh],
+    ["r-2", asha],
+    ["r-3", ritesh],
     ["r-4", undefined],
   ] as const;
   for (const [n, [id, user]] of owners.entries()) {
     const createdAt = `2026-10-29T10:0${n}:00.000Z`;
-    await addRunAt(deps.registry, { id, cwd, createdAt, ...(user === undefined ? {} : { user }) });
+    await addRunAt(deps.storage, { id, cwd, createdAt, ...(user === undefined ? {} : { user }) });
   }
   return deps;
 };
 
 describe("GET /runs by", () => {
-  test("SC39: by=ritesh-gh, by=8675309 and by=ritesh@example.com each list u_1's two runs, and by=nobody is an empty 200", async () => {
+  test("SC126 (SC39): by=ritesh-gh, by=8675309 and by=ritesh@example.com each list Ritesh's two runs, and by=nobody is an empty 200", async () => {
     const deps = await ownedRunsDeps();
 
     for (const by of ["ritesh-gh", "8675309", "ritesh@example.com"]) {
@@ -1941,7 +1940,7 @@ describe("GET /runs by", () => {
     expect(await listIds(deps, { by: "nobody" })).toEqual({ ids: [], total: 0 });
   });
 
-  test("SC40: @yok ls --by ritesh-gh lists u_1's two runs and no others", async () => {
+  test("SC126 (SC40): @yok ls --by ritesh-gh lists Ritesh's two runs and no others", async () => {
     const deps = await ownedRunsDeps();
 
     expect(await firstCells(deps, "ls --by ritesh-gh")).toEqual(["r-3", "r-1"]);
@@ -1965,7 +1964,7 @@ const DAILY = [
 describe("Slack commands", () => {
   test("SC32: run status fix-login shows run r-1 and launches nothing, not a workflow named status", async () => {
     const { deps, launches } = await chatDeps();
-    await addRunAt(deps.registry, {
+    await addRunAt(deps.storage, {
       id: "r-1",
       name: "fix-login",
       cwd: gitRepo(),
@@ -1979,7 +1978,7 @@ describe("Slack commands", () => {
     expect(launches).toEqual([]);
   });
 
-  test("SC33: run status of a run the registry does not hold replies not-found naming it", async () => {
+  test("SC33: run status of a run yok.db does not hold replies not-found naming it", async () => {
     const { deps } = await chatDeps();
 
     expect(await chat(deps, "run status r-404")).toBe("not-found: no run r-404");
@@ -1989,11 +1988,11 @@ describe("Slack commands", () => {
     const { deps } = await chatDeps();
     const demo = gitRepo();
     const other = gitRepo();
-    addProjectEntry(deps.home, "demo", demo);
-    addProjectEntry(deps.home, "other", other);
-    await addRunAt(deps.registry, { id: "r-10", cwd: demo, createdAt: "2026-10-29T10:00:00.000Z" });
-    await addRunAt(deps.registry, { id: "r-11", cwd: demo, createdAt: "2026-10-29T11:00:00.000Z" });
-    await addRunAt(deps.registry, {
+    await addProjectEntry(deps.storage, "demo", demo);
+    await addProjectEntry(deps.storage, "other", other);
+    await addRunAt(deps.storage, { id: "r-10", cwd: demo, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.storage, { id: "r-11", cwd: demo, createdAt: "2026-10-29T11:00:00.000Z" });
+    await addRunAt(deps.storage, {
       id: "r-12",
       cwd: other,
       createdAt: "2026-10-29T12:00:00.000Z",
@@ -2007,11 +2006,11 @@ describe("Slack commands", () => {
     const { deps } = await chatDeps();
     const demo = gitRepo();
     const other = gitRepo();
-    addProjectEntry(deps.home, "demo", demo);
-    addProjectEntry(deps.home, "other", other);
+    await addProjectEntry(deps.storage, "demo", demo);
+    await addProjectEntry(deps.storage, "other", other);
     const at = "2026-10-29T10:00:00.000Z";
-    await addRunAt(deps.registry, { id: "r-1", name: "fix-login", cwd: demo, createdAt: at });
-    await addRunAt(deps.registry, { id: "r-2", name: "fix-login", cwd: other, createdAt: at });
+    await addRunAt(deps.storage, { id: "r-1", name: "fix-login", cwd: demo, createdAt: at });
+    await addRunAt(deps.storage, { id: "r-2", name: "fix-login", cwd: other, createdAt: at });
     const firstLine = async (text: string) => (await chat(deps, text)).split("\n")[0];
 
     expect(await chat(deps, "run status fix-login")).toBe(
@@ -2027,13 +2026,13 @@ describe("Slack commands", () => {
     ["before the other flags", '--prompt "fix login" --project demo', "fix login"],
   ])("a --prompt %s is the run's prompt input, as typed", async (_label, rest, prompt) => {
     const { deps, launches } = await chatDeps();
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const reply = await chat(deps, `run ok.yaml --project demo ${rest}`);
 
     expect(reply).toContain("started");
     expect(launches).toHaveLength(1);
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.inputs).toEqual({ prompt });
     expect(run?.name).toBeNull();
   });
@@ -2041,8 +2040,8 @@ describe("Slack commands", () => {
   test("--input KEY=VALUE adds run inputs beside the prompt, as yok run does", async () => {
     const { deps } = await chatDeps();
     const optional = { type: "string", required: false };
-    tempWorkspace(
-      deps.home,
+    await tempWorkspace(
+      deps.storage,
       okWorkflow({ inputs: { prompt: optional, mode: optional, ticket: optional } }),
     );
 
@@ -2051,7 +2050,7 @@ describe("Slack commands", () => {
       'run ok.yaml --project demo --prompt "go" --input mode=full --input ticket=T-1',
     );
 
-    const [run] = await deps.registry.listRuns();
+    const [run] = await deps.storage.runs.listRuns();
     expect(run?.inputs).toEqual({ prompt: "go", mode: "full", ticket: "T-1" });
   });
 
@@ -2067,10 +2066,10 @@ describe("Slack commands", () => {
   test("SC5012: ls replies 'Showing 20 of 21 runs' with the shared table, r-20 first, r-0 absent, PROJECT demo", async () => {
     const { deps } = await chatDeps();
     const cwd = gitRepo();
-    addProjectEntry(deps.home, "demo", cwd);
+    await addProjectEntry(deps.storage, "demo", cwd);
     for (let i = 0; i < 21; i++) {
       const minute = String(i).padStart(2, "0");
-      await addRunAt(deps.registry, {
+      await addRunAt(deps.storage, {
         id: `r-${i}`,
         cwd,
         createdAt: `2026-10-29T10:${minute}:00.000Z`,
@@ -2098,14 +2097,14 @@ describe("Slack commands", () => {
   test("SC5013: ls passes --status, --limit and --all to the route, and a bogus status is a bad-request naming the valid ones", async () => {
     const { deps } = await chatDeps();
     const cwd = gitRepo();
-    await addRunAt(deps.registry, { id: "r-0", cwd, createdAt: "2026-10-29T10:00:00.000Z" });
-    await addRunAt(deps.registry, {
+    await addRunAt(deps.storage, { id: "r-0", cwd, createdAt: "2026-10-29T10:00:00.000Z" });
+    await addRunAt(deps.storage, {
       id: "r-1",
       name: "one",
       cwd,
       createdAt: "2026-10-29T10:01:00.000Z",
     });
-    await addRunAt(deps.registry, {
+    await addRunAt(deps.storage, {
       id: "r-2",
       name: "two",
       cwd,
@@ -2155,6 +2154,24 @@ describe("Slack commands", () => {
     expect(existsSync(dir)).toBe(true);
   });
 
+  test("SC618: project remove demo --force removes finished run r-done, names it, and says the checkout was kept", async () => {
+    const { deps } = await chatDeps();
+    const dir = gitRepo();
+    await chat(deps, `project add demo --path ${dir}`);
+    await storeNamedRun(deps.storage, {
+      project: "demo",
+      root: dir,
+      id: "r-done",
+      name: "done-run",
+      status: "completed",
+    });
+
+    expect(await chat(deps, "project remove demo --force")).toBe(
+      `Removed *demo* and its runs r-done\nkept ${dir}: yok deletes only the folders it cloned`,
+    );
+    expect(await deps.storage.runs.findRun("r-done")).toBeUndefined();
+  });
+
   test("SC37: project remove nope replies with the API's refusal as the CLI prints it", async () => {
     const { deps } = await chatDeps();
     expect(await chat(deps, "project remove nope")).toBe("not-found: no project named nope");
@@ -2162,7 +2179,7 @@ describe("Slack commands", () => {
 
   test("SC38: doctor --project demo replies with the verdict, then a table of every check", async () => {
     const { deps } = await chatDeps();
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const reply = await chatReply(deps, "doctor --project demo");
 
@@ -2172,7 +2189,7 @@ describe("Slack commands", () => {
 
   test("SC40: a trigger added from Slack is listed, fires, and its fire shows in its log", async () => {
     const { deps } = await chatDeps();
-    tempWorkspace(deps.home, DAILY);
+    await tempWorkspace(deps.storage, DAILY);
 
     expect(await chat(deps, "trigger add ok.yaml --project demo")).toMatch(
       /^\*daily\* in \*demo\*: `0 9 \* \* \*` \(UTC\), next fire \d\d-\d\d \d\d:\d\d UTC$/,
@@ -2190,7 +2207,7 @@ describe("Slack commands", () => {
 
   test("SC41: trigger rm removes the trigger, and the list then says no triggers", async () => {
     const { deps } = await chatDeps();
-    tempWorkspace(deps.home, DAILY);
+    await tempWorkspace(deps.storage, DAILY);
     await chat(deps, "trigger add ok.yaml --project demo");
 
     expect(await chat(deps, "trigger rm daily --project demo")).toBe("Removed *daily* from *demo*");
@@ -2201,7 +2218,7 @@ describe("Slack commands", () => {
 describe("run page URL", () => {
   test("SC11: POST /runs returns the page URL, GET /runs/:id/view returns it later, and a missing run is 404", async () => {
     const deps = { ...(await buildDeps(launchesOk)), publicOrigin: "http://localhost:4321" };
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
     const app = createApi(deps);
 
     const started = await postRun(app);
@@ -2244,6 +2261,169 @@ describe("AddProjectBodySchema", () => {
     expect(parsed.error?.issues[0]?.message).toBe(
       "must not hold a password or an https user name; use a git credential helper or an ssh key",
     );
+  });
+});
+
+type NamedRunSeed = Readonly<{
+  project: string;
+  root: string;
+  id: string;
+  name: string;
+  status: State["status"];
+  terminal?: string;
+}>;
+
+// Run ID named NAME in PROJECT at ROOT, as orchestrate init leaves it: its .yok/NAME folder
+// holds a file, its state is STATUS and its session is TERMINAL. PROJECT is added at ROOT when
+// there is none.
+const storeNamedRun = async (
+  storage: IStorage,
+  { project, root, id, name, status, terminal = "t1" }: NamedRunSeed,
+): Promise<string> => {
+  const runDir = runDirOf(root, name);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "notes.md"), "kept until yok rm\n");
+  const run: WorkflowRun = {
+    id,
+    project,
+    workflow: "ok",
+    workflowPath: join(root, "ok.yaml"),
+    inputs: {},
+    cwd: root,
+    sessions: [{ agent: "claude", sessionId: "s1" }],
+    name,
+    terminal,
+    config: null,
+    tiers: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  await storeRun(storage, run, { ...seedState(runDir, {}), runId: id, runName: name, status });
+  return runDir;
+};
+
+// A run still starting, or left starting by a server that died: no name and no terminal yet.
+const storeUnnamedRun = (storage: IStorage, id: string, createdAt: string) =>
+  storage.runs.addRun({
+    id,
+    project: "demo",
+    workflow: "ok",
+    workflowPath: "/srv/ok.yaml",
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt,
+  });
+
+const deleteRun = (deps: Parameters<typeof createApi>[0], id: string) =>
+  createApi(deps).request(`/runs/${id}`, { method: "DELETE" });
+
+const runEvent = (runId: string, id: string): EventDraft => ({
+  id,
+  ts: "2026-01-01T00:00:01.000Z",
+  type: "workflow.note",
+  source: "workflow",
+  runId,
+  payload: {},
+});
+
+describe("DELETE /runs/:id", () => {
+  test("SC605: removing finished run r-done deletes its row, events, comments, folder and open session, and a new run can take the name demo-run", async () => {
+    const { deps } = await projectDeps();
+    const { host, calls } = fakeHost(EMPTY_BOX, true);
+    const root = gitRepo();
+    const runDir = await storeNamedRun(deps.storage, {
+      project: "demo",
+      root,
+      id: "r-done",
+      name: "demo-run",
+      status: "completed",
+    });
+    await appendEvent(deps.storage, runEvent("r-done", "e-1"));
+    await appendEvent(deps.storage, runEvent("r-done", "e-2"));
+    await deps.storage.comments.add("r-done", [
+      { file: "artifacts/a.md", kind: "global", text: "done?" },
+    ]);
+
+    const res = await deleteRun({ ...deps, host }, "r-done");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ removed: "r-done" });
+    expect(await deps.storage.runs.findRun("r-done")).toBeUndefined();
+    expect(await deps.storage.events("r-done").read()).toEqual([]);
+    expect(await deps.storage.comments.list("r-done")).toEqual([]);
+    expect(existsSync(runDir)).toBe(false);
+    expect(calls).toContain("kill");
+    await storeUnnamedRun(deps.storage, "r-next", "2026-01-02T00:00:00.000Z");
+    const state = { ...seedState(runDir, {}), runId: "r-next", runName: "demo-run" };
+    expect(await deps.storage.runs.initRun("r-next", "demo-run", state)).toEqual({
+      ok: true,
+      value: undefined,
+    });
+  });
+
+  test("SC606: running run r-live with its session alive is refused with 409 and keeps its row, events and folder, killing nothing", async () => {
+    const { deps } = await projectDeps();
+    const { host, calls } = fakeHost(EMPTY_BOX, true);
+    const runDir = await storeNamedRun(deps.storage, {
+      project: "demo",
+      root: gitRepo(),
+      id: "r-live",
+      name: "demo-run",
+      status: "running",
+    });
+    await appendEvent(deps.storage, runEvent("r-live", "e-1"));
+
+    const res = await deleteRun({ ...deps, host }, "r-live");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      "run demo-run is still going; yok rm removes only a run that has finished or lost its session",
+    );
+    expect(await deps.storage.runs.findRun("r-live")).toBeDefined();
+    expect(await deps.storage.events("r-live").read()).toHaveLength(1);
+    expect(existsSync(runDir)).toBe(true);
+    expect(calls).not.toContain("kill");
+  });
+
+  test("SC607: run r-starting launched a moment ago with no terminal yet is refused with 409 and kept", async () => {
+    const { deps } = await projectDeps();
+    await addProjectEntry(deps.storage, "demo", gitRepo());
+    await storeUnnamedRun(deps.storage, "r-starting", new Date().toISOString());
+
+    const res = await deleteRun(deps, "r-starting");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toContain("r-starting is still going");
+    expect(await deps.storage.runs.findRun("r-starting")).toBeDefined();
+  });
+
+  test("SC608: run r-stale left starting since 2026-01-01 by a dead server is removed, leaving the project's .yok folder alone", async () => {
+    const { deps } = await projectDeps();
+    const root = gitRepo();
+    await addProjectEntry(deps.storage, "demo", root);
+    const other = join(runDirOf(root, "other"), "notes.md");
+    mkdirSync(dirname(other), { recursive: true });
+    writeFileSync(other, "another run's\n");
+    await storeUnnamedRun(deps.storage, "r-stale", "2026-01-01T00:00:00.000Z");
+
+    const res = await deleteRun(deps, "r-stale");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ removed: "r-stale" });
+    expect(await deps.storage.runs.findRun("r-stale")).toBeUndefined();
+    expect(readFileSync(other, "utf8")).toBe("another run's\n");
+  });
+
+  test("SC609: removing r-nope, which does not exist, is 404 not-found no run with id r-nope", async () => {
+    const { deps } = await projectDeps();
+
+    const res = await deleteRun(deps, "r-nope");
+
+    expect(res.status).toBe(404);
+    expect(await errorOf(res)).toEqual({ code: "not-found", message: "no run with id r-nope" });
   });
 });
 
@@ -2371,8 +2551,8 @@ describe("/projects", () => {
 
   test("SC204: a run start and a project remove answer while a clone is still running", async () => {
     const { deps } = await projectDeps();
-    tempWorkspace(deps.home);
-    addProjectEntry(deps.home, "spare", gitRepo());
+    await tempWorkspace(deps.storage);
+    await addProjectEntry(deps.storage, "spare", gitRepo());
     const { promise: cloneHeld, resolve: releaseClone } = Promise.withResolvers<void>();
     const slowClone = async (_cwd: string, _url: string, dest: string): Promise<Result<void>> => {
       await cloneHeld;
@@ -2400,7 +2580,7 @@ describe("/projects", () => {
   test("SC205: a clone into the folder of a project whose checkout is gone is refused 409 and the clone removed", async () => {
     const { deps } = await projectDeps();
     const path = join(mkdtempSync(join(tmpdir(), "yok-gone-")), "checkout");
-    addProjectEntry(deps.home, "old", path);
+    await addProjectEntry(deps.storage, "old", path);
     const initClone = async (_cwd: string, _url: string, dest: string): Promise<Result<void>> => {
       execFileSync("git", ["init", "-q", dest]);
       return { ok: true, value: undefined };
@@ -2449,20 +2629,19 @@ describe("/projects", () => {
     const root = gitRepo();
     const { deps } = await projectDeps();
     expect((await post(createApi(deps), { name: "demo", path: root })).status).toBe(201);
-    const run: WorkflowRun = {
+    await deps.storage.runs.addRun({
       id: "r-live",
+      project: "demo",
       workflow: "ok",
       workflowPath: join(root, "ok.yaml"),
       inputs: {},
-      cwd: root,
       sessions: [{ agent: "claude", sessionId: "s1" }],
       name: "demo-run",
       terminal: "t1",
       config: null,
       tiers: null,
       createdAt: "2026-01-01T00:00:00.000Z",
-    };
-    await deps.registry.addRun(run);
+    });
     const remove = (app: ReturnType<typeof createApi>) =>
       app.request("/projects/demo", { method: "DELETE" });
     const alive = createApi({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
@@ -2473,25 +2652,39 @@ describe("/projects", () => {
     expect((await errorOf(refused)).message).toContain("r-live");
     expect((await listProjects(alive)).map((project) => project.name)).toEqual(["demo"]);
 
+    const kept = await remove(gone);
+    expect(kept.status).toBe(409);
+    expect((await errorOf(kept)).message).toBe(
+      "demo has runs: r-live; remove them with yok rm RUN, or pass --force",
+    );
+    await deps.storage.runs.removeRun("r-live");
     const removed = await remove(gone);
     expect(removed.status).toBe(200);
     expect(await listProjects(gone)).toEqual([]);
   });
 
   test.each([
-    ["started a moment ago holds it", new Date().toISOString(), 409],
-    ["left starting for over ten minutes does not", "2026-01-01T00:00:00.000Z", 200],
-  ])("SC207: a run still starting with no terminal yet, %s", async (_case, createdAt, status) => {
+    [
+      "started a moment ago holds it",
+      new Date().toISOString(),
+      "demo has runs still going: r-starting; --force does not remove a run still going",
+    ],
+    [
+      "left starting for over ten minutes holds only its row",
+      "2026-01-01T00:00:00.000Z",
+      "demo has runs: r-starting; remove them with yok rm RUN, or pass --force",
+    ],
+  ])("SC207: a run still starting with no terminal yet, %s", async (_case, createdAt, message) => {
     const root = gitRepo();
     const { deps } = await projectDeps();
     const app = createApi(deps);
     expect((await post(app, { name: "demo", path: root })).status).toBe(201);
-    await deps.registry.addRun({
+    await deps.storage.runs.addRun({
       id: "r-starting",
+      project: "demo",
       workflow: "ok",
       workflowPath: join(root, "ok.yaml"),
       inputs: {},
-      cwd: root,
       sessions: [],
       name: null,
       terminal: null,
@@ -2502,10 +2695,11 @@ describe("/projects", () => {
 
     const res = await app.request("/projects/demo", { method: "DELETE" });
 
-    expect(res.status).toBe(status);
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(message);
   });
 
-  test("SC207, SC2015: a project removed while its run is being checked stops the start, recording and launching nothing", async () => {
+  test("SC223 (SC207, SC2015): a project removed while its run is being checked stops the start with project demo was removed, recording and launching nothing", async () => {
     let launched = false;
     const base = await buildDeps(() => {
       launched = true;
@@ -2518,14 +2712,14 @@ describe("/projects", () => {
         return readyCheckout(input);
       }) satisfies CheckCheckout,
     };
-    tempWorkspace(deps.home);
+    await tempWorkspace(deps.storage);
 
     const res = await postRun(createApi(deps));
 
     expect(res.status).toBe(409);
-    expect((await errorOf(res)).message).toContain("demo");
+    expect((await errorOf(res)).message).toBe("project demo was removed");
     expect(launched).toBe(false);
-    expect(await deps.registry.listRuns()).toEqual([]);
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
   });
 
   test("SC207: a run that has finished does not hold its project, though its session is still open", async () => {
@@ -2535,41 +2729,89 @@ describe("/projects", () => {
     expect((await post(app, { name: "demo", path: root })).status).toBe(201);
     const runDir = runDirOf(root, "demo-run");
     mkdirSync(runDir, { recursive: true });
-    const state = { ...seedState(runDir, {}), status: "completed" };
-    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
-    await deps.registry.addRun({
+    const state = { ...seedState(runDir, {}), status: "completed" as const };
+    const run = {
       id: "r-done",
+      project: "demo",
       workflow: "ok",
       workflowPath: join(root, "ok.yaml"),
       inputs: {},
       cwd: root,
-      sessions: [{ agent: "claude", sessionId: "s1" }],
+      sessions: [{ agent: "claude" as const, sessionId: "s1" }],
       name: "demo-run",
       terminal: "t1",
       config: null,
       tiers: null,
       createdAt: "2026-01-01T00:00:00.000Z",
-    });
+    };
+    await storeRun(deps.storage, run, state);
 
     const res = await app.request("/projects/demo", { method: "DELETE" });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      "demo has runs: r-done; remove them with yok rm RUN, or pass --force",
+    );
+    await deps.storage.runs.removeRun("r-done");
+    expect((await app.request("/projects/demo", { method: "DELETE" })).status).toBe(200);
     expect(await listProjects(app)).toEqual([]);
   });
 
-  test("SC208: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
+  test("SC221, SC616: removing web with a live run is 409 runs still going, api with a finished run is 409 has runs, and docs with none is 200 and leaves the list", async () => {
+    const { deps } = await projectDeps();
+    const app = createApi({ ...deps, host: fakeHost(EMPTY_BOX, true).host });
+    const roots = { web: gitRepo(), api: gitRepo(), docs: gitRepo() };
+    for (const [name, path] of Object.entries(roots)) {
+      expect((await post(app, { name, path })).status).toBe(201);
+    }
+    const runIn = (project: "web" | "api", id: string): WorkflowRun => ({
+      id,
+      project,
+      workflow: "ok",
+      workflowPath: join(roots[project], "ok.yaml"),
+      inputs: {},
+      cwd: roots[project],
+      sessions: [{ agent: "claude", sessionId: "s1" }],
+      name: `${project}-run`,
+      terminal: "t1",
+      config: null,
+      tiers: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const stateIn = (project: "web" | "api", status: State["status"]): State => ({
+      ...seedState(runDirOf(roots[project], `${project}-run`), {}),
+      status,
+    });
+    await storeRun(deps.storage, runIn("web", "r-web"), stateIn("web", "running"));
+    await storeRun(deps.storage, runIn("api", "r-api"), stateIn("api", "completed"));
+    const remove = (name: string) => app.request(`/projects/${name}`, { method: "DELETE" });
+
+    const web = await remove("web");
+    expect(web.status).toBe(409);
+    expect((await errorOf(web)).message).toBe(
+      "web has runs still going: r-web; --force does not remove a run still going",
+    );
+    const api = await remove("api");
+    expect(api.status).toBe(409);
+    expect((await errorOf(api)).message).toBe(
+      "api has runs: r-api; remove them with yok rm RUN, or pass --force",
+    );
+    const docs = await remove("docs");
+    expect(docs.status).toBe(200);
+    expect(await docs.json()).toEqual({ removed: "docs", runs: [], purged: false, note: null });
+    expect((await listProjects(app)).map((project) => project.name)).toEqual(["web", "api"]);
+  });
+
+  test("SC208, SC617: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();
     const cloned = join(deps.home, "projects", "cloned");
     const placed = join(deps.home, "projects", "placed");
     mkdirSync(cloned, { recursive: true });
     mkdirSync(placed, { recursive: true });
     const outside = gitRepo();
-    const entry = (path: string, git = "") =>
-      `  path: ${path}\n${git}  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`;
-    writeFileSync(
-      join(deps.home, "projects.yaml"),
-      `cloned:\n${entry(cloned, "  git: https://example.test/cloned.git\n")}outside:\n${entry(outside)}placed:\n${entry(placed)}`,
-    );
+    await addProjectEntry(deps.storage, "cloned", cloned, "https://example.test/cloned.git");
+    await addProjectEntry(deps.storage, "outside", outside);
+    await addProjectEntry(deps.storage, "placed", placed);
     const app = createApi(deps);
     const purge = async (name: string) => {
       const res = await app.request(`/projects/${name}?purge=true`, {
@@ -2578,14 +2820,21 @@ describe("/projects", () => {
       return res.json();
     };
 
-    expect(await purge("cloned")).toEqual({ removed: "cloned", purged: true, note: null });
+    expect(await purge("cloned")).toEqual({
+      removed: "cloned",
+      runs: [],
+      purged: true,
+      note: null,
+    });
     expect(await purge("outside")).toEqual({
       removed: "outside",
+      runs: [],
       purged: false,
       note: `kept ${outside}: yok deletes only the folders it cloned`,
     });
     expect(await purge("placed")).toEqual({
       removed: "placed",
+      runs: [],
       purged: false,
       note: `kept ${placed}: yok deletes only the folders it cloned`,
     });
@@ -2600,10 +2849,7 @@ describe("/projects", () => {
     const link = join(deps.home, "projects", "link");
     mkdirSync(dirname(link), { recursive: true });
     symlinkSync(target, link);
-    writeFileSync(
-      join(deps.home, "projects.yaml"),
-      `link:\n  path: ${link}\n  git: https://example.test/link.git\n  addedBy: { channel: api }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
-    );
+    await addProjectEntry(deps.storage, "link", link, "https://example.test/link.git");
 
     const res = await createApi(deps).request("/projects/link?purge=true", {
       method: "DELETE",
@@ -2613,13 +2859,180 @@ describe("/projects", () => {
     expect(readdirSync(target)).toEqual([".git"]);
   });
 
-  test("SC210, SC2014: the listing reads ready or missing only, even from a file that still holds old verdicts", async () => {
+  const removeWith = (deps: Parameters<typeof createApi>[0], path: string) =>
+    createApi(deps).request(path, { method: "DELETE" });
+
+  const storeFinished = (storage: IStorage, project: string, root: string, id: string) =>
+    storeNamedRun(storage, { project, root, id, name: `${id}-run`, status: "completed" });
+
+  test("SC610: removing demo with finished runs r-a and r-b and no flag is 409 naming both and the way out, and deletes nothing", async () => {
+    const { deps } = await projectDeps();
+    const root = gitRepo();
+    const dirs = [
+      await storeFinished(deps.storage, "demo", root, "r-a"),
+      await storeFinished(deps.storage, "demo", root, "r-b"),
+    ];
+
+    const res = await removeWith(deps, "/projects/demo");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      "demo has runs: r-a, r-b; remove them with yok rm RUN, or pass --force",
+    );
+    expect((await listProjects(createApi(deps))).map((project) => project.name)).toEqual(["demo"]);
+    expect((await deps.storage.runs.listRuns()).map((run) => run.id)).toEqual(["r-a", "r-b"]);
+    expect(dirs.filter((dir) => existsSync(dir))).toEqual(dirs);
+  });
+
+  test("SC611: --force on demo with live run r-live is 409 saying --force does not remove it, and finished r-done keeps its row and folder", async () => {
+    const { deps } = await projectDeps();
+    const host = fakeHost(EMPTY_BOX, true).host;
+    const root = gitRepo();
+    await storeNamedRun(deps.storage, {
+      project: "demo",
+      root,
+      id: "r-live",
+      name: "live-run",
+      status: "running",
+    });
+    const doneDir = await storeFinished(deps.storage, "demo", root, "r-done");
+
+    const res = await removeWith({ ...deps, host }, "/projects/demo?force=true");
+
+    expect(res.status).toBe(409);
+    const { message } = await errorOf(res);
+    expect(message).toContain("r-live");
+    expect(message).toContain("--force does not remove a run still going");
+    expect(await deps.storage.runs.findRun("r-done")).toBeDefined();
+    expect(existsSync(doneDir)).toBe(true);
+    expect((await listProjects(createApi(deps))).map((project) => project.name)).toEqual(["demo"]);
+  });
+
+  test("SC612: --force on demo, added by path, deletes runs r-a (session open) and r-b (session gone) and their folders, and keeps the checkout and its README.md", async () => {
+    const { deps } = await projectDeps();
+    const root = gitRepo();
+    writeFileSync(join(root, "README.md"), "# demo\n");
+    const open = fakeHost(EMPTY_BOX, true);
+    const gone = fakeHost(EMPTY_BOX, false);
+    const host = {
+      ...open.host,
+      find: (name: string) => (name === "t-a" ? open : gone).host.find(name),
+    };
+    const finished = { project: "demo", root, status: "completed" } as const;
+    const dirs = [
+      await storeNamedRun(deps.storage, { ...finished, id: "r-a", name: "a-run", terminal: "t-a" }),
+      await storeNamedRun(deps.storage, { ...finished, id: "r-b", name: "b-run", terminal: "t-b" }),
+    ];
+
+    const res = await removeWith({ ...deps, host }, "/projects/demo?force=true");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      removed: "demo",
+      runs: ["r-a", "r-b"],
+      purged: false,
+      note: `kept ${root}: yok deletes only the folders it cloned`,
+    });
+    expect(await deps.storage.runs.listRuns()).toEqual([]);
+    expect(dirs.filter((dir) => existsSync(dir))).toEqual([]);
+    expect(open.calls).toContain("kill");
+    expect(gone.calls).not.toContain("kill");
+    expect(readFileSync(join(root, "README.md"), "utf8")).toBe("# demo\n");
+    expect(await listProjects(createApi(deps))).toEqual([]);
+  });
+
+  // Project cloned at HOME/projects/cloned, as yok project add --git leaves it, with finished run r-a.
+  const clonedWithRun = async (storage: IStorage, home: string): Promise<string> => {
+    const cloned = join(home, "projects", "cloned");
+    mkdirSync(cloned, { recursive: true });
+    await addProjectEntry(storage, "cloned", cloned, "https://example.test/cloned.git");
+    await storeFinished(storage, "cloned", cloned, "r-a");
+    return cloned;
+  };
+
+  test("SC613: --force alone deletes the folder yok cloned along with its run r-a", async () => {
+    const { deps } = await projectDeps();
+    const cloned = await clonedWithRun(deps.storage, deps.home);
+
+    const res = await removeWith(deps, "/projects/cloned?force=true");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      removed: "cloned",
+      runs: ["r-a"],
+      purged: true,
+      note: null,
+    });
+    expect(existsSync(cloned)).toBe(false);
+    expect(await deps.storage.runs.findRun("r-a")).toBeUndefined();
+  });
+
+  test("SC614: --purge without --force on cloned with run r-a is 409 has runs, keeping the clone and the run", async () => {
+    const { deps } = await projectDeps();
+    const cloned = await clonedWithRun(deps.storage, deps.home);
+
+    const res = await removeWith(deps, "/projects/cloned?purge=true");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      "cloned has runs: r-a; remove them with yok rm RUN, or pass --force",
+    );
+    expect(existsSync(cloned)).toBe(true);
+    expect(await deps.storage.runs.findRun("r-a")).toBeDefined();
+  });
+
+  test("SC615: --force on web with trigger digest is 409 still has triggers, before finished run r-a is touched", async () => {
+    const { deps } = await projectDeps();
+    const root = gitRepo();
+    const runDir = await storeFinished(deps.storage, "web", root, "r-a");
+    const saved = await deps.storage.triggers.save({
+      project: "web",
+      name: "digest",
+      workflow: "digest",
+      config: null,
+      cron: "0 9 * * *",
+      timezone: "UTC",
+      nextFireAt: "2026-01-02T09:00:00.000Z",
+    });
+    expect(saved.ok).toBe(true);
+
+    const res = await removeWith(deps, "/projects/web?force=true");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toBe(
+      "web still has triggers: digest; remove them first with yok trigger rm NAME --project web",
+    );
+    expect(await deps.storage.runs.findRun("r-a")).toBeDefined();
+    expect(existsSync(runDir)).toBe(true);
+  });
+
+  test("a run started in demo after the remove checked its runs makes the remove 409 naming that run, keeping demo", async () => {
+    const { deps } = await projectDeps();
+    const root = gitRepo();
+    await addProjectEntry(deps.storage, "demo", root);
+    const storage: IStorage = {
+      ...deps.storage,
+      projects: {
+        ...deps.storage.projects,
+        remove: async (name) => {
+          await storeFinished(deps.storage, "demo", root, "r-late");
+          return deps.storage.projects.remove(name);
+        },
+      },
+    };
+
+    const res = await removeWith({ ...deps, storage }, "/projects/demo?force=true");
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).message).toContain("r-late");
+    expect((await listProjects(createApi(deps))).map((project) => project.name)).toEqual(["demo"]);
+  });
+
+  test("SC210, SC2014: the listing reads ready or missing only", async () => {
     const { deps } = await projectDeps();
     const kept = gitRepo();
-    writeFileSync(
-      join(deps.home, "projects.yaml"),
-      `kept:\n  path: ${kept}\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: BLOCKED x\ngone:\n  path: /no/such/checkout\n  addedBy: { channel: cli }\n  addedAt: 2026-01-01T00:00:00.000Z\n  verdict: READY\n`,
-    );
+    await addProjectEntry(deps.storage, "kept", kept);
+    await addProjectEntry(deps.storage, "gone", "/no/such/checkout");
 
     const res = await createApi(deps).request("/projects");
 
@@ -2678,9 +3091,20 @@ const modelEvent = (
   payload: { node: "think", model: "opus-x", ...payload },
 });
 
+// Stores DRAFT as the run's next event without folding it into the run's state, as an event
+// stored after the state's last write leaves it.
+const appendEvent = async (storage: IStorage, draft: EventDraft): Promise<Event> => {
+  const store = storage.events(draft.runId);
+  const expectedSeq = (await store.read()).length;
+  const event = EventSchema.parse({ ...draft, schemaVersion: 1, seq: expectedSeq + 1 });
+  const appended = await store.append({ event, state: null, expectedSeq });
+  if (appended.kind !== "stored") throw new Error(`event ${draft.id} was not stored`);
+  return event;
+};
+
 // A run named demo on sessions s-0 then s-1, whose state and event log say it switched to opus-x.
 // Its checkout is a git repo holding the run folder's workflow.yaml, as orchestrate init leaves it.
-const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun> => {
+const seedRun = async (storage: IStorage, seed: Seed = {}): Promise<WorkflowRun> => {
   const cwd = seed.run?.cwd ?? mkdtempSync(join(tmpdir(), "yok-resume-"));
   execFileSync("git", ["init", "-q"], { cwd });
   const runDir = runDirOf(cwd, "demo");
@@ -2689,6 +3113,7 @@ const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun
   if (seed.dotenv !== undefined) writeFileSync(join(cwd, ".env"), seed.dotenv);
   const run: WorkflowRun = {
     id: "r-1a2b3c4d",
+    project: "demo",
     workflow: "ok",
     workflowPath: join(cwd, "ok.yaml"),
     inputs: {},
@@ -2704,26 +3129,23 @@ const seedRun = async (registry: Registry, seed: Seed = {}): Promise<WorkflowRun
     createdAt: "2026-01-01T00:00:00.000Z",
     ...seed.run,
   };
-  await registry.addRun(run);
   const status = seed.status ?? "running";
   const blocker =
     status === "blocked"
       ? {
           blocker: {
-            reason: "stuck",
+            reason: "stuck" as const,
             since: "2026-01-01T00:00:02.000Z",
             details: { message: null },
           },
         }
       : {};
-  const state = { ...seedState(runDir, {}), status, tiers: TIERS, ...blocker };
-  writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
-  const store = jsonlEventStore(runDir);
-  const requested = await store.append(modelEvent("workflow.model.requested", {}));
-  if (!requested.ok) throw new Error(requested.error);
+  await storeRun(storage, run, { ...seedState(runDir, {}), status, tiers: TIERS, ...blocker });
+  const requested = await appendEvent(storage, modelEvent("workflow.model.requested", {}));
   if (seed.applied === false) return run;
-  await store.append(
-    modelEvent("workflow.model.applied", { requestSeq: requested.value.seq, applied: true }),
+  await appendEvent(
+    storage,
+    modelEvent("workflow.model.applied", { requestSeq: requested.seq, applied: true }),
   );
   return run;
 };
@@ -2750,20 +3172,11 @@ const resume = (deps: Parameters<typeof createApi>[0], run: object | string) =>
   });
 
 describe("POST /runs/resume", () => {
-  test("SC34: resuming a run owned by a connected user, with an empty body env, launches with their GitHub token", async () => {
+  test("SC127 (SC34): resuming a run owned by a connected user, with an empty body env, launches with their GitHub token", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { run: { source: "slack", user: "u_1" } });
-    const github = { id: 1, login: "ritesh-gh" };
-    await updateUsers(
-      deps.home,
-      (): UsersFile => ({
-        u_1: {
-          name: "R",
-          email: "",
-          accounts: { github: { ...github, token: "gho_u1" } },
-        },
-      }),
-    );
+    const github = { id: 1, login: "ritesh-gh", token: "gho_u1" };
+    const userId = await seedUser(deps.storage, { name: "R", github });
+    const run = await seedRun(deps.storage, { run: { source: "slack", user: userId } });
 
     expect((await resume(deps, run.id)).status).toBe(200);
 
@@ -2772,7 +3185,7 @@ describe("POST /runs/resume", () => {
 
   test("SC602, SC7102: a running run whose session is gone continues s-1 on opus-x, the model it last switched to, in its old terminal, with the env the server built from its checkout's .env", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { dotenv: "FOO=bar\n" });
+    const run = await seedRun(deps.storage, { dotenv: "FOO=bar\n" });
 
     const res = await resume(deps, run.id);
 
@@ -2789,12 +3202,12 @@ describe("POST /runs/resume", () => {
     expect(options?.prompt).toBe("/orchestrate --resume demo");
     expect(options?.cwd).toBe(run.cwd);
     expect(options?.env).toMatchObject({ FOO: "bar", YOK_RUN_ID: run.id, YOK_HOME: deps.home });
-    expect(await deps.registry.findRun(run.id)).toEqual(run);
+    expect(await deps.storage.runs.findRun(run.id)).toEqual(run);
   });
 
   test("SC7103: a body that still carries an env is 400 bad-request and nothing launches", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.storage);
 
     const res = await createApi(deps).request("/runs/resume", {
       method: "POST",
@@ -2809,8 +3222,7 @@ describe("POST /runs/resume", () => {
 
   test("SC7104: a run named demo inside project demo, registered at its checkout, resumes continuing its s-1", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
-    addProjectEntry(deps.home, "demo", run.cwd);
+    await seedRun(deps.storage);
 
     const res = await resume(deps, { project: "demo", name: "demo" });
 
@@ -2823,8 +3235,7 @@ describe("POST /runs/resume", () => {
     ["an unknown run name", { project: "demo", name: "other" }, 'no run named "other"'],
   ])("SC7105: %s is 404 not-found and nothing launches", async (_label, pick, holds) => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
-    addProjectEntry(deps.home, "demo", run.cwd);
+    await seedRun(deps.storage);
 
     const res = await resume(deps, pick);
 
@@ -2841,7 +3252,7 @@ describe("POST /runs/resume", () => {
       ...base,
       checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
     };
-    const run = await seedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    const run = await seedRun(deps.storage, { workflow: GATED_WORKFLOW });
     passBuiltInChecks(run.cwd);
 
     const blocked = await resume(deps, run.id);
@@ -2861,7 +3272,7 @@ describe("POST /runs/resume", () => {
 
   test("a resume whose run folder's workflow.yaml no longer compiles is 409 conflict and nothing launches", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { workflow: "name: ok\nnodes: 3\n" });
+    const run = await seedRun(deps.storage, { workflow: "name: ok\nnodes: 3\n" });
 
     const res = await resume(deps, run.id);
 
@@ -2882,7 +3293,7 @@ describe("POST /runs/resume", () => {
         return readyCheckout(input);
       }) satisfies CheckCheckout,
     };
-    const run = await seedRun(deps.registry, {
+    const run = await seedRun(deps.storage, {
       run: {
         sessions: [
           { agent: "claude", sessionId: "s-0" },
@@ -2905,7 +3316,7 @@ describe("POST /runs/resume", () => {
     ["a yok run run resumes with no permission mode", {}, undefined],
   ])("%s", async (_label, saved, expected) => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { run: saved });
+    const run = await seedRun(deps.storage, { run: saved });
 
     await resume(deps, run.id);
 
@@ -2914,7 +3325,7 @@ describe("POST /runs/resume", () => {
 
   test("a run whose last linked session s-2 never started continues s-1, the last session whose SessionStart was logged", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, {
+    const run = await seedRun(deps.storage, {
       run: {
         sessions: [
           { agent: "claude", sessionId: "s-1" },
@@ -2922,8 +3333,7 @@ describe("POST /runs/resume", () => {
         ],
       },
     });
-    const store = jsonlEventStore(runDirOf(run.cwd, "demo"));
-    await store.append({
+    await appendEvent(deps.storage, {
       id: "e-start",
       ts: "2026-01-01T00:00:02.000Z",
       type: "hooks.session-start.called",
@@ -2942,7 +3352,7 @@ describe("POST /runs/resume", () => {
     "SC603: a %s run resumes with one launch",
     async (status) => {
       const { deps, launches } = await resumeDeps();
-      const run = await seedRun(deps.registry, { status });
+      const run = await seedRun(deps.storage, { status });
 
       const res = await resume(deps, run.id);
 
@@ -2955,7 +3365,7 @@ describe("POST /runs/resume", () => {
     "SC812: a %s run whose session is gone resumes with one launch continuing s-1 in claude-demo-3c4d",
     async (status) => {
       const { deps, launches } = await resumeDeps();
-      const run = await seedRun(deps.registry, { status });
+      const run = await seedRun(deps.storage, { status });
 
       const res = await resume(deps, run.id);
 
@@ -2972,7 +3382,7 @@ describe("POST /runs/resume", () => {
   test("SC813: a completed run whose tmux session is still alive is 409 conflict pointing at yok attach demo, and nothing launches", async () => {
     const { deps: base, launches } = await resumeDeps();
     const deps = { ...base, host: fakeHost("", true).host };
-    const run = await seedRun(deps.registry, { status: "completed" });
+    const run = await seedRun(deps.storage, { status: "completed" });
 
     const res = await resume(deps, run.id);
 
@@ -2988,7 +3398,7 @@ describe("POST /runs/resume", () => {
 
   test("SC604: a switch to opus-x requested but never applied launches on haiku-x, the default tier's model", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { applied: false });
+    const run = await seedRun(deps.storage, { applied: false });
 
     await resume(deps, run.id);
 
@@ -3014,7 +3424,7 @@ describe("POST /runs/resume", () => {
     "SC606: a run with %s is 409 conflict telling the person to start it again with yok run",
     async (_label, overrides) => {
       const { deps, launches } = await resumeDeps();
-      const run = await seedRun(deps.registry, { run: overrides });
+      const run = await seedRun(deps.storage, { run: overrides });
 
       const res = await resume(deps, run.id);
 
@@ -3029,49 +3439,53 @@ describe("POST /runs/resume", () => {
     },
   );
 
-  test.each<[string, Partial<WorkflowRun>, (runDir: string) => void, (runDir: string) => string]>([
+  test.each<
+    [string, Partial<WorkflowRun>, (storage: IStorage, run: WorkflowRun) => Promise<void>, string]
+  >([
     [
       "a last session on pi",
       { sessions: [{ agent: "pi", sessionId: "s-1" }] },
-      () => {},
-      () => "run demo ran on pi, which yok cannot resume",
+      async () => {},
+      "run demo ran on pi, which yok cannot resume",
     ],
     [
-      "a state.json that does not parse",
+      "no stored state",
       {},
-      (runDir) => writeFileSync(join(runDir, "state.json"), "garbage"),
-      (runDir) => `run demo has no readable state in ${runDir}`,
+      async (storage, run) => {
+        await storage.runs.removeRun(run.id);
+        await storeRun(storage, run);
+      },
+      "run demo has no readable state",
     ],
   ])(
     "a run with %s is 409 conflict and nothing launches",
     async (_label, overrides, spoil, message) => {
       const { deps, launches } = await resumeDeps();
-      const run = await seedRun(deps.registry, { run: overrides });
-      const runDir = runDirOf(run.cwd, "demo");
-      spoil(runDir);
+      const run = await seedRun(deps.storage, { run: overrides });
+      await spoil(deps.storage, run);
 
       const res = await resume(deps, run.id);
 
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: { code: "conflict", message: message(runDir) } });
+      expect(await res.json()).toEqual({ error: { code: "conflict", message } });
       expect(launches).toEqual([]);
     },
   );
 
-  test("SC608: a launch that fails with boom is 502 agent-failed and leaves the run in the registry unchanged", async () => {
+  test("SC608: a launch that fails with boom is 502 agent-failed and leaves the stored run unchanged", async () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.storage);
 
     const res = await resume(deps, run.id);
 
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: { code: "agent-failed", message: "boom" } });
-    expect(await deps.registry.findRun(run.id)).toEqual(run);
+    expect(await deps.storage.runs.findRun(run.id)).toEqual(run);
   });
 
   test("SC609: a run whose last session is codex asks for the codex provider and prompts $orchestrate --resume demo", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, {
+    const run = await seedRun(deps.storage, {
       run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },
     });
 
@@ -3084,7 +3498,7 @@ describe("POST /runs/resume", () => {
   test("SC607: a run whose tmux session is still alive is 409 conflict pointing at yok attach demo, and nothing launches", async () => {
     const { deps: base, launches } = await resumeDeps();
     const deps = { ...base, host: fakeHost("", true).host };
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.storage);
 
     const res = await resume(deps, run.id);
 
@@ -3100,7 +3514,7 @@ describe("POST /runs/resume", () => {
 
   test("SC633: a model-2.lock whose helper is dead is gone once resume returns 200", async () => {
     const { deps } = await resumeDeps();
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.storage);
     const helper = Bun.spawn(["true"]);
     await helper.exited;
     const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-2.lock");
@@ -3113,7 +3527,7 @@ describe("POST /runs/resume", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  test("a comment posted while the session was down is typed into the resumed session once resume returns 200", async () => {
+  test("SC315: a comment posted while the session was down is typed into the resumed session once resume returns 200", async () => {
     const { deps: base, launches } = await resumeDeps();
     const typed: string[] = [];
     const pane = { ...fakePane("%9"), isAlive: () => Promise.resolve(launches.length > 0) };
@@ -3128,12 +3542,10 @@ describe("POST /runs/resume", () => {
         },
       }),
     };
-    const run = await seedRun(deps.registry);
-    await addComments(
-      runDirOf(run.cwd, "demo"),
-      [{ file: "artifacts/a.md", kind: "global", text: "while away" }],
-      new Date("2026-01-01T00:00:03.000Z"),
-    );
+    const run = await seedRun(deps.storage);
+    await deps.storage.comments.add(run.id, [
+      { file: "artifacts/a.md", kind: "global", text: "while away" },
+    ]);
 
     const res = await resume(deps, run.id);
     for (let i = 0; i < 20 && typed.length === 0; i++) await Bun.sleep(25);
@@ -3145,7 +3557,7 @@ describe("POST /runs/resume", () => {
 
   test("a model-1.lock of a finished switch is gone once resume returns 200, though another live process now holds its pid", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry);
+    const run = await seedRun(deps.storage);
     const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-1.lock");
     mkdirSync(dirname(lock), { recursive: true });
     writeFileSync(lock, String(process.pid));
@@ -3159,7 +3571,7 @@ describe("POST /runs/resume", () => {
 
   test("a model-1.lock whose switch is still requested and whose helper is alive is 409 conflict asking to try again in a minute, and nothing launches", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { applied: false });
+    const run = await seedRun(deps.storage, { applied: false });
     const lock = join(runDirOf(run.cwd, "demo"), "locks", "model-1.lock");
     mkdirSync(dirname(lock), { recursive: true });
     writeFileSync(lock, String(process.pid));
@@ -3180,13 +3592,11 @@ describe("POST /runs/resume", () => {
 
 // demo, failed on its workflow's exec node two: two started, two failed, then the run failed.
 const seedFailedRun = async (
-  registry: Registry,
+  storage: IStorage,
   seed: Seed = {},
   error: Readonly<{ kind: string; message: string }> = { kind: "exit", message: "exit 1" },
 ): Promise<WorkflowRun> => {
-  const run = await seedRun(registry, { status: "failed", ...seed });
-  const runDir = runDirOf(run.cwd, "demo");
-  const store = jsonlEventStore(runDir);
+  const run = await seedRun(storage, { status: "failed", ...seed });
   const two = { nodeId: "two", nodeRunId: "nr-two" };
   const events = [
     { type: "workflow.node.started", ...two, payload: { nodeType: "exec" } },
@@ -3198,14 +3608,13 @@ const seedFailedRun = async (
     { type: "workflow.failed", payload: {} },
   ];
   for (const [index, event] of events.entries()) {
-    const stored = await store.append({
+    await appendEvent(storage, {
       id: `e-fail-${index}`,
       ts: "2026-01-01T00:00:03.000Z",
       source: "workflow",
       runId: run.id,
       ...event,
     });
-    if (!stored.ok) throw new Error(stored.error);
   }
   return run;
 };
@@ -3217,13 +3626,16 @@ const retry = (deps: Parameters<typeof createApi>[0], runId: string, answered?: 
     body: JSON.stringify({ run: { id: runId }, ...(answered === undefined ? {} : { answered }) }),
   });
 
-const stateOf = (run: WorkflowRun): State =>
-  JSON.parse(readFileSync(join(runDirOf(run.cwd, "demo"), "state.json"), "utf8"));
+const stateOf = async (storage: IStorage, run: WorkflowRun): Promise<State> => {
+  const state = await storage.events(run.id).readState();
+  if (state === null) throw new Error(`run ${run.id} has no state`);
+  return state;
+};
 
 describe("POST /runs/retry", () => {
   test("SC12: a failed run gets its failed step two reopened and continues s-1 with the resume prompt", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedFailedRun(deps.registry, { dotenv: "FOO=bar\n" });
+    const run = await seedFailedRun(deps.storage, { dotenv: "FOO=bar\n" });
 
     const res = await retry(deps, run.id);
 
@@ -3237,14 +3649,14 @@ describe("POST /runs/retry", () => {
     expect(launches[0]?.prompt).toBe("/orchestrate --resume demo");
     expect(launches[0]?.continueSession).toEqual({ id: "s-1", terminalName: "claude-demo-3c4d" });
     expect(launches[0]?.env).toMatchObject({ FOO: "bar" });
-    const state = stateOf(run);
+    const state = await stateOf(deps.storage, run);
     expect(state.status).toBe("running");
     expect(state.nodeRuns.two?.status).toBe("interrupted");
   });
 
   test("a failed run the runs list already showed is listed as no longer failed once it is retried", async () => {
     const { deps } = await resumeDeps();
-    const run = await seedFailedRun(deps.registry);
+    const run = await seedFailedRun(deps.storage);
     const listedStatus = async () => {
       const res = await createApi(deps).request("/runs");
       const body: { runs: readonly { id: string; status: string }[] } = await res.json();
@@ -3261,7 +3673,7 @@ describe("POST /runs/retry", () => {
   test("a run whose step two failed needing an answer is 409 and stays failed until answered: true, which reopens it and launches", async () => {
     const { deps, launches } = await resumeDeps();
     const run = await seedFailedRun(
-      deps.registry,
+      deps.storage,
       {},
       {
         kind: "needs-input",
@@ -3273,11 +3685,11 @@ describe("POST /runs/retry", () => {
     expect(refused.status).toBe(409);
     expect(JSON.stringify(await refused.json())).toContain("Which database?");
     expect(launches).toEqual([]);
-    expect(stateOf(run).status).toBe("failed");
+    expect((await stateOf(deps.storage, run)).status).toBe("failed");
 
     expect((await retry(deps, run.id, true)).status).toBe(200);
     expect(launches).toHaveLength(1);
-    expect(stateOf(run).status).toBe("running");
+    expect((await stateOf(deps.storage, run)).status).toBe("running");
   });
 
   test("SC7107: a retry the doctor refuses is 400, leaves the run and its step two failed, and nothing launches", async () => {
@@ -3286,15 +3698,15 @@ describe("POST /runs/retry", () => {
       ...base,
       checkCheckout: ((input) => checkCheckoutWith([], input)) satisfies CheckCheckout,
     };
-    const run = await seedFailedRun(deps.registry, { workflow: GATED_WORKFLOW });
+    const run = await seedFailedRun(deps.storage, { workflow: GATED_WORKFLOW });
     passBuiltInChecks(run.cwd);
-    const before = stateOf(run);
+    const before = await stateOf(deps.storage, run);
 
     const res = await retry(deps, run.id);
 
     expect(res.status).toBe(400);
     expect((await errorOf(res)).code).toBe("bad-request");
-    expect(stateOf(run)).toEqual(before);
+    expect(await stateOf(deps.storage, run)).toEqual(before);
     expect(before.status).toBe("failed");
     expect(launches).toEqual([]);
   });
@@ -3314,20 +3726,20 @@ describe("POST /runs/retry", () => {
         return readyCheckout(input);
       }) satisfies CheckCheckout,
     };
-    const run = await seedFailedRun(deps.registry);
-    const before = stateOf(run);
+    const run = await seedFailedRun(deps.storage);
+    const before = await stateOf(deps.storage, run);
 
     const res = await retry(deps, run.id);
 
     expect(res.status).toBe(409);
     expect((await errorOf(res)).message).toContain("still has its agent session");
-    expect(stateOf(run)).toEqual(before);
+    expect(await stateOf(deps.storage, run)).toEqual(before);
     expect(launches).toEqual([]);
   });
 
   test("SC13:a failed codex run asks for the codex provider and prompts $orchestrate --resume demo", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedFailedRun(deps.registry, {
+    const run = await seedFailedRun(deps.storage, {
       run: { sessions: [{ agent: "codex", sessionId: "s-1" }] },
     });
 
@@ -3340,7 +3752,7 @@ describe("POST /runs/retry", () => {
 
   test("SC14: a completed run is 409 conflict saying retry brings back only a failed run, and nothing launches", async () => {
     const { deps, launches } = await resumeDeps();
-    const run = await seedRun(deps.registry, { status: "completed" });
+    const run = await seedRun(deps.storage, { status: "completed" });
 
     const res = await retry(deps, run.id);
 
@@ -3357,7 +3769,7 @@ describe("POST /runs/retry", () => {
   test("SC15: a failed run whose tmux session is still alive is 409 pointing at yok attach demo, stays failed, and nothing launches", async () => {
     const { deps: base, launches } = await resumeDeps();
     const deps = { ...base, host: fakeHost("", true).host };
-    const run = await seedFailedRun(deps.registry);
+    const run = await seedFailedRun(deps.storage);
 
     const res = await retry(deps, run.id);
 
@@ -3369,12 +3781,12 @@ describe("POST /runs/retry", () => {
       },
     });
     expect(launches).toEqual([]);
-    expect(stateOf(run).status).toBe("failed");
+    expect((await stateOf(deps.storage, run)).status).toBe("failed");
   });
 
   test("SC16: a launch that fails after the retry is 502 saying yok resume demo starts the reopened run", async () => {
     const deps = await buildDeps(() => Promise.resolve({ ok: false, error: "boom" }));
-    const run = await seedFailedRun(deps.registry);
+    const run = await seedFailedRun(deps.storage);
 
     const res = await retry(deps, run.id);
 
@@ -3385,6 +3797,6 @@ describe("POST /runs/retry", () => {
         message: "boom; its failed steps are reopened, so yok resume demo starts it",
       },
     });
-    expect(stateOf(run).status).toBe("running");
+    expect((await stateOf(deps.storage, run)).status).toBe("running");
   });
 });

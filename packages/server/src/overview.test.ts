@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Workflow, WorkflowSchema } from "@yok/core";
 import type { Blocker, NodeRun, SavedPolicies, State, WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
-import type { UsersFile } from "@yok/sdk/internal";
+import { memoryStorage } from "@yok/sdk/internal";
 import { listSteps, ownerMatches, readRunFiles, summarizeRun } from "./overview.ts";
 
 const runRecord = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   id: "r-1",
+  project: "acme",
   workflow: "task",
   workflowPath: "/w.yaml",
   inputs: {},
@@ -103,7 +104,7 @@ describe("summarizeRun", () => {
   });
 });
 
-const ritesh: UsersFile = {
+const ritesh = {
   u_1: {
     name: "Ritesh",
     email: "ritesh@example.com",
@@ -226,15 +227,14 @@ describe("summarizeRun before or without a state", () => {
     ]);
   });
 
-  test("EC2: a run folder whose state.json is not JSON reads unreadable, and a run with no folder reads missing", async () => {
-    const corrupt = runRecord({ cwd: mkdtempSync(join(tmpdir(), "yok-overview-")) });
-    const runDir = runDirOf(corrupt.cwd, "feat-x");
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(join(runDir, "state.json"), "{not json");
+  test("EC2: a named run with a folder but no stored state reads unreadable, and a run with no folder reads missing", async () => {
+    const storage = memoryStorage();
+    const stateless = runRecord({ cwd: mkdtempSync(join(tmpdir(), "yok-overview-")) });
+    mkdirSync(runDirOf(stateless.cwd, "feat-x"), { recursive: true });
     const absent = runRecord({ cwd: mkdtempSync(join(tmpdir(), "yok-overview-")) });
     const statuses = await Promise.all(
-      [corrupt, absent].map(
-        async (run) => summarizeRun(run, await readRunFiles(run), null, {}).status,
+      [stateless, absent].map(
+        async (run) => summarizeRun(run, await readRunFiles(storage, run), null, {}).status,
       ),
     );
     expect(statuses).toEqual(["unreadable", "missing"]);

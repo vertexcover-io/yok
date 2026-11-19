@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import * as z from "zod";
 import { PermissionModeSchema } from "./agent.ts";
 import {
@@ -10,8 +10,6 @@ import {
   SessionRefSchema,
   SlugSchema,
 } from "./contracts.ts";
-import { readIfExists, updateJsonFile } from "./files.ts";
-import { type ILogger, noopLogger } from "./logger.ts";
 import { SavedPoliciesSchema } from "./policies.ts";
 import { isCompiled } from "./process.ts";
 
@@ -21,13 +19,14 @@ export const yokHome = (
   compiled: boolean = isCompiled,
 ): string => env.YOK_HOME ?? join(homedir(), compiled ? ".yok" : ".yok-dev");
 
-export const registryPath = (home: string = yokHome()): string => join(home, "registry.json");
-
 export const WorkflowRunSchema = z.strictObject({
   id: NonEmptyStringSchema,
+  // the project the run belongs to; its folder is the run's cwd
+  project: SlugSchema,
   workflow: SlugSchema,
   workflowPath: NonEmptyStringSchema,
   inputs: JsonObjectSchema,
+  // read from the project's path; a stored run keeps no folder of its own
   cwd: NonEmptyStringSchema,
   // The first is the session `yok run` launched.
   sessions: z.array(SessionRefSchema),
@@ -55,120 +54,50 @@ export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
 export type SessionRef = z.infer<typeof SessionRefSchema>;
 
-export const RegistryFileSchema = z.strictObject({
-  version: z.literal(1),
-  runs: z.record(z.string(), WorkflowRunSchema),
+// What a run is stored as: the run minus cwd, which is read from its project.
+export const RunDraftSchema = WorkflowRunSchema.omit({ cwd: true });
+export type RunDraft = z.infer<typeof RunDraftSchema>;
+
+export const ProjectSchema = z.strictObject({
+  path: AbsolutePathSchema,
+  git: z.string().optional(),
+  // where the request came from: cli, server, api or slack
+  addedBy: z.strictObject({ channel: NonEmptyStringSchema }),
+  addedAt: z.iso.datetime(),
 });
-export type RegistryFile = z.infer<typeof RegistryFileSchema>;
+export type Project = z.infer<typeof ProjectSchema>;
 
-const EMPTY_REGISTRY: RegistryFile = { version: 1, runs: {} };
+// "Refrens_Main" -> "refrens-main": the project name `yok run` gives a new checkout, and the
+// server gives the folder of a trigger saved on main. Empty or digit-first when the folder has
+// no usable name.
+export const folderSlug = (folder: string): string =>
+  folder
+    .replace(/\.git$/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
-type Change = (registry: RegistryFile) => RegistryFile;
-
-const withRun = (registry: RegistryFile, run: WorkflowRun): RegistryFile => ({
-  ...registry,
-  runs: { ...registry.runs, [run.id]: run },
-});
-
-// Each change returns the registry it was given when there is nothing to do, so update
-// can skip the write and tell the caller nothing changed.
-const addRun =
-  (run: WorkflowRun): Change =>
-  (registry) =>
-    withRun(registry, run);
-
-const removeRun =
-  (runId: string): Change =>
-  (registry) => {
-    if (registry.runs[runId] === undefined) return registry;
-    const { [runId]: _removed, ...runs } = registry.runs;
-    return { ...registry, runs };
-  };
-
-const initRun =
-  (runId: string, name: string): Change =>
-  (registry) => {
-    const run = registry.runs[runId];
-    return run === undefined ? registry : withRun(registry, { ...run, name });
-  };
-
-const setTerminal =
-  (runId: string, terminal: string): Change =>
-  (registry) => {
-    const run = registry.runs[runId];
-    return run === undefined ? registry : withRun(registry, { ...run, terminal });
-  };
-
-const linkSession =
-  (runId: string, session: SessionRef): Change =>
-  (registry) => {
-    const run = registry.runs[runId];
-    if (run === undefined) return registry;
-    const linked = run.sessions.some(
-      (existing) => existing.agent === session.agent && existing.sessionId === session.sessionId,
-    );
-    return linked ? registry : withRun(registry, { ...run, sessions: [...run.sessions, session] });
-  };
-
-// A name is reused only after its run folder was deleted, so the newest run holds the folder.
-const namedNewestFirst = (registry: RegistryFile, name: string): readonly WorkflowRun[] =>
-  Object.values(registry.runs)
-    .filter((run) => run.name === name)
-    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-export type RegistryReader = Readonly<{
-  findRun: (runId: string) => Promise<WorkflowRun | undefined>;
-  findRunsByName: (name: string) => Promise<readonly WorkflowRun[]>;
-  listRuns: () => Promise<readonly WorkflowRun[]>;
-}>;
-
-export type Registry = RegistryReader &
-  Readonly<{
-    addRun: (run: WorkflowRun) => Promise<void>;
-    removeRun: (runId: string) => Promise<void>;
-    initRun: (runId: string, name: string) => Promise<void>;
-    setTerminal: (runId: string, terminal: string) => Promise<void>;
-    linkSession: (runId: string, session: SessionRef) => Promise<void>;
-  }>;
-
-const readRegistry = async (path: string): Promise<RegistryFile> => {
-  const text = await readIfExists(path);
-  return text === null ? EMPTY_REGISTRY : RegistryFileSchema.parse(JSON.parse(text));
+// The name `yok run` gives a folder. Nobody is asked, so a name another folder holds gets the
+// first free number, and a folder with no usable name starts with "project".
+export const chooseProjectName = (
+  projects: Readonly<Record<string, Project>>,
+  folder: string,
+): string => {
+  const slug = folderSlug(basename(folder));
+  const base = /^[a-z]/.test(slug) ? slug : `project-${slug}`.replace(/-$/, "");
+  const numbered = Object.keys(projects).map((_name, index) => `${base}-${index + 2}`);
+  return [base, ...numbered].find((name) => projects[name] === undefined) ?? base;
 };
 
-// What a script needs to find its run; changing the registry is the engine's job.
-export const createRegistryReader = (path: string): RegistryReader => ({
-  findRun: async (runId) => (await readRegistry(path)).runs[runId],
-  findRunsByName: async (name) => namedNewestFirst(await readRegistry(path), name),
-  listRuns: async () => Object.values((await readRegistry(path)).runs),
-});
-
-export const createRegistry = (path: string, parentLog: ILogger = noopLogger): Registry => {
-  const log = parentLog.child({ component: "registry", path });
-
-  const update = async (change: Change): Promise<boolean> => {
-    const { before, after } = await updateJsonFile(path, readRegistry, change);
-    if (after === before) return false;
-    log.debug({ runs: Object.keys(after.runs).length }, "registry written");
-    return true;
-  };
-
-  return {
-    ...createRegistryReader(path),
-    addRun: async (run) => {
-      await update(addRun(run));
-    },
-    removeRun: async (runId) => {
-      await update(removeRun(runId));
-    },
-    initRun: async (runId, name) => {
-      await update(initRun(runId, name));
-    },
-    setTerminal: async (runId, terminal) => {
-      await update(setTerminal(runId, terminal));
-    },
-    linkSession: async (runId, session) => {
-      await update(linkSession(runId, session));
-    },
-  };
+// Why a project cannot be saved beside PROJECTS, or null. The root is unknown before a clone.
+export const findProjectConflict = (
+  projects: Readonly<Record<string, Project>>,
+  { name, git, root }: Readonly<{ name: string; git?: string | undefined; root?: string }>,
+): string | null => {
+  if (projects[name] !== undefined) return `a project named ${name} already exists`;
+  if (git !== undefined && Object.values(projects).some((project) => project.git === git)) {
+    return `${git} is already a project`;
+  }
+  const owner = Object.entries(projects).find(([, project]) => project.path === root);
+  return owner === undefined ? null : `${root} is already project ${owner[0]}`;
 };

@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedEvents, seedRuns } from "../../cli/src/test-runs.ts";
 import { type Event, type JsonValue, type State, StateSchema } from "./contracts.ts";
-import { type IEventStore, jsonlEventStore } from "./event-store.ts";
-import { runDirOf } from "./events.ts";
+import { type RunRef, runDirOf } from "./events.ts";
+import type { SessionRef } from "./registry.ts";
+import type { IStorage } from "./repositories.ts";
+import { requireRun } from "./runs.ts";
 import {
   appendRunEvent,
   appendRunEventIf,
@@ -15,14 +18,19 @@ import {
   emitRunEvent,
   projectEvents,
   readGit,
+  readRunEvents,
+  readRunSessions,
+  readState,
   syncState,
   toRepoId,
 } from "./state.ts";
+import { memoryStorage, openStorage } from "./storage.ts";
 
-test("conditional event append admits only one caller for the same state", async () => {
-  const { run, runDir } = await runWithHandlers({});
+test("SC216: two conditional appends started together on one state at seq 0: exactly one is stored, the other fails condition-failed", async () => {
+  const { run, storage } = await runWithHandlers({});
   const append = (source: string) =>
     appendRunEventIf(
+      storage,
       run,
       { type: "custom.once.note", source, payload: null },
       (state) => state?.lastEventSeq === 0,
@@ -33,23 +41,17 @@ test("conditional event append admits only one caller for the same state", async
     ok: false,
     error: "condition-failed",
   });
-  expect(await jsonlEventStore(runDir).read()).toHaveLength(1);
+  expect(await storage.events(run.id).read()).toHaveLength(1);
 });
 
-test("conditional append checks the event log when state.json is behind", async () => {
-  const { run, runDir, stateJson } = await runWithHandlers({});
-  const store = jsonlEventStore(runDir);
-  const prior = await store.append({
-    id: "already-stored",
-    ts: new Date().toISOString(),
-    runId: run.id,
-    type: "custom.once.note",
-    source: "prior",
-    payload: null,
-  });
-  expect(prior.ok).toBe(true);
+test("conditional append checks the stored events when the stored state is behind", async () => {
+  const { run, storage } = await runWithHandlers({});
+  const store = storage.events(run.id);
+  const prior = { ...event(1, "custom.once.note"), id: "already-stored", source: "prior" };
+  expect((await store.append({ event: prior, state: null, expectedSeq: 0 })).kind).toBe("stored");
 
   const attempted = await appendRunEventIf(
+    storage,
     run,
     { type: "custom.once.note", source: "late", payload: null },
     (state) => state?.lastEventSeq === 0,
@@ -57,7 +59,7 @@ test("conditional append checks the event log when state.json is behind", async 
 
   expect(attempted).toMatchObject({ ok: false, error: "condition-failed" });
   expect(await store.read()).toHaveLength(1);
-  expect((await stateJson()).lastEventSeq).toBe(1);
+  expect((await syncState(storage, run.id))?.lastEventSeq).toBe(1);
 });
 
 const seed: State = {
@@ -169,89 +171,20 @@ describe("projectEvents", () => {
 });
 
 describe("syncState", () => {
-  let runDir = "";
-  beforeEach(async () => {
-    runDir = await mkdtemp(join(tmpdir(), "run-"));
-    await writeFile(join(runDir, "state.json"), JSON.stringify(seed));
-  });
-
-  const append = async (id: string, payload: string): Promise<void> => {
-    const result = await jsonlEventStore(runDir).append({
-      id,
-      ts: "2026-09-26T10:00:00Z",
-      type: "workflow.file.opened",
-      source: "test",
-      runId: "r-test",
-      payload,
-    });
-    if (!result.ok) throw new Error(result.error);
-  };
-
-  const readState = async (): Promise<unknown> =>
-    JSON.parse(await readFile(join(runDir, "state.json"), "utf8"));
-
-  test("a stale state.json catches up from events appended after its cursor", async () => {
-    await append("a", "a.ts");
-    await syncState(runDir);
-    await append("b", "b.ts");
-    await append("c", "c.ts");
-
-    const state = await syncState(runDir);
-
-    expect(state).toEqual({ ...seed, lastEventSeq: 3 });
-    expect(await readState()).toEqual(state);
-  });
-
-  test("a folder with no state.json yet is left alone and gives null", async () => {
-    const bare = await mkdtemp(join(tmpdir(), "run-"));
-    await jsonlEventStore(bare).append({
-      id: "a",
-      ts: "2026-09-26T10:00:00Z",
-      type: "workflow.file.opened",
-      source: "test",
-      runId: "r-test",
-      payload: "a.ts",
-    });
-
-    expect(await syncState(bare)).toBeNull();
-    expect(await readdir(bare)).not.toContain("state.json");
-  });
-
-  test("writing state.json leaves no temp files behind and adds no run-folder entries", async () => {
-    await append("a", "a.ts");
-    await syncState(runDir);
-    expect((await readdir(runDir)).sort()).toEqual([
-      "artifacts",
-      "event.jsonl",
-      "locks",
-      "state.json",
-    ]);
-    expect(await readdir(join(runDir, "artifacts"))).toEqual([]);
-    expect(await readdir(join(runDir, "locks"))).toEqual([]);
-  });
-
-  test("a slow sync that finishes last cannot overwrite a newer state.json", async () => {
+  test("a stored state behind its events catches up from the events stored after its seq", async () => {
+    const { run, storage } = await runWithHandlers({});
+    const store = storage.events(run.id);
     const opened = (seq: number, file: string): Event => event(seq, "workflow.file.opened", file);
-    const releaseSlowRead = Promise.withResolvers<void>();
-    let reads = 0;
-    const store: IEventStore = {
-      append: () => Promise.reject(new Error("unused")),
-      read: async () => {
-        reads += 1;
-        if (reads > 1) return [opened(1, "a.ts"), opened(2, "b.ts")];
-        await releaseSlowRead.promise;
-        return [opened(1, "a.ts")];
-      },
-    };
+    await store.append({
+      event: opened(1, "a.ts"),
+      state: { ...seed, lastEventSeq: 1 },
+      expectedSeq: 0,
+    });
+    await store.append({ event: opened(2, "b.ts"), state: null, expectedSeq: 1 });
+    await store.append({ event: opened(3, "c.ts"), state: null, expectedSeq: 2 });
 
-    const slow = syncState(runDir, store);
-    await Bun.sleep(20);
-    const fast = syncState(runDir, store);
-    await Bun.sleep(20);
-    releaseSlowRead.resolve();
-    await Promise.all([slow, fast]);
-
-    expect(await readState()).toEqual({ ...seed, lastEventSeq: 2 });
+    expect(await syncState(storage, run.id)).toEqual({ ...seed, lastEventSeq: 3 });
+    expect((await store.readState())?.lastEventSeq).toBe(1);
   });
 });
 
@@ -264,21 +197,27 @@ export const onRisky = (state, event) => {
 };
 `;
 
-test("a sync with no event since the last one leaves state.json unwritten", async () => {
-  const { run, runDir } = await runWithHandlers({});
-  const appended = await appendRunEvent(run, { type: "custom.once.note", source: "t", payload: 1 });
-  if (!appended.ok) throw new Error(appended.error);
-  const path = join(runDir, "state.json");
-  const [before, text] = [await stat(path), await readFile(path, "utf8")];
+const seedRun = async (storage: IStorage, run: RunRef, state: State): Promise<void> => {
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: run.cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
+    id: run.id,
+    project: "repo",
+    workflow: "feature",
+    workflowPath: join(run.cwd, "workflow.yaml"),
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: addedAt,
+  });
+  const claimed = await storage.runs.initRun(run.id, run.name, state);
+  if (!claimed.ok) throw new Error(claimed.error);
+};
 
-  await syncState(runDir);
-
-  const after = await stat(path);
-  expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
-  expect(await readFile(path, "utf8")).toBe(text);
-});
-
-// A run folder whose state.json lists the given handlers from a module written beside it.
+// A run stored with a state that lists the given handlers from a module written beside it.
 const runWithHandlers = async (
   refs: Readonly<Record<string, readonly { module?: string; handler: string }[]>>,
 ) => {
@@ -294,55 +233,63 @@ const runWithHandlers = async (
   const run = { id: "r-test", cwd, name: "fix-login" };
   const runDir = runDirOf(cwd, run.name);
   await mkdir(runDir, { recursive: true });
-  await writeFile(join(runDir, "state.json"), JSON.stringify({ ...seed, eventHandlers }));
-  const stateJson = async (): Promise<State> =>
-    StateSchema.parse(JSON.parse(await readFile(join(runDir, "state.json"), "utf8")));
-  return { run, runDir, stateJson };
+  const storage = memoryStorage();
+  await seedRun(storage, run, { ...seed, eventHandlers });
+  const savedState = async (): Promise<State> => {
+    const state = await storage.events(run.id).readState();
+    if (state === null) throw new Error("no state");
+    return state;
+  };
+  return { run, runDir, storage, savedState };
 };
 
 describe("emitRunEvent", () => {
   test.each(["workflow.node.completed", "orchestrate.done", "hooks.session-start.called"])(
     "SC8: refuses the engine-owned %s and leaves the log untouched",
     async (type) => {
-      const { run, runDir } = await runWithHandlers({});
+      const { run, storage } = await runWithHandlers({});
 
-      const result = await emitRunEvent(run, { type, source: "ext", payload: {} });
+      const result = await emitRunEvent(run, { type, source: "ext", payload: {} }, storage);
 
       expect(result.ok).toBe(false);
       expect(result.ok ? "" : result.error).toStartWith(type);
-      expect(await jsonlEventStore(runDir).read()).toHaveLength(0);
+      expect(await storage.events(run.id).read()).toHaveLength(0);
     },
   );
 });
 
 describe("emitRunEvent with extension handlers", () => {
   test("EH7 — a custom.* event's extension handler writes state.custom into state.json", async () => {
-    const { run, stateJson } = await runWithHandlers({
+    const { run, storage, savedState } = await runWithHandlers({
       "custom.review.note": [{ handler: "onReviewNote" }],
     });
 
-    const result = await emitRunEvent(run, {
-      type: "custom.review.note",
-      source: "test",
-      payload: "looks good",
-    });
+    const result = await emitRunEvent(
+      run,
+      {
+        type: "custom.review.note",
+        source: "test",
+        payload: "looks good",
+      },
+      storage,
+    );
 
     expect(result.ok).toBe(true);
-    expect((await stateJson()).custom).toEqual({ note: "looks good" });
+    expect((await savedState()).custom).toEqual({ note: "looks good" });
   });
 
   test("EH8 — an extension on a built-in type sees the state the built-in handler wrote", async () => {
-    const { run, stateJson } = await runWithHandlers({
+    const { run, storage, savedState } = await runWithHandlers({
       "workflow.started": [{ handler: "onStarted" }],
     });
 
-    await appendRunEvent(run, {
+    await appendRunEvent(storage, run, {
       type: "workflow.started",
       source: "test",
       payload: { workflow: "feature", inputs: { ticket: "T-1" } },
     });
 
-    expect((await stateJson()).custom).toEqual({ input: { ticket: "T-1" } });
+    expect((await savedState()).custom).toEqual({ input: { ticket: "T-1" } });
   });
 
   test.each([
@@ -354,74 +301,101 @@ describe("emitRunEvent with extension handlers", () => {
     ["an export that is missing", { handler: "onMissing" }, "onMissing"],
     ["an export that is not a function", { handler: "notAFunction" }, "notAFunction"],
   ])("EH9 — %s fails the emit, naming it, and stores nothing", async (_label, ref, named) => {
-    const { run, runDir, stateJson } = await runWithHandlers({ "custom.review.note": [ref] });
+    const { run, storage, savedState } = await runWithHandlers({ "custom.review.note": [ref] });
 
-    const result = await emitRunEvent(run, {
-      type: "custom.review.note",
-      source: "test",
-      payload: "looks good",
-    });
+    const result = await emitRunEvent(
+      run,
+      {
+        type: "custom.review.note",
+        source: "test",
+        payload: "looks good",
+      },
+      storage,
+    );
 
     expect(result.ok ? "" : result.error).toContain(named);
     expect(result.ok ? "" : result.error).toContain(ref.handler);
-    expect(await jsonlEventStore(runDir).read()).toEqual([]);
-    expect((await stateJson()).lastEventSeq).toBe(0);
+    expect(await storage.events(run.id).read()).toEqual([]);
+    expect((await savedState()).lastEventSeq).toBe(0);
   });
 
   test.each([["throws", "onRisky"]])(
     "EH13 — a handler that %s fails the emit and stores nothing, so later events still apply",
     async (_label, handler) => {
-      const { run, runDir, stateJson } = await runWithHandlers({
+      const { run, storage, savedState } = await runWithHandlers({
         "custom.review.note": [{ handler }],
         "custom.review.other": [{ handler: "onReviewNote" }],
       });
 
-      const bad = await emitRunEvent(run, {
-        type: "custom.review.note",
-        source: "test",
-        payload: "bad",
-      });
-      const good = await emitRunEvent(run, {
-        type: "custom.review.other",
-        source: "test",
-        payload: "fine",
-      });
+      const bad = await emitRunEvent(
+        run,
+        {
+          type: "custom.review.note",
+          source: "test",
+          payload: "bad",
+        },
+        storage,
+      );
+      const good = await emitRunEvent(
+        run,
+        {
+          type: "custom.review.other",
+          source: "test",
+          payload: "fine",
+        },
+        storage,
+      );
 
       expect(bad.ok ? "" : bad.error).toContain("event not stored");
       expect(good.ok).toBe(true);
-      expect((await jsonlEventStore(runDir).read()).map((event) => event.type)).toEqual([
+      expect((await storage.events(run.id).read()).map((event) => event.type)).toEqual([
         "custom.review.other",
       ]);
-      expect(await stateJson()).toMatchObject({ lastEventSeq: 1, custom: { note: "fine" } });
+      expect(await savedState()).toMatchObject({ lastEventSeq: 1, custom: { note: "fine" } });
     },
   );
 
-  test("EH14 — a handler module that throws while loading fails the emit and stores nothing", async () => {
-    const { run, runDir } = await runWithHandlers({
-      "custom.review.note": [{ handler: "onReviewNote" }],
+  test("SC205: an event its handler throws on is refused, and the run keeps no event and its state as before", async () => {
+    const { run, storage, savedState } = await runWithHandlers({
+      "custom.review.note": [{ handler: "onRisky" }],
     });
-    const broken = join(run.cwd, "broken.ts");
+    const before = await savedState();
+
+    const result = await emitRunEvent(
+      run,
+      { type: "custom.review.note", source: "test", payload: "bad" },
+      storage,
+    );
+
+    expect(result.ok ? "" : result.error).toContain(
+      "event not stored, a handler could not apply it",
+    );
+    expect(await storage.events(run.id).read()).toEqual([]);
+    expect(await savedState()).toEqual(before);
+  });
+
+  test("EH14 — a handler module that throws while loading fails the emit and stores nothing", async () => {
+    const broken = join(await realpath(await mkdtemp(join(tmpdir(), "broken-"))), "broken.ts");
     await writeFile(
       broken,
       'throw new Error("module is broken");\nexport const onReviewNote = () => {};\n',
     );
-    const state = StateSchema.parse(JSON.parse(await readFile(join(runDir, "state.json"), "utf8")));
-    await writeFile(
-      join(runDir, "state.json"),
-      JSON.stringify({
-        ...state,
-        eventHandlers: { "custom.review.note": [{ module: broken, handler: "onReviewNote" }] },
-      }),
-    );
-
-    const result = await emitRunEvent(run, {
-      type: "custom.review.note",
-      source: "test",
-      payload: "looks good",
+    const { run, storage } = await runWithHandlers({
+      "custom.review.note": [{ module: broken, handler: "onReviewNote" }],
     });
 
+    const result = await emitRunEvent(
+      run,
+      {
+        type: "custom.review.note",
+        source: "test",
+        payload: "looks good",
+      },
+      storage,
+    );
+
     expect(result.ok ? "" : result.error).toContain("module is broken");
-    expect(await jsonlEventStore(runDir).read()).toEqual([]);
+    expect(await storage.events(run.id).read()).toEqual([]);
   });
 });
 
@@ -435,7 +409,7 @@ const repoIn = async (name: string): Promise<string> => {
 };
 
 describe("createState", () => {
-  test("SC18: builds a valid first state from the run folder and the frozen handler list, and writes it as state.json", async () => {
+  test("SC18: builds a valid first state from the run folder and the frozen handler list, and writes no file", async () => {
     const repo = await repoIn("Fix Login App");
     const runDir = join(repo, ".yok", "fix-login");
     await mkdir(runDir, { recursive: true });
@@ -470,7 +444,7 @@ describe("createState", () => {
     expect(state.workspace.type).toBe("mono");
     expect(state.workspace.path).toBe(repo);
     expect(Object.keys(state.workspace.repositories)).toEqual(["fix-login-app"]);
-    expect(JSON.parse(await readFile(join(runDir, "state.json"), "utf8"))).toEqual(state);
+    expect(await readdir(runDir)).toEqual(["workflow.yaml"]);
   });
 });
 
@@ -503,9 +477,9 @@ describe("state files written before activeSessions", () => {
   });
 });
 
-describe("what subscribers keep in state.json", () => {
+describe("what subscribers keep in the run's state", () => {
   test("SC211: notification.thread.started fills state.notification, custom.state.updated merges into state.custom by key, and a call record changes neither", async () => {
-    const { run, stateJson } = await runWithHandlers({});
+    const { run, storage, savedState } = await runWithHandlers({});
 
     for (const input of [
       { type: "custom.state.updated", source: "subscriber", payload: { asana: { taskId: "555" } } },
@@ -536,26 +510,26 @@ describe("what subscribers keep in state.json", () => {
         },
       },
     ]) {
-      const appended = await appendRunEvent(run, input);
+      const appended = await appendRunEvent(storage, run, input);
       if (!appended.ok) throw new Error(appended.error);
     }
 
-    const state = await stateJson();
+    const state = await savedState();
     expect(state.notification).toEqual({ provider: "slack", threadId: "171.1" });
     expect(state.custom).toEqual({ asana: { taskId: "777" }, linear: { issue: "VER-1" } });
   });
 
   test("SC919: a thread started with channel C1 and requester U7 keeps both in state.notification", async () => {
-    const { run, stateJson } = await runWithHandlers({});
+    const { run, storage, savedState } = await runWithHandlers({});
 
-    const appended = await appendRunEvent(run, {
+    const appended = await appendRunEvent(storage, run, {
       type: "notification.thread.started",
       source: "orchestrate",
       payload: { provider: "slack", threadId: "100.1", channel: "C1", user: "U7" },
     });
 
     if (!appended.ok) throw new Error(appended.error);
-    expect((await stateJson()).notification).toEqual({
+    expect((await savedState()).notification).toEqual({
       provider: "slack",
       threadId: "100.1",
       channel: "C1",
@@ -564,14 +538,192 @@ describe("what subscribers keep in state.json", () => {
   });
 
   test("SC920: a thread event with an empty channel is refused, so no empty value reaches the notifier", async () => {
-    const { run } = await runWithHandlers({});
+    const { run, storage } = await runWithHandlers({});
 
-    const appended = await appendRunEvent(run, {
+    const appended = await appendRunEvent(storage, run, {
       type: "notification.thread.started",
       source: "orchestrate",
       payload: { provider: "slack", threadId: "100.1", channel: "" },
     });
 
     expect(appended.ok).toBe(false);
+  });
+});
+
+const PING = { type: "custom.demo.ping", source: "test", payload: null };
+
+describe("storing events through storage", () => {
+  test("SC204: an append that conflicts every time fails after forty tries and calls no subscriber", async () => {
+    const real = memoryStorage();
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "conflict-")));
+    const run = { id: "r-1", cwd, name: "fix-login" };
+    const marker = join(cwd, "called");
+    const listener = {
+      name: "listener",
+      blocking: true,
+      timeoutSeconds: 5,
+      command: `touch ${marker}`,
+      cwd,
+    };
+    await seedRun(real, run, {
+      ...seed,
+      runId: run.id,
+      subscribers: { "custom.demo.ping": [listener] },
+    });
+    let appends = 0;
+    const storage: IStorage = {
+      ...real,
+      events: (runId) => ({
+        ...real.events(runId),
+        append: async () => {
+          appends += 1;
+          return { kind: "conflict" };
+        },
+      }),
+    };
+
+    const result = await appendRunEvent(storage, run, PING);
+
+    expect(result).toEqual({
+      ok: false,
+      error: "event not stored: run r-1 changed during 40 tries",
+    });
+    expect(appends).toBe(40);
+    expect(await readdir(cwd)).not.toContain("called");
+  });
+
+  test.each([
+    ["SC201: five processes each storing five events on one run", 5, 5, 0],
+    ["twenty processes each storing ten events on a run already holding 300", 20, 10, 300],
+  ])(
+    "%s all land, numbered in order, with the state matching the events",
+    async (_label, processes, each, stored) => {
+      const home = await realpath(await mkdtemp(join(tmpdir(), "concurrent-home-")));
+      const cwd = await realpath(await mkdtemp(join(tmpdir(), "concurrent-")));
+      const run = { id: "r-1", cwd, name: "fix-login" };
+      const storage = openStorage(home);
+      await seedRun(storage, run, { ...seed, runId: run.id });
+      for (let i = 0; i < stored; i++) await appendRunEvent(storage, run, PING);
+      const writer = (source: string) => `
+      import { appendRunEvent } from ${JSON.stringify(join(import.meta.dir, "state.ts"))};
+      import { openStorage } from ${JSON.stringify(join(import.meta.dir, "storage.ts"))};
+      const storage = openStorage(${JSON.stringify(home)});
+      for (let i = 0; i < ${each}; i++) {
+        const stored = await appendRunEvent(storage, ${JSON.stringify(run)}, {
+          type: "custom.demo.ping", source: ${JSON.stringify(source)}, payload: i,
+        });
+        if (!stored.ok) { console.error(stored.error); process.exit(1); }
+      }
+      await storage.close();
+    `;
+      const writers = Array.from({ length: processes }, (_, i) =>
+        Bun.spawn(["bun", "-e", writer(`p${i}`)], { stdout: "pipe", stderr: "pipe" }),
+      );
+      const exits = await Promise.all(writers.map((writer) => writer.exited));
+      const errors = await Promise.all(writers.map((writer) => new Response(writer.stderr).text()));
+
+      expect({ exits, errors }).toEqual({
+        exits: writers.map(() => 0),
+        errors: writers.map(() => ""),
+      });
+      const total = stored + processes * each;
+      const events = await storage.events(run.id).read();
+      expect(events.map((event) => event.seq)).toEqual(
+        Array.from({ length: total }, (_, i) => i + 1),
+      );
+      const state = await storage.events(run.id).readState();
+      expect(state?.lastEventSeq).toBe(total);
+      expect(await syncState(storage, run.id)).toEqual(state);
+      await storage.close();
+    },
+    60_000,
+  );
+
+  test("SC224: a skill script finds its run, stores an event and reads the state back with no storage, through YOK_HOME", async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "skill-home-")));
+    const repo = await repoIn("repo");
+    const run = { id: "r-1", cwd: repo, name: "feat-x" };
+    await mkdir(runDirOf(repo, run.name), { recursive: true });
+    const seeded = openStorage(home);
+    await seedRun(seeded, run, { ...seed, runId: run.id, runName: run.name, lastEventSeq: 0 });
+    await seeded.close();
+    const previous = process.env.YOK_HOME;
+    process.env.YOK_HOME = home;
+    try {
+      const found = await requireRun({ name: "feat-x", env: process.env, cwd: repo });
+      expect(found).toEqual({ ok: true, value: run });
+      if (!found.ok) return;
+      const note = { type: "custom.skill.note", source: "skill", payload: "hi" };
+      const stored = await emitRunEvent(found.value, note);
+      expect(stored.ok ? stored.value.seq : stored.error).toBe(1);
+      expect((await readState(found.value))?.lastEventSeq).toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env.YOK_HOME;
+      else process.env.YOK_HOME = previous;
+    }
+    const reader = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `import { openStorage } from ${JSON.stringify(join(import.meta.dir, "storage.ts"))};
+         const storage = openStorage(${JSON.stringify(home)});
+         console.log((await storage.events("r-1").readState()).lastEventSeq);
+         await storage.close();`,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await reader.exited).toBe(0);
+    expect((await new Response(reader.stdout).text()).trim()).toBe("1");
+    await rm(home, { recursive: true, force: true });
+  });
+
+  test("SC413: a run's three events and its claude A, codex B sessions read the same with and without a storage, and an unknown run reads empty", async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "readers-home-")));
+    const cwd = await repoIn("readers");
+    const sessions: SessionRef[] = [
+      { agent: "claude", sessionId: "A" },
+      { agent: "codex", sessionId: "B" },
+    ];
+    await seedRuns(home, [
+      {
+        id: "r-1",
+        project: "readers",
+        workflow: "task",
+        workflowPath: join(cwd, "task.yaml"),
+        inputs: {},
+        cwd,
+        sessions,
+        name: "feat-x",
+        terminal: null,
+        config: null,
+        tiers: null,
+        createdAt: "2026-09-26T10:00:00Z",
+      },
+    ]);
+    const events = [1, 2, 3].map((seq) => ({
+      ...event(seq, "custom.test.note", seq),
+      runId: "r-1",
+    }));
+    await seedEvents(home, "r-1", events);
+    const run = { id: "r-1", cwd, name: "feat-x" };
+    const unknown = { ...run, id: "r-9" };
+    const previous = process.env.YOK_HOME;
+    process.env.YOK_HOME = home;
+    try {
+      expect(await readRunEvents(run)).toEqual(events);
+      expect(await readRunSessions(run)).toEqual(sessions);
+      expect(await readRunEvents(unknown)).toEqual([]);
+      expect(await readRunSessions(unknown)).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.YOK_HOME;
+      else process.env.YOK_HOME = previous;
+    }
+    const storage = openStorage(home);
+    expect(await readRunEvents(run, storage)).toEqual(events);
+    expect(await readRunSessions(run, storage)).toEqual(sessions);
+    expect(await readRunEvents(unknown, storage)).toEqual([]);
+    expect(await readRunSessions(unknown, storage)).toEqual([]);
+    await storage.close();
+    await rm(home, { recursive: true, force: true });
   });
 });

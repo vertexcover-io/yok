@@ -1,16 +1,25 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { runDirOf } from "@yok/sdk";
+import { seedRuns } from "../../../packages/cli/src/test-runs.ts";
 import {
   buildEvent,
   eventsDir,
   logEvent,
   parseTranscript,
   resolveEvidence,
-  runSessionId,
   skillVersion,
   validate,
 } from "./log-learning-event.mjs";
@@ -245,38 +254,61 @@ test("fills id, timestamp, cwd and version, and swaps the snippets for message i
   assert.match(event.eventId, /^[0-9a-f-]{36}$/);
 });
 
-// One line of a run's event.jsonl, as yok writes it.
-const runEvent = (seq, type, payload) =>
-  JSON.stringify({
-    schemaVersion: 1,
-    seq,
-    id: `e${seq}`,
-    ts: "2026-10-15T10:00:00.000Z",
-    type,
-    source: "test",
-    runId: "r-1",
-    payload,
-  });
+const SCRIPT = join(import.meta.dirname, "log-learning-event.mjs");
 
-test("without a session id, the event goes under the run's current session", () => {
-  const runDir = tempDir("run-");
-  writeFileSync(
-    join(runDir, "event.jsonl"),
-    `${[
-      runEvent(1, "workflow.started", {
-        workflow: "task",
-        inputs: {},
-        activeSessions: [{ agent: "codex", sessionId: "first" }],
-      }),
-      runEvent(2, "workflow.session.replaced", {
-        agent: "codex",
-        previousSessionId: "first",
-        sessionId: "after-compact",
-      }),
-    ].join("\n")}\n`,
-  );
-  assert.equal(runSessionId(runDir), "after-compact");
-  assert.equal(runSessionId(tempDir("empty-run-")), undefined);
+// The script run with no session id and the event on stdin, in run r-1 with these sessions.
+const logInRun = async (sessions, env = {}) => {
+  const cwd = tempDir("learn-run-");
+  const home = tempDir("learn-home-");
+  await seedRuns(home, [
+    {
+      id: "r-1",
+      project: "repo",
+      workflow: "task",
+      workflowPath: join(cwd, "task.yaml"),
+      inputs: {},
+      cwd,
+      sessions,
+      name: "run-x",
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt: "2026-10-15T10:00:00.000Z",
+    },
+  ]);
+  mkdirSync(runDirOf(cwd, "run-x"), { recursive: true });
+  const ran = spawnSync("bun", [SCRIPT], {
+    cwd,
+    input: JSON.stringify(valid),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: "/nowhere",
+      YOK_HOME: home,
+      YOK_RUN_ID: "r-1",
+      ...env,
+    },
+  });
+  return { cwd, ran };
+};
+
+test("SC415: without a session id, the event goes under after-compact, the session the run linked last, not first", async () => {
+  const { cwd, ran } = await logInRun([
+    { agent: "codex", sessionId: "first" },
+    { agent: "codex", sessionId: "after-compact" },
+  ]);
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.equal(readEvents(eventsFile(cwd, "after-compact")).length, 1);
+  assert.equal(existsSync(eventsFile(cwd, "first")), false);
+});
+
+test("SC416: without a session id, a run with no linked session and no run at all are both refused", async () => {
+  const none = await logInRun([]);
+  assert.equal(none.ran.status, 1);
+  assert.match(none.ran.stderr, /no agent session linked/);
+  const outside = await logInRun([{ agent: "claude", sessionId: "s1" }], { YOK_RUN_ID: "" });
+  assert.equal(outside.ran.status, 1);
+  assert.match(outside.ran.stderr, /learn works only in a yok run/);
 });
 
 test("generated fields win over the same keys in the input", () => {

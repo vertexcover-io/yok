@@ -1,14 +1,13 @@
 // Prints what the user said since the last learn pass, each message with the end of the agent's
 // reply before it, for the learn skill to pick corrections from.
 //   candidates.ts [--run NAME | --run-id ID]  a yok run's sessions; with neither, $YOK_RUN_ID's
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   answers,
   bodyOf,
-  createRegistryReader,
+  collectEventSessions,
   type Event,
   findTranscript,
   humanMessages,
@@ -16,11 +15,8 @@ import {
   parseTime,
   type Rec,
   type Result,
-  readEvents,
-  readRunSessions,
-  registryPath,
+  readRunEvents,
   requireRun,
-  runDirOf,
 } from "@yok/sdk";
 
 // Enough to recognise the exchange; a pasted log or a long plan summary is cut.
@@ -95,20 +91,18 @@ const report = (since: string | undefined, blocks: readonly string[]): string =>
 };
 
 export const listRun = (options: {
-  readonly runDir: string;
+  readonly events: readonly Event[];
   readonly projectsDir: string;
-}): Result<string> => {
-  const eventsPath = join(options.runDir, "event.jsonl");
-  if (!existsSync(eventsPath)) return { ok: false, error: `no event.jsonl in ${options.runDir}` };
-  const events = readEvents(eventsPath);
+}): string => {
+  const { events } = options;
   const since = lastReviewedAt(events);
-  const sessions = readRunSessions(events)
+  const sessions = collectEventSessions(events)
     .filter((session) => session.agent === "claude")
     .flatMap(({ sessionId }) => {
       const list = readSession(options.projectsDir, sessionId, since);
       return list && list.length > 0 ? [formatSession(sessionId, list)] : [];
     });
-  return { ok: true, value: report(since, sessions) };
+  return report(since, sessions);
 };
 
 const pick = async (argv: readonly string[]): Promise<Result<string>> => {
@@ -124,14 +118,14 @@ const pick = async (argv: readonly string[]): Promise<Result<string>> => {
     values.projects ??
     join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
   const run = await requireRun({
-    registry: createRegistryReader(registryPath()),
     name: values.run,
     id: values["run-id"],
     env: process.env,
     cwd: process.cwd(),
   });
   if (!run.ok) return { ok: false, error: `learn works only in a yok run: ${run.error}` };
-  return listRun({ runDir: runDirOf(run.value.cwd, run.value.name), projectsDir });
+  const events = await readRunEvents(run.value);
+  return { ok: true, value: listRun({ events, projectsDir }) };
 };
 
 // `yok orchestrate skill run` imports this file and calls main; bun can also run it directly.

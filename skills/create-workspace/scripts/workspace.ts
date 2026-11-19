@@ -7,7 +7,6 @@ import { parseArgs } from "node:util";
 import {
   type Config,
   createGit,
-  createRegistryReader,
   type EventError,
   emitRunEvent,
   eventError,
@@ -25,7 +24,6 @@ import {
   pickRun,
   type Result,
   type RunRef,
-  registryPath,
   SlugSchema,
   spawn,
   stackOf,
@@ -807,7 +805,6 @@ type Target = Readonly<{ run: RunRef | undefined; root: string; config: Config }
 
 const findTarget = async (flags: Flags): Promise<Result<Target>> => {
   const run = await pickRun({
-    registry: createRegistryReader(registryPath()),
     name: flags.run,
     id: flags["run-id"],
     env: process.env,

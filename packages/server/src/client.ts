@@ -103,17 +103,18 @@ export const createYokClient = ({
     retry: (body: RetryRunBody) => unwrap(api.runs.retry.$post({ json: body })),
     projects: () => unwrap(api.projects.$get()),
     addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
-    removeProject: (name: string, purge: boolean) =>
+    removeProject: (name: string, flags: Readonly<{ purge: boolean; force: boolean }>) =>
       unwrap(
         api.projects[":name"].$delete({
           param: { name },
-          query: { purge: purge ? "true" : "false" },
+          query: { purge: flags.purge ? "true" : "false", force: flags.force ? "true" : "false" },
         }),
       ),
     doctor: (body: DoctorBody) => unwrap(api.doctor.$post({ json: body })),
     view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
     viewRuns: () => unwrap(api.runs.view.$get()),
     runs: (query: ListRunsQuery) => unwrap(api.runs.$get({ query })),
+    removeRun: (id: string) => unwrap(api.runs[":id"].$delete({ param: { id } })),
     addTrigger: (body: AddTriggerBody) => unwrap(api.triggers.$post({ json: body })),
     listTriggers: () => unwrap(api.triggers.$get()),
     fireTrigger: (ref: TriggerRef) => unwrap(api.triggers.fire.$post({ json: ref })),

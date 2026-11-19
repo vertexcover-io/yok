@@ -38,8 +38,8 @@ RUN below is the run's spec name. The input holds `workspace`, the create-worksp
 output, and `task`, the request or ticket text. It may also hold `qa`, the QA stage's output:
 its verdict in `status`, its `reason`, its `report` path and one `gaps[]` entry per requirement
 it could not verify, each with `req` and `mechanism` (what blocked it). Do every step once per repo in the workspace,
-inside its `worktreeDir`, and skip a repo whose branch has no commit past its base. The base
-branch is `workspace.repositories.NAME.git.baseBranch` in `.yok/RUN/state.json`.
+inside its `worktreeDir`, and skip a repo whose branch has no commit past its base. Print each
+repo's base branch with `yok orchestrate get workspace.repositories.NAME.git.baseBranch --run RUN`.
 
 **A run on a pull request's branch.** When the branch tracks a branch other than its own
 (`git rev-parse --abbrev-ref @{upstream}` prints `origin/NAME` and NAME is not the branch), the

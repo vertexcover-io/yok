@@ -7,8 +7,6 @@ import {
   parseJson,
   type Result,
   type RunRef,
-  readState,
-  runDirOf,
   type SessionRef,
   type State,
   type ToolVerdict,
@@ -23,7 +21,7 @@ export const findEnvRun = async (
 ): Promise<Readonly<{ ref: RunRef; sessions: readonly SessionRef[] }> | undefined> => {
   const runId = deps.env.YOK_RUN_ID;
   if (!runId) return undefined;
-  const run = await deps.registry.findRun(runId);
+  const run = await deps.storage.runs.findRun(runId);
   if (run === undefined || run.name === null) return undefined;
   return { ref: { id: run.id, cwd: run.cwd, name: run.name }, sessions: run.sessions };
 };
@@ -47,7 +45,7 @@ export const findSessionState = async (
 ): Promise<Readonly<{ run: RunRef; state: State }> | undefined> => {
   const run = await findSessionRun(input, deps);
   if (run === undefined) return undefined;
-  const state = await readState(runDirOf(run.cwd, run.name));
+  const state = await deps.storage.events(run.id).readState();
   return state === null ? undefined : { run, state };
 };
 
@@ -79,7 +77,12 @@ export const recordRunEvent = async (
   allowed: (state: State | null) => boolean = () => true,
 ): Promise<Event | undefined> => {
   try {
-    const stored = await appendRunEventIf(run, { ...event, source: "hooks" }, allowed);
+    const stored = await appendRunEventIf(
+      deps.storage,
+      run,
+      { ...event, source: "hooks" },
+      allowed,
+    );
     if (stored.ok) return stored.value.event;
     if (stored.error === "condition-failed") return undefined;
     deps.log.warn({ error: stored.error }, `${event.type} not recorded`);

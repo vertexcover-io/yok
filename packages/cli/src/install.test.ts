@@ -645,7 +645,7 @@ describe("removeInstall", () => {
     mkdirSync(join(home, "bin"), { recursive: true });
     const execPath = join(home, "bin", "yok");
     writeFileSync(execPath, "binary");
-    writeFileSync(join(home, "registry.json"), "{}");
+    writeFileSync(join(home, "yok.db"), "");
     const pathLine = /^\s*line='(.*)'$/m.exec(readFileSync(INSTALL_SH, "utf8"))?.[1];
     const rc = join(root, ".zshrc");
     writeFileSync(rc, `alias ll='ls -l'\n\n${pathLine}\nexport EDITOR=vim\n`);

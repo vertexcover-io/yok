@@ -115,7 +115,7 @@ type Walk = ModelInputs &
     draining: boolean;
   }>;
 
-// Top-level nodes carry no `parents`; state.json puts them at the root of its tree.
+// Top-level nodes carry no `parents`; the run's state puts them at the root of its tree.
 export const buildParentsField = (parents: readonly string[]) =>
   parents.length === 0 ? {} : { parents: [...parents] };
 
@@ -691,7 +691,7 @@ async function executeNodes(nodes: readonly PlanNode[], walk: Walk, state: State
     const draining =
       walk.draining || (!node.always && findBlockingFailure(nodes, siblings) !== undefined);
     const found = findNodeRun(current, node);
-    // an interrupted node starts again as if it never ran; the old run stays in event.jsonl
+    // an interrupted node starts again as if it never ran; the old run stays in the run's events
     const nodeRun = found?.status === "interrupted" ? undefined : found;
     if (nodeRun !== undefined && nodeRun.status !== "running") continue;
     if (nodeRun === undefined && (draining || !isReady(node, nodes, siblings))) continue;
@@ -789,7 +789,7 @@ export const decideNext = async (
   return { state: await emit(walked.state, event), decision: { kind: "finished", status } };
 };
 
-// A running leaf and its node run in state.json.
+// A running leaf and its node run in the run's state.
 export type RunningLeaf = Readonly<{ node: Leaf; nodeRun: NodeRun }>;
 
 // Every running leaf, those inside running containers included.

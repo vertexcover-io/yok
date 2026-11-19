@@ -8,10 +8,15 @@
     "./internal": "./src/internal.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "drizzle-orm": "0.45.4",
     "yaml": "^2.9.1",
     "zod": "^4"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.11"
   }
 }

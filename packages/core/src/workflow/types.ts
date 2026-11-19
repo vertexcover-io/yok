@@ -320,7 +320,7 @@ export const WorkflowErrorCodeSchema = z.enum([
 ]);
 
 // How one exec, wait or agent node ended, as orchestrate exec and done record it. A script's
-// process record goes to the event log only; output is the value state.json keeps.
+// process record goes to the event log only; output is the value the run's state keeps.
 export const WorkflowCompileErrorSchema = z.strictObject({
   kind: z.literal("compile"),
   retryable: z.literal(false),
@@ -385,7 +385,7 @@ export type PlanStage = Readonly<{
 }>;
 
 // Compiled nodes carry what they need: the ids of the containers around them (the path to their
-// entry in state.json), a stage node its loaded SKILL.md, an include node the workflow it
+// entry in the run's state), a stage node its loaded SKILL.md, an include node the workflow it
 // includes, and loops and switches their compiled children. `after` names the node before it in
 // run order when it has no dependsOn: it waits for that node to end, but neither inherits its skip
 // nor may read its output.

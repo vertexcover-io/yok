@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDirOf } from "@yok/sdk";
+import { type Event, EventSchema, runDirOf } from "@yok/sdk";
+import { seedEvents, seedRuns } from "../../../packages/cli/src/test-runs.ts";
 
 const SCRIPT = join(import.meta.dir, "retro.ts");
 
@@ -17,37 +25,54 @@ const user = (ts: string, text: string): Row => ({
   message: { role: "user", content: text },
 });
 
-// One event.jsonl line as yok writes it.
-const event = (seq: number, type: string, ts: string, payload: Row, nodeId?: string): Row => ({
-  schemaVersion: 1,
-  seq,
-  id: `e-${seq}`,
-  ts,
-  type,
-  source: "workflow",
-  runId: "r-1",
-  ...(nodeId ? { nodeId, nodeRunId: `nr-${nodeId}` } : {}),
-  payload,
-});
+const event = (seq: number, type: string, ts: string, payload: Row, nodeId?: string): Event =>
+  EventSchema.parse({
+    schemaVersion: 1,
+    seq,
+    id: `e-${seq}`,
+    ts,
+    type,
+    source: "workflow",
+    runId: "r-1",
+    ...(nodeId ? { nodeId, nodeRunId: `nr-${nodeId}` } : {}),
+    payload,
+  });
 
-// A checkout holding .yok/run-x/event.jsonl for one Claude session, and a projects folder
-// holding that session's transcript, as `yok run` and Claude Code leave them.
-const runFixture = (): Readonly<{ cwd: string; projects: string; transcript: string }> => {
-  const cwd = mkdtempSync(join(tmpdir(), "retro-e2e-"));
-  const runDir = runDirOf(cwd, "run-x");
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(
-    join(runDir, "event.jsonl"),
-    jsonl([
-      event(1, "workflow.started", "2026-10-03T10:00:00Z", {
-        workflow: "task",
-        inputs: {},
-        activeSessions: [{ agent: "claude", sessionId: "S1" }],
-      }),
-      event(2, "workflow.node.started", "2026-10-03T10:01:00Z", {}, "planning"),
-      event(3, "workflow.node.completed", "2026-10-03T10:30:00Z", {}, "planning"),
-    ]),
-  );
+// A checkout whose run run-x, in a yok home of its own, recorded one Claude session, and a
+// projects folder holding that session's transcript, as `yok run` and Claude Code leave them.
+// The checkout's real path, since git reports /private/var where mkdtemp gives /var on macOS.
+const runFixture = async (): Promise<
+  Readonly<{ cwd: string; home: string; projects: string; transcript: string }>
+> => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "retro-e2e-")));
+  execFileSync("git", ["init", "-q"], { cwd });
+  mkdirSync(runDirOf(cwd, "run-x"), { recursive: true });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "retro-e2e-home-")));
+  await seedRuns(home, [
+    {
+      id: "r-1",
+      project: "repo",
+      workflow: "task",
+      workflowPath: join(cwd, "task.yaml"),
+      inputs: {},
+      cwd,
+      sessions: [],
+      name: "run-x",
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt: "2026-10-03T10:00:00Z",
+    },
+  ]);
+  await seedEvents(home, "r-1", [
+    event(1, "workflow.started", "2026-10-03T10:00:00Z", {
+      workflow: "task",
+      inputs: {},
+      activeSessions: [{ agent: "claude", sessionId: "S1" }],
+    }),
+    event(2, "workflow.node.started", "2026-10-03T10:01:00Z", {}, "planning"),
+    event(3, "workflow.node.completed", "2026-10-03T10:30:00Z", {}, "planning"),
+  ]);
   const projects = join(cwd, "projects");
   mkdirSync(join(projects, "-Users-x-repo"), { recursive: true });
   const transcript = join(projects, "-Users-x-repo", "S1.jsonl");
@@ -55,18 +80,23 @@ const runFixture = (): Readonly<{ cwd: string; projects: string; transcript: str
     transcript,
     jsonl([user("2026-10-03T10:05:00Z", "looks good, go"), user("2026-10-03T10:40:00Z", "stop")]),
   );
-  return { cwd, projects, transcript };
+  return { cwd, home, projects, transcript };
 };
 
-const retro = (cwd: string, args: readonly string[]) =>
-  spawnSync("bun", [SCRIPT, ...args], { cwd, encoding: "utf8" });
+// A run id or yok home from the shell running the tests must never reach a real database.
+const retro = (cwd: string, home: string, args: readonly string[]) =>
+  spawnSync("bun", [SCRIPT, ...args], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, YOK_RUN_ID: undefined, YOK_HOME: home },
+  });
 
 describe("bun run retro", () => {
-  test("extract --run writes the run file, the stage table and main-1's nine files, exits 0 and prints the summary", () => {
-    const { cwd, projects } = runFixture();
+  test("SC417: extract --run reads run-x's stored events, writes the run file, the stage table and main-1's nine files, exits 0 and prints the summary", async () => {
+    const { cwd, home, projects } = await runFixture();
     const out = join(cwd, "out");
 
-    const run = retro(cwd, [
+    const run = retro(cwd, home, [
       "extract",
       "--run",
       "run-x",
@@ -78,7 +108,7 @@ describe("bun run retro", () => {
       "UTC",
     ]);
 
-    expect(run.status).toBe(0);
+    expect(run.status, run.stderr).toBe(0);
     expect(existsSync(join(out, "00-run.txt"))).toBe(true);
     expect(existsSync(join(out, "09-stages.txt"))).toBe(true);
     for (const n of ["00-summary", "01-spine", "02-assistant", "03-tool-calls", "04-tool-errors"]) {
@@ -93,21 +123,29 @@ describe("bun run retro", () => {
     );
   });
 
-  test("extract --run for a run with no event.jsonl exits 1 with a message on stderr and writes nothing", () => {
-    const { cwd, projects } = runFixture();
+  test("SC418: extract --run for a run yok does not know exits 1 with a message on stderr and writes nothing", async () => {
+    const { cwd, home, projects } = await runFixture();
     const out = join(cwd, "out");
 
-    const run = retro(cwd, ["extract", "--run", "missing", "--out", out, "--projects", projects]);
+    const run = retro(cwd, home, [
+      "extract",
+      "--run",
+      "missing",
+      "--out",
+      out,
+      "--projects",
+      projects,
+    ]);
 
     expect(run.status).toBe(1);
     expect(run.stderr.length).toBeGreaterThan(0);
     expect(existsSync(out)).toBe(false);
   });
 
-  test("cite TRANSCRIPT LINE prints the record headed with the transcript's name and line", () => {
-    const { cwd, transcript } = runFixture();
+  test("cite TRANSCRIPT LINE prints the record headed with the transcript's name and line", async () => {
+    const { cwd, home, transcript } = await runFixture();
 
-    const run = retro(cwd, ["cite", transcript, "2", "--tz", "UTC"]);
+    const run = retro(cwd, home, ["cite", transcript, "2", "--tz", "UTC"]);
 
     expect(run.status).toBe(0);
     expect(run.stdout).toContain("--- S1.jsonl:2 @ 10-03 10:40:00 [user]\nstop");

@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { readWorkflowFile, sortTopologically, type Workflow, type WorkflowNode } from "@yok/core";
 import type {
   Blocker,
+  IStorage,
   ITerminalHost,
   JsonValue,
   NodeRun,
@@ -11,14 +12,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { runDirOf, SkipOutputSchema, StateSchema } from "@yok/sdk";
-import {
-  findRunningLeaf,
-  isRunLive,
-  type Registry,
-  readUsers,
-  resolvePolicies,
-  type UsersFile,
-} from "@yok/sdk/internal";
+import { findRunningLeaf, isRunLive, resolvePolicies, type User } from "@yok/sdk/internal";
 import * as z from "zod";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
 
@@ -108,8 +102,13 @@ const UNLINKED: StartedBy = {
   email: null,
 };
 
-// A user removed from users.json since still shows by id, so the run keeps an owner.
-const resolveStartedBy = (run: WorkflowRun, users: UsersFile): StartedBy | null => {
+type UsersById = Readonly<Record<string, User>>;
+
+export const usersById = async (storage: IStorage): Promise<UsersById> =>
+  Object.fromEntries(await storage.users.list());
+
+// A user removed since still shows by id, so the run keeps an owner.
+const resolveStartedBy = (run: WorkflowRun, users: UsersById): StartedBy | null => {
   const { user } = run;
   if (user === undefined) return run.source === "slack" ? UNLINKED : null;
   const found = users[user];
@@ -137,7 +136,7 @@ export const summarizeRun = (
   run: WorkflowRun,
   files: RunFiles,
   agentAlive: boolean | null,
-  users: UsersFile,
+  users: UsersById,
 ): RunSummary => {
   const base = {
     id: run.id,
@@ -181,12 +180,14 @@ export const summarizeRun = (
 };
 
 // By run folder. init copies workflow.yaml once and nothing rewrites it, and a finished run's state
-// changes again only through a retry, which forgets it here, so the list reads neither twice.
+// changes again only through a retry, so the list reads neither twice. A retry and yok rm forget
+// the folder here: after yok rm, a new run can take the same name and folder.
 const workflows = new Map<string, Workflow>();
 const finishedRuns = new Map<string, RunFiles>();
 
 export const forgetFinishedRun = (runDir: string): void => {
   finishedRuns.delete(runDir);
+  workflows.delete(runDir);
 };
 
 const readWorkflowOnce = async (runDir: string): Promise<Workflow | null> => {
@@ -197,13 +198,13 @@ const readWorkflowOnce = async (runDir: string): Promise<Workflow | null> => {
   return workflow;
 };
 
-export const readRunFiles = async (run: WorkflowRun): Promise<RunFiles> => {
+export const readRunFiles = async (storage: IStorage, run: WorkflowRun): Promise<RunFiles> => {
   if (run.name === null) return { state: null, workflow: null, hasRunDir: false };
   const runDir = runDirOf(run.cwd, run.name);
   const kept = finishedRuns.get(runDir);
   if (kept !== undefined) return kept;
   const [state, workflow, hasRunDir] = await Promise.all([
-    readStateOrNull(runDir),
+    readStateOrNull(storage, run.id),
     readWorkflowOnce(runDir),
     stat(runDir).then(
       (found) => found.isDirectory(),
@@ -217,25 +218,25 @@ export const readRunFiles = async (run: WorkflowRun): Promise<RunFiles> => {
 
 // Only a live run asks tmux, so a long history costs no terminal calls.
 const summarizeLive = async (
+  storage: IStorage,
   run: WorkflowRun,
   host: ITerminalHost,
-  users: UsersFile,
+  users: UsersById,
 ): Promise<RunSummary> => {
-  const files = await readRunFiles(run);
+  const files = await readRunFiles(storage, run);
   const live = files.state !== null && isRunLive(files.state.status);
   return summarizeRun(run, files, live ? await isAgentAlive(run, host) : null, users);
 };
 
 export const listRunSummaries = async (
-  registry: Registry,
+  storage: IStorage,
   host: ITerminalHost,
-  home: string,
 ): Promise<readonly RunSummary[]> => {
-  const runs = [...(await registry.listRuns())].sort((a, b) =>
+  const runs = [...(await storage.runs.listRuns())].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
-  const users = await readUsers(home);
-  return Promise.all(runs.map((run) => summarizeLive(run, host, users)));
+  const users = await usersById(storage);
+  return Promise.all(runs.map((run) => summarizeLive(storage, run, host, users)));
 };
 
 export type Step = Readonly<{

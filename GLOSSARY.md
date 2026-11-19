@@ -23,7 +23,7 @@ _Avoid_: Spec name
 A value given to a run when it starts, declared by the workflow.
 
 **Registry**:
-The machine-wide list of runs, shared by the server and the orchestrate commands.
+The machine-wide list of runs, the `runs` table in `yok.db`, shared by the server and the orchestrate commands.
 
 **Task**:
 The work a run is asked to do, taken from a prompt or a ticket.
@@ -204,7 +204,7 @@ The agent hook that decides whether the agent may end its turn or must go back t
 In this section a project is a repository and its settings; a registered project (below) is the checkout itself.
 
 **Project**:
-A name the server knows for a checkout on its machine, kept in `projects.yaml` in the yok home. A run starts from a project's name.
+A name the server knows for a checkout on its machine, kept in `yok.db` in the yok home. A run starts from a project's name and belongs to that project.
 
 **Config**:
 A project's yok settings: packages, commands, environments, tiers, extensions and subscribers.

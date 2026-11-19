@@ -4,7 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as z from "zod";
-import { type Event, EventSchema, parseJson, SessionRefSchema } from "./contracts.ts";
+import { type Event, parseJson, SessionRefSchema } from "./contracts.ts";
 import { WorkflowStartedEvent } from "./events.ts";
 import type { SessionRef } from "./registry.ts";
 
@@ -194,13 +194,6 @@ export const findTranscript = (projectsDir: string, sessionId: string): string |
     .find((path) => existsSync(path));
 };
 
-// A run's event.jsonl, leaving out any event this yok version does not know.
-export const readEvents = (path: string): readonly Event[] =>
-  readJsonLines(path).flatMap(({ value }) => {
-    const parsed = EventSchema.safeParse(value);
-    return parsed.success ? [parsed.data] : [];
-  });
-
 // Hook, agent and session-replaced events all carry the session they came from in their payload.
 const SessionPayloadSchema = z.object({ payload: z.object(SessionRefSchema.shape) });
 
@@ -214,7 +207,7 @@ const sessionsOf = (event: Event): readonly SessionRef[] => {
 
 // Every session the run used, in order of first appearance: a `context` node that replaces the
 // session adds a new id, so a run can have several.
-export const readRunSessions = (events: readonly Event[]): readonly SessionRef[] =>
+export const collectEventSessions = (events: readonly Event[]): readonly SessionRef[] =>
   events
     .flatMap(sessionsOf)
     .filter((s, i, all) => all.findIndex((o) => o.sessionId === s.sessionId) === i);

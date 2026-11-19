@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -11,12 +10,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { addComments, readComments, replyToComment } from "@yok/core";
-import type { ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
-import { noopLogger } from "@yok/sdk";
-import { createRegistry, type Registry, updateUsers, VERSION } from "@yok/sdk/internal";
+import type { IStorage, ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
+import { noopLogger, StateSchema } from "@yok/sdk";
+import { memoryStorage, VERSION } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, RULE, seedState } from "./fake-host.ts";
+import {
+  claudeOver,
+  EMPTY_BOX,
+  fakeHost,
+  RULE,
+  seedRun,
+  seedState,
+  seedUser,
+} from "./fake-host.ts";
+import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
 
 const tempDir = (prefix: string): string =>
@@ -27,8 +34,10 @@ const put = (root: string, rel: string, content: string | Uint8Array): void => {
   writeFileSync(join(root, rel), content);
 };
 
+// Each folder is its own project, since a run's cwd is its project's folder.
 const runRecord = (id: string, cwd: string, name: string | null): WorkflowRun => ({
   id,
+  project: folderSlug(cwd),
   workflow: "w",
   workflowPath: "/w.yaml",
   inputs: {},
@@ -40,6 +49,14 @@ const runRecord = (id: string, cwd: string, name: string | null): WorkflowRun =>
   tiers: null,
   createdAt: "2026-01-01T00:00:00.000Z",
 });
+
+// Stores STATE as run ID's own, as an engine write would leave it; the run is stored afresh.
+const putState = async (storage: IStorage, id: string, state: unknown): Promise<void> => {
+  const run = await storage.runs.findRun(id);
+  if (run === undefined) throw new Error(`no run ${id}`);
+  await storage.runs.removeRun(id);
+  await seedRun(storage, run, StateSchema.parse(state));
+};
 
 const stateWith = (nodeRuns: unknown): State => ({ nodeRuns }) as unknown as State;
 
@@ -119,21 +136,20 @@ describe("resolveArtifactPath", () => {
 // delivery.ts remembers each run's last delivery by id, so a test that reads it passes its own id.
 const setup = async (screen?: string, alive = true, namedId = "r-named") => {
   const cwd = tempDir("viewer-cwd");
-  const registry = createRegistry(join(tempDir("viewer-reg"), "registry.json"), noopLogger);
+  const storage = memoryStorage();
   const named = runRecord(namedId, cwd, "demo");
-  await registry.addRun(screen === undefined ? named : { ...named, terminal: "s1" });
-  await registry.addRun(runRecord("r-starting", cwd, null));
-  await registry.addRun(runRecord("r-empty", cwd, "bare"));
+  await seedRun(storage, screen === undefined ? named : { ...named, terminal: "s1" });
+  await seedRun(storage, runRecord("r-starting", cwd, null));
+  await seedRun(storage, runRecord("r-empty", cwd, "bare"));
   const { host, calls } = fakeHost(screen ?? "", alive);
   const now = () => new Date("2026-01-01T00:00:00.000Z");
   const opened: { file: string; line: number | null }[] = [];
   const app = viewerRoutes({
-    registry,
     log: noopLogger,
     providerFor: () => claudeOver(host),
     host,
     now,
-    home: tempDir("viewer-home"),
+    storage,
     stopping: new AbortController().signal,
     openInEditor: (target) => {
       opened.push(target);
@@ -151,7 +167,7 @@ const setup = async (screen?: string, alive = true, namedId = "r-named") => {
   return {
     namedId,
     cwd,
-    registry,
+    storage,
     app,
     get,
     post,
@@ -165,10 +181,8 @@ const until = async (check: () => Promise<boolean>): Promise<void> => {
   for (let i = 0; i < 50 && !(await check()); i++) await Bun.sleep(50);
 };
 
-const statusesOf = async (runDir: string): Promise<readonly string[]> => {
-  const read = await readComments(runDir);
-  return read.ok ? read.value.comments.map((c) => c.status) : [];
-};
+const statusesOf = async (storage: IStorage, runId = "r-named"): Promise<readonly string[]> =>
+  (await storage.comments.list(runId)).map((c) => c.status);
 
 describe("viewer routes", () => {
   test("the dashboard's header links to the person's settings", async () => {
@@ -206,7 +220,7 @@ describe("viewer routes", () => {
   });
 
   test("each file names the first stage, in workflow order, that delivered it, and files no stage delivered come last", async () => {
-    const { get, cwd, runDir } = await setup();
+    const { get, cwd, runDir, storage } = await setup();
     put(
       runDir,
       "workflow.yaml",
@@ -227,9 +241,9 @@ describe("viewer routes", () => {
       ...nodeRun([]),
       artifacts: paths.map((path) => ({ type: "file", name: path, path })),
     });
-    put(
-      runDir,
-      "state.json",
+    await putState(
+      storage,
+      "r-named",
       stateWithRuns(cwd, {
         review: delivered("artifacts/review.md", "artifacts/design.md"),
         tidy: delivered("artifacts/tidy.md"),
@@ -251,10 +265,9 @@ describe("viewer routes", () => {
     ]);
   });
 
-  test("SC6b: a state.json that does not parse leaves the list standing, all drafts", async () => {
+  test("SC6b: a run with no state leaves the list standing, all drafts", async () => {
     const { get, runDir } = await setup();
     put(runDir, "artifacts/design.md", "# d");
-    put(runDir, "state.json", "{not json");
     const body = (await (await get("/runs/r-named/files")).json()) as {
       files: { draft: boolean }[];
     };
@@ -262,7 +275,7 @@ describe("viewer routes", () => {
   });
 
   test("SC10: the file list flags design.md while its running node waits on it, and stops once the node completes", async () => {
-    const { get, runDir } = await setup();
+    const { get, runDir, storage } = await setup();
     put(runDir, "artifacts/design.md", "# d");
     put(runDir, "artifacts/notes.md", "# n");
     const design = (status: NodeRun["status"]): NodeRun => ({
@@ -281,13 +294,13 @@ describe("viewer routes", () => {
       return body.files.map((f) => [f.path, f.awaitingApproval]);
     };
 
-    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design: design("running") })));
+    await putState(storage, "r-named", seedState(runDir, { design: design("running") }));
     expect(await flags()).toEqual([
       ["artifacts/design.md", true],
       ["artifacts/notes.md", false],
     ]);
 
-    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design: design("completed") })));
+    await putState(storage, "r-named", seedState(runDir, { design: design("completed") }));
     expect(await flags()).toEqual([
       ["artifacts/design.md", false],
       ["artifacts/notes.md", false],
@@ -430,16 +443,12 @@ const draft = {
   anchor: { quote: "one file", before: "a", after: "b", lines: [14, 16], heading: "Approach" },
 };
 
-const eventsOf = (runDir: string, type: string): { payload: unknown }[] =>
-  readFileSync(join(runDir, "event.jsonl"), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as { type: string; payload: unknown })
-    .filter((event) => event.type === type);
+const eventsOf = async (storage: IStorage, runId: string, type: string) =>
+  (await storage.events(runId).read()).filter((event) => event.type === type);
 
 describe("comment routes", () => {
-  test("SC25: a posted batch is saved, logged with its places, typed into the session, and bad bodies are refused", async () => {
-    const { post, runDir, calls } = await setup(EMPTY_BOX);
+  test("SC316 (SC25): a posted batch is saved, logged with its places, typed into the session with no comments.json written, and bad bodies are refused", async () => {
+    const { post, runDir, calls, storage } = await setup(EMPTY_BOX);
     const res = await post("/runs/r-named/comments", {
       comments: [draft, { file: "artifacts/a.md", kind: "global", text: "Ship it" }],
     });
@@ -447,7 +456,7 @@ describe("comment routes", () => {
     expect(res.status).toBe(201);
     const body = (await res.json()) as { comments: { id: string }[] };
     expect(body.comments.map((c) => c.id)).toEqual(["c1", "c2"]);
-    const added = eventsOf(runDir, "artifact.comment.added");
+    const added = await eventsOf(storage, "r-named", "artifact.comment.added");
     expect(added).toHaveLength(1);
     expect(added[0]?.payload).toEqual({
       comments: [
@@ -455,10 +464,11 @@ describe("comment routes", () => {
         { id: "c2", file: "artifacts/a.md", kind: "global", text: "Ship it" },
       ],
     });
-    await until(async () => (await statusesOf(runDir)).every((s) => s === "delivered"));
-    expect(await statusesOf(runDir)).toEqual(["delivered", "delivered"]);
+    await until(async () => (await statusesOf(storage)).every((s) => s === "delivered"));
+    expect(await statusesOf(storage)).toEqual(["delivered", "delivered"]);
     expect(calls.filter((c) => c.startsWith("text:"))).toHaveLength(1);
     expect(calls[0]).toContain("2 new comments");
+    expect(existsSync(join(runDir, "comments.json"))).toBe(false);
     const bad = [
       await post("/runs/r-named/comments", { comments: [{ ...draft, kind: "shout" }] }),
       await post("/runs/r-missing/comments", { comments: [draft] }),
@@ -468,8 +478,8 @@ describe("comment routes", () => {
     expect(bad.map((r) => r.status)).toEqual([400, 404, 409, 400]);
   });
 
-  test("an approve on a file no running node waits on is refused with 409 and nothing is stored, and one on the waiting design.md is accepted", async () => {
-    const { post, runDir } = await setup();
+  test("SC317: an approve on a file no running node waits on is refused with 409 and nothing is stored, and one on the waiting design.md is accepted", async () => {
+    const { post, runDir, storage } = await setup();
     put(runDir, "artifacts/design.md", "# d");
     put(runDir, "artifacts/notes.md", "# n");
     const design: NodeRun = {
@@ -481,66 +491,64 @@ describe("comment routes", () => {
       artifacts: [],
       awaitingApproval: "artifacts/design.md",
     };
-    put(runDir, "state.json", JSON.stringify(seedState(runDir, { design })));
+    await putState(storage, "r-named", seedState(runDir, { design }));
     const approve = (file: string) =>
       post("/runs/r-named/comments", { comments: [{ file, kind: "approve", text: "Approved" }] });
 
     const refused = await approve("artifacts/notes.md");
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("artifacts/notes.md");
-    expect(await statusesOf(runDir)).toEqual([]);
+    expect(await statusesOf(storage)).toEqual([]);
 
     expect((await approve("artifacts/design.md")).status).toBe(201);
   });
 
-  test("SC530: a comment on design.md in a run whose interaction policy is off is refused with 409, and nothing is stored or logged", async () => {
-    const { post, runDir } = await setup();
+  test("SC317 (SC530): a comment on design.md in a run whose interaction policy is off is refused with 409, and nothing is stored or logged", async () => {
+    const { post, runDir, storage } = await setup();
     put(runDir, "artifacts/design.md", "# d");
     const state: State = {
       ...seedState(runDir, {}),
       policies: { values: { interaction: false }, sources: { interaction: "cli" } },
     };
-    put(runDir, "state.json", JSON.stringify(state));
+    await putState(storage, "r-named", state);
 
     const refused = await post("/runs/r-named/comments", { comments: [draft] });
 
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("interaction");
-    expect(existsSync(join(runDir, "comments.json"))).toBe(false);
-    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
+    expect(await statusesOf(storage)).toEqual([]);
+    expect(await storage.events("r-named").read()).toEqual([]);
   });
 
   const offPolicies = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
 
-  test("SC530: a run the registry saved with interaction off refuses comments though its state.json is missing", async () => {
-    const { post, registry, cwd } = await setup();
-    await registry.addRun({ ...runRecord("r-off", cwd, "off"), policies: offPolicies });
+  test("SC317 (SC530): a run saved with interaction off refuses comments though it has no state", async () => {
+    const { post, storage, cwd } = await setup();
+    await seedRun(storage, { ...runRecord("r-off", cwd, "off"), policies: offPolicies });
     const runDir = join(cwd, ".yok", "off");
     put(runDir, "artifacts/design.md", "# d");
 
     const refused = await post("/runs/r-off/comments", { comments: [draft] });
 
     expect(refused.status).toBe(409);
-    expect(existsSync(join(runDir, "comments.json"))).toBe(false);
+    expect(await statusesOf(storage, "r-off")).toEqual([]);
   });
 
-  test("SC530: a reply on a run whose interaction policy is off is refused with 409, and the thread is left as it was", async () => {
-    const { post, registry, cwd } = await setup();
-    await registry.addRun({ ...runRecord("r-off", cwd, "off"), policies: offPolicies });
+  test("SC320 (SC530): a reply on a run whose interaction policy is off is refused with 409, and the thread is left as it was", async () => {
+    const { post, storage, cwd } = await setup();
+    await seedRun(storage, { ...runRecord("r-off", cwd, "off"), policies: offPolicies });
     const runDir = join(cwd, ".yok", "off");
     put(runDir, "artifacts/design.md", "# d");
-    await addComments(
-      runDir,
-      [{ file: "artifacts/design.md", kind: "global", text: "Why one file?" }],
-      new Date(),
-    );
-    const before = readFileSync(join(runDir, "comments.json"), "utf8");
+    await storage.comments.add("r-off", [
+      { file: "artifacts/design.md", kind: "global", text: "Why one file?" },
+    ]);
+    const before = await storage.comments.list("r-off");
 
     const refused = await post("/runs/r-off/comments/c1/reply", { text: "one more thing" });
 
     expect(refused.status).toBe(409);
-    expect(readFileSync(join(runDir, "comments.json"), "utf8")).toBe(before);
-    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
+    expect(await storage.comments.list("r-off")).toEqual(before);
+    expect(await storage.events("r-off").read()).toEqual([]);
   });
 
   const seedWaitingDesign = async () => {
@@ -555,13 +563,13 @@ describe("comment routes", () => {
       artifacts: [],
       awaitingApproval: "artifacts/design.md",
     };
-    put(ctx.runDir, "state.json", JSON.stringify(seedState(ctx.runDir, { design })));
+    await putState(ctx.storage, "r-named", seedState(ctx.runDir, { design }));
     return ctx;
   };
   const approveDraft = { file: "artifacts/design.md", kind: "approve", text: "Approved" };
 
-  test("SC10: two approvals of the waiting design.md posted at once - one is accepted with 201, the other refused with 409, and only one approval is stored and logged", async () => {
-    const { post, runDir } = await seedWaitingDesign();
+  test("SC318 (SC10): two approvals of the waiting design.md posted at once - one is accepted with 201, the other refused with 409, and only one approval is stored and logged", async () => {
+    const { post, storage } = await seedWaitingDesign();
 
     const replies = await Promise.all([
       post("/runs/r-named/comments", { comments: [approveDraft] }),
@@ -569,36 +577,36 @@ describe("comment routes", () => {
     ]);
 
     expect(replies.map((r) => r.status).sort()).toEqual([201, 409]);
-    expect(await statusesOf(runDir)).toHaveLength(1);
-    const added = eventsOf(runDir, "artifact.comment.added");
+    expect(await statusesOf(storage)).toHaveLength(1);
+    const added = await eventsOf(storage, "r-named", "artifact.comment.added");
     expect(added).toHaveLength(1);
     expect(added[0]?.payload).toMatchObject({ comments: [{ kind: "approve" }] });
   });
 
-  test("SC10: one batch holding two approvals of the same design.md is refused with 409 and nothing is stored", async () => {
-    const { post, runDir } = await seedWaitingDesign();
+  test("SC317 (SC10): one batch holding two approvals of the same design.md is refused with 409 and nothing is stored", async () => {
+    const { post, storage } = await seedWaitingDesign();
 
     const res = await post("/runs/r-named/comments", { comments: [approveDraft, approveDraft] });
 
     expect(res.status).toBe(409);
-    expect(await statusesOf(runDir)).toEqual([]);
-    expect(existsSync(join(runDir, "event.jsonl"))).toBe(false);
+    expect(await statusesOf(storage)).toEqual([]);
+    expect(await storage.events("r-named").read()).toEqual([]);
   });
 
-  test("SC31: a user follow-up sends the thread again and is logged", async () => {
-    const { post, get, runDir, calls } = await setup(EMPTY_BOX);
+  test("SC319 (SC31): a comment typed to the agent gets its reply, and a user follow-up sends the thread again and is logged", async () => {
+    const { post, get, calls, storage } = await setup(EMPTY_BOX);
     await post("/runs/r-named/comments", { comments: [draft] });
-    await until(async () => (await statusesOf(runDir))[0] === "delivered");
-    await replyToComment(runDir, "c1", { status: "answered", text: "Because." }, new Date());
+    await until(async () => (await statusesOf(storage))[0] === "delivered");
+    await storage.comments.reply("r-named", "c1", { status: "answered", text: "Because." });
 
     const res = await post("/runs/r-named/comments/c1/reply", { text: "Can we bundle it later?" });
 
     expect(res.status).toBe(200);
     const typedFollowUp = () =>
       calls.some((c) => c.includes("c1 · reply on its thread: Can we bundle it later?"));
-    await until(async () => typedFollowUp() && (await statusesOf(runDir))[0] === "delivered");
+    await until(async () => typedFollowUp() && (await statusesOf(storage))[0] === "delivered");
     expect(typedFollowUp()).toBe(true);
-    expect(await statusesOf(runDir)).toEqual(["delivered"]);
+    expect(await statusesOf(storage)).toEqual(["delivered"]);
     const listed = (await (await get("/runs/r-named/comments")).json()) as {
       comments: { status: string; thread: { by: string; text: string }[] }[];
     };
@@ -606,7 +614,9 @@ describe("comment routes", () => {
       by: "user",
       text: "Can we bundle it later?",
     });
-    expect(eventsOf(runDir, "artifact.comment.replied")[0]?.payload).toMatchObject({
+    expect(
+      (await eventsOf(storage, "r-named", "artifact.comment.replied"))[0]?.payload,
+    ).toMatchObject({
       id: "c1",
       by: "user",
       status: "sent",
@@ -652,9 +662,9 @@ const sseReader = (res: Response) => {
 };
 
 describe("run stream", () => {
-  test("SC30: the stream sends the run's state at once and again when something changes", async () => {
-    const { app, registry, cwd } = await setup();
-    await registry.addRun(runRecord("r-late", cwd, null));
+  test("SC321 (SC30): the stream sends the run's state at once and again when something changes", async () => {
+    const { app, storage, cwd } = await setup();
+    await seedRun(storage, runRecord("r-late", cwd, null));
     const res = await app.request("/runs/r-late/stream", { headers: { host: "localhost:4000" } });
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const sse = sseReader(res);
@@ -666,8 +676,9 @@ describe("run stream", () => {
         (e) => e.event === "comments" && (e.data as { comments: unknown[] }).comments.length === 0,
       );
 
-      await registry.initRun("r-late", "late");
       const lateDir = join(cwd, ".yok", "late");
+      const late = { ...stateJson("r-late", cwd, "running"), runName: "late", runDir: lateDir };
+      expect((await storage.runs.initRun("r-late", "late", late)).ok).toBe(true);
       await sse.waitFor(
         (e) =>
           e.event === "files" &&
@@ -690,12 +701,10 @@ describe("run stream", () => {
         (e) => e.event === "file" && (e.data as { path: string }).path === "artifacts/design.md",
       );
 
-      await addComments(
-        lateDir,
-        [{ file: "artifacts/design.md", kind: "global", text: "hi" }],
-        new Date(),
-      );
-      await replyToComment(lateDir, "c1", { status: "answered", text: "Because." }, new Date());
+      await storage.comments.add("r-late", [
+        { file: "artifacts/design.md", kind: "global", text: "hi" },
+      ]);
+      await storage.comments.reply("r-late", "c1", { status: "answered", text: "Because." });
       await sse.waitFor(
         (e) => e.event === "comments" && JSON.stringify(e.data).includes("Because."),
       );
@@ -838,8 +847,13 @@ const WORKFLOW_YAML = [
   "",
 ].join("\n");
 
-const stateJson = (runId: string, cwd: string, status: State["status"]): string =>
-  JSON.stringify({
+const stateJson = (
+  runId: string,
+  cwd: string,
+  status: State["status"],
+  extra: Readonly<Record<string, unknown>> = {},
+): State =>
+  StateSchema.parse({
     schemaVersion: 1,
     lastEventSeq: 1,
     runId,
@@ -860,16 +874,16 @@ const stateJson = (runId: string, cwd: string, status: State["status"]): string 
     nodeRuns: {},
     activeSessions: [],
     tiers: null,
+    ...extra,
   });
 
-const listRoutes = (registry: Registry, host: ITerminalHost = fakeHost("").host) => {
+const listRoutes = (storage: IStorage, host: ITerminalHost = fakeHost("").host) => {
   return viewerRoutes({
-    registry,
     log: noopLogger,
     providerFor: () => claudeOver(host),
     host,
     now: () => new Date(),
-    home: tempDir("viewer-home"),
+    storage,
     stopping: new AbortController().signal,
     openInEditor: () => ({ ok: true, value: null }),
   });
@@ -881,15 +895,15 @@ describe("runs list", () => {
   test("SC105: GET /runs lists every run newest first, each with its own folder, and a run with a folder carries its state's status", async () => {
     const acme = join(tempDir("list-a"), "acme");
     const beta = join(tempDir("list-b"), "beta");
-    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    const storage = memoryStorage();
     const at = (day: number) => `2026-01-0${day}T00:00:00.000Z`;
-    await registry.addRun({ ...runRecord("r-old", acme, "gone"), createdAt: at(1) });
-    await registry.addRun({ ...runRecord("r-new", beta, null), createdAt: at(3) });
-    await registry.addRun({ ...runRecord("r-mid", acme, "demo"), createdAt: at(2) });
-    put(acme, ".yok/demo/state.json", stateJson("r-mid", acme, "completed"));
+    await seedRun(storage, { ...runRecord("r-old", acme, "gone"), createdAt: at(1) });
+    await seedRun(storage, { ...runRecord("r-new", beta, null), createdAt: at(3) });
+    const mid = { ...runRecord("r-mid", acme, "demo"), createdAt: at(2) };
+    await seedRun(storage, mid, stateJson("r-mid", acme, "completed"));
     put(acme, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
 
-    const res = await listRoutes(registry).request("/runs", {
+    const res = await listRoutes(storage).request("/runs", {
       headers: { host: "localhost:4000" },
     });
     const { runs } = (await res.json()) as { runs: ListedRun[] };
@@ -904,23 +918,19 @@ describe("runs list", () => {
   test("GET /runs keeps a finished run's files and every run's workflow once read, and re-reads a live run's state", async () => {
     const done = join(tempDir("list-done"), "acme");
     const live = join(tempDir("list-live"), "beta");
-    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
-    await registry.addRun({
-      ...runRecord("r-done", done, "demo"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-    });
-    await registry.addRun({
-      ...runRecord("r-live", live, "demo"),
-      createdAt: "2026-01-02T00:00:00.000Z",
-    });
-    for (const [cwd, id, status] of [
-      [done, "r-done", "completed"],
-      [live, "r-live", "running"],
+    const storage = memoryStorage();
+    for (const [cwd, id, status, createdAt] of [
+      [done, "r-done", "completed", "2026-01-01T00:00:00.000Z"],
+      [live, "r-live", "running", "2026-01-02T00:00:00.000Z"],
     ] as const) {
-      put(cwd, ".yok/demo/state.json", stateJson(id, cwd, status));
+      await seedRun(
+        storage,
+        { ...runRecord(id, cwd, "demo"), createdAt },
+        stateJson(id, cwd, status),
+      );
       put(cwd, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
     }
-    const app = listRoutes(registry);
+    const app = listRoutes(storage);
     const list = async () =>
       (
         (await (await app.request("/runs", { headers: { host: "localhost:4000" } })).json()) as {
@@ -932,8 +942,8 @@ describe("runs list", () => {
       { id: "r-done", status: "completed", steps: { total: 2 } },
     ]);
 
-    put(done, ".yok/demo/state.json", stateJson("r-done", done, "running"));
-    put(live, ".yok/demo/state.json", stateJson("r-live", live, "failed"));
+    await putState(storage, "r-done", stateJson("r-done", done, "running"));
+    await putState(storage, "r-live", stateJson("r-live", live, "failed"));
     rmSync(join(live, ".yok/demo/workflow.yaml"));
 
     expect(await list()).toMatchObject([
@@ -967,7 +977,7 @@ const twoPaneHost = () => {
 
 describe("runs list liveness", () => {
   test("SC115: GET /runs reports a blocked run with a live terminal as blocked with its blocker and a running run with a dead terminal as gone, asking the host about those two terminals only", async () => {
-    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
+    const storage = memoryStorage();
     const runs = [
       { id: "r-blocked", terminal: "t-alive", status: "blocked", blocker: QUESTION_BLOCKER },
       { id: "r-gone", terminal: "t-dead", status: "running" },
@@ -976,20 +986,18 @@ describe("runs list liveness", () => {
     for (const [i, run] of runs.entries()) {
       const cwd = tempDir(`list-${run.id}`);
       const createdAt = `2026-01-0${3 - i}T00:00:00.000Z`;
-      await registry.addRun({
-        ...runRecord(run.id, cwd, "demo"),
-        terminal: run.terminal,
-        createdAt,
-      });
-      const state = {
-        ...JSON.parse(stateJson(run.id, cwd, run.status)),
-        ...("blocker" in run ? { blocker: run.blocker } : {}),
-      };
-      put(cwd, ".yok/demo/state.json", JSON.stringify(state));
+      const state = stateJson(
+        run.id,
+        cwd,
+        run.status,
+        "blocker" in run ? { blocker: run.blocker } : {},
+      );
+      const record = { ...runRecord(run.id, cwd, "demo"), terminal: run.terminal, createdAt };
+      await seedRun(storage, record, state);
     }
     const { host, asked } = twoPaneHost();
 
-    const res = await listRoutes(registry, host).request("/runs", {
+    const res = await listRoutes(storage, host).request("/runs", {
       headers: { host: "localhost:4000" },
     });
     const body = (await res.json()) as { runs: ListedRun[] };
@@ -1006,9 +1014,9 @@ describe("runs list liveness", () => {
 describe("runs list stream", () => {
   test("SC107: /stream sends the runs at once, with an unnamed run starting, and again once the run is named and has its state", async () => {
     const cwd = tempDir("list-cwd");
-    const registry = createRegistry(join(tempDir("list-reg"), "registry.json"), noopLogger);
-    await registry.addRun({ ...runRecord("r-live", cwd, null), terminal: "s1" });
-    const res = await listRoutes(registry).request("/stream", {
+    const storage = memoryStorage();
+    await seedRun(storage, { ...runRecord("r-live", cwd, null), terminal: "s1" });
+    const res = await listRoutes(storage).request("/stream", {
       headers: { host: "localhost:4000" },
     });
     expect(res.headers.get("content-type")).toContain("text/event-stream");
@@ -1018,8 +1026,12 @@ describe("runs list stream", () => {
     try {
       await sse.waitFor(statusIs("starting"), 500);
 
-      await registry.initRun("r-live", "demo");
-      put(cwd, ".yok/demo/state.json", stateJson("r-live", cwd, "running"));
+      const named = await storage.runs.initRun(
+        "r-live",
+        "demo",
+        stateJson("r-live", cwd, "running"),
+      );
+      expect(named.ok).toBe(true);
       put(cwd, ".yok/demo/workflow.yaml", WORKFLOW_YAML);
       await sse.waitFor(statusIs("running"));
     } finally {
@@ -1037,8 +1049,8 @@ const THREE_STEPS_YAML = [
   "",
 ].join("\n");
 
-const stateWithRuns = (cwd: string, nodeRuns: Record<string, unknown>): string =>
-  JSON.stringify({ ...JSON.parse(stateJson("r-named", cwd, "running")), nodeRuns });
+const stateWithRuns = (cwd: string, nodeRuns: Record<string, unknown>): State =>
+  stateJson("r-named", cwd, "running", { nodeRuns });
 
 type StepsBody = { steps: { id: string; status: string }[] };
 const stepsOf = (e: SseEvent): StepsBody["steps"] | null =>
@@ -1046,9 +1058,9 @@ const stepsOf = (e: SseEvent): StepsBody["steps"] | null =>
 
 describe("steps on the run stream", () => {
   test("SC123: a named run streams its folder's steps, a named run with no workflow.yaml streams none, and an unnamed run streams no steps", async () => {
-    const { get, cwd, runDir } = await setup();
+    const { get, cwd, runDir, storage } = await setup();
     put(runDir, "workflow.yaml", THREE_STEPS_YAML);
-    put(runDir, "state.json", stateWithRuns(cwd, { design: nodeRun([]) }));
+    await putState(storage, "r-named", stateWithRuns(cwd, { design: nodeRun([]) }));
 
     const named = sseReader(await get("/runs/r-named/stream"));
     try {
@@ -1081,12 +1093,12 @@ describe("steps on the run stream", () => {
 
 describe("steps on the run stream, live", () => {
   test("SC124: the stream sends the steps at once with design running, and again once state has design completed", async () => {
-    const { get, cwd, runDir } = await setup();
+    const { get, cwd, runDir, storage } = await setup();
     put(runDir, "workflow.yaml", THREE_STEPS_YAML);
     const designIs = (status: string) => (e: SseEvent) => stepsOf(e)?.[0]?.status === status;
-    put(
-      runDir,
-      "state.json",
+    await putState(
+      storage,
+      "r-named",
       stateWithRuns(cwd, { design: { ...nodeRun([]), status: "running" } }),
     );
 
@@ -1094,7 +1106,7 @@ describe("steps on the run stream, live", () => {
     try {
       await sse.waitFor(designIs("running"), 1000);
 
-      put(runDir, "state.json", stateWithRuns(cwd, { design: nodeRun([]) }));
+      await putState(storage, "r-named", stateWithRuns(cwd, { design: nodeRun([]) }));
       await sse.waitFor(designIs("completed"));
     } finally {
       await sse.close();
@@ -1104,10 +1116,10 @@ describe("steps on the run stream, live", () => {
 
 describe("summary on the run stream", () => {
   test("the run stream sends the run's summary at once, and again when the run blocks with its steps unchanged", async () => {
-    const { get, cwd, runDir } = await setup(EMPTY_BOX, true);
+    const { get, cwd, runDir, storage } = await setup(EMPTY_BOX, true);
     put(runDir, "workflow.yaml", THREE_STEPS_YAML);
     const nodeRuns = { design: { ...nodeRun([]), status: "running" } };
-    put(runDir, "state.json", stateWithRuns(cwd, nodeRuns));
+    await putState(storage, "r-named", stateWithRuns(cwd, nodeRuns));
     const statusIs = (status: string) => (e: SseEvent) =>
       e.event === "summary" && (e.data as ListedRun).status === status;
 
@@ -1115,8 +1127,8 @@ describe("summary on the run stream", () => {
     try {
       await sse.waitFor(statusIs("running"), 1000);
 
-      const blocked = { ...JSON.parse(stateWithRuns(cwd, nodeRuns)), status: "blocked" };
-      put(runDir, "state.json", JSON.stringify({ ...blocked, blocker: QUESTION_BLOCKER }));
+      const blocked = { ...stateWithRuns(cwd, nodeRuns), status: "blocked" };
+      await putState(storage, "r-named", { ...blocked, blocker: QUESTION_BLOCKER });
       const summary = await sse.waitFor(statusIs("blocked"));
       expect(summary.data).toMatchObject({ id: "r-named", blocker: QUESTION_BLOCKER });
       expect(sse.seen.filter((e) => e.event === "steps")).toHaveLength(1);
@@ -1125,20 +1137,21 @@ describe("summary on the run stream", () => {
     }
   }, 10000);
 
-  test("the run stream's summary names the yok user who started the run, not just their id", async () => {
+  test("SC126: the run stream's summary names the yok user who started the run, not just their id", async () => {
     const cwd = tempDir("viewer-cwd");
-    const home = tempDir("viewer-home");
-    const registry = createRegistry(join(tempDir("viewer-reg"), "registry.json"), noopLogger);
-    await registry.addRun({ ...runRecord("r-owned", cwd, "demo"), source: "slack", user: "u_1" });
-    await updateUsers(home, () => ({ u_1: { name: "Ritesh", email: "", accounts: {} } }));
+    const storage = memoryStorage();
+    const userId = await seedUser(storage, {
+      name: "Ritesh",
+      github: { id: 1, login: "ritesh-gh" },
+    });
+    await seedRun(storage, { ...runRecord("r-owned", cwd, "demo"), source: "slack", user: userId });
     const { host } = fakeHost("");
     const app = viewerRoutes({
-      registry,
       log: noopLogger,
       providerFor: () => claudeOver(host),
       host,
       now: () => new Date(),
-      home,
+      storage,
       stopping: new AbortController().signal,
       openInEditor: () => ({ ok: true, value: null }),
     });
@@ -1148,7 +1161,7 @@ describe("summary on the run stream", () => {
     );
     try {
       const summary = await sse.waitFor((e) => e.event === "summary", 1000);
-      expect(summary.data).toMatchObject({ startedBy: { user: "u_1", name: "Ritesh" } });
+      expect(summary.data).toMatchObject({ startedBy: { user: userId, name: "Ritesh" } });
     } finally {
       await sse.close();
     }
