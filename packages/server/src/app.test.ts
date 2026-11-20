@@ -984,7 +984,7 @@ describe("createYokClient", () => {
     }
   });
 
-  test("SC1003: the client calls every route under /api, with a UTF-8 Basic header only when given a login", async () => {
+  test("SC26 (SC1003): the client calls every route under /api, sending Authorization: Bearer when given a token and never Basic", async () => {
     const seen: Array<readonly [string, string | null]> = [];
     const { url, server } = serveOn((request) => {
       seen.push([new URL(request.url).pathname, request.headers.get("authorization")]);
@@ -994,21 +994,20 @@ describe("createYokClient", () => {
       const keyless = createYokClient({ url });
       await keyless.health();
       await keyless.viewRuns();
-      const login = { user: "ritesh", password: "pässwörd" };
-      const withLogin = createYokClient({ url, login });
-      await withLogin.health();
-      await withLogin.viewRuns();
+      const withToken = createYokClient({ url, token: "yok_abc-123" });
+      await withToken.health();
+      await withToken.viewRuns();
       await createYokClient({ url: `${url}/` }).health();
     } finally {
       await server.stop(true);
     }
 
-    const basic = "Basic cml0ZXNoOnDDpHNzd8O2cmQ=";
+    const bearer = "Bearer yok_abc-123";
     expect(seen).toEqual([
       ["/api/health", null],
       ["/api/runs/view", null],
-      ["/api/health", basic],
-      ["/api/runs/view", basic],
+      ["/api/health", bearer],
+      ["/api/runs/view", bearer],
       ["/api/health", null],
     ]);
   });
