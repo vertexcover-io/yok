@@ -93,6 +93,7 @@ export const ErrorBodySchema = z.strictObject({
       "unauthenticated",
       "not-found",
       "conflict",
+      "too-many-requests",
       "agent-failed",
       "git-failed",
       "internal",

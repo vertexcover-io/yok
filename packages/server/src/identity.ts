@@ -24,6 +24,8 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEVICE_TTL_MS = 10 * 60 * 1000;
 const DEVICE_POLL_SECONDS = 2;
+// POST /api/auth/device is open and the requests live in memory, so they are capped.
+export const MAX_PENDING_DEVICE_REQUESTS = 100;
 // No vowels and no look-alikes, so a code read off a terminal is typed back without doubt.
 const USER_CODE_LETTERS = "BCDFGHJKLMNPQRSTVWXZ";
 // One grant: who the person is, push and pull on every repo they can reach, and pushes that
@@ -469,7 +471,9 @@ const liveRequests = (requests: DeviceRequests, now: Date): DeviceRequests => {
 
 const findByUserCode = (requests: DeviceRequests, typed: string) => {
   const userCode = normalizeUserCode(typed);
-  return [...requests].find(([, request]) => request.userCode === userCode);
+  return [...requests].find(
+    ([, request]) => request.userCode === userCode && request.approvedBy === undefined,
+  );
 };
 
 const startDevice = (
@@ -478,10 +482,18 @@ const startDevice = (
   requests: DeviceRequests,
   hostname: string,
 ) => {
+  if (liveRequests(requests, deps.now()).size >= MAX_PENDING_DEVICE_REQUESTS) {
+    return errorResponse(
+      c,
+      429,
+      "too-many-requests",
+      "too many login requests are waiting; try again in a few minutes",
+    );
+  }
   const deviceCode = randomBytes(32).toString("base64url");
   const userCode = newUserCode();
   const expiresAt = deps.now().getTime() + DEVICE_TTL_MS;
-  liveRequests(requests, deps.now()).set(deviceCode, { hostname, userCode, expiresAt });
+  requests.set(deviceCode, { hostname, userCode, expiresAt });
   return c.json(
     {
       deviceCode,
@@ -538,6 +550,7 @@ const deviceConfirmPage = (user: User, request: DeviceRequest) =>
     "Approve the yok CLI",
     html`<p>Give the yok CLI on <code>${request.hostname}</code> access as ${user.name}?</p>
 <p class="muted">Code ${request.userCode}. The access lasts until you revoke it in Settings.</p>
+<p>Approve only if you just ran <code>yok login</code> yourself.</p>
 <form method="post" action="/device"><input type="hidden" name="code" value="${request.userCode}"><button class="primary">Approve</button></form>`,
   );
 

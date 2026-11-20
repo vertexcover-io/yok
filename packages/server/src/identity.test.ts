@@ -9,6 +9,7 @@ import {
   dropGitHubToken,
   hashToken,
   identityRoutes,
+  MAX_PENDING_DEVICE_REQUESTS,
   requireCaller,
   safeNext,
   sessionSecret,
@@ -853,6 +854,46 @@ describe("CLI device login", () => {
     expect(await s.storage.users.listTokens(userId)).toEqual([]);
   });
 
+  test("the request past the pending cap answers 429 and issues no code, and room comes back when old ones expire", async () => {
+    const s = setup();
+    for (let i = 0; i < MAX_PENDING_DEVICE_REQUESTS; i++) await startDevice(s);
+
+    const refused = await postJson(s, "/api/auth/device", { hostname: "one-too-many" });
+
+    expect(refused.status).toBe(429);
+    expect(JSON.stringify(await refused.json())).not.toContain("deviceCode");
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000 + 1));
+    expect((await postJson(s, "/api/auth/device", { hostname: "later" })).status).toBe(200);
+  });
+
+  test("a request already approved cannot be approved again by another person, and still hands its token to the first approver", async () => {
+    const s = setup();
+    const first = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    expect((await approveDevice(s, first, userCode)).status).toBe(200);
+    const [[firstId = ""] = []] = await s.storage.users.list();
+    const other = await s.storage.users.saveGitHubUser({
+      id: 42,
+      login: "mallory",
+      name: "Mallory",
+      email: "m@example.com",
+      token: "gho_m",
+    });
+    const second = await signValue(await sessionSecret(s.home), {
+      sub: other[0],
+      purpose: "session",
+      exp: NOW.getTime() + 60_000,
+    });
+
+    const again = await approveDevice(s, { cookie: `yok_session=${second}` }, userCode);
+    const poll = await pollDevice(s, deviceCode);
+
+    expect(again.status).toBe(400);
+    expect(poll.status).toBe(200);
+    expect(await s.storage.users.listTokens(other[0])).toEqual([]);
+    expect(await s.storage.users.listTokens(firstId)).toHaveLength(1);
+  });
+
   test("SC20: /device with no session cookie goes to sign-in and comes back to /device", async () => {
     const s = setup();
 
@@ -875,6 +916,7 @@ describe("CLI device login", () => {
 
     expect(ask).toContain('name="code"');
     expect(confirm).toContain("Give the yok CLI on <code>build-box</code> access as Ritesh?");
+    expect(confirm).toContain("only if you just ran <code>yok login</code> yourself");
     expect(confirm).toContain('action="/device"');
     expect(confirm).toContain(`value="${userCode}"`);
     expect(wrong.status).toBe(400);
