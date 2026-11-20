@@ -318,6 +318,8 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok ls` | List runs, newest 20 first, across every project. `--limit N`, `--all`, `--project NAME`, `--status S1,S2`, `--json`; works with `--remote` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
+| `yok login --server SERVER_URL` | Sign in to a shared server: approve a code in the browser, then save `YOK_SERVER_URL` and `YOK_SERVER_TOKEN` to `~/.yok/.env`. `--no-open` prints the page's address without opening it; needs no `--remote` |
+| `yok logout` | Revoke this machine's token on the server and remove it from `~/.yok/.env` |
 | `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
 | `yok update` | Install the newest release, move the plugin to it for every agent on PATH, restart the server. `--agent NAME` (repeatable) limits it, `--pre-release` |
 | `yok plugin install` | Reinstall the plugin at the binary's version for every agent on PATH. `--agent NAME` (repeatable) limits it |
