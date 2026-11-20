@@ -266,26 +266,6 @@ const heredocTargets = (bodies: readonly Body[]): readonly string[] =>
     return INTERPRETERS.has(name) ? codeWrites(body.lines.join("\n")) : [];
   });
 
-export type ShellCommand = Readonly<{ name: string; args: readonly string[]; stdin: string }>;
-
-// Every simple command a shell command runs, those inside `sh -c` and `eval` included, each with
-// the heredoc body it reads. A segment it cannot parse gives none.
-export const shellCommands = (command: string, depth = 0): readonly ShellCommand[] => {
-  const { text, bodies } = splitHeredocs(command);
-  const commands: ShellCommand[] = [];
-  let nextBody = 0;
-  for (const raw of splitSegments(text)) {
-    const body = heredocOf(raw) === undefined ? undefined : bodies[nextBody++];
-    const segment = parseSegment(raw);
-    if (segment === undefined) continue;
-    const { name, args } = segment;
-    commands.push({ name, args, stdin: body?.lines.join("\n") ?? "" });
-    const script = depth < MAX_NESTING ? nestedScript(name, args) : undefined;
-    if (script !== undefined) commands.push(...shellCommands(script, depth + 1));
-  }
-  return commands;
-};
-
 const expandAll = (paths: readonly string[], base: PathBase): readonly string[] =>
   paths.flatMap((path) => {
     const expanded = expandPath(path, base);

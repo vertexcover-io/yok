@@ -184,10 +184,8 @@ Tell the user the run folder `init` printed (`dir`). Then repeat:
 4. On any non-zero exit from `next`, show its error output and stop.
 
 `exec` and `done` record how each node ended. Never run `yok orchestrate emit` for a node, and
-never write the yok database, `yok.db` in the yok home, yourself: a hook refuses the common tool
-calls that write, move or delete it, `sqlite3` with anything but a `SELECT` or
-`PRAGMA table_info` among them, and its
-message names the command to use instead. Read the
+never write the yok database, `yok.db` in the yok home, yourself: a hook refuses the tool calls
+that write, move or delete it by path, and its message names the command to use instead. Read the
 run with `yok orchestrate get [KEY]`, `yok orchestrate sessions` and `yok orchestrate events`.
 
 When you need the user's input, ask the way the reference says. A Stop hook checks the run when

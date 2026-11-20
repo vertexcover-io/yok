@@ -20,11 +20,11 @@ Every orchestrate command reads the run's state and events from `yok.db`, recomp
 
 ## 3. Events are the truth. State is a summary.
 
-`appendRunEvent` folds the event into the run's state, stores the event and the new state in one `yok.db` transaction, and only then calls subscribers. The transaction lands only if no other process stored an event since the state was read; otherwise it reads again and retries. Nothing else writes a run's events or state. A PreToolUse hook refuses the common ways an agent tool call writes `yok.db`: a file write or `rm` of it, and a SQL client such as `sqlite3` or Python that names the database or the yok home in its own arguments and runs a statement other than a `SELECT` or a pragma that lists tables, such as `table_info`. Text that only mentions them, such as a commit message, is not checked. It is a pattern check, so it cannot catch every write.
+`appendRunEvent` folds the event into the run's state, stores the event and the new state in one `yok.db` transaction, and only then calls subscribers. The transaction lands only if no other process stored an event since the state was read; otherwise it reads again and retries. Nothing else writes a run's events or state. A PreToolUse hook refuses an agent tool call that writes, moves or deletes `yok.db` or its `-wal` and `-shm` files by path, such as a file write or `rm` of it. It does not read the SQL a client such as `sqlite3` runs, so it keeps out accidents, not a determined write.
 
 **Why.** A log you can replay is a run you can audit, resume, and learn from. A state edited by hand is a story someone told.
 
-**If you ignore it.** You write a field into state without an event and the next replay loses it. Add an event type and a handler that folds it. The guard is [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L82); the fold is [applyEvent](../../packages/sdk/src/state.ts#L33).
+**If you ignore it.** You write a field into state without an event and the next replay loses it. Add an event type and a handler that folds it. The guard is [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L62); the fold is [applyEvent](../../packages/sdk/src/state.ts#L33).
 
 ## 4. A stage passes only with proof that code can check.
 

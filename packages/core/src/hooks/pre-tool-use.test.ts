@@ -146,41 +146,16 @@ describe("recordGuard through runPreToolUse", () => {
     }
   });
 
-  test("a SQL client given the database and a write statement, a script file or a dot-import is refused naming yok.db", async () => {
+  test("a SQL client is not judged by its SQL: reads and writes through sqlite3, python or bun -e are allowed", async () => {
     const { cwd, home, deps } = await setUp();
     const commands = [
+      `sqlite3 $YOK_HOME/yok.db "select id from runs where name like 'create%'"`,
+      `sqlite3 ${home}/yok.db "select replace(name, '-', ' ') from runs"`,
       'sqlite3 ~/.yok/yok.db "delete from events"',
-      "sqlite3 $YOK_HOME/yok.db < fix.sql",
-      `echo 'update runs set state = null' | sqlite3 ${home}/yok.db`,
-      `sqlite3 ${home}/yok.db ".import /tmp/x events"`,
       `python3 -c "import sqlite3; sqlite3.connect('${home}/yok.db').execute('delete from runs')"`,
       `bun -e "new (require('bun:sqlite').Database)('$YOK_HOME/yok.db').run('drop table events')"`,
-    ];
-
-    for (const command of commands) {
-      const verdict = await runPreToolUse(
-        use(cwd, shell(command), { toolName: "Bash" }),
-        recordGuard,
-        deps,
-      );
-      expect({ command, verdict }).toMatchObject({
-        command,
-        verdict: { kind: "deny", path: join(home, "yok.db") },
-      });
-    }
-  });
-
-  test("a SELECT through sqlite3 or python, a cat of the database and yok orchestrate itself are allowed", async () => {
-    const { cwd, home, deps } = await setUp();
-    const commands = [
-      `sqlite3 $YOK_HOME/yok.db "select id from events where type = 'node.deleted' and seq < 5"`,
-      `python3 -c "import sqlite3; print(sqlite3.connect('${home}/yok.db').execute('select count(*) from runs').fetchone())"`,
       `cat ${home}/yok.db | head -c 100`,
       "yok orchestrate events --run feat-x",
-      "sqlite3 -readonly $YOK_HOME/yok.db 'select count(*) from runs'",
-      "sqlite3 -readonly $YOK_HOME/yok.db 'pragma table_info(runs)'",
-      `sqlite3 ${home}/yok.db "PRAGMA table_list"`,
-      "cat $YOK_HOME/server.log",
     ];
 
     for (const command of commands) {
@@ -190,53 +165,6 @@ describe("recordGuard through runPreToolUse", () => {
         deps,
       );
       expect({ command, verdict }).toEqual({ command, verdict: { kind: "allow" } });
-    }
-  });
-
-  test("a command that names yok.db and a SQL client only in another command's text, or in a client segment that does not name the home, is allowed", async () => {
-    const { cwd, home, deps } = await setUp();
-    const commands = [
-      'git commit -m "docs: sqlite3 may read yok.db"',
-      'yok orchestrate done NR --run R --summary "Moved records to yok.db; tests use sqlite3."',
-      'gh pr create --title "Store records in yok.db" --body "The new sqlite3 store keeps every record in yok.db."',
-      "grep -rn sqlite3 $YOK_HOME/server.log",
-      'bun -e "console.log(1)" && ls $YOK_HOME',
-      `YOK_HOME=${home} python3 scripts/check.py`,
-      "python3 -m json.tool < $YOK_HOME/runs/x.json",
-      "yok orchestrate done NR --run R --output - <<'OUT'\nsqlite3 $YOK_HOME/yok.db 'delete from events'\nOUT",
-    ];
-
-    for (const command of commands) {
-      const verdict = await runPreToolUse(
-        use(cwd, shell(command), { toolName: "Bash" }),
-        recordGuard,
-        deps,
-      );
-      expect({ command, verdict }).toEqual({ command, verdict: { kind: "allow" } });
-    }
-  });
-
-  test("a SQL client write reached through an insert, a relative path, a heredoc program or a nested shell is refused naming yok.db", async () => {
-    const { cwd, home, deps } = await setUp();
-    const commands = [
-      `sqlite3 $YOK_HOME/yok.db "insert into runs(id) values('x')"`,
-      `python3 -c "import sqlite3; sqlite3.connect('yok.db').execute('drop table runs')"`,
-      `python3 - <<'PY'\nimport sqlite3\nsqlite3.connect('${home}/yok.db').execute('delete from runs')\nPY`,
-      `sqlite3 ${home}/yok.db <<'SQL'\ndelete from events;\nSQL`,
-      `bash -c "sqlite3 $YOK_HOME/yok.db 'delete from events'"`,
-      `ls && sqlite3 ${home}/yok.db 'select 1' && sqlite3 ${home}/yok.db 'pragma journal_mode=delete'`,
-    ];
-
-    for (const command of commands) {
-      const verdict = await runPreToolUse(
-        use(cwd, shell(command), { toolName: "Bash" }),
-        recordGuard,
-        deps,
-      );
-      expect({ command, verdict }).toMatchObject({
-        command,
-        verdict: { kind: "deny", path: join(home, "yok.db") },
-      });
     }
   });
 

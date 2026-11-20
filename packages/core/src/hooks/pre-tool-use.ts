@@ -23,13 +23,7 @@ import {
   recordRunEvent,
   recordSessionEvent,
 } from "./common.ts";
-import {
-  expandPath,
-  type PathBase,
-  type ShellCommand,
-  shellCommands,
-  shellWriteTargets,
-} from "./write-targets.ts";
+import { expandPath, type PathBase, shellWriteTargets } from "./write-targets.ts";
 
 const ALLOW: ToolVerdict = { kind: "allow" };
 // SQLite's write-ahead log and shared-memory files are the database as much as yok.db is.
@@ -55,48 +49,10 @@ const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   return call.kind === "shell" ? shellWriteTargets(call.command, base) : [];
 };
 
-const EVAL_FLAGS: ReadonlySet<string> = new Set(["-e", "--eval", "-p", "--print"]);
-const READ_SQL =
-  /\bselect\b|\.(tables|schema|indexes|dump)\b|\bpragma\s+(table_x?info|table_list|index_list|index_info)\b/i;
-// Any other pragma may set something, such as journal_mode.
-const WRITE_SQL =
-  /\b(insert|update|delete|replace|drop|create|alter|attach|detach|vacuum|reindex)\b|\bpragma\b(?!\s+(table_x?info|table_list|index_list|index_info)\b)|\.(import|restore|read|clone)\b/i;
-
-const isSqlClient = ({ name, args }: ShellCommand): boolean =>
-  name === "sqlite3" ||
-  /^python[\d.]*$/.test(name) ||
-  (["bun", "node", "deno"].includes(name) && args.some((arg) => EVAL_FLAGS.has(arg)));
-
-const namesHome = (text: string, base: PathBase): boolean => {
-  const tildeHome = base.yokHome.startsWith(`${base.home}/`)
-    ? `~${base.yokHome.slice(base.home.length)}`
-    : undefined;
-  return (
-    text.includes("yok.db") ||
-    /\$\{?YOK_HOME\b/.test(text) ||
-    text.includes(base.yokHome) ||
-    (tildeHome !== undefined && text.includes(tildeHome))
-  );
-};
-
-// A heuristic, so it catches the common writes, not every one: a SQL client whose own arguments
-// or heredoc name the database or the home, unless all the SQL they show is a read.
-const writesThroughSqlClient = (command: string, base: PathBase): boolean =>
-  shellCommands(command).some((client) => {
-    if (!isSqlClient(client)) return false;
-    const text = [...client.args, client.stdin].join("\n");
-    if (!namesHome(text, base)) return false;
-    return !READ_SQL.test(text) || WRITE_SQL.test(text);
-  });
-
-const deniedPath = (call: ToolCall, base: PathBase): string | undefined => {
-  const path = callTargets(call, base)
+const deniedPath = (call: ToolCall, base: PathBase): string | undefined =>
+  callTargets(call, base)
     .map((target) => protectedRecordOf(target, base))
     .find((found) => found !== undefined);
-  if (path !== undefined) return path;
-  if (call.kind !== "shell" || !writesThroughSqlClient(call.command, base)) return undefined;
-  return join(base.yokHome, "yok.db");
-};
 
 // Refuses a call that writes, moves or deletes yok's database.
 export const recordGuard: PreToolUseHandler = {
