@@ -1820,6 +1820,23 @@ describe("a shared server's dashboard in a browser", () => {
     }
   }, 30000);
 
+  test("a button on a run's page, pressed after the cookie goes, sends the browser to /login and back to that run", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/runs/r-1`);
+      await until("document.querySelector('#runId').textContent === 'r-1'");
+      await page.context().clearCookies();
+      await evaluate("document.querySelector('#retryBtn').hidden = false");
+
+      await page.click("#retryBtn");
+
+      await page.waitForURL(`${origin}/login?next=%2Fruns%2Fr-1`);
+    } finally {
+      await server.stop();
+    }
+  }, 30000);
+
   test("SC17, SC22: a CLI's login is approved on /device and its token is listed in /settings, and a CI token made there is shown once and revoked with one click", async () => {
     const { server, origin, session } = await sharedServer();
     try {
