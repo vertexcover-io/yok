@@ -131,9 +131,17 @@ export const missingSignInKeys = (home: string): string | undefined => {
 const NOT_SET_UP =
   "GitHub sign-in is not set up: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are missing from the yok home's .env";
 
-// Only a path on this server, so a crafted next= cannot send the browser to another site.
-export const safeNext = (next: string | undefined): string =>
-  next?.startsWith("/") === true && !next.startsWith("//") ? next : "/";
+const LOCAL_ORIGIN = "http://yok.local";
+
+// Only a path on this server, so a crafted next= cannot send the browser to another site. The URL
+// parser drops tabs and newlines and reads a backslash as a slash, as a browser does, so
+// `/\evil.com` and `/<tab>/evil.com` resolve off this origin and are refused.
+export const safeNext = (next: string | undefined): string => {
+  if (next?.startsWith("/") !== true) return "/";
+  return URL.canParse(next, LOCAL_ORIGIN) && new URL(next, LOCAL_ORIGIN).origin === LOCAL_ORIGIN
+    ? next
+    : "/";
+};
 
 type GitHubCalls = Pick<IdentityDeps, "githubFetch">;
 

@@ -54,6 +54,13 @@ describe("signed values", () => {
     for (const next of ["//evil.com", "https://evil.com", undefined])
       expect(safeNext(next)).toBe("/");
   });
+
+  test("safeNext refuses a backslash or a tab that a browser reads as //evil.com, and keeps the device and Slack links", () => {
+    for (const next of ["/\\evil.com", "/\t/evil.com", "/\n/evil.com"])
+      expect(safeNext(next)).toBe("/");
+    for (const next of ["/device?code=ABCD-1234", "/link/slack?state=a.b_c-d"])
+      expect(safeNext(next)).toBe(next);
+  });
 });
 
 type Call = Readonly<{ url: string; method: string; body: string }>;
