@@ -616,6 +616,11 @@ const finishLogin = async (
     await revokeQuietly(deps, app, token);
     return failed(c, identity.error, 502);
   }
+  const missing = deps.gated ? missingSignInKeys(deps.home) : undefined;
+  if (missing !== undefined) {
+    await revokeQuietly(deps, app, token);
+    return failed(c, missing, 503);
+  }
   const allowed = deps.gated
     ? await mayEnter(deps, token, identity.value.login)
     : ({ ok: true, value: true } as const);

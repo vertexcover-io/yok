@@ -370,6 +370,23 @@ describe("who may sign in on a shared server", () => {
     expect(old.headers.get("location")).toBe("/login?next=%2Fsettings");
   });
 
+  test("a sign-in while both key lists are empty answers 503, revokes only the new GitHub token and leaves a known user and their CLI tokens alone", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    setSignInEnv(s.home, "");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(503);
+    expect(await done.text()).toContain("No one can sign in yet");
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+    const revoke = s.calls.find((call) => call.method === "DELETE");
+    expect(JSON.parse(revoke?.body ?? "{}")).toEqual({ access_token: "gho_a" });
+  });
+
   test("SC14: a revoked user who is later allowed signs in again with access_revoked_at cleared", async () => {
     const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
     await signIn(s);
