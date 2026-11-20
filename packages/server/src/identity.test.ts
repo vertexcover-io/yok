@@ -825,6 +825,19 @@ describe("CLI device login", () => {
     expect(JSON.stringify(await second.json())).not.toContain(token);
   });
 
+  test("two polls at once on an approved request give one token to one of them and a 404 to the other", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    await approveDevice(s, headers, userCode);
+
+    const polls = await Promise.all([pollDevice(s, deviceCode), pollDevice(s, deviceCode)]);
+
+    expect(polls.map((res) => res.status).sort()).toEqual([200, 404]);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
   test("SC18: polling before anyone approves answers pending and mints no token", async () => {
     const s = setup();
     await signIn(s);
