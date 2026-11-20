@@ -251,6 +251,8 @@ A server set up before the sign-in gate had one Caddy password for everybody. No
 4. In each repo that uses the GitHub Action, delete the `YOK_USER` and `YOK_PASSWORD` secrets and add `YOK_TOKEN` (below).
 5. In Slack, each person types `@yok login` once; commands from anyone not linked get one private reply that says so.
 
+The upgrade does not check anyone's access. A person who used yok before it and is in neither `SUPER_ADMIN_LOGINS` nor `GITHUB_ORGS` keeps their 30-day cookie and their Slack link until they next sign in with GitHub, which refuses them and ends both.
+
 ### Drive yok from Slack
 
 1. Create a Slack app in your workspace. Under Event Subscriptions, turn events on, set the request URL to `https://yok.example.com/api/hooks/slack`, and subscribe to the `app_mentions:read` bot event (`app_mention`). Add the `chat:write` bot scope and install the app.
