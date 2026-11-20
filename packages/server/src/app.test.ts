@@ -1232,7 +1232,15 @@ const gatedRoot = async () => {
 };
 
 // Routes the gate leaves open: the paths are the spec's list, not read from the code under test.
-const OPEN = ["/api/health", "/login", "/auth/github", "/auth/github/callback", "/api/hooks/slack"];
+const OPEN = [
+  "/api/health",
+  "/login",
+  "/auth/github",
+  "/auth/github/callback",
+  "/api/hooks/slack",
+  "/api/auth/device",
+  "/api/auth/device/token",
+];
 
 // A path from a registered route pattern, with a made-up value for each parameter or wildcard.
 const concretePath = (pattern: string): string =>
@@ -1272,6 +1280,9 @@ describe("createRoot caller gate", () => {
     expect(await get("/auth/github")).toBe(503);
     expect(await get("/auth/github/callback")).toBe(503);
     expect(await get("/api/hooks/slack", "POST")).toBe(503);
+    expect(await get("/api/auth/device", "POST")).toBe(400);
+    expect(await get("/api/auth/device/token", "POST")).toBe(400);
+    expect(await get("/device")).toBe(401);
   });
 
   test("SC2: without SERVER_DOMAIN the dashboard, the API and a run start answer a bare request as before", async () => {
@@ -1323,6 +1334,35 @@ describe("createRoot caller gate", () => {
       const res = await app.request("/api/me", { headers: { host: DOMAIN, ...headers } });
       expect([headers, res.status]).toEqual([headers, 401]);
     }
+  });
+
+  test("SC23: DELETE /api/tokens/current with a token revokes that token, so it no longer works, and leaves the person's other tokens", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    await deps.storage.users.createToken(userId, "ci", hashToken("yok_other"));
+    const status = async () =>
+      (await app.request("/api/me", { headers: { host: DOMAIN, ...bearer } })).status;
+    expect(await status()).toBe(200);
+
+    const res = await app.request("/api/tokens/current", {
+      method: "DELETE",
+      headers: { host: DOMAIN, ...bearer },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await status()).toBe(401);
+    expect((await deps.storage.users.listTokens(userId)).map((t) => t.name)).toEqual(["ci"]);
+  });
+
+  test("DELETE /api/tokens/current from a browser session has no token to revoke and answers 400", async () => {
+    const { app, deps, userId, cookie } = await gatedRoot();
+
+    const res = await app.request("/api/tokens/current", {
+      method: "DELETE",
+      headers: { host: DOMAIN, ...cookie, origin: SIGNED_IN.origin },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await deps.storage.users.listTokens(userId)).toHaveLength(1);
   });
 
   test("SC4: a user with access revoked is refused by cookie and by token, until access is restored", async () => {

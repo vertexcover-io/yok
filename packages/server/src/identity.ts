@@ -1,13 +1,20 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import type { notifierHooks } from "@yok/core";
 import type { ILogger, IStorage, Result } from "@yok/sdk";
-import type { Accounts, GitHubSignIn, User, UserEntry } from "@yok/sdk/internal";
+import type { Accounts, ApiToken, GitHubSignIn, User, UserEntry } from "@yok/sdk/internal";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import * as z from "zod";
-import { errorResponse, type Vars } from "./api.ts";
-import { readHomeEnv, updateHomeEnv } from "./protocol.ts";
+import { errorResponse, jsonBody, type Vars } from "./api.ts";
+import {
+  DeviceStartBodySchema,
+  type DeviceStartReplySchema,
+  DeviceTokenBodySchema,
+  type DeviceTokenReply,
+  readHomeEnv,
+  updateHomeEnv,
+} from "./protocol.ts";
 
 const GITHUB = "https://github.com";
 const GITHUB_API = "https://api.github.com";
@@ -15,6 +22,10 @@ const SESSION_COOKIE = "yok_session";
 const NONCE_COOKIE = "yok_login_nonce";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DEVICE_TTL_MS = 10 * 60 * 1000;
+const DEVICE_POLL_SECONDS = 2;
+// No vowels and no look-alikes, so a code read off a terminal is typed back without doubt.
+const USER_CODE_LETTERS = "BCDFGHJKLMNPQRSTVWXZ";
 // One grant: who the person is, push and pull on every repo they can reach, and pushes that
 // change workflow files, which GitHub refuses without `workflow` (ADR 0041).
 // read:org lets /user/orgs list private memberships, which GITHUB_ORGS is checked against.
@@ -298,6 +309,8 @@ const OPEN_PATHS: ReadonlySet<string> = new Set([
   "/auth/github",
   "/auth/github/callback",
   "/api/hooks/slack",
+  "/api/auth/device",
+  "/api/auth/device/token",
 ]);
 const READ_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 
@@ -384,6 +397,8 @@ dl{margin:0}
 dt{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
 dd{margin:0 0 20px;overflow-wrap:anywhere}
 form{margin:0}.actions{margin-top:10px}
+input{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg)}
+.token{margin-bottom:12px}
 button,a.button{font:inherit;font-size:13px;font-weight:500;padding:6px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);cursor:pointer;text-decoration:none;display:inline-block;white-space:nowrap}
 button:hover,a.button:hover{background:var(--panel-2)}
 a.button.primary,button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
@@ -400,6 +415,113 @@ const page = (title: string, body: ReturnType<typeof html>) => html`<!doctype ht
 ${raw(STYLE)}</style></head>
 <body><header class="bar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>yok</a></header>
 <main><section class="card"><h1>${title}</h1>${body}</section></main></body></html>`;
+
+const newToken = (): string => `yok_${randomBytes(32).toString("base64url")}`;
+
+type DeviceRequest = Readonly<{
+  hostname: string;
+  userCode: string;
+  expiresAt: number;
+  // the person who approved it; the CLI's next poll turns this into a token
+  approvedBy?: string;
+}>;
+
+// Pending CLI logins by device code. They live in memory: a restart only makes the CLI start again.
+type DeviceRequests = Map<string, DeviceRequest>;
+
+const newUserCode = (): string => {
+  const letters = Array.from({ length: 8 }, () =>
+    USER_CODE_LETTERS.charAt(randomInt(USER_CODE_LETTERS.length)),
+  ).join("");
+  return `${letters.slice(0, 4)}-${letters.slice(4)}`;
+};
+
+// Typed by hand, so case, spaces and a missing dash do not matter.
+const normalizeUserCode = (typed: string): string => {
+  const letters = typed.toUpperCase().replace(/[^A-Z]/g, "");
+  return `${letters.slice(0, 4)}-${letters.slice(4)}`;
+};
+
+const liveRequests = (requests: DeviceRequests, now: Date): DeviceRequests => {
+  for (const [deviceCode, request] of requests) {
+    if (request.expiresAt < now.getTime()) requests.delete(deviceCode);
+  }
+  return requests;
+};
+
+const findByUserCode = (requests: DeviceRequests, typed: string) => {
+  const userCode = normalizeUserCode(typed);
+  return [...requests].find(([, request]) => request.userCode === userCode);
+};
+
+const startDevice = (
+  c: Context,
+  deps: IdentityDeps,
+  requests: DeviceRequests,
+  hostname: string,
+) => {
+  const deviceCode = randomBytes(32).toString("base64url");
+  const userCode = newUserCode();
+  const expiresAt = deps.now().getTime() + DEVICE_TTL_MS;
+  liveRequests(requests, deps.now()).set(deviceCode, { hostname, userCode, expiresAt });
+  return c.json(
+    {
+      deviceCode,
+      userCode,
+      verificationUrl: `${deps.publicOrigin}/device`,
+      expiresIn: DEVICE_TTL_MS / 1000,
+      interval: DEVICE_POLL_SECONDS,
+    } satisfies z.infer<typeof DeviceStartReplySchema>,
+    200,
+  );
+};
+
+const EXPIRED = "this login request expired or was never made; run yok login again";
+
+// The token is minted here and shown once; the entry goes before any await, so two polls at once
+// cannot both receive one. A person whose access was revoked since approving gets nothing.
+const pollDevice = async (
+  c: Context,
+  deps: IdentityDeps,
+  requests: DeviceRequests,
+  deviceCode: string,
+) => {
+  const request = liveRequests(requests, deps.now()).get(deviceCode);
+  if (request === undefined) return errorResponse(c, 404, "not-found", EXPIRED);
+  if (request.approvedBy === undefined) {
+    return c.json({ status: "pending" } satisfies DeviceTokenReply, 200);
+  }
+  requests.delete(deviceCode);
+  const user = await activeUser(deps.storage, request.approvedBy);
+  if (user === undefined) return errorResponse(c, 404, "not-found", EXPIRED);
+  const token = newToken();
+  await deps.storage.users.createToken(
+    request.approvedBy,
+    `CLI on ${request.hostname}`,
+    hashToken(token),
+  );
+  return c.json({ status: "approved", token } satisfies DeviceTokenReply, 200);
+};
+
+const deviceCodeForm = html`<p class="muted">Type the code the yok CLI printed.</p>
+<form method="get" action="/device"><input name="code" autocomplete="off" autofocus required placeholder="ABCD-EFGH"> <button class="primary">Continue</button></form>`;
+
+const unknownCodePage = (c: Context) =>
+  c.html(
+    page(
+      "Code not recognised",
+      html`<p>That code is wrong or has expired. Run <code>yok login</code> again for a new one.</p><p><a class="button" href="/device">Enter another code</a></p>`,
+    ),
+    400,
+  );
+
+const deviceConfirmPage = (user: User, request: DeviceRequest) =>
+  page(
+    "Approve the yok CLI",
+    html`<p>Give the yok CLI on <code>${request.hostname}</code> access as ${user.name}?</p>
+<p class="muted">Code ${request.userCode}. The access lasts until you revoke it in Settings.</p>
+<form method="post" action="/device"><input type="hidden" name="code" value="${request.userCode}"><button class="primary">Approve</button></form>`,
+  );
 
 const signedInUser = (c: Context<{ Variables: Vars }>): UserEntry | null => {
   const caller = c.get("caller");
@@ -542,12 +664,29 @@ const githubRow = (account: Accounts["github"]) =>
     : html`<dd>Connected as <code>${account.login}</code>: your runs push and open pull requests as you, on every repository you can reach.
 <form class="actions" method="post" action="/settings/github/disconnect"><button>Disconnect GitHub</button></form></dd>`;
 
-const settingsPage = ([, user]: UserEntry) =>
+const tokenRow = (token: ApiToken) => {
+  const used =
+    token.lastUsedAt === null
+      ? "Never used"
+      : `Last used ${token.lastUsedAt.slice(0, 16).replace("T", " ")} UTC`;
+  return html`<div class="token"><code>${token.name}</code> <span class="muted">${used}</span>
+<form class="actions" method="post" action="/settings/tokens/${token.id}/revoke"><button>Revoke</button></form></div>`;
+};
+
+const tokensRow = (tokens: readonly ApiToken[]) => html`<dd>${
+  tokens.length === 0
+    ? html`<p class="muted">No tokens yet. yok login adds one for each machine.</p>`
+    : tokens.map(tokenRow)
+}
+<form class="actions" method="post" action="/settings/tokens"><input name="name" placeholder="github actions" maxlength="80" required> <button>Create token</button></form></dd>`;
+
+const settingsPage = ([, user]: UserEntry, tokens: readonly ApiToken[]) =>
   page(
     "Settings",
     html`<dl><dt>Signed in as</dt><dd>${user.name} (GitHub <code>${user.accounts.github?.login ?? "-"}</code>)</dd>
 <dt>GitHub access</dt>${githubRow(user.accounts.github)}
-<dt>Slack</dt>${slackRow(user.slack)}</dl>
+<dt>Slack</dt>${slackRow(user.slack)}
+<dt>CLI tokens</dt>${tokensRow(tokens)}</dl>
 <form class="foot" method="post" action="/logout"><button>Sign out</button></form>`,
   );
 
@@ -592,75 +731,147 @@ const linkSlackPage = async (
 };
 
 // Mounted at / by createRoot, behind the host guard and requireCaller like the dashboard.
-export const identityRoutes = (deps: IdentityDeps) =>
-  new Hono<{ Variables: Vars }>()
-    .get("/login", (c) => {
-      const next = safeNext(c.req.query("next"));
-      if (signedInUser(c) !== null) return c.redirect(next);
-      const missing = deps.gated ? missingSignInKeys(deps.home) : undefined;
-      if (missing !== undefined) return failed(c, missing, 503);
-      const start = `/auth/github?next=${encodeURIComponent(next)}`;
-      return c.html(
-        page(
-          "Sign in to yok",
-          html`<p class="muted">yok uses your GitHub account to show who started each run, and to push and open pull requests for the runs you start from Slack.</p>
+export const identityRoutes = (deps: IdentityDeps) => {
+  const requests: DeviceRequests = new Map();
+  return (
+    new Hono<{ Variables: Vars }>()
+      .get("/login", (c) => {
+        const next = safeNext(c.req.query("next"));
+        if (signedInUser(c) !== null) return c.redirect(next);
+        const missing = deps.gated ? missingSignInKeys(deps.home) : undefined;
+        if (missing !== undefined) return failed(c, missing, 503);
+        const start = `/auth/github?next=${encodeURIComponent(next)}`;
+        return c.html(
+          page(
+            "Sign in to yok",
+            html`<p class="muted">yok uses your GitHub account to show who started each run, and to push and open pull requests for the runs you start from Slack.</p>
 <p><a class="button primary" href="${start}">Sign in with GitHub</a></p>`,
-        ),
-      );
-    })
-    .get("/auth/github", async (c) => {
-      const app = oauthApp(deps.home);
-      if (app === null) return failed(c, NOT_SET_UP, 503);
-      const next = safeNext(c.req.query("next"));
-      // Ties the callback to this browser, so a callback URL someone else started cannot sign
-      // this browser in as them.
-      const nonce = randomBytes(16).toString("hex");
-      setCookie(c, NONCE_COOKIE, nonce, {
-        path: "/auth/github",
-        httpOnly: true,
-        sameSite: "Lax",
-        secure: deps.publicOrigin.startsWith("https://"),
-        maxAge: STATE_TTL_MS / 1000,
-      });
-      return c.redirect(
-        await authorizeUrl(deps, app, { sub: "", purpose: "login", next, nonce }, GITHUB_SCOPE),
-      );
-    })
-    .get("/auth/github/callback", (c) => callback(c, deps))
-    .get("/settings", (c) => {
-      const signedIn = signedInUser(c);
-      return signedIn === null
-        ? c.redirect(loginRedirect("/settings"))
-        : c.html(settingsPage(signedIn));
-    })
-    .post("/logout", (c) => {
-      deleteCookie(c, SESSION_COOKIE, { path: "/" });
-      return c.redirect("/login");
-    })
-    .get("/link/slack", (c) => linkSlackPage(c, deps, c.req.query("state") ?? "", false))
-    .post("/link/slack", cookieOnly, async (c) => {
-      const body = await c.req.parseBody();
-      return linkSlackPage(c, deps, typeof body.state === "string" ? body.state : "", true);
-    })
-    .post("/settings/slack/unlink", cookieOnly, async (c) => {
-      const signedIn = signedInUser(c);
-      if (signedIn === null) return c.redirect(loginRedirect("/settings"));
-      await deps.storage.users.removeUserAccount(signedIn[0], "slack");
-      return c.redirect("/settings");
-    })
-    // Revoked now, not when the person's runs end: a run holding the token fails its next push,
-    // which is what Disconnect asks for.
-    .post("/settings/github/disconnect", cookieOnly, async (c) => {
-      const signedIn = signedInUser(c);
-      if (signedIn === null) return c.redirect(loginRedirect("/settings"));
-      const [, user] = signedIn;
-      const app = oauthApp(deps.home);
-      const token = user.accounts.github?.token;
-      if (app !== null && token !== undefined) {
-        await revokeToken(deps, app, token).catch((error: unknown) =>
-          deps.log.warn({ err: error }, "GitHub could not be reached to revoke the token"),
+          ),
         );
-      }
-      await dropGitHubToken(deps.storage, signedIn);
-      return c.redirect("/settings");
-    });
+      })
+      .get("/auth/github", async (c) => {
+        const app = oauthApp(deps.home);
+        if (app === null) return failed(c, NOT_SET_UP, 503);
+        const next = safeNext(c.req.query("next"));
+        // Ties the callback to this browser, so a callback URL someone else started cannot sign
+        // this browser in as them.
+        const nonce = randomBytes(16).toString("hex");
+        setCookie(c, NONCE_COOKIE, nonce, {
+          path: "/auth/github",
+          httpOnly: true,
+          sameSite: "Lax",
+          secure: deps.publicOrigin.startsWith("https://"),
+          maxAge: STATE_TTL_MS / 1000,
+        });
+        return c.redirect(
+          await authorizeUrl(deps, app, { sub: "", purpose: "login", next, nonce }, GITHUB_SCOPE),
+        );
+      })
+      .get("/auth/github/callback", (c) => callback(c, deps))
+      .get("/settings", async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/settings"));
+        return c.html(settingsPage(signedIn, await deps.storage.users.listTokens(signedIn[0])));
+      })
+      .post("/settings/tokens", cookieOnly, async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/settings"));
+        const name = z
+          .string()
+          .trim()
+          .min(1)
+          .max(80)
+          .safeParse((await c.req.parseBody()).name);
+        if (!name.success) {
+          return c.html(
+            page(
+              "Name the token",
+              html`<p>A token needs a name, so you can tell it apart later.</p><p><a class="button" href="/settings">Settings</a></p>`,
+            ),
+            400,
+          );
+        }
+        const token = newToken();
+        await deps.storage.users.createToken(signedIn[0], name.data, hashToken(token));
+        c.header("Cache-Control", "no-store");
+        return c.html(
+          page(
+            "Token created",
+            html`<p>Copy <code>${name.data}</code> now: yok keeps only a hash and cannot show it again.</p><p><code>${token}</code></p><p><a class="button" href="/settings">Settings</a></p>`,
+          ),
+        );
+      })
+      .post("/settings/tokens/:id/revoke", cookieOnly, async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/settings"));
+        await deps.storage.users.deleteToken(signedIn[0], c.req.param("id"));
+        return c.redirect("/settings");
+      })
+      .post("/api/auth/device", jsonBody(DeviceStartBodySchema), (c) =>
+        startDevice(c, deps, requests, c.req.valid("json").hostname),
+      )
+      .post("/api/auth/device/token", jsonBody(DeviceTokenBodySchema), (c) =>
+        pollDevice(c, deps, requests, c.req.valid("json").deviceCode),
+      )
+      .get("/device", cookieOnly, (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/device"));
+        const typed = c.req.query("code");
+        if (typed === undefined) return c.html(page("Approve the yok CLI", deviceCodeForm));
+        const found = findByUserCode(liveRequests(requests, deps.now()), typed);
+        return found === undefined
+          ? unknownCodePage(c)
+          : c.html(deviceConfirmPage(signedIn[1], found[1]));
+      })
+      .post("/device", cookieOnly, async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/device"));
+        const typed = (await c.req.parseBody()).code;
+        const found = findByUserCode(
+          liveRequests(requests, deps.now()),
+          typeof typed === "string" ? typed : "",
+        );
+        if (found === undefined) return unknownCodePage(c);
+        const [deviceCode, request] = found;
+        requests.set(deviceCode, { ...request, approvedBy: signedIn[0] });
+        deps.log.info({ userId: signedIn[0], hostname: request.hostname }, "CLI login approved");
+        return c.html(
+          page(
+            "yok CLI approved",
+            html`<p>The yok CLI on <code>${request.hostname}</code> now has access as ${signedIn[1].name}. Go back to your terminal.</p>`,
+          ),
+        );
+      })
+      .post("/logout", (c) => {
+        deleteCookie(c, SESSION_COOKIE, { path: "/" });
+        return c.redirect("/login");
+      })
+      .get("/link/slack", (c) => linkSlackPage(c, deps, c.req.query("state") ?? "", false))
+      .post("/link/slack", cookieOnly, async (c) => {
+        const body = await c.req.parseBody();
+        return linkSlackPage(c, deps, typeof body.state === "string" ? body.state : "", true);
+      })
+      .post("/settings/slack/unlink", cookieOnly, async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/settings"));
+        await deps.storage.users.removeUserAccount(signedIn[0], "slack");
+        return c.redirect("/settings");
+      })
+      // Revoked now, not when the person's runs end: a run holding the token fails its next push,
+      // which is what Disconnect asks for.
+      .post("/settings/github/disconnect", cookieOnly, async (c) => {
+        const signedIn = signedInUser(c);
+        if (signedIn === null) return c.redirect(loginRedirect("/settings"));
+        const [, user] = signedIn;
+        const app = oauthApp(deps.home);
+        const token = user.accounts.github?.token;
+        if (app !== null && token !== undefined) {
+          await revokeToken(deps, app, token).catch((error: unknown) =>
+            deps.log.warn({ err: error }, "GitHub could not be reached to revoke the token"),
+          );
+        }
+        await dropGitHubToken(deps.storage, signedIn);
+        return c.redirect("/settings");
+      })
+  );
+};

@@ -1819,4 +1819,59 @@ describe("a shared server's dashboard in a browser", () => {
       await server.stop();
     }
   }, 30000);
+
+  test("SC17, SC22: a CLI's login is approved on /device and its token is listed in /settings, and a CI token made there is shown once and revoked with one click", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      const started = await fetch(`${origin}/api/auth/device`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hostname: "build-box" }),
+      });
+      const { deviceCode, userCode } = (await started.json()) as {
+        deviceCode: string;
+        userCode: string;
+      };
+      const poll = () =>
+        fetch(`${origin}/api/auth/device/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deviceCode }),
+        });
+      expect(await (await poll()).json()).toEqual({ status: "pending" });
+
+      await page.goto(`${origin}/device`);
+      expect(new URL(page.url()).pathname).toBe("/login");
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/device`);
+      await page.fill("input[name=code]", userCode);
+      await page.click("text=Continue");
+      await page.waitForSelector("text=Give the yok CLI on build-box access as Ada?");
+      await page.click("button:has-text('Approve')");
+      await page.waitForSelector("text=Go back to your terminal");
+      const approved = (await (await poll()).json()) as { status: string; token: string };
+      expect(approved.status).toBe("approved");
+      expect(approved.token).toStartWith("yok_");
+      expect((await poll()).status).toBe(404);
+
+      await page.goto(`${origin}/settings`);
+      await page.waitForSelector("text=CLI on build-box");
+      await page.fill("input[name=name]", "github actions");
+      await page.click("button:has-text('Create token')");
+      const shown = (await page.locator("main p code").last().textContent()) ?? "";
+      expect(shown).toMatch(/^yok_[A-Za-z0-9_-]{43}$/);
+      const ciWorks = (token: string) =>
+        fetch(`${origin}/api/me`, { headers: { authorization: `Bearer ${token}` } });
+      expect((await ciWorks(shown)).status).toBe(200);
+
+      await page.click("text=Settings");
+      expect(await page.content()).not.toContain(shown);
+      await page.locator(".token", { hasText: "github actions" }).locator("button").click();
+      await page.waitForSelector(".token:has-text('github actions')", { state: "detached" });
+      expect((await ciWorks(shown)).status).toBe(401);
+      expect((await ciWorks(approved.token)).status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  }, 30000);
 });

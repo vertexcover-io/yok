@@ -697,3 +697,243 @@ describe("GitHub access in settings", () => {
     expect(s.calls.length).toBe(callsBefore);
   });
 });
+
+const FORM = { "content-type": "application/x-www-form-urlencoded" };
+
+const postJson = (s: Setup, path: string, body: unknown) =>
+  s.app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const startDevice = async (s: Setup, hostname = "ritesh-mbp") => {
+  const res = await postJson(s, "/api/auth/device", { hostname });
+  return (await res.json()) as { deviceCode: string; userCode: string; verificationUrl: string };
+};
+
+const pollDevice = (s: Setup, deviceCode: string) =>
+  postJson(s, "/api/auth/device/token", { deviceCode });
+
+const approveDevice = (s: Setup, headers: Record<string, string>, userCode: string) =>
+  s.app.request("/device", {
+    method: "POST",
+    headers: { ...headers, ...FORM },
+    body: new URLSearchParams({ code: userCode }),
+  });
+
+const signedInHeaders = async (s: Setup) => ({ cookie: cookieOf((await signIn(s)).done) });
+
+describe("CLI device login", () => {
+  test("starting a request returns a device code, a user code like ABCD-EFGH and the /device URL", async () => {
+    const s = setup();
+
+    const started = await startDevice(s);
+
+    expect(started.userCode).toMatch(/^[A-Z]{4}-[A-Z]{4}$/);
+    expect(started.deviceCode.length).toBeGreaterThan(30);
+    expect(started.verificationUrl).toBe("http://localhost:4000/device");
+  });
+
+  test("SC17: approving the request gives the polling CLI a yok_ token once, keeps only its hash, and a second poll gets nothing", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+
+    const approved = await approveDevice(s, headers, userCode);
+    const first = await pollDevice(s, deviceCode);
+    const { token } = (await first.json()) as { token: string };
+    const second = await pollDevice(s, deviceCode);
+
+    expect(approved.status).toBe(200);
+    expect(first.status).toBe(200);
+    expect(token).toMatch(/^yok_[A-Za-z0-9_-]{43}$/);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect((await s.storage.users.listTokens(userId)).map((t) => t.name)).toEqual([
+      "CLI on ritesh-mbp",
+    ]);
+    expect((await s.storage.users.findToken(hashToken(token)))?.userId).toBe(userId);
+    expect(await s.storage.users.findToken(token)).toBeUndefined();
+    expect(second.status).toBe(404);
+    expect(JSON.stringify(await second.json())).not.toContain(token);
+  });
+
+  test("SC18: polling before anyone approves answers pending and mints no token", async () => {
+    const s = setup();
+    await signIn(s);
+    const { deviceCode } = await startDevice(s);
+
+    const res = await pollDevice(s, deviceCode);
+
+    expect(await res.json()).toEqual({ status: "pending" });
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+
+  test("SC19: a request older than 10 minutes is expired for the poll and for the approval, and a code never issued is the same", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000 + 1));
+
+    const poll = await pollDevice(s, deviceCode);
+    const approve = await approveDevice(s, headers, userCode);
+    const unknown = await pollDevice(s, "never-issued");
+
+    expect(poll.status).toBe(404);
+    expect(approve.status).toBe(400);
+    expect(unknown.status).toBe(404);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+
+  test("SC20: /device with no session cookie goes to sign-in and comes back to /device", async () => {
+    const s = setup();
+
+    const res = await s.app.request("/device");
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/login?next=%2Fdevice");
+  });
+
+  test("/device asks for the code, then names the machine and the person with an Approve button", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { userCode } = await startDevice(s, "build-box");
+
+    const ask = await (await s.app.request("/device", { headers })).text();
+    const confirm = await (
+      await s.app.request(`/device?code=${userCode.toLowerCase().replace("-", "")}`, { headers })
+    ).text();
+    const wrong = await s.app.request("/device?code=ZZZZ-ZZZZ", { headers });
+
+    expect(ask).toContain('name="code"');
+    expect(confirm).toContain("Give the yok CLI on <code>build-box</code> access as Ritesh?");
+    expect(confirm).toContain('action="/device"');
+    expect(confirm).toContain(`value="${userCode}"`);
+    expect(wrong.status).toBe(400);
+  });
+
+  test("SC21: approving with a Bearer token instead of a cookie is refused and the request stays pending", async () => {
+    const s = setup();
+    await signIn(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const { deviceCode, userCode } = await startDevice(s);
+
+    const res = await approveDevice(s, { authorization: "Bearer yok_abc" }, userCode);
+
+    expect(res.status).toBe(401);
+    expect(await (await pollDevice(s, deviceCode)).json()).toEqual({ status: "pending" });
+  });
+
+  test("a person whose access was revoked cannot approve, and a request approved before the revoke mints no token", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const early = await startDevice(s);
+    await approveDevice(s, headers, early.userCode);
+    const late = await startDevice(s);
+    await s.storage.users.setAccessRevokedAt(userId, NOW.toISOString());
+
+    const approve = await approveDevice(s, headers, late.userCode);
+    const poll = await pollDevice(s, early.deviceCode);
+
+    expect(approve.status).toBe(302);
+    expect(poll.status).toBe(404);
+    expect(await (await pollDevice(s, late.deviceCode)).json()).toEqual({ status: "pending" });
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+});
+
+describe("tokens in settings", () => {
+  const createToken = (s: Setup, headers: Record<string, string>, name: string) =>
+    s.app.request("/settings/tokens", {
+      method: "POST",
+      headers: { ...headers, ...FORM },
+      body: new URLSearchParams({ name }),
+    });
+
+  test("settings lists each token with its last use and a Revoke button", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const used = await s.storage.users.createToken(userId, "laptop", hashToken("yok_a"));
+    await s.storage.users.touchToken(used.id, NOW);
+    const idle = await s.storage.users.createToken(userId, "ci", hashToken("yok_b"));
+
+    const page = await (await s.app.request("/settings", { headers })).text();
+
+    expect(page).toContain("<code>laptop</code>");
+    expect(page).toContain("Last used 2026-11-04");
+    expect(page).toContain("<code>ci</code>");
+    expect(page).toContain("Never used");
+    expect(page).toContain(`action="/settings/tokens/${idle.id}/revoke"`);
+  });
+
+  test("SC22: creating a CI token shows it once, and the database finds it only by its hash", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+
+    const res = await createToken(s, headers, "github actions");
+    const shown = (await res.text()).match(/yok_[A-Za-z0-9_-]{43}/)?.[0] ?? "";
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect((await s.storage.users.listTokens(userId)).map((t) => t.name)).toEqual([
+      "github actions",
+    ]);
+    expect((await s.storage.users.findToken(hashToken(shown)))?.name).toBe("github actions");
+    expect(await s.storage.users.findToken(shown)).toBeUndefined();
+    const settings = await (await s.app.request("/settings", { headers })).text();
+    expect(settings).not.toContain(shown);
+  });
+
+  test("a blank name makes no token, and a Bearer token cannot make one", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+
+    const blank = await createToken(s, headers, "   ");
+    const viaToken = await createToken(s, { authorization: "Bearer yok_abc" }, "more");
+
+    expect(blank.status).toBe(400);
+    expect(viaToken.status).toBe(401);
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
+  test("Revoke deletes that token so it stops working, and another person's token id deletes nothing", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const mine = await s.storage.users.createToken(userId, "laptop", hashToken("yok_mine"));
+    const other = await s.storage.users.saveGitHubUser({
+      id: 2,
+      login: "bo",
+      name: "Bo",
+      email: "",
+      token: "gho_b",
+    });
+    const theirs = await s.storage.users.createToken(
+      other[0],
+      "bo-laptop",
+      hashToken("yok_theirs"),
+    );
+
+    const foreign = await s.app.request(`/settings/tokens/${theirs.id}/revoke`, {
+      method: "POST",
+      headers,
+    });
+    const own = await s.app.request(`/settings/tokens/${mine.id}/revoke`, {
+      method: "POST",
+      headers,
+    });
+
+    expect(foreign.status).toBe(302);
+    expect(own.headers.get("location")).toBe("/settings");
+    expect(await s.storage.users.findToken(hashToken("yok_mine"))).toBeUndefined();
+    expect(await s.storage.users.findToken(hashToken("yok_theirs"))).toBeDefined();
+  });
+});

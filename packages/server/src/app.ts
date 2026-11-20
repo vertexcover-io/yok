@@ -59,6 +59,23 @@ export const createApi = (deps: ApiDeps) =>
       const login = user.accounts.github?.login ?? null;
       return c.json({ user: { id, name: user.name, email: user.email, login } }, 200);
     })
+    // A token revokes itself; a browser session has no token, and cannot name another here.
+    .delete("/tokens/current", async (c) => {
+      const caller = c.get("caller");
+      if (caller === undefined) {
+        return errorResponse(c, 401, "unauthenticated", "no token to revoke: run yok login first");
+      }
+      if (caller.tokenId === undefined) {
+        return errorResponse(
+          c,
+          400,
+          "bad-request",
+          "only a token can revoke itself: sign out of the browser, or revoke tokens in Settings",
+        );
+      }
+      await deps.storage.users.deleteToken(caller.userId, caller.tokenId);
+      return c.json({ revoked: true }, 200);
+    })
     .route("/runs", runRoutes(deps))
     .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))
