@@ -1899,6 +1899,10 @@ const bearerProxy = (port: number): string => {
   return `http://127.0.0.1:${proxy.port}`;
 };
 
+// What the process was started with, from ps: `ps eww` appends the environment to the command.
+const processEnvironment = (pid: number): string =>
+  spawnSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout;
+
 describe("yok --remote beside a local server", () => {
   test(
     "SC4019: a run started through a token-checking proxy saves interaction false from cli, and the laptop side starts no server",
@@ -1928,6 +1932,30 @@ describe("yok --remote beside a local server", () => {
       expect(hasNoServer(remote.home)).toBe(true);
 
       stopServer(repo, server.env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "a server yok starts holds neither the shell's remote login token nor its URL in its own process environment",
+    () => {
+      const repo = makeRepo();
+      const { home, env } = makeEnv();
+      const shell = {
+        ...env,
+        YOK_SERVER_URL: "https://yok.example.com",
+        YOK_SERVER_TOKEN: "yok_secret_in_shell",
+      };
+
+      expect(yok(repo, shell, "project", "add", "web", "--path", repo).code).toBe(0);
+
+      const [pid = 0] = serverPids(home);
+      const serverEnv = processEnvironment(pid);
+      expect(serverEnv).toContain(`YOK_HOME=${home}`);
+      expect(serverEnv).not.toContain("yok_secret_in_shell");
+      expect(serverEnv).not.toContain("YOK_SERVER_URL");
+
+      stopServer(repo, env);
     },
     TIMEOUT_MS,
   );
