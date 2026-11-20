@@ -241,7 +241,7 @@ describe("loadEnv", () => {
 });
 
 describe("sessionEnv", () => {
-  const session = { YOK_RUN_ID: "run-1", YOK_HOME: "/h" };
+  const session = { YOK_RUN_ID: "run-1", YOK_HOME: "/h", YOK_SERVER_TOKEN: "" };
 
   test.each([
     [
@@ -253,6 +253,11 @@ describe("sessionEnv", () => {
       "SC62: a run with no PATH puts the shim folder before the caller's PATH",
       {},
       { PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
+    ],
+    [
+      "SC34: a yok token in the run's env reaches the session as an empty string",
+      { YOK_SERVER_TOKEN: "yok_secret", FOO: "1" },
+      { FOO: "1", PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
     ],
   ])("%s", async (_label, runEnv, expected) => {
     expect(await sessionEnv(memoryStorage(), runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(
@@ -312,6 +317,7 @@ describe("sessionEnv for an owned run", () => {
       PATH: `/shims:${process.env.PATH}`,
       YOK_RUN_ID: "C",
       YOK_HOME: home,
+      YOK_SERVER_TOKEN: "",
     });
     expect(d?.GH_TOKEN).toBe("server");
   });

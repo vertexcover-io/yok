@@ -1,7 +1,7 @@
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import { DoctorReportSchema, type notifierHooks } from "@yok/core";
 import { type ILogger, POLICY_NAMES, type Result } from "@yok/sdk";
-import { parsePolicyFlags } from "@yok/sdk/internal";
+import { parsePolicyFlags, type UserEntry } from "@yok/sdk/internal";
 import * as z from "zod";
 import { apiErrorText, type YokClient } from "./client.ts";
 import { dropGitHubToken, sessionSecret, signValue, tokenAlive } from "./identity.ts";
@@ -30,6 +30,8 @@ export type DispatchDeps = RunDeps &
     client: YokClient;
     log: ILogger;
     now: () => Date;
+    // SERVER_DOMAIN was set when the server started: a command then needs a linked yok user
+    gated: boolean;
     githubFetch?: notifierHooks.Fetch | undefined;
   }>;
 
@@ -44,6 +46,8 @@ type ChatCommand = {
   readonly words: readonly string[];
   readonly usage: string;
   readonly options: ParseArgsOptionsConfig;
+  // runs for any member of the channel, linked or not
+  readonly open?: true;
   readonly run: (args: Args, thread: ChatThread, deps: DispatchDeps, say: Say) => Promise<Reply>;
 };
 
@@ -104,18 +108,17 @@ const runInputs = (pairs: readonly string[]): Readonly<Record<string, string>> =
 
 type Owner = Readonly<{ user?: string; note: string | null }>;
 
+const slackUser = (thread: ChatThread, deps: DispatchDeps): Promise<UserEntry | undefined> =>
+  thread.user === undefined
+    ? Promise.resolve(undefined)
+    : deps.storage.users.findByAccount("slack", thread.user);
+
 // The Slack member's yok user, with the line the thread gets when the run will not be able to push.
-// A token GitHub no longer accepts is dropped here, so the run starts as not connected.
+// A token GitHub no longer accepts is dropped here, so the run starts as not connected. A member
+// with no yok user can only be here on a server that is not gated; its run has no owner.
 const runOwner = async (thread: ChatThread, deps: DispatchDeps): Promise<Owner> => {
-  const linked =
-    thread.user === undefined
-      ? undefined
-      : await deps.storage.users.findByAccount("slack", thread.user);
-  if (linked === undefined) {
-    return {
-      note: "this Slack account is not linked to a yok user, so the run cannot push or open a pull request; type `@yok login` to link it",
-    };
-  }
+  const linked = await slackUser(thread, deps);
+  if (linked === undefined) return { note: null };
   const [id, user] = linked;
   const token = user.accounts.github?.token;
   if (token !== undefined && (await tokenAlive(deps, token))) return { user: id, note: null };
@@ -180,17 +183,18 @@ const listProjects = async (_args: Args, _thread: ChatThread, deps: DispatchDeps
   return { text: plural(projects.length, "project"), table: projectTable(projects) };
 };
 
-const addProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
+const addProject = async (args: Args, thread: ChatThread, deps: DispatchDeps) => {
   const [name] = args.positionals;
   const git = stringFlag(args, "git");
   const path = stringFlag(args, "path");
   if (name === undefined || (git === undefined && path === undefined)) throw needsUsage();
+  const linked = await slackUser(thread, deps);
   const { project } = unwrapApi(
     await deps.client.addProject({
       name,
       ...(git === undefined ? {} : { git }),
       ...(path === undefined ? {} : { path }),
-      addedBy: { channel: "slack" },
+      addedBy: { channel: "slack", ...(linked === undefined ? {} : { id: linked[0] }) },
     }),
   );
   return { text: `Added *${project.name}* at \`${project.path}\`` };
@@ -328,6 +332,8 @@ const showRun = async (args: Args, _thread: ChatThread, deps: DispatchDeps) => {
 };
 
 const LINK_TTL_MS = 10 * 60 * 1000;
+const SIGN_IN_FIRST =
+  "This server only runs commands for people signed in to yok. Type `@yok login` to link your Slack account.";
 const NOT_LINKED = "This Slack account is not linked to a yok user. Type `@yok login` to link it.";
 
 const memberOf = (thread: ChatThread): string => {
@@ -338,6 +344,12 @@ const memberOf = (thread: ChatThread): string => {
 const linkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
   const member = memberOf(thread);
   const linked = await deps.storage.users.findByAccount("slack", member);
+  if (linked?.[1].accessRevokedAt !== undefined) {
+    return {
+      text: `Your access to yok ended. Sign in at ${deps.publicOrigin}/login with a GitHub account in one of the server's orgs to get it back.`,
+      private: true,
+    };
+  }
   if (linked !== undefined) return { text: `Already linked to yok user *${linked[1].name}*.` };
   const exp = deps.now().getTime() + LINK_TTL_MS;
   const state = signValue(await sessionSecret(deps.home), { sub: member, purpose: "link", exp });
@@ -453,10 +465,16 @@ const COMMANDS: readonly ChatCommand[] = [
     options: PROJECT_FLAG,
     run: removeTrigger,
   },
-  { words: ["login"], usage: "login", options: {}, run: linkLogin },
-  { words: ["whoami"], usage: "whoami", options: {}, run: whoAmI },
+  { words: ["login"], usage: "login", options: {}, open: true, run: linkLogin },
+  { words: ["whoami"], usage: "whoami", options: {}, open: true, run: whoAmI },
   { words: ["logout"], usage: "logout", options: {}, run: unlinkLogin },
-  { words: ["help"], usage: "help", options: {}, run: async () => ({ text: helpText() }) },
+  {
+    words: ["help"],
+    usage: "help",
+    options: {},
+    open: true,
+    run: async () => ({ text: helpText() }),
+  },
 ];
 
 // The longest match wins, so `run status r-1` is never read as running a workflow named status.
@@ -555,6 +573,12 @@ export const dispatchCommand = async (
   const command = LONGEST_FIRST.find((c) => c.words.every((word, index) => words[index] === word));
   if (command === undefined) {
     return { text: [`unknown command: ${words.join(" ")}`, "", helpText()].join("\n") };
+  }
+  if (deps.gated && command.open !== true) {
+    const linked = await slackUser(thread, deps);
+    if (linked === undefined || linked[1].accessRevokedAt !== undefined) {
+      return { text: SIGN_IN_FIRST, private: true };
+    }
   }
   try {
     const args = parseWords(words.slice(command.words.length), command.options);

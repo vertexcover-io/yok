@@ -1933,7 +1933,7 @@ describe("yok --remote beside a local server", () => {
   );
 
   test(
-    "SC4020: a server yok starts gives none of the remote login variables to a run's agent session",
+    "SC33, SC4020: a server yok starts gives no remote login URL and an empty token to a run's agent session",
     () => {
       const repo = makeRepo();
       const { env, fakeOut } = makeEnv();
@@ -1948,7 +1948,8 @@ describe("yok --remote beside a local server", () => {
       expect(run.code).toBe(0);
       waitFor(() => readLines(fakeOut).some(isLaunch));
       const launched = readLines(fakeOut).find(isLaunch)?.env as Record<string, string>;
-      expect(Object.keys(launched)).not.toContainAnyValues(["YOK_SERVER_URL", "YOK_SERVER_TOKEN"]);
+      expect(Object.keys(launched)).not.toContain("YOK_SERVER_URL");
+      expect(launched.YOK_SERVER_TOKEN).toBe("");
 
       stopServer(repo, env);
     },

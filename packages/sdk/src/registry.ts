@@ -61,8 +61,9 @@ export type RunDraft = z.infer<typeof RunDraftSchema>;
 export const ProjectSchema = z.strictObject({
   path: AbsolutePathSchema,
   git: z.string().optional(),
-  // where the request came from: cli, server, api or slack
-  addedBy: z.strictObject({ channel: NonEmptyStringSchema }),
+  // where the request came from: cli, server, api or slack; user is the yok user who added it,
+  // when one did
+  addedBy: z.strictObject({ channel: NonEmptyStringSchema, user: NonEmptyStringSchema.optional() }),
   addedAt: z.iso.datetime(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
