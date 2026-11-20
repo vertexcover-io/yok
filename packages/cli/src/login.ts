@@ -3,7 +3,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Command } from "@commander-js/extra-typings";
 import { unwrap } from "@yok/core";
 import { yokHome } from "@yok/sdk";
-import { DeviceStartReplySchema, DeviceTokenReplySchema, updateHomeEnv } from "@yok/server";
+import {
+  DeviceStartReplySchema,
+  DeviceTokenReplySchema,
+  ErrorBodySchema,
+  updateHomeEnv,
+} from "@yok/server";
 import { createYokClient } from "@yok/server/client";
 import type * as z from "zod";
 import {
@@ -32,7 +37,10 @@ const postJson = async <S extends z.ZodType>(
   }).catch(() => null);
   if (reply === null) throw new Error(`${host} is not answering`);
   if (reply.status === 404) throw new Error(EXPIRED);
-  const parsed = schema.safeParse(await reply.json().catch(() => null));
+  const json: unknown = await reply.json().catch(() => null);
+  const refused = ErrorBodySchema.safeParse(json);
+  if (!reply.ok && refused.success) throw new Error(`${host}: ${refused.data.error.message}`);
+  const parsed = schema.safeParse(json);
   if (!reply.ok || !parsed.success) {
     throw new Error(`${host} answered ${path} with ${reply.status}; is it a yok server?`);
   }

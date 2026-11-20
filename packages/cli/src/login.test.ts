@@ -194,6 +194,42 @@ describe("login", () => {
     expect(existsSync(join(home, ".env"))).toBe(false);
   });
 
+  test.each([
+    {
+      reply: Response.json(
+        {
+          error: {
+            code: "too-many-requests",
+            message: "too many login requests are waiting; try again in a few minutes",
+          },
+        },
+        { status: 429 },
+      ),
+      shown: "too many login requests are waiting; try again in a few minutes",
+    },
+    {
+      reply: new Response("<html>Bad gateway</html>", { status: 502 }),
+      shown: "answered /api/auth/device with 502; is it a yok server?",
+    },
+  ])(
+    "a refused login start shows the yok server's own message, else asks whether it is a yok server: $shown",
+    async ({ reply, shown }) => {
+      const home = tempHome();
+      const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => reply.clone() });
+
+      const attempt = login({
+        url: `http://127.0.0.1:${server.port}`,
+        home,
+        hostname: "laptop",
+        onVerification: () => {},
+      });
+
+      await expect(attempt).rejects.toThrow(shown);
+      server.stop(true);
+      expect(existsSync(join(home, ".env"))).toBe(false);
+    },
+  );
+
   test("a token the server does not accept on /api/me is not saved", async () => {
     const home = tempHome();
     const working = "YOK_SERVER_URL=https://yok.example.com\nYOK_SERVER_TOKEN=yok_old\n";
