@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,41 +10,70 @@ import {
   type State,
   StateSchema,
 } from "./contracts.ts";
-import { jsonlEventStore, memoryEventStore } from "./event-store.ts";
 import {
   builtInHandlers,
-  emitEvent,
   findRunningLeaf,
   foldModelSwitch,
   runDirOf,
   WorkspaceCreatedEvent,
 } from "./events.ts";
-import { emitRunEvent, projectEvents } from "./state.ts";
+import type { IStorage } from "./repositories.ts";
+import { appendRunEvent, emitRunEvent, projectEvents } from "./state.ts";
+import { memoryStorage } from "./storage.ts";
+
+// A stored run r-1 in a fresh repo folder; with a state when one is given, as init stores it.
+const storedRun = async (state?: State) => {
+  const cwd = await mkdtemp(join(tmpdir(), "repo-"));
+  const run = { id: "r-1", cwd, name: "fix-login" };
+  const storage: IStorage = memoryStorage();
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
+    id: run.id,
+    project: "repo",
+    workflow: "feature",
+    workflowPath: join(cwd, "workflow.yaml"),
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: addedAt,
+  });
+  if (state !== undefined) {
+    const claimed = await storage.runs.initRun(run.id, run.name, state);
+    if (!claimed.ok) throw new Error(claimed.error);
+  }
+  return { run, cwd, storage };
+};
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-describe("emitEvent", () => {
+describe("appendRunEvent", () => {
   test("SC1: an event emitted with no id is stored as seq 1 with a UUID, the current time and the given runId", async () => {
-    const store = memoryEventStore();
+    const { run, storage } = await storedRun();
     const before = Date.now();
-    const result = await emitEvent(store, "r-1", {
+    const result = await appendRunEvent(storage, run, {
       type: "custom.skill.note",
       source: "test",
       payload: { a: 1 },
     });
     if (!result.ok) throw new Error(result.error);
-    expect(result.value).toMatchObject({ seq: 1, runId: "r-1", payload: { a: 1 } });
-    expect(result.value.id).toMatch(UUID);
-    expect(Date.parse(result.value.ts)).toBeGreaterThanOrEqual(before - 1000);
-    expect(Date.parse(result.value.ts)).toBeLessThanOrEqual(Date.now() + 1000);
-    expect(await store.read()).toEqual([result.value]);
+    const { event } = result.value;
+    expect(event).toMatchObject({ seq: 1, runId: "r-1", payload: { a: 1 } });
+    expect(event.id).toMatch(UUID);
+    expect(Date.parse(event.ts)).toBeGreaterThanOrEqual(before - 1000);
+    expect(Date.parse(event.ts)).toBeLessThanOrEqual(Date.now() + 1000);
+    expect(await storage.events(run.id).read()).toEqual([event]);
   });
 
   test.each([
     ["completed", { output: "hi\n" }],
     ["failed", { error: { kind: "exit", message: "exit 1" } }],
   ])("workflow.node.%s carries a script's process record", async (outcome, fields) => {
-    const result = await emitEvent(memoryEventStore(), "r-1", {
+    const { run, storage } = await storedRun();
+    const result = await appendRunEvent(storage, run, {
       type: `workflow.node.${outcome}`,
       source: "test",
       nodeId: "a",
@@ -61,37 +90,33 @@ describe("emitEvent", () => {
 });
 
 describe("emitRunEvent", () => {
-  test("SC31: stores the event in the run's .yok/NAME folder with the run's id", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "repo-"));
-    const run = { id: "r-1", cwd, name: "fix-login" };
+  test("SC31: stores the event on the run with the run's id", async () => {
+    const { run, cwd, storage } = await storedRun();
 
-    const result = await emitRunEvent(run, {
-      type: "custom.skill.note",
-      source: "test",
-      payload: { a: 1 },
-    });
+    const result = await emitRunEvent(
+      run,
+      { type: "custom.skill.note", source: "test", payload: { a: 1 } },
+      storage,
+    );
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value).toMatchObject({ seq: 1, runId: "r-1" });
     expect(runDirOf(cwd, "fix-login")).toBe(join(cwd, ".yok", "fix-login"));
-    expect(await jsonlEventStore(runDirOf(cwd, "fix-login")).read()).toEqual([result.value]);
+    expect(await storage.events(run.id).read()).toEqual([result.value]);
   });
 
-  test("brings the run's state.json up to date, so a workspace event moves state.workspace", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "repo-"));
-    const run = { id: "r-1", cwd, name: "fix-login" };
-    const dir = runDirOf(cwd, "fix-login");
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "state.json"), JSON.stringify(seed));
-
-    const result = await emitRunEvent(run, {
+  test("brings the run's stored state up to date, so a workspace event moves state.workspace", async () => {
+    const { run, storage } = await storedRun(seed);
+    const created = {
       type: "workspace.created",
       source: "test",
       payload: createdPayload("multi", { api: repository(`${WS_DIR}/api`) }),
-    });
+    };
+    const result = await emitRunEvent(run, created, storage);
 
     if (!result.ok) throw new Error(result.error);
-    const state = StateSchema.parse(JSON.parse(await readFile(join(dir, "state.json"), "utf8")));
+    const state = await storage.events(run.id).readState();
+    if (state === null) throw new Error("no state");
     expect(state.lastEventSeq).toBe(1);
     expect(state.workspace.type).toBe("multi");
     expect(state.workspace.path).toBe(WS_DIR);
@@ -1097,7 +1122,7 @@ describe("blocker", () => {
   });
 });
 
-describe("emitEvent refusals", () => {
+describe("event refusals", () => {
   const node = { nodeId: "a", nodeRunId: "a" };
   const session = { agent: "claude", sessionId: "s1" };
   const doneInput = { nodeRunId: "nr-1", output: {}, artifacts: [] };
@@ -1343,10 +1368,10 @@ describe("emitEvent refusals", () => {
   ])(
     "%s is refused, naming why, and nothing is stored",
     async (_label, type, ids, payload, reason) => {
-      const store = memoryEventStore();
-      const result = await emitEvent(store, "r-1", { type, source: "test", ...ids, payload });
+      const { run, storage } = await storedRun();
+      const result = await appendRunEvent(storage, run, { type, source: "test", ...ids, payload });
       expect(result.ok ? "" : result.error).toContain(reason);
-      expect(await store.read()).toEqual([]);
+      expect(await storage.events(run.id).read()).toEqual([]);
     },
   );
 });

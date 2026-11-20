@@ -25,6 +25,7 @@ import {
   type Samskara,
   warn,
 } from "@yok/sdk";
+import { checkSqliteVersion, sqliteVersion } from "@yok/sdk/internal";
 import * as z from "zod";
 import { findMissingNotifierKeys } from "./notifier.ts";
 import { pickNotifier } from "./notifier-subscriber.ts";
@@ -181,6 +182,12 @@ export const buildSamskaraCheck = (workflowSamskara: Samskara | undefined): Chec
   run: (context) => checkSamskaraUpload(context, workflowSamskara),
 });
 
+// yok.db needs SQLite 3.38; macOS ships it with the system, Linux with yok's own bun.
+export const checkSqlite = (found: string): Outcome => {
+  const checked = checkSqliteVersion(found);
+  return checked.ok ? ok(`SQLite ${found}`) : fail(checked.error);
+};
+
 // The rows for yok's built-in subscribers, from a workflow's blocks when there is one; yok run and
 // yok doctor both add them, so the two agree on what blocks a run.
 export const builtInChecks = (
@@ -200,6 +207,11 @@ export const CHECKS: readonly Check[] = [
     run: checkBinary("jq"),
   },
   { name: "curl", fix: ["brew install curl", "apt install curl"], run: checkBinary("curl") },
+  {
+    name: "sqlite",
+    fix: ["on macOS, update macOS", "on Linux, update yok"],
+    run: async () => checkSqlite(sqliteVersion()),
+  },
   {
     name: "yok-gitignored",
     fix: ["echo '.yok/' >> .gitignore", "remove any narrower .yok/* exception"],

@@ -37,7 +37,7 @@ Every action a skill takes is a subcommand of `yok orchestrate`. Not a server ro
 
 1. Put the logic in [packages/core/src/runs.ts](../../packages/core/src/runs.ts) or a sibling, as a plain function that takes a `RunRef` and returns a `Result`.
 2. Add the command in [packages/core/src/orchestrate.ts](../../packages/core/src/orchestrate.ts). Take the run with `--run NAME` or `--run-id ID`, falling back to `$YOK_RUN_ID`, the way the others do. Print one JSON reply.
-3. If the action changes the run, it must do so by appending an event, never by editing `state.json`.
+3. If the action changes the run, it must do so by appending an event, never by writing the run's state itself.
 4. Test it in `orchestrate.e2e.test.ts`, which runs the real command against a temporary repo and home.
 5. Tell the agent about it in [skills/orchestrate/SKILL.md](../../skills/orchestrate/SKILL.md) if the agent is meant to call it.
 

@@ -230,7 +230,7 @@ const describeFailed = (_: Event, state: State): Notice => {
 
 type BuildNotice = (event: Event, state: State) => Notice | undefined;
 
-// Every message the thread can hold. Node lines carry the node's own summary from state.json;
+// Every message the thread can hold. Node lines carry the node's own summary from the run's state;
 // the rest are fixed templates.
 const NOTICE_BY_EVENT: Readonly<Record<string, BuildNotice>> = {
   "workflow.started": (_, state) => {

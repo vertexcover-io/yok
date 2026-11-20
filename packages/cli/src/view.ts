@@ -1,5 +1,6 @@
 import { Command } from "@commander-js/extra-typings";
-import { createRegistryReader, pickRun, registryPath } from "@yok/sdk";
+import { pickRun, yokHome } from "@yok/sdk";
+import { withStorage } from "@yok/sdk/internal";
 import { apiErrorText, ensureServer, fail, openForPerson, yokClient } from "./client.ts";
 
 export const viewCommand = () =>
@@ -9,13 +10,9 @@ export const viewCommand = () =>
     .option("--run-id <id>", "view by run id instead of name")
     .option("--print", "print the page URL without opening it")
     .action(async (name, opts) => {
-      const run = await pickRun({
-        registry: createRegistryReader(registryPath()),
-        name,
-        id: opts.runId,
-        env: process.env,
-        cwd: process.cwd(),
-      });
+      const run = await withStorage(yokHome(), (storage) =>
+        pickRun({ storage, name, id: opts.runId, env: process.env, cwd: process.cwd() }),
+      );
       if (!run.ok) return fail(run.error);
       await ensureServer();
       const client = yokClient();

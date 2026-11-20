@@ -1,10 +1,10 @@
 /// <reference path="./vendor-sh.d.ts" />
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type HookDeps,
   type PreToolUseHandler,
   readPolicies,
-  registryPath,
   spawn,
   type ToolCall,
   type ToolUse,
@@ -25,57 +25,43 @@ import {
 } from "./common.ts";
 import { expandPath, type PathBase, shellWriteTargets } from "./write-targets.ts";
 
-export type ProtectedRecord =
-  | Readonly<{ kind: "state" | "events"; runName: string; path: string }>
-  | Readonly<{ kind: "registry"; path: string }>;
-
 const ALLOW: ToolVerdict = { kind: "allow" };
-const RUN_RECORD = /[\\/]\.yok[\\/]([^\\/]+)[\\/](state\.json|event\.jsonl)$/;
+// SQLite's write-ahead log and shared-memory files are the database as much as yok.db is.
+const DATABASE_FILES = ["yok.db", "yok.db-wal", "yok.db-shm"];
 const BASH_ANTIPATTERNS_TIMEOUT_MS = 10_000;
 
-export const protectedRecordOf = (path: string, base: PathBase): ProtectedRecord | undefined => {
+// The absolute path when PATH is one of the database's files, else undefined.
+export const protectedRecordOf = (path: string, base: PathBase): string | undefined => {
   const abs = expandPath(path, base);
   if (abs === undefined) return undefined;
-  if (abs === registryPath(base.yokHome)) return { kind: "registry", path: abs };
-  const match = RUN_RECORD.exec(abs);
-  const runName = match?.[1];
-  if (runName === undefined) return undefined;
-  return { kind: match?.[2]?.startsWith("state") ? "state" : "events", runName, path: abs };
+  return DATABASE_FILES.some((file) => abs === join(base.yokHome, file)) ? abs : undefined;
 };
 
-const recordMessage = (record: ProtectedRecord): string => {
-  if (record.kind === "registry") {
-    return (
-      `${record.path} is the yok registry, so this call was refused. It changes only ` +
-      "through `yok orchestrate init NAME` and " +
-      "`yok orchestrate link-session --run NAME --agent AGENT --session-id ID`. " +
-      "Reading it is fine."
-    );
-  }
-  const run = record.runName;
-  return (
-    `${record.path} is written only by the orchestrate script, so this call was refused. ` +
-    `Move the run with \`yok orchestrate next --run ${run}\`, record a node with ` +
-    `\`yok orchestrate exec|done NODE_RUN_ID --run ${run}\`, and add an event with ` +
-    `\`yok orchestrate emit TYPE --run ${run} --source SKILL\`. Reading the file is fine.`
-  );
-};
+const recordMessage = (path: string): string =>
+  `${path} is yok's database, so this call was refused. A run changes only through ` +
+  "`yok orchestrate` commands: move it with `yok orchestrate next --run NAME`, record a node " +
+  "with `yok orchestrate exec|done NODE_RUN_ID --run NAME`, add an event with " +
+  "`yok orchestrate emit TYPE --run NAME --source SKILL`, and link a session with " +
+  "`yok orchestrate link-session --run NAME --agent AGENT --session-id ID`. Reading it is fine.";
 
 const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   if (call.kind === "file-write") return [call.path];
   return call.kind === "shell" ? shellWriteTargets(call.command, base) : [];
 };
 
-// Refuses a call that writes, moves or deletes a run's state.json or event.jsonl, or the registry.
+const deniedPath = (call: ToolCall, base: PathBase): string | undefined =>
+  callTargets(call, base)
+    .map((target) => protectedRecordOf(target, base))
+    .find((found) => found !== undefined);
+
+// Refuses a call that writes, moves or deletes yok's database.
 export const recordGuard: PreToolUseHandler = {
   name: "record-guard",
   run: async (use, deps) => {
     const base = { cwd: use.cwd, home: homedir(), yokHome: yokHome(deps.env) };
-    const record = callTargets(use.call, base)
-      .map((target) => protectedRecordOf(target, base))
-      .find((found) => found !== undefined);
-    if (record === undefined) return ALLOW;
-    return { kind: "deny", message: recordMessage(record), path: record.path };
+    const path = deniedPath(use.call, base);
+    if (path === undefined) return ALLOW;
+    return { kind: "deny", message: recordMessage(path), path };
   },
 };
 

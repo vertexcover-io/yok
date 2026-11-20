@@ -26,6 +26,10 @@ const testTmp = realpathSync(mkdtempSync(join(tmpdir(), "yok-test-")));
 process.env.TMPDIR = testTmp;
 afterAll(() => rmSync(testTmp, { recursive: true, force: true }));
 
+// A run function given no storage opens the yok home's database, so tests get a home of their own
+// and never write the person's yok.db; a test that needs a home sets its own.
+process.env.YOK_HOME = join(testTmp, "yok-home");
+
 // Launching Claude adds its folder to Claude's trusted list, so tests get a config of their own
 // and never write the person's ~/.claude.json.
 process.env.CLAUDE_CONFIG_DIR = join(testTmp, "claude-config");

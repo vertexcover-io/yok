@@ -52,50 +52,28 @@ const repo = previous?.repo ?? realpathSync(mkdtempSync(join(tmpdir(), "learn-si
 const simCwd = realpathSync(mkdtempSync(join(tmpdir(), "learn-sim-user-")));
 if (!previous) createRepo(repo, scenario.files);
 
-// Every scenario runs inside a fake yok run, since learn works only in one: a private yok home whose registry names the run, the
-// run's folder with its workflow and event log, and a `yok` on PATH that runs this checkout's CLI.
-// The event log gets workflow.started, naming the session, once the first turn gives its id.
+// Every scenario runs inside a fake yok run, since learn works only in one: a private yok home
+// whose yok.db holds the run, the run's folder with its workflow, and a `yok` on PATH that runs
+// this checkout's CLI. The run gets its session once the first turn gives its id. Node cannot
+// open yok.db, so seed.ts writes the run's records with bun.
 const RUN = { id: "learn-sim-run", name: "sim" };
 const runDir = join(repo, ".yok", RUN.name);
-const yokHome = join(simCwd, "yok-home");
+// A re-check reads the run's events again, so it reuses the first session's yok home.
+const yokHome = previous?.yokHome ?? join(simCwd, "yok-home");
 const yokBin = join(simCwd, "bin");
-const writeRegistry = (sessions) =>
-  writeFileSync(
-    join(yokHome, "registry.json"),
-    JSON.stringify({
-      version: 1,
-      runs: {
-        [RUN.id]: {
-          id: RUN.id, workflow: "task", workflowPath: join(PLUGIN_ROOT, "workflows", "task.yaml"), inputs: {},
-          cwd: repo, sessions, name: RUN.name, terminal: null, config: null, tiers: null, createdAt: new Date().toISOString(),
-        },
-      },
-    }),
-  );
-const startRun = (id) => {
-  writeRegistry([{ agent: "claude", sessionId: id }]);
-  const started = {
-    schemaVersion: 1, seq: 1, id: "sim-started", ts: new Date().toISOString(), type: "workflow.started", source: "sim", runId: RUN.id,
-    payload: { workflow: "task", inputs: {}, activeSessions: [{ agent: "claude", sessionId: id }] },
-  };
-  writeFileSync(join(runDir, "event.jsonl"), `${JSON.stringify(started)}\n`);
+const yokCli = join(PLUGIN_ROOT, "packages", "cli", "src", "index.ts");
+const agentEnv = { ...process.env, PATH: `${yokBin}:${process.env.PATH}`, YOK_HOME: yokHome, YOK_RUN_ID: RUN.id };
+const SEED = join(dirname(fileURLToPath(import.meta.url)), "seed.ts");
+const seed = (...args) => {
+  const result = spawnSync("bun", [SEED, ...args], { cwd: repo, env: agentEnv, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`seed.ts ${args[0]} failed: ${result.stderr}`);
+  return result.stdout.trim();
 };
-// An afterRun scenario starts once the run's PR is up while retro still runs: state.json has the
-// `pr` stage completed and the run still running, the repo
-// has a remote to push to, and the session gets yok's offer-learn Stop hook, as `yok run` installs it.
-const finishRun = () => {
-  const at = new Date().toISOString();
-  const state = {
-    schemaVersion: 1, lastEventSeq: 1, runId: RUN.id, runName: RUN.name, runDir, version: "2.0.0",
-    workflow: { name: "task", path: "workflow.yaml" }, input: {}, scope: null, startedAt: at, completedAt: null, status: "running",
-    workspace: { type: "mono", path: repo, repositories: { shop: { path: repo, git: { branch: "feat/invoice-id", baseBranch: "main", startSha: "init" } } } },
-    nodeRuns: {
-      pr: { nodeRunId: "pr", nodeType: "agent", status: "completed", startedAt: at, completedAt: at, artifacts: [] },
-      retro: { nodeRunId: "retro", nodeType: "agent", status: "running", startedAt: at, completedAt: null, artifacts: [] },
-    },
-    activeSessions: [], tiers: null, eventHandlers: {}, subscribers: {}, config: { path: null, root: repo },
-  };
-  writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
+const startRun = (id) => seed("session", id);
+// An afterRun scenario starts once the run's PR is up while retro still runs: the run's state has
+// the `pr` stage completed and the run still running, the repo has a remote to push to, and the
+// session gets yok's offer-learn Stop hook, as `yok run` installs it.
+const pushBranch = () => {
   const remote = join(simCwd, "origin.git");
   spawnSync("git", ["init", "-q", "--bare", remote]);
   spawnSync("git", ["remote", "add", "origin", remote], { cwd: repo });
@@ -107,14 +85,14 @@ if (!previous) {
   mkdirSync(yokHome, { recursive: true });
   mkdirSync(yokBin, { recursive: true });
   writeFileSync(join(runDir, "workflow.yaml"), readFileSync(join(PLUGIN_ROOT, "workflows", "task.yaml")));
-  writeFileSync(join(yokBin, "yok"), `#!/bin/sh\nexec bun ${join(PLUGIN_ROOT, "packages", "cli", "src", "index.ts")} "$@"\n`, { mode: 0o755 });
-  writeRegistry([]);
-  if (scenario.afterRun) finishRun();
+  writeFileSync(join(yokBin, "yok"), `#!/bin/sh\nexec bun ${yokCli} "$@"\n`, { mode: 0o755 });
+  seed("run", RUN.name, repo, ...(scenario.afterRun ? ["finished"] : []));
+  if (scenario.afterRun) pushBranch();
 }
 const hookSettings = scenario.afterRun
   ? ["--settings", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `${join(yokBin, "yok")} orchestrate hook stop --agent claude --handler offer-learn`, timeout: 30 }] }] } })]
   : [];
-// What the viewer does with a comment: store it in the run's comments.json and type the same
+// What the viewer does with a comment: store it on the run as delivered and type the same
 // [review] message the server delivers (deliveryMessage in packages/core/src/comments.ts).
 // The simulated user sometimes writes a chat line before the comment; the viewer's message goes
 // first, as the server would deliver it, and the chat line follows.
@@ -125,18 +103,9 @@ const deliverComment = (said) => {
   const [, quote, text] = match;
   const chat = said.slice(0, match.index).trim();
   const file = "artifacts/plan.md";
-  const commentsPath = join(runDir, "comments.json");
-  const stored = existsSync(commentsPath) ? JSON.parse(readFileSync(commentsPath, "utf8")) : { version: 1, comments: [] };
-  const id = `c${stored.comments.length + 1}`;
   const planPath = join(runDir, file);
   const line = existsSync(planPath) ? readFileSync(planPath, "utf8").split("\n").findIndex((l) => l.includes(quote)) + 1 : 0;
-  const at = new Date().toISOString();
-  stored.comments.push({
-    id, file, kind: "comment", text: text.trim(), status: "delivered", createdAt: at, deliveredAt: at,
-    anchor: { quote, before: "", after: "", ...(line > 0 ? { lines: [line, line] } : {}) },
-    thread: [{ by: "user", text: text.trim(), at }],
-  });
-  writeFileSync(commentsPath, JSON.stringify(stored, null, 2));
+  const id = seed("comment", file, String(line), quote, text.trim());
   return [
     "[review] 1 new comment from the viewer:",
     `${id} · ${file}${line > 0 ? `:${line}` : ""} on "${quote}"\n  ${text.trim()}`,
@@ -144,8 +113,6 @@ const deliverComment = (said) => {
     ...(chat ? ["", chat] : []),
   ].join("\n");
 };
-
-const agentEnv = { ...process.env, PATH: `${yokBin}:${process.env.PATH}`, YOK_HOME: yokHome, YOK_RUN_ID: RUN.id };
 
 // --- the simulated user ------------------------------------------------------------------------
 const SPEAKER = { user: "YOU", agent: "AGENT", stage: "PIPELINE (starts the learn stage, not you)" };
@@ -305,10 +272,11 @@ const expected = scenario.afterRun && pushes < 2
 const userMessages = conversation.filter((turn) => turn.role === "user").map((turn) => turn.text.trim());
 const addedLearningFiles = () => changedFiles.filter((line) => line.startsWith("??") && /docs\/learnings\/(?!index\.md)/.test(line));
 
-const readRunEvents = () =>
-  existsSync(join(runDir, "event.jsonl"))
-    ? readFileSync(join(runDir, "event.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    : [];
+// The run's events, read through this checkout's yok.
+const readRunEvents = () => {
+  const result = spawnSync("bun", [yokCli, "orchestrate", "events"], { cwd: repo, env: agentEnv, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  return result.status === 0 ? JSON.parse(result.stdout) : [];
+};
 
 // --- checks ------------------------------------------------------------------------------------
 const checks = [];
@@ -520,6 +488,7 @@ const result = {
   scenario: scenarioName,
   source: scenario.source,
   repo,
+  yokHome,
   sessionId,
   transcript: sessionId ? transcriptPath(sessionId) : null,
   conversation,

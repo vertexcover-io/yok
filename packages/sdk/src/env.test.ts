@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "./config.ts";
 import { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
-import { createRegistry, registryPath } from "./registry.ts";
-import { setAccountToken, type User, updateUsers } from "./users.ts";
+import type { IStorage } from "./repositories.ts";
+import { memoryStorage } from "./storage.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "sdk-env-")));
 
@@ -255,30 +255,28 @@ describe("sessionEnv", () => {
       { PATH: `/h/shims/abc:${process.env.PATH}`, ...session },
     ],
   ])("%s", async (_label, runEnv, expected) => {
-    expect(await sessionEnv(runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(expected);
+    expect(await sessionEnv(memoryStorage(), runEnv, "run-1", "/h", "/h/shims/abc")).toEqual(
+      expected,
+    );
   });
 });
 
 describe("sessionEnv for an owned run", () => {
-  const github = { id: 1, login: "ritesh-gh" };
-  const connected: User = {
-    name: "R",
-    email: "",
-    accounts: { github: { ...github, token: "gho_u1" } },
-  };
+  const signIn = { id: 1, login: "ritesh-gh", name: "R", email: "", token: "gho_u1" };
 
   type Started = { source?: "api" | "slack" | "trigger"; user?: string };
 
-  const homeWith = async (runs: Record<string, Started>): Promise<string> => {
+  const homeWith = async (storage: IStorage, runs: Record<string, Started>): Promise<string> => {
     const home = tempDir();
-    const registry = createRegistry(registryPath(home));
+    const addedAt = new Date().toISOString();
+    await storage.projects.add("repo", { path: "/abs/repo", addedBy: { channel: "cli" }, addedAt });
     for (const [id, started] of Object.entries(runs)) {
-      await registry.addRun({
+      await storage.runs.addRun({
         id,
+        project: "repo",
         workflow: "demo",
         workflowPath: "/abs/workflow.yaml",
         inputs: {},
-        cwd: "/abs/repo",
         sessions: [],
         name: null,
         terminal: null,
@@ -291,18 +289,19 @@ describe("sessionEnv for an owned run", () => {
     return home;
   };
 
-  test("SC26: Slack run A by a connected user gets their token, Slack run B by no yok user gets none, API run C and pre-source run D keep their env", async () => {
-    const home = await homeWith({
-      A: { source: "slack", user: "u_1" },
+  test("SC127 (SC26), SC218: Slack run A by a connected user gets their token, Slack run B by no yok user gets none, API run C and pre-source run D keep their env", async () => {
+    const storage = memoryStorage();
+    const [userId] = await storage.users.saveGitHubUser(signIn);
+    const home = await homeWith(storage, {
+      A: { source: "slack", user: userId },
       B: { source: "slack" },
       C: { source: "api" },
       D: {},
     });
-    await updateUsers(home, () => ({ u_1: connected }));
     const runEnv = { GH_TOKEN: "server", FOO: "1" };
 
     const [a, b, c, d] = await Promise.all(
-      ["A", "B", "C", "D"].map((id) => sessionEnv(runEnv, id, home, "/shims")),
+      ["A", "B", "C", "D"].map((id) => sessionEnv(storage, runEnv, id, home, "/shims")),
     );
 
     expect(a?.GH_TOKEN).toBe("gho_u1");
@@ -317,13 +316,16 @@ describe("sessionEnv for an owned run", () => {
     expect(d?.GH_TOKEN).toBe("server");
   });
 
-  test("SC27: a GitHub token connected after the run started reaches the run's next session", async () => {
-    const home = await homeWith({ A: { source: "slack", user: "u_1" } });
-    await updateUsers(home, () => ({ u_1: { ...connected, accounts: { github } } }));
-    const before = await sessionEnv({}, "A", home, "/shims");
+  test("SC127 (SC27): a GitHub token connected after the run started reaches the run's next session", async () => {
+    const storage = memoryStorage();
+    const [userId] = await storage.users.saveGitHubUser(signIn);
+    const home = await homeWith(storage, { A: { source: "slack", user: userId } });
+    const github = { provider: "github", providerId: "1", username: "ritesh-gh" };
+    await storage.users.addUserAccount(userId, github);
+    const before = await sessionEnv(storage, {}, "A", home, "/shims");
 
-    await updateUsers(home, (users) => setAccountToken(users, "u_1", "github", "gho_new"));
-    const after = await sessionEnv({}, "A", home, "/shims");
+    await storage.users.addUserAccount(userId, { ...github, token: "gho_new" });
+    const after = await sessionEnv(storage, {}, "A", home, "/shims");
 
     expect(before.GH_TOKEN).toBe("");
     expect(after.GH_TOKEN).toBe("gho_new");

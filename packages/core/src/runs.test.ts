@@ -16,17 +16,18 @@ import {
   createGit,
   emitRunEvent,
   findRoot,
+  type IStorage,
   type ITerminal,
   type ITerminalHost,
   noopLogger,
   type ResolvedTiers,
   type RunRef,
   resolveRun,
-  StateSchema,
+  type State,
   SubscriberRefSchema,
   type WorkflowRun,
 } from "@yok/sdk";
-import { appendRunEvent, createRegistry, jsonlEventStore, type Registry } from "@yok/sdk/internal";
+import { appendRunEvent, memoryStorage, openStorage } from "@yok/sdk/internal";
 import corePackage from "../package.json";
 import { agentAdapters, agentProvider } from "./agents/index.ts";
 import { currentTerminal } from "./agents/tmux.ts";
@@ -37,12 +38,14 @@ import {
   linkRunSession,
   nextStep,
   notifyThreadFromEnv,
+  readStateKey,
   terminalName,
 } from "./runs.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   id: "r-1",
+  project: "repo",
   workflow: "demo",
   workflowPath: "/abs/workflow.yaml",
   inputs: {},
@@ -84,16 +87,20 @@ const WORKFLOW =
   'name: ok\nnodes:\n  - { id: a, type: exec, input: null, runtime: sh, script: "true" }\n';
 
 // A run `yok run` saved in a fresh git repo, not yet initialized.
-const savedRun = async (overrides: Partial<WorkflowRun> = {}) => {
+const savedRun = async (
+  overrides: Partial<WorkflowRun> = {},
+  storage: IStorage = memoryStorage(),
+) => {
   const cwd = overrides.cwd ?? makeRepo();
   const workflowPath = join(cwd, "ok.yaml");
   writeFileSync(workflowPath, WORKFLOW);
-  const registry = createRegistry(join(tempDir(), "registry.json"));
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
   const run = makeRun({ cwd, workflowPath, ...overrides });
-  await registry.addRun(run);
+  await storage.runs.addRun(run);
   const init = (name: string, runId = run.id, extra: Partial<InitOptions> = {}) =>
     initializeRun({
-      registry,
+      storage,
       runId,
       name,
       git: createGit(),
@@ -101,12 +108,13 @@ const savedRun = async (overrides: Partial<WorkflowRun> = {}) => {
       modelSwitchAgents: SWITCHING,
       ...extra,
     });
-  return { cwd, workflowPath, registry, run, init };
+  const events = () => storage.events(run.id).read();
+  return { cwd, workflowPath, storage, run, init, events };
 };
 
 describe("initializeRun", () => {
-  test("SC19: writes workflow.yaml, one workflow.started event, a state.json with lastEventSeq 1 and the run's id, folder and running status, and names the run in the registry", async () => {
-    const { cwd, workflowPath, registry, run, init } = await savedRun();
+  test("SC19: writes workflow.yaml, an empty artifacts/ and no state.json, stores one workflow.started event and a state with lastEventSeq 1 and the run's id, folder and running status, and names the run", async () => {
+    const { cwd, workflowPath, storage, run, init, events: storedEvents } = await savedRun();
 
     const result = await init("fix-login");
 
@@ -116,7 +124,7 @@ describe("initializeRun", () => {
     expect(readFileSync(join(dir, "workflow.yaml"), "utf8")).toBe(
       readFileSync(workflowPath, "utf8"),
     );
-    const events = await jsonlEventStore(dir).read();
+    const events = await storedEvents();
     expect(events).toMatchObject([
       { id: "workflow-started", type: "workflow.started", source: "orchestrate", seq: 1 },
     ]);
@@ -132,16 +140,19 @@ describe("initializeRun", () => {
       input: run.inputs,
       startedAt: events[0]?.ts,
     });
-    expect((await registry.findRun(run.id))?.name).toBe("fix-login");
+    expect((await storage.runs.findRun(run.id))?.name).toBe("fix-login");
+    expect(await storage.events(run.id).readState()).toEqual(result.value.state);
+    expect(existsSync(join(dir, "state.json"))).toBe(false);
+    expect(existsSync(join(dir, "artifacts"))).toBe(true);
   });
 
   test("SC18: init given notifyThread 100.1 stores notification.thread.started before workflow.started, so state.notification.threadId is 100.1", async () => {
-    const { cwd, init } = await savedRun();
+    const { init, events: storedEvents } = await savedRun();
 
     const result = await init("fix-login", undefined, { notifyThread: { threadId: "100.1" } });
 
     if (!result.ok) throw new Error(result.error);
-    const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
+    const events = await storedEvents();
     expect(events.map((event) => event.type)).toEqual([
       "notification.thread.started",
       "workflow.started",
@@ -186,30 +197,30 @@ describe("initializeRun", () => {
   });
 
   test("SC19 (regression): init without notifyThread stores no thread event and leaves state.notification unset", async () => {
-    const { cwd, init } = await savedRun();
+    const { init, events: storedEvents } = await savedRun();
 
     const result = await init("fix-login");
 
     if (!result.ok) throw new Error(result.error);
-    const events = await jsonlEventStore(join(cwd, ".yok", "fix-login")).read();
+    const events = await storedEvents();
     expect(events.map((event) => event.type)).not.toContain("notification.thread.started");
     expect(result.value.state.notification).toBeUndefined();
   });
 
   test("SC8: seeds activeSessions with the session yok run launched", async () => {
     const session = { agent: "claude", sessionId: "s1" } as const;
-    const { init } = await savedRun({ sessions: [session] });
+    const { init, storage, run } = await savedRun({ sessions: [session] });
 
     const result = await init("fix-login");
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.activeSessions).toEqual([session]);
-    const stored = JSON.parse(readFileSync(join(result.value.dir, "state.json"), "utf8"));
-    expect(stored.activeSessions).toEqual([session]);
+    const stored = await storage.events(run.id).readState();
+    expect(stored?.activeSessions).toEqual([session]);
   });
 
   test("SC20: a second init, a bad name, and an unknown run are each refused", async () => {
-    const { cwd, init, registry, workflowPath } = await savedRun();
+    const { cwd, init, storage, workflowPath } = await savedRun();
     expect((await init("fix-login")).ok).toBe(true);
 
     expect(await init("fix-login-2")).toEqual({
@@ -217,11 +228,11 @@ describe("initializeRun", () => {
       error: "run r-1 is already initialized as fix-login",
     });
 
-    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+    await storage.runs.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
 
     const badName = await init("Bad Name", "r-2");
     expect(badName.ok ? "" : badName.error).toContain("Bad Name");
-    expect((await registry.findRun("r-2"))?.name).toBeNull();
+    expect((await storage.runs.findRun("r-2"))?.name).toBeNull();
 
     expect(await init("fix-login", "r-missing")).toEqual({
       ok: false,
@@ -230,19 +241,19 @@ describe("initializeRun", () => {
   });
 
   test("a taken name is refused with the old run's status, its node, and the command that reaches it", async () => {
-    const { cwd, init, registry, run, workflowPath } = await savedRun();
+    const { cwd, init, storage, run, workflowPath } = await savedRun();
     expect((await init("fix-login")).ok).toBe(true);
     const old = { id: run.id, cwd, name: "fix-login" };
-    const opened = await nextStep(old, agentAdapters);
+    const opened = await nextStep(storage, old, agentAdapters);
     if (!opened.ok) throw new Error(opened.error);
-    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+    await storage.runs.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
 
     expect(await init("fix-login", "r-2")).toEqual({
       ok: false,
       error: "run fix-login already exists (running, at a); attach with `yok attach fix-login`",
     });
 
-    const failed = await appendRunEvent(old, {
+    const failed = await appendRunEvent(storage, old, {
       type: "workflow.failed",
       payload: {},
       source: "test",
@@ -252,26 +263,50 @@ describe("initializeRun", () => {
       ok: false,
       error: "run fix-login already exists (failed, at a); resume it with `yok resume fix-login`",
     });
-    expect((await registry.findRun("r-2"))?.name).toBeNull();
+    expect((await storage.runs.findRun("r-2"))?.name).toBeNull();
   });
 
-  test("a taken name whose folder holds no run is refused without a command", async () => {
-    const { cwd, init, registry, workflowPath } = await savedRun();
-    await registry.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
+  test("a leftover .yok/dupe folder that no run row holds no longer blocks init of dupe", async () => {
+    const { cwd, init, storage, workflowPath } = await savedRun();
+    await storage.runs.addRun(makeRun({ id: "r-2", cwd, workflowPath }));
     mkdirSync(join(cwd, ".yok", "dupe"), { recursive: true });
 
-    expect(await init("dupe", "r-2")).toEqual({ ok: false, error: "run dupe already exists" });
+    expect((await init("dupe", "r-2")).ok).toBe(true);
+    expect((await storage.runs.findRun("r-2"))?.name).toBe("dupe");
+  });
+
+  test("SC220: init with a name a failed run of the same project holds is refused naming its status, and the new run stays unnamed with no state and no event", async () => {
+    const { cwd, init, storage, workflowPath } = await savedRun({ id: "r-old" });
+    const first = await init("feat-x", "r-old");
+    if (!first.ok) throw new Error(first.error);
+    const old = { id: "r-old", cwd, name: "feat-x" };
+    const failed = await appendRunEvent(storage, old, {
+      type: "workflow.failed",
+      payload: {},
+      source: "test",
+    });
+    if (!failed.ok) throw new Error(failed.error);
+    rmSync(join(cwd, ".yok", "feat-x"), { recursive: true });
+    await storage.runs.addRun(makeRun({ id: "r-new", cwd, workflowPath }));
+
+    expect(await init("feat-x", "r-new")).toEqual({
+      ok: false,
+      error: "run feat-x already exists (failed); resume it with `yok resume feat-x`",
+    });
+    expect((await storage.runs.findRun("r-new"))?.name).toBeNull();
+    expect(await storage.events("r-new").readState()).toBeNull();
+    expect(await storage.events("r-new").read()).toEqual([]);
   });
 
   test("SC20: a run whose repo has an invalid config is refused, leaving no run folder and no name", async () => {
-    const { cwd, init, registry, run } = await savedRun();
+    const { cwd, init, storage, run } = await savedRun();
     writeFileSync(join(cwd, "orchestrate.config.json"), JSON.stringify({ packages: {} }));
 
     const result = await init("fix-login");
 
     expect(result.ok ? "" : result.error).toContain('expected "version: 2"');
     expect(existsSync(join(cwd, ".yok", "fix-login"))).toBe(false);
-    expect((await registry.findRun(run.id))?.name).toBeNull();
+    expect((await storage.runs.findRun(run.id))?.name).toBeNull();
   });
 
   test("EH10 — init freezes the config's event handlers with absolute modules, so a later config edit changes nothing", async () => {
@@ -295,7 +330,7 @@ describe("initializeRun", () => {
         }),
       );
     config("onReviewNote");
-    const { init, run } = await savedRun({ cwd });
+    const { init, run, storage } = await savedRun({ cwd });
 
     const result = await init("fix-login");
     if (!result.ok) throw new Error(result.error);
@@ -303,6 +338,7 @@ describe("initializeRun", () => {
     const emitted = await emitRunEvent(
       { id: run.id, cwd, name: "fix-login" },
       { type: "custom.review.note", source: "test", payload: "looks good" },
+      storage,
     );
 
     expect(result.value.state.eventHandlers).toEqual({
@@ -311,10 +347,8 @@ describe("initializeRun", () => {
       ],
     });
     expect(emitted.ok).toBe(true);
-    const state = StateSchema.parse(
-      JSON.parse(readFileSync(join(cwd, ".yok", "fix-login", "state.json"), "utf8")),
-    );
-    expect(state.custom).toEqual({ note: "looks good" });
+    const state = await storage.events(run.id).readState();
+    expect(state?.custom).toEqual({ note: "looks good" });
   });
 
   const handlerConfig = (dir: string, file = "orchestrate.config.json"): string => {
@@ -432,7 +466,7 @@ describe("initializeRun", () => {
   });
 
   test("SC108: a run with no subscribers freezes none, and an appended event records no subscriber call", async () => {
-    const { cwd, init, run } = await savedRun();
+    const { cwd, init, run, storage, events } = await savedRun();
     subscriberConfig(cwd, {});
 
     const result = await init("fix-login");
@@ -440,11 +474,12 @@ describe("initializeRun", () => {
     const emitted = await emitRunEvent(
       { id: run.id, cwd, name: "fix-login" },
       { type: "custom.review.note", source: "test", payload: "looks good" },
+      storage,
     );
 
     expect(result.value.state.subscribers).toEqual({});
     expect(emitted.ok).toBe(true);
-    const types = (await jsonlEventStore(result.value.dir).read()).map((event) => event.type);
+    const types = (await events()).map((event) => event.type);
     expect(types).toEqual(["workflow.started", "custom.review.note"]);
   });
 
@@ -475,26 +510,55 @@ describe("initializeRun", () => {
     expect(existsSync(join(cwd, ".yok", "fix-login"))).toBe(false);
   });
 
-  test("a registry that fails to name the run after the folder is filled removes the folder, so a retry can succeed", async () => {
-    const { cwd, init, registry, run } = await savedRun();
-    const failing: Registry = {
-      ...registry,
-      initRun: () => Promise.reject(new Error("registry is locked")),
+  test("a storage that refuses to name the run after the folder is filled returns its error and leaves the folder, which may be the winner's", async () => {
+    const { cwd, init, storage, run } = await savedRun();
+    const taken = { ok: false, error: "run name fix-login is taken in project repo" } as const;
+    const failing: IStorage = {
+      ...storage,
+      runs: { ...storage.runs, initRun: async () => taken },
     };
 
-    await expect(init("fix-login", run.id, { registry: failing })).rejects.toThrow(
-      "registry is locked",
-    );
+    expect(await init("fix-login", run.id, { storage: failing })).toEqual(taken);
 
+    expect(existsSync(join(cwd, ".yok", "fix-login"))).toBe(true);
+    expect((await storage.runs.findRun(run.id))?.name).toBeNull();
+  });
+
+  test("an init whose start events fail after the name was claimed releases the name and folder, so a retry initializes the run", async () => {
+    const { cwd, init, storage, run, events } = await savedRun();
+    const busy: IStorage = {
+      ...storage,
+      events: (runId) => ({
+        ...storage.events(runId),
+        append: async () => {
+          throw new Error("database is locked");
+        },
+      }),
+    };
+
+    await expect(init("fix-login", run.id, { storage: busy })).rejects.toThrow(
+      "database is locked",
+    );
+    expect((await storage.runs.findRun(run.id))?.name).toBeNull();
+    expect(await storage.events(run.id).readState()).toBeNull();
     expect(existsSync(join(cwd, ".yok", "fix-login"))).toBe(false);
-    expect((await init("fix-login")).ok).toBe(true);
+
+    const retried = await init("fix-login");
+
+    expect(retried.ok).toBe(true);
+    expect((await events()).map((event) => event.type)).toEqual(["workflow.started"]);
   });
 });
 
 describe("the notifier at init", () => {
   // The frozen notifier runs in a detached runner that inherits this environment; without these
   // keys it can never reach Slack.
-  const SLACK_KEYS = ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID", "SLACK_MEMBER_ID"] as const;
+  const SLACK_KEYS = [
+    "SLACK_BOT_TOKEN",
+    "SLACK_CHANNEL_ID",
+    "SLACK_MEMBER_ID",
+    "YOK_HOME",
+  ] as const;
   const saved = Object.fromEntries(SLACK_KEYS.map((key) => [key, process.env[key]]));
 
   beforeEach(() => {
@@ -524,7 +588,10 @@ describe("the notifier at init", () => {
     writeFileSync(join(cwd, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));
     const workflowPath = join(cwd, "flow.yaml");
     writeFileSync(workflowPath, `${WORKFLOW}${workflowNotifier}`);
-    return savedRun({ cwd, workflowPath });
+    // the notifier's detached runner inherits YOK_HOME and opens the same yok.db
+    const home = tempDir();
+    process.env.YOK_HOME = home;
+    return savedRun({ cwd, workflowPath }, openStorage(home));
   };
 
   test.each([
@@ -624,15 +691,13 @@ describe("the notifier at init", () => {
   });
 
   test("SC213: a notifier with no Slack variables is a failed non-blocking call naming SLACK_BOT_TOKEN, and the run keeps running", async () => {
-    const { cwd, init } = await notifierRun({ notifier: {} }, "");
+    const { cwd, init, storage, run, events } = await notifierRun({ notifier: {} }, "");
     expect(existsSync(join(cwd, ".env"))).toBe(false);
 
     const result = await init("fix-login");
     if (!result.ok) throw new Error(result.error);
     const notifierCall = async () =>
-      (await jsonlEventStore(result.value.dir).read()).find(
-        (event) => event.type === "subscriber.called",
-      );
+      (await events()).find((event) => event.type === "subscriber.called");
     const deadline = Date.now() + 5000;
     let call = await notifierCall();
     while (call === undefined && Date.now() < deadline) {
@@ -647,10 +712,7 @@ describe("the notifier at init", () => {
       status: "failed",
       error: { message: expect.stringContaining("SLACK_BOT_TOKEN") },
     });
-    const state = StateSchema.parse(
-      JSON.parse(readFileSync(join(result.value.dir, "state.json"), "utf8")),
-    );
-    expect(state.status).toBe("running");
+    expect((await storage.events(run.id).readState())?.status).toBe("running");
   });
 });
 
@@ -663,13 +725,13 @@ const initializedRun = async () => {
 
 describe("resolveRun", () => {
   test("finds an initialized run by its name and folder, and refuses a name no run has", async () => {
-    const { cwd, registry, run } = await initializedRun();
+    const { cwd, storage, run } = await initializedRun();
 
-    expect(await resolveRun({ registry, root: cwd, name: "fix-login" })).toEqual({
+    expect(await resolveRun({ storage, root: cwd, name: "fix-login" })).toEqual({
       ok: true,
       value: { id: run.id, cwd, name: "fix-login" },
     });
-    const missing = await resolveRun({ registry, root: cwd, name: "other" });
+    const missing = await resolveRun({ storage, root: cwd, name: "other" });
     expect(missing.ok ? "" : missing.error).toContain('no run named "other"');
   });
 
@@ -684,7 +746,7 @@ describe("resolveRun", () => {
     if (!root.ok) throw new Error(root.error);
 
     const result = await resolveRun({
-      registry: context.registry,
+      storage: context.storage,
       root: root.value,
       name: "fix-login",
     });
@@ -696,10 +758,10 @@ describe("resolveRun", () => {
   });
 
   test("SC27: a run whose folder was deleted is refused, and nothing is recreated", async () => {
-    const { cwd, registry } = await initializedRun();
+    const { cwd, storage } = await initializedRun();
     rmSync(join(cwd, ".yok"), { recursive: true });
 
-    const result = await resolveRun({ registry, root: cwd, name: "fix-login" });
+    const result = await resolveRun({ storage, root: cwd, name: "fix-login" });
 
     expect(result.ok ? "" : result.error).toContain("no longer exists");
     expect(existsSync(join(cwd, ".yok"))).toBe(false);
@@ -708,9 +770,9 @@ describe("resolveRun", () => {
 
 describe("linkRunSession", () => {
   test("SC22: links a new agent session and refuses an unknown agent without changing the run", async () => {
-    const { cwd, registry, run } = await initializedRun();
+    const { cwd, storage, run } = await initializedRun();
     const link = (agent: string, sessionId: string) =>
-      linkRunSession({ registry, run: { id: run.id, cwd, name: "fix-login" }, agent, sessionId });
+      linkRunSession({ storage, run: { id: run.id, cwd, name: "fix-login" }, agent, sessionId });
 
     expect(await link("codex", "s2")).toEqual({
       ok: true,
@@ -719,9 +781,56 @@ describe("linkRunSession", () => {
 
     const unknown = await link("gpt", "s3");
     expect(unknown.ok ? "" : unknown.error).toContain("agent");
-    expect((await registry.findRun(run.id))?.sessions).toEqual([
+    expect((await storage.runs.findRun(run.id))?.sessions).toEqual([
       { agent: "codex", sessionId: "s2" },
     ]);
+  });
+});
+
+describe("readStateKey", () => {
+  const app = { path: "/repo", git: { branch: "b", baseBranch: "main", startSha: "a1b2" } };
+  const state: State = {
+    schemaVersion: 1,
+    lastEventSeq: 0,
+    runId: "r-1",
+    runName: "feat-x",
+    runDir: "/repo/.yok/feat-x",
+    config: { path: null, root: "/repo" },
+    version: "2.0.0",
+    workflow: { name: "t", path: "workflow.yaml" },
+    input: {},
+    scope: null,
+    startedAt: "2026-09-26T10:00:00Z",
+    completedAt: null,
+    status: "running",
+    workspace: { type: "mono", path: "/repo", repositories: { app } },
+    nodeRuns: {},
+    activeSessions: [{ agent: "claude", sessionId: "A" }],
+    tiers: null,
+    eventHandlers: {},
+    subscribers: {},
+  };
+
+  test("SC401: a dotted key reads the start commit, the whole repositories object, and a null completedAt as null", () => {
+    expect(readStateKey(state, "workspace.repositories.app.git.startSha")).toEqual({
+      ok: true,
+      value: "a1b2",
+    });
+    expect(readStateKey(state, "workspace.repositories")).toEqual({ ok: true, value: { app } });
+    expect(readStateKey(state, "completedAt")).toEqual({ ok: true, value: null });
+  });
+
+  test("SC402: workspace.nope is an error naming the key and the run", () => {
+    expect(readStateKey(state, "workspace.nope")).toEqual({
+      ok: false,
+      error: "run feat-x has no workspace.nope in its state",
+    });
+  });
+
+  test("SC403: status.length, activeSessions.0 and workspace.constructor read nothing, never a length, a session or a function", () => {
+    for (const key of ["status.length", "activeSessions.0", "workspace.constructor"]) {
+      expect(readStateKey(state, key).ok).toBe(false);
+    }
   });
 });
 
@@ -744,13 +853,13 @@ describe("terminal naming", () => {
   test("SC3: init renames the pane's tmux session and records the name", async () => {
     const { socket, terminal } = privateTmux();
     try {
-      const { registry, run, init } = await savedRun({ id: "r-1a2b3c4d" });
+      const { storage, run, init } = await savedRun({ id: "r-1a2b3c4d" });
 
       const result = await init("fix-login", run.id, { terminal });
 
       expect(result.ok).toBe(true);
       expect(tmux(socket, "list-sessions", "-F", "#{session_name}")).toBe("claude-fix-login-3c4d");
-      expect((await registry.findRun(run.id))?.terminal).toBe("claude-fix-login-3c4d");
+      expect((await storage.runs.findRun(run.id))?.terminal).toBe("claude-fix-login-3c4d");
     } finally {
       tmux(socket, "kill-server");
     }
@@ -856,13 +965,13 @@ describe("terminal naming", () => {
   ])(
     "%s leaves the terminal name alone, and init succeeds with its run folder",
     async (_label, terminal) => {
-      const { registry, run, init } = await savedRun({ terminal: "old" });
+      const { storage, run, init } = await savedRun({ terminal: "old" });
 
       const result = await init("fix-login", run.id, terminal === undefined ? {} : { terminal });
 
       expect(result.ok).toBe(true);
       expect(existsSync(result.ok ? result.value.dir : "")).toBe(true);
-      expect((await registry.findRun(run.id))?.terminal).toBe("old");
+      expect((await storage.runs.findRun(run.id))?.terminal).toBe("old");
     },
   );
 });
@@ -875,13 +984,16 @@ const CLAUDE_TIERS: ResolvedTiers = {
   },
 };
 
+// a run and the storage it is kept in
+type StagedRef = RunRef & Readonly<{ storage: IStorage }>;
+
 type StagedRunOptions = Partial<{ tiers: ResolvedTiers | null; config: object; header: string }>;
 
 // An initialized run of NODES registered with TIERS, with the demo stages under stages/, the
 // config CONFIG and HEADER at the top of its workflow.
 const stagedRun = async (nodes: string, options: StagedRunOptions = {}) => {
   const { tiers = CLAUDE_TIERS, config = {}, header = "" } = options;
-  const { cwd, workflowPath, init, run } = await savedRun({ tiers });
+  const { cwd, workflowPath, init, run, storage } = await savedRun({ tiers });
   writeStages(join(cwd, "stages"), {
     ...DEMO_STAGES,
     odd: { tier: "balanced" },
@@ -890,7 +1002,7 @@ const stagedRun = async (nodes: string, options: StagedRunOptions = {}) => {
   writeFileSync(workflowPath, `name: ok\n${header}nodes:\n${nodes}`);
   writeFileSync(join(cwd, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));
   const result = await init("tiered");
-  const ref = { id: run.id, cwd, name: "tiered" };
+  const ref: StagedRef = { id: run.id, cwd, name: "tiered", storage };
   return { cwd, result, ref };
 };
 
@@ -902,12 +1014,11 @@ describe("initializeRun with tiers", () => {
     const config = {
       agents: { claude: { tiers: { default: "fast", models: { fast: { model: "haiku-x" } } } } },
     };
-    const { result } = await stagedRun(stageNode("make", "producer"), { config });
+    const { result, ref } = await stagedRun(stageNode("make", "producer"), { config });
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.tiers).toEqual(CLAUDE_TIERS);
-    const stored = JSON.parse(readFileSync(join(result.value.dir, "state.json"), "utf8"));
-    expect(stored.tiers).toEqual(CLAUDE_TIERS);
+    expect((await ref.storage.events(ref.id).readState())?.tiers).toEqual(CLAUDE_TIERS);
   });
 
   test.each<[string, string, StagedRunOptions, string]>([
@@ -992,7 +1103,7 @@ describe("nextStep with stage tiers", () => {
       header: "agent: codex\n",
     });
 
-    const reply = await nextStep(ref, agentAdapters);
+    const reply = await nextStep(ref.storage, ref, agentAdapters);
 
     expect(reply).toMatchObject({
       ok: true,
@@ -1003,7 +1114,7 @@ describe("nextStep with stage tiers", () => {
   test("a Claude run launched on its default deep tier hands out its first deep stage with no model step", async () => {
     const { ref } = await stagedRun(stageNode("think", "thinker"));
 
-    const reply = await nextStep(ref, agentAdapters);
+    const reply = await nextStep(ref.storage, ref, agentAdapters);
 
     expect(reply).toMatchObject({
       ok: true,
@@ -1014,7 +1125,7 @@ describe("nextStep with stage tiers", () => {
   test("a Claude run registered with no tiers hands out its fast stage with no model step", async () => {
     const { ref } = await stagedRun(stageNode("make", "quick"), { tiers: null });
 
-    const reply = await nextStep(ref, agentAdapters);
+    const reply = await nextStep(ref.storage, ref, agentAdapters);
 
     expect(reply).toMatchObject({
       ok: true,
@@ -1029,25 +1140,25 @@ describe("nextStep with stage tiers", () => {
     };
     const { ref } = await stagedRun(stageNode("make", "quick"), { tiers });
 
-    const first = await nextStep(ref, agentAdapters);
+    const first = await nextStep(ref.storage, ref, agentAdapters);
     expect(first).toEqual({
       ok: true,
       value: { kind: "model", nodeId: "make", model: "sonnet-y" },
     });
-    const events = await jsonlEventStore(join(ref.cwd, ".yok", "tiered")).read();
+    const events = await ref.storage.events(ref.id).read();
     expect(events.at(-1)).toMatchObject({
       type: "orchestrate.next",
       payload: { output: { kind: "model", nodeId: "make", model: "sonnet-y" } },
     });
     const requestSeq = events.find((event) => event.type === "workflow.model.requested")?.seq;
-    const applied = await appendRunEvent(ref, {
+    const applied = await appendRunEvent(ref.storage, ref, {
       type: "workflow.model.applied",
       source: "orchestrate",
       payload: { requestSeq: requestSeq ?? 0, node: "make", model: "sonnet-y", applied: true },
     });
     expect(applied.ok).toBe(true);
 
-    expect(await nextStep(ref, agentAdapters)).toMatchObject({
+    expect(await nextStep(ref.storage, ref, agentAdapters)).toMatchObject({
       ok: true,
       value: { kind: "steps", steps: [{ kind: "stage", nodeId: "make" }] },
     });
@@ -1080,8 +1191,8 @@ const execNode = (id: string, extra = "") =>
   `  - { id: ${id}, type: exec, runtime: sh, script: "true", input: {}${extra} }\n`;
 
 // The one step a `next` reply hands out.
-const nextSingleStep = async (ref: RunRef) => {
-  const reply = await nextStep(ref, agentAdapters);
+const nextSingleStep = async (ref: StagedRef) => {
+  const reply = await nextStep(ref.storage, ref, agentAdapters);
   if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
   const [step, ...rest] = reply.value.steps;
   if (step === undefined || rest.length > 0) throw new Error(JSON.stringify(reply));
@@ -1090,10 +1201,10 @@ const nextSingleStep = async (ref: RunRef) => {
 
 // Records the step completed, as `orchestrate exec` would.
 const completeStep = async (
-  ref: RunRef,
+  ref: StagedRef,
   step: Readonly<{ nodeId: string; nodeRunId: string }>,
 ): Promise<void> => {
-  const ended = await appendRunEvent(ref, {
+  const ended = await appendRunEvent(ref.storage, ref, {
     type: "workflow.node.completed",
     source: "orchestrate",
     nodeId: step.nodeId,
@@ -1112,7 +1223,7 @@ ${execNode("run", ", dependsOn: [a]")}`,
     );
     await completeStep(ref, await nextSingleStep(ref));
 
-    const reply = await nextStep(ref, agentAdapters);
+    const reply = await nextStep(ref.storage, ref, agentAdapters);
 
     if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
     expect(reply.value.steps).toMatchObject([
@@ -1138,7 +1249,7 @@ ${execNode("run", ", dependsOn: [a]")}`,
 ${execNode("d", ", dependsOn: [b]")}`,
     );
     await completeStep(ref, await nextSingleStep(ref));
-    const second = await nextStep(ref, agentAdapters);
+    const second = await nextStep(ref.storage, ref, agentAdapters);
     if (!second.ok || second.value.kind !== "steps") throw new Error(JSON.stringify(second));
     const b = second.value.steps.find(({ nodeId }) => nodeId === "b");
     if (b === undefined) throw new Error(JSON.stringify(second));
@@ -1159,7 +1270,7 @@ ${execNode("d", ", dependsOn: [b]")}`,
     const first = await nextSingleStep(ref);
     expect(first).toMatchObject({ kind: "exec", nodeId: "a", mode: "inline" });
     await completeStep(ref, first);
-    const second = await nextStep(ref, agentAdapters);
+    const second = await nextStep(ref.storage, ref, agentAdapters);
 
     expect(second).toMatchObject({
       ok: true,

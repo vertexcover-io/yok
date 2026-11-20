@@ -17,7 +17,7 @@ import {
   type RunRef,
   runDirOf,
 } from "@yok/sdk";
-import { jsonlEventStore } from "@yok/sdk/internal";
+import { withStorage } from "@yok/sdk/internal";
 import {
   addRepositories as addWith,
   createWorkspace as createWith,
@@ -33,12 +33,29 @@ type Options = Omit<WorkspaceOptions, "config">;
 
 // Reads the repo's config at call time, as the script does with no run, so a test can write the
 // config just before the call.
+// Each run keeps its events in a home of its own.
+const homeOf = (run: RunRef): string => join(run.cwd, "home");
+
+// The script records into YOK_HOME's yok.db, as `yok orchestrate skill run` sets it.
+const inHome = async <T>(run: RunRef | undefined, work: () => Promise<T>): Promise<T> => {
+  if (run === undefined) return work();
+  const before = process.env.YOK_HOME;
+  process.env.YOK_HOME = homeOf(run);
+  try {
+    return await work();
+  } finally {
+    if (before === undefined) Reflect.deleteProperty(process.env, "YOK_HOME");
+    else process.env.YOK_HOME = before;
+  }
+};
+
 const changeWithConfig = async (
   change: typeof createWith,
   options: Options,
 ): Promise<Result<WorkspaceReport>> => {
   const loaded = await loadCheckoutConfig(options.root);
-  return loaded.ok ? change({ ...options, config: loaded.value.config }) : loaded;
+  if (!loaded.ok) return loaded;
+  return inHome(options.run, () => change({ ...options, config: loaded.value.config }));
 };
 const createWorkspace = (options: Options) => changeWithConfig(createWith, options);
 const addRepositories = (options: Options) => changeWithConfig(addWith, options);
@@ -77,14 +94,38 @@ const makeRepo = (dir: string, ignored: readonly string[] = [".worktrees/"]): st
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "wt-")));
 
-// A run folder of its own, so the events a command records never land in the repo under test.
-const newRun = (): RunRef => {
+// A run folder and home of its own, so the events a command records never land in the repo
+// under test.
+const newRun = async (): Promise<RunRef> => {
   const run = { id: "r-1", cwd: tempDir(), name: "feat-x" };
   mkdirSync(runDirOf(run.cwd, run.name), { recursive: true });
+  const createdAt = new Date().toISOString();
+  await withStorage(homeOf(run), async (storage) => {
+    const added = await storage.projects.add("repo", {
+      path: run.cwd,
+      addedBy: { channel: "cli" },
+      addedAt: createdAt,
+    });
+    if (!added.ok) throw new Error(added.error);
+    await storage.runs.addRun({
+      id: run.id,
+      project: "repo",
+      workflow: "task",
+      workflowPath: join(run.cwd, "task.yaml"),
+      inputs: {},
+      sessions: [],
+      name: run.name,
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt,
+    });
+  });
   return run;
 };
 
-const eventsOf = (run: RunRef) => jsonlEventStore(runDirOf(run.cwd, run.name)).read();
+const eventsOf = (run: RunRef) =>
+  withStorage(homeOf(run), (storage) => storage.events(run.id).read());
 
 const writeConfig = (root: string, config: object): void =>
   writeFileSync(join(root, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));
@@ -661,7 +702,7 @@ const REJECTIONS: Rejection[] = [
 test.each(REJECTIONS)("rejected before anything is created: $name", async (rejection) => {
   const root = rejection.root();
   const createdBefore = existsSync(join(root, ".worktrees/b"));
-  const run = newRun();
+  const run = await newRun();
   const result = await createWorkspace({
     run,
     root,
@@ -688,7 +729,7 @@ describe("create events", () => {
     const root = makeMulti({
       packages: { apiServer: { path: "serana" }, courier: { path: "courier" } },
     });
-    const run = newRun();
+    const run = await newRun();
     const result = await createWorkspace({
       run,
       root,
@@ -728,7 +769,7 @@ describe("create events", () => {
         courier: { path: "courier" },
       },
     });
-    const run = newRun();
+    const run = await newRun();
     await createWorkspace({ run, root, branch: "b", repos: ["serana", "courier"] });
     const events = await eventsOf(run);
     expect(events).toMatchObject([
@@ -748,12 +789,12 @@ describe("create events", () => {
 
   test("WS38 — an event that cannot be stored still returns the report, with the store error, and leaves the worktree on disk", async () => {
     const root = makeRepo(tempDir());
-    const run = newRun();
-    writeFileSync(join(runDirOf(run.cwd, run.name), "event.jsonl"), "not json\n");
+    const run = await newRun();
+    await withStorage(homeOf(run), (storage) => storage.runs.removeRun(run.id));
     const result = await createWorkspace({ run, root, branch: "feat-x" });
     if (!result.ok) throw new Error(result.error);
     expect(result.value.repos.map((repo) => repo.status)).toEqual(["ready"]);
-    expect(result.value.eventError).toContain("not valid JSON");
+    expect(result.value.eventError).toContain("not stored");
     expect(existsSync(join(root, ".worktrees/feat-x"))).toBe(true);
   });
 });
@@ -762,7 +803,7 @@ describe("addRepositories", () => {
   test("WS20 — adding courier to a workspace holding serana checks it out on the branch and records one workspace.repository.added", async () => {
     const root = makeMulti({});
     await createWorkspace({ root, branch: "b", repos: ["serana"] });
-    const run = newRun();
+    const run = await newRun();
     const result = await addRepositories({ run, root, branch: "b", repos: ["courier"] });
     if (!result.ok) throw new Error(result.error);
     const workspaceDir = join(root, ".workspaces/b");
@@ -801,7 +842,7 @@ describe("addRepositories", () => {
       },
     });
     await createWorkspace({ root, branch: "b", repos: ["api"] });
-    const run = newRun();
+    const run = await newRun();
     await addRepositories({ run, root, branch: "b", repos: ["serana", "courier"] });
     expect(await eventsOf(run)).toMatchObject([
       { type: "workspace.repository.added", payload: { repoId: "serana" } },
@@ -820,7 +861,7 @@ describe("addRepositories", () => {
 
   test("WS21 — with no workspace folder, add fails before touching git and records nothing", async () => {
     const root = makeMulti({});
-    const run = newRun();
+    const run = await newRun();
     const result = await addRepositories({ run, root, branch: "b", repos: ["serana", "courier"] });
     expect(result.ok ? "" : result.error).toContain("no workspace");
     expect(result.ok ? "" : result.error).toContain(
@@ -833,7 +874,7 @@ describe("addRepositories", () => {
   test("WS21 — in mono layout, add fails before touching git and records nothing", async () => {
     const root = makeRepo(tempDir());
     await createWorkspace({ root, branch: "b" });
-    const run = newRun();
+    const run = await newRun();
     const result = await addRepositories({ run, root, branch: "b", repos: ["api"] });
     expect(result.ok ? "" : result.error).toContain("multi");
     expect(await eventsOf(run)).toEqual([]);
@@ -845,7 +886,7 @@ describe("remove events", () => {
   test("WS22 — removing courier by name records workspace.repository.removed; removing with no repos named records workspace.removed listing serana", async () => {
     const root = await twoRepoWorkspace();
     const workspaceDir = join(root, ".workspaces/b");
-    const run = newRun();
+    const run = await newRun();
     await removeWorkspace({ run, root, branch: "b", repos: ["courier"] });
     await removeWorkspace({ run, root, branch: "b" });
     expect(await eventsOf(run)).toMatchObject([
@@ -870,7 +911,7 @@ describe("remove events", () => {
 
   test("WS23 — remove naming every repo records one workspace.repository.removed per repo, never workspace.removed", async () => {
     const root = await twoRepoWorkspace();
-    const run = newRun();
+    const run = await newRun();
     await removeWorkspace({ run, root, branch: "b", repos: ["serana", "courier"] });
     const types = (await eventsOf(run)).map((event) => event.type);
     expect(types).toEqual(["workspace.repository.removed", "workspace.repository.removed"]);
@@ -879,7 +920,7 @@ describe("remove events", () => {
   test("remove naming a repo the workspace doesn't hold is refused before any teardown, and records nothing", async () => {
     const root = makeMulti({});
     await createWorkspace({ root, branch: "b", repos: ["serana"] });
-    const run = newRun();
+    const run = await newRun();
     const result = await removeWorkspace({ run, root, branch: "b", repos: ["serana", "courier"] });
     expect(result.ok ? "" : result.error).toContain("courier");
     expect(existsSync(join(root, ".workspaces/b/serana"))).toBe(true);
@@ -893,7 +934,7 @@ describe("remove events", () => {
         courier: { path: "courier" },
       },
     });
-    const run = newRun();
+    const run = await newRun();
     await removeWorkspace({ run, root, branch: "b", repos: ["serana"] });
     await removeWorkspace({ run, root, branch: "b" });
     const events = await eventsOf(run);
@@ -912,7 +953,7 @@ describe("remove events", () => {
 
   test("a remove refused before touching any repo records nothing", async () => {
     const root = makeMulti({});
-    const run = newRun();
+    const run = await newRun();
     const result = await removeWorkspace({ run, root, branch: "b" });
     expect(result.ok).toBe(false);
     expect(await eventsOf(run)).toEqual([]);

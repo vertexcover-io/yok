@@ -22,8 +22,8 @@ shape, and the per-run queries you write yourself during Step 1 and Step 2 of `a
 `SLUG` is the project's working directory with every `/` replaced by `-`. So
 `/Users/x/Projects/andromeda` becomes `-Users-x-Projects-andromeda`.
 
-A v2 run lists its session ids in `.yok/RUN/event.jsonl`, and the extractor finds each
-transcript by id across every project folder.
+A v2 run lists its session ids in its events (`yok orchestrate events --run RUN`), and the
+extractor finds each transcript by id across every project folder.
 
 ## Record schema
 

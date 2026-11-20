@@ -2,10 +2,10 @@ import type { AgentType } from "./agent.ts";
 import type { AskedQuestion } from "./contracts.ts";
 import type { AnsweredQuestion } from "./events.ts";
 import type { ILogger } from "./logger.ts";
-import type { RegistryReader } from "./registry.ts";
+import type { IStorage } from "./repositories.ts";
 
 export type HookDeps = Readonly<{
-  registry: RegistryReader;
+  storage: IStorage;
   env: Readonly<Record<string, string | undefined>>;
   log: ILogger;
 }>;

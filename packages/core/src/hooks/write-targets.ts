@@ -162,6 +162,8 @@ const splitRedirects = (words: readonly string[]): Split => {
       const target = words[i + 1];
       if (target !== undefined) redirects.push(target);
       i += 1;
+    } else if (word === "<") {
+      i += 1;
     } else if (attached?.[1] !== undefined && !attached[1].startsWith("&")) {
       redirects.push(attached[1]);
     } else if (!/^\d*>&/.test(word) && !word.startsWith("<")) {

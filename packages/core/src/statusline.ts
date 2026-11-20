@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   type Blocker,
+  type IStorage,
   type NodeRun,
   parseJson,
   parseYaml,
@@ -37,7 +38,7 @@ const parseInput = (stdin: string): StatuslineInput => {
   return parsed.success ? parsed.data : {};
 };
 
-// The node lists a node holds, keyed as state.json keys their runs: under the container's id.
+// The node lists a node holds, keyed as the run's state keys their runs: under the container's id.
 // An include's nodes live in another file, so they get no stage label.
 const listChildren = (node: WorkflowNode): readonly (readonly WorkflowNode[])[] => {
   if (node.type === "loop") return [node.nodes];
@@ -142,11 +143,15 @@ const trailing = (
 
 // The line Claude Code shows for a yok run session. Reads the run's saved state without a
 // lock and never writes; the caller prints it.
-export const renderStatusline = async (stdin: string, run: RunRef | undefined): Promise<string> => {
+export const renderStatusline = async (
+  storage: IStorage,
+  stdin: string,
+  run: RunRef | undefined,
+): Promise<string> => {
   if (run === undefined) return "yok · starting";
   const runDir = runDirOf(run.cwd, run.name);
   const [state, workflow] = await Promise.all([
-    readState(runDir).catch(() => null),
+    readState(run, storage).catch(() => null),
     readWorkflow(runDir).catch(() => null),
   ]);
   const head = `yok ${run.name}`;

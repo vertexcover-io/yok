@@ -1,5 +1,5 @@
-import { registryPath, type SessionStartHandler, yokHome } from "@yok/sdk";
-import { appendRunEvent, createRegistry } from "@yok/sdk/internal";
+import type { SessionStartHandler } from "@yok/sdk";
+import { appendRunEvent } from "@yok/sdk/internal";
 import { completeContextOnSessionStart } from "../context-step.ts";
 
 // Links by YOK_RUN_ID even before `init` names the run: an agent's first SessionStart comes
@@ -9,20 +9,18 @@ export const linkSession: SessionStartHandler = {
   run: async (input, deps) => {
     const runId = deps.env.YOK_RUN_ID;
     if (!runId) return;
-    const run = await deps.registry.findRun(runId);
+    const run = await deps.storage.runs.findRun(runId);
     if (run === undefined) return;
     const { agent, sessionId, source } = input;
-    // HookDeps only reads the registry; linking a session is this hook's own write.
-    const registry = createRegistry(registryPath(yokHome(deps.env)), deps.log);
-    await registry.linkSession(run.id, { agent, sessionId });
+    await deps.storage.runs.linkSession(run.id, { agent, sessionId });
     if (run.name === null) return;
     const ref = { id: run.id, cwd: run.cwd, name: run.name };
-    await appendRunEvent(ref, {
+    await appendRunEvent(deps.storage, ref, {
       type: "hooks.session-start.called",
       source: "hooks",
       payload: { agent, sessionId, source },
     });
-    await completeContextOnSessionStart(ref, sessionId, source);
+    await completeContextOnSessionStart(deps.storage, ref, sessionId, source);
   },
 };
 

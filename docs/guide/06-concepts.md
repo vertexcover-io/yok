@@ -152,7 +152,7 @@ extensions:
 | `notifier` | `{ enabled, type: slack }` |
 | `samskara` | `{ enabled }`: upload each completed node's artifact files, or the subfolder of `artifacts/` they sit in, to the run's Claude session in samskara |
 
-Init freezes which config file a run uses into `state.json`, so a run keeps its settings even if you edit the file mid-run.
+Init freezes which config file a run uses into the run's state, so a run keeps its settings even if you edit the file mid-run.
 
 ## Tier
 
@@ -162,9 +162,9 @@ The server resolves the merged set once at launch and init copies it into state.
 
 ## Event and state
 
-An event is one line in `event.jsonl`: `seq`, `ts`, `type`, `source`, `runId`, optional `nodeId`, `nodeRunId`, `stage`, and a `payload`. The types are listed in [events.ts](../../packages/sdk/src/events.ts#L463). Families: `workflow.*` for the engine's decisions, `orchestrate.*` for each command call, `hooks.*` for agent hook calls, `agent.*` for limits, API errors, questions, and getting stuck, `artifact.comment.*`, `subscriber.called`, `workspace.*`, `custom.state.updated`.
+An event is one row of the run's log in `yok.db`: `seq`, `ts`, `type`, `source`, `runId`, optional `nodeId`, `nodeRunId`, `stage`, and a `payload`. The types are listed in [events.ts](../../packages/sdk/src/events.ts#L463). Families: `workflow.*` for the engine's decisions, `orchestrate.*` for each command call, `hooks.*` for agent hook calls, `agent.*` for limits, API errors, questions, and getting stuck, `artifact.comment.*`, `subscriber.called`, `workspace.*`, `custom.state.updated`.
 
-`state.json` is the fold of every event through [applyEvent](../../packages/sdk/src/state.ts#L33). Its fields: `status`, `blocker`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is rewritten atomically after every event. Nobody edits it.
+A run's state is the fold of every event through `applyEvent` in [state.ts](../../packages/sdk/src/state.ts). Its fields: `status`, `blocker`, `nodeRuns` (one entry per node, nested for containers), `workspace`, `activeSessions`, `tiers`, `stopHook`, `custom`, `config`. It is stored beside the events in `yok.db`, in the same transaction as each event. Nobody edits it. `yok orchestrate get KEY` prints one value from it.
 
 A run's `status` is `running`, `blocked`, `completed`, `failed` or `cancelled`. A run is `blocked` while it waits on the person: the agent asked a question, hit its usage limit, is waiting out an API error, got stuck, or stopped on an agent error. `blocker` says which (`question`, `usage-limit`, `api-error`, `stuck`, `agent-error`), the step that was running (`node`), since when, and the details: the questions, the time the limit resets, the error and the time of its retry, or the error. A question's answer clears a `question` blocker, the limit resuming clears a `usage-limit` one, and the retry typing `continue` clears an `api-error` one. When the main agent makes its next Bash call or file edit on a blocked run, the PreToolUse hook records `agent.resumed` with the blocker's reason (a sub-agent's call never does), which clears it and puts the run back to `running`; this also closes a question the person dismissed without answering. The workflow completing or failing drops any blocker. Nothing else clears one; the agent moves the workflow only through `yok orchestrate` Bash calls, which the hook hears first. Each agent step's node run also records its `agentState`: the agent, tier, model and session it started on.
 
@@ -211,7 +211,7 @@ The helper (`yok orchestrate auto-resume`) skips the retry when the session move
 
 ## Comment
 
-A note you leave on an artifact in the viewer at `http://127.0.0.1:PORT/runs/RUN_ID`. The server stores it in `comments.json`, then types it into the run's tmux session the next time Claude's input box is empty. The agent answers with `yok orchestrate comments reply`. Nothing in a skill watches for comments. [ADR 0004](../adr/0004-harness-server-types-review-comments-into-the-run-tmux-session.md). A design or plan page that waits for approval leaves the input box empty, so comments reach the agent while it waits.
+A note you leave on an artifact in the viewer at `http://127.0.0.1:PORT/runs/RUN_ID`. The server stores it in `yok.db`, then types it into the run's tmux session the next time Claude's input box is empty. The agent answers with `yok orchestrate comments reply`. Nothing in a skill watches for comments. [ADR 0004](../adr/0004-harness-server-types-review-comments-into-the-run-tmux-session.md). A design or plan page that waits for approval leaves the input box empty, so comments reach the agent while it waits.
 
 ## Workspace
 
@@ -219,9 +219,9 @@ Where a run writes code. `layout: mono` means one repo: a worktree at `.worktree
 
 ## Registry and homes
 
-`registry.json` in the yok home lists every run on the machine: id, workflow, inputs, cwd, name, tmux session, Claude session ids, tiers. The server adds a run; init names it; the SessionStart hook links sessions. It is read and written under a file lock by both the server and orchestrate.
+The `runs` table in `yok.db`, in the yok home, lists every run on the machine: id, project, workflow, inputs, name, tmux session, agent session ids, tiers. A run's folder is `.yok/NAME` under its project's checkout. The server adds a run; init names it; the SessionStart hook links sessions. The server and the orchestrate commands each open the database, and SQLite transactions keep their writes apart. A run's name stays taken in its project until `yok rm RUN` deletes the run.
 
-The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, registry, and `projects.yaml`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
+The release binary's home is `~/.yok`. The dev build's is `~/.yok-dev`. Each has its own server, port, and `yok.db`, so a dev run never reaches the release server or the other way round. `YOK_HOME` points either at another folder.
 
 ## Doctor
 
@@ -247,7 +247,7 @@ nodes:
 
 Compile checks the block: the cron must parse and fire, the zone must be real, `trigger.inputs` must fit the workflow's `inputs`, and the workflow's `agent` must be `claude`, since Codex has no permission mode to launch in. `yok trigger add WORKFLOW` registers it for a project: the one `--project NAME` names, or the checkout you are in, added as a project under its folder's name the first time, as `yok run` does. Adding the same workflow again updates it, and a second workflow with the same `name` in that project is refused. `list`, `fire NAME` (run it now), `log NAME` (last 20 firings) and `rm NAME` do the rest, each taking `--project NAME` or the checkout's project. The trigger's name is the workflow's `name`, unique per project. A project that still has triggers cannot be removed.
 
-The server keeps only the schedule, in `triggers.json` in the yok home, so an edited `cron` or `timezone` takes effect only after you run `yok trigger add` again, while edited `inputs` or `permissionMode` apply at the next firing. Every 15 seconds it starts each trigger whose `nextFireAt` has passed, through the same start-up path as `yok run`: a `git pull --ff-only` on a project yok cloned, the doctor, the env, then a run named `NAME-YYYYMMDD-HHMMSS` with `interaction: false` and the block's `permissionMode`. Each firing is one line in `trigger-fires.jsonl`: `started` with the run id, `skipped` (the previous run's agent is still working, or started under 5 minutes ago and has not named its run yet; the slot is over 6h old; earlier slots were slept through; or the trigger was removed while the doctor ran), or `failed` with the reason, such as a doctor check or a failed pull. After a sleep, only the latest missed slot fires. Triggers fire only while the server is up. A trigger saved before triggers named projects names a folder; on start the server moves it to the project at that folder, and adds one under the folder's name when there is none. [ADR 0023](../adr/0023-the-yok-server-fires-cron-triggers-from-a-15-second-tick.md).
+The server keeps only the schedule, in `yok.db` in the yok home, so an edited `cron` or `timezone` takes effect only after you run `yok trigger add` again, while edited `inputs` or `permissionMode` apply at the next firing. Every 15 seconds it starts each trigger whose `nextFireAt` has passed, through the same start-up path as `yok run`: a `git pull --ff-only` on a project yok cloned, the doctor, the env, then a run named `NAME-YYYYMMDD-HHMMSS` with `interaction: false` and the block's `permissionMode`. Each firing is one row in `yok.db`: `started` with the run id, `skipped` (the previous run's agent is still working, or started under 5 minutes ago and has not named its run yet; the slot is over 6h old; earlier slots were slept through; or the trigger was removed while the doctor ran), or `failed` with the reason, such as a doctor check or a failed pull. After a sleep, only the latest missed slot fires. Triggers fire only while the server is up. A trigger saved before triggers named projects names a folder; `yok import-files` moves it to the project at that folder, and adds one under the folder's name when there is none. [ADR 0023](../adr/0023-the-yok-server-fires-cron-triggers-from-a-15-second-tick.md).
 
 ## Not built yet
 

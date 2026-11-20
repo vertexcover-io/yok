@@ -1,14 +1,14 @@
-import {
-  deliveryMessage,
-  findOpenContextRun,
-  markDelivered,
-  readComments,
-  type WorkflowAgent,
-  WorkflowAgentSchema,
-} from "@yok/core";
-import type { IAgentProvider, ILogger, ITerminalHost, State, WorkflowRun } from "@yok/sdk";
-import { emitRunEvent, readState, runDirOf } from "@yok/sdk";
-import type { Registry } from "@yok/sdk/internal";
+import { findOpenContextRun, type WorkflowAgent, WorkflowAgentSchema } from "@yok/core";
+import type {
+  IAgentProvider,
+  ILogger,
+  IStorage,
+  ITerminalHost,
+  State,
+  WorkflowRun,
+} from "@yok/sdk";
+import { emitRunEvent } from "@yok/sdk";
+import { deliveryMessage } from "@yok/sdk/internal";
 
 export type DeliveryOutcome =
   | Readonly<{ kind: "delivered"; ids: readonly string[] }>
@@ -17,20 +17,22 @@ export type DeliveryOutcome =
   | Readonly<{ kind: "failed"; reason: string }>;
 
 export type DeliveryDeps = Readonly<{
+  storage: IStorage;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   log: ILogger;
-  now: () => Date;
 }>;
-export type ScheduleDeps = DeliveryDeps & Readonly<{ registry: Registry }>;
 
 const RETRY_MS = 2000;
 
 const waiting = (reason: string): DeliveryOutcome => ({ kind: "waiting", reason });
 
-// A state.json that does not parse reads as no state, so one bad engine write blanks nothing.
-export const readStateOrNull = (runDir: string): Promise<State | null> =>
-  readState(runDir).catch(() => null);
+// A stored state that does not parse reads as no state, so one bad engine write blanks nothing.
+export const readStateOrNull = (storage: IStorage, runId: string): Promise<State | null> =>
+  storage
+    .events(runId)
+    .readState()
+    .catch(() => null);
 
 export const isAgentAlive = async (run: WorkflowRun, host: ITerminalHost): Promise<boolean> =>
   run.terminal !== null && (await host.find(run.terminal).isAlive());
@@ -40,10 +42,7 @@ export const deliverComments = async (
   deps: DeliveryDeps,
 ): Promise<DeliveryOutcome> => {
   if (run.name === null) return waiting("run has no name yet");
-  const runDir = runDirOf(run.cwd, run.name);
-  const read = await readComments(runDir);
-  if (!read.ok) return { kind: "failed", reason: read.error };
-  const sent = read.value.comments.filter((c) => c.status === "sent");
+  const sent = (await deps.storage.comments.list(run.id)).filter((c) => c.status === "sent");
   if (sent.length === 0) return { kind: "nothing" };
 
   // Not retried: yok resume schedules a delivery once the session is back, and the next comment
@@ -52,7 +51,7 @@ export const deliverComments = async (
     return { kind: "failed", reason: "agent session is not running" };
   }
   const pane = deps.host.find(run.terminal);
-  const state = await readStateOrNull(runDir);
+  const state = await readStateOrNull(deps.storage, run.id);
   if (state !== null && findOpenContextRun(state.nodeRuns) !== undefined) {
     return waiting("agent is clearing its context");
   }
@@ -66,11 +65,11 @@ export const deliverComments = async (
   if (!typed.ok) return waiting(typed.error);
   if (typed.value === "not-ready") return waiting("agent has a menu open or text in its input box");
   const ids = sent.map((c) => c.id);
-  const marked = await markDelivered(runDir, sent, deps.now());
-  if (!marked.ok) return { kind: "failed", reason: marked.error };
+  await deps.storage.comments.markDelivered(run.id, sent);
   const logged = await emitRunEvent(
     { id: run.id, cwd: run.cwd, name: run.name },
     { type: "artifact.comment.delivered", source: "viewer", payload: { ids } },
+    deps.storage,
   );
   if (!logged.ok)
     deps.log.error({ runId: run.id, error: logged.error }, "delivery event not logged");
@@ -83,8 +82,8 @@ const attempts = new Map<string, Promise<void>>();
 
 export const lastDelivery = (runId: string): DeliveryOutcome | undefined => outcomes.get(runId);
 
-const attempt = async (runId: string, deps: ScheduleDeps): Promise<void> => {
-  const run = await deps.registry.findRun(runId);
+const attempt = async (runId: string, deps: DeliveryDeps): Promise<void> => {
+  const run = await deps.storage.runs.findRun(runId);
   if (run === undefined) return;
   const outcome = await deliverComments(run, deps);
   outcomes.set(runId, outcome);
@@ -102,7 +101,7 @@ const attempt = async (runId: string, deps: ScheduleDeps): Promise<void> => {
 
 // Attempts for one run queue behind each other so a batch posted mid-delivery is not typed twice;
 // a run already waiting on a retry needs no second one. The last attempt in line clears the entry.
-export const scheduleDelivery = (runId: string, deps: ScheduleDeps): Promise<void> => {
+export const scheduleDelivery = (runId: string, deps: DeliveryDeps): Promise<void> => {
   if (retries.has(runId)) return Promise.resolve();
   const next: Promise<void> = (attempts.get(runId) ?? Promise.resolve())
     .then(() => attempt(runId, deps))
@@ -114,13 +113,11 @@ export const scheduleDelivery = (runId: string, deps: ScheduleDeps): Promise<voi
   return next;
 };
 
-export const resumeDeliveries = async (deps: ScheduleDeps): Promise<void> => {
-  for (const run of await deps.registry.listRuns()) {
+export const resumeDeliveries = async (deps: DeliveryDeps): Promise<void> => {
+  for (const run of await deps.storage.runs.listRuns()) {
     if (run.name === null) continue;
-    const read = await readComments(runDirOf(run.cwd, run.name));
-    if (read.ok && read.value.comments.some((c) => c.status === "sent")) {
-      void scheduleDelivery(run.id, deps);
-    }
+    const comments = await deps.storage.comments.list(run.id);
+    if (comments.some((c) => c.status === "sent")) void scheduleDelivery(run.id, deps);
   }
 };
 

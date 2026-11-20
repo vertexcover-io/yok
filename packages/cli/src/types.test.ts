@@ -91,10 +91,12 @@ const PROJECT_TSCONFIG = {
 };
 
 const GOOD_EXTENSION = [
-  'import { NonEmptyStringSchema } from "@yok/sdk";',
+  'import { type IRunRepository, type IStorage, NonEmptyStringSchema } from "@yok/sdk";',
   'import { z } from "zod";',
   'export const name: string = NonEmptyStringSchema.parse("x");',
   "export const Schema = z.object({ name: NonEmptyStringSchema });",
+  "export const close = (storage: IStorage): Promise<void> => storage.close();",
+  "export const list = (runs: IRunRepository) => runs.listRuns();",
   "",
 ].join("\n");
 
@@ -117,7 +119,7 @@ const tsc = (project: string): { code: number | null; output: string } => {
 };
 
 describe("an extension in a project", () => {
-  test("SC104: typechecks against the written types with only zod installed, and an ./internal-only import fails", async () => {
+  test("SC104, SC106, SC215: typechecks with IStorage and IRunRepository against the written types with only zod installed, and an ./internal-only import fails", async () => {
     const project = await makeProject();
 
     expect(tsc(project)).toEqual({ code: 0, output: "" });

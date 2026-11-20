@@ -12,27 +12,25 @@ import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sdk from "@yok/sdk";
-import {
-  noopLogger,
-  registryPath,
-  runDirOf,
-  type StopFailureInput,
-  type TranscriptEntry,
-} from "@yok/sdk";
-import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { noopLogger, runDirOf, type StopFailureInput, type TranscriptEntry } from "@yok/sdk";
+import { memoryStorage } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
 import { recordAgentError, resumeAfterLimit } from "./stop-failure.ts";
 
 const setUp = async () => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), "hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "hooks-repo-")));
-  const registry = createRegistry(registryPath(home));
-  await registry.addRun({
+  const storage = memoryStorage();
+  await storage.projects.add("repo", {
+    path: cwd,
+    addedBy: { channel: "cli" },
+    addedAt: new Date().toISOString(),
+  });
+  await storage.runs.addRun({
     id: "r-1",
+    project: "repo",
     workflow: "feature",
     workflowPath: join(cwd, "workflow.yaml"),
     inputs: {},
-    cwd,
     sessions: [{ agent: "claude", sessionId: "s1" }],
     name: "feat-x",
     terminal: null,
@@ -42,8 +40,8 @@ const setUp = async () => {
   });
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
-  const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  return { runDir, cwd, deps };
+  const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
+  return { runDir, cwd, deps, readEvents: () => storage.events("r-1").read() };
 };
 
 const failure = (error: string, sessionId = "s1"): StopFailureInput => ({
@@ -67,9 +65,9 @@ afterAll(() => spawn.mockRestore());
 
 describe("resumeAfterLimit", () => {
   test("SC22: a usage limit in a run session is logged as agent.limit.reached and starts the program's orchestrate auto-resume for that event", async () => {
-    const { runDir, cwd, deps } = await setUp();
+    const { cwd, deps, readEvents } = await setUp();
     await resumeAfterLimit.run(failure("rate_limit"), deps);
-    const [event] = await jsonlEventStore(runDir).read();
+    const [event] = await readEvents();
     expect(event).toMatchObject({
       type: "agent.limit.reached",
       payload: {
@@ -100,9 +98,9 @@ describe("resumeAfterLimit", () => {
     ["an error that is not a usage limit, such as overloaded", failure("overloaded")],
     ["a session not linked to the run", failure("rate_limit", "other")],
   ])("%s logs nothing and starts no wait", async (_, input) => {
-    const { runDir, deps } = await setUp();
+    const { deps, readEvents } = await setUp();
     await resumeAfterLimit.run(input, deps);
-    expect(await jsonlEventStore(runDir).read()).toEqual([]);
+    expect(await readEvents()).toEqual([]);
     expect(spawn).not.toHaveBeenCalled();
   });
 });
@@ -127,19 +125,19 @@ describe("recordAgentError", () => {
     ],
     ["no transcript to read", undefined, false],
   ])("an API error records progressed from its transcript: %s", async (_, entries, progressed) => {
-    const { runDir, deps } = await setUp();
+    const { deps, readEvents } = await setUp();
     await recordAgentError.run(
       { ...failure("server_error"), readTranscript: async () => entries },
       deps,
     );
-    const [event] = await jsonlEventStore(runDir).read();
+    const [event] = await readEvents();
     expect(event).toMatchObject({ type: "agent.error.reached", payload: { progressed } });
   });
 
   test("SC2: a server_error in a run session, even one whose hook group lists only record-agent-error, is logged as agent.error.reached and starts the wait helper for that event", async () => {
-    const { runDir, cwd, deps } = await setUp();
+    const { cwd, deps, readEvents } = await setUp();
     await recordAgentError.run(failure("server_error"), deps);
-    const events = await jsonlEventStore(runDir).read();
+    const events = await readEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: "agent.error.reached",
@@ -161,12 +159,12 @@ describe("recordAgentError", () => {
   });
 
   test("SC3: a usage limit records nothing, and authentication_failed records agent.stopped with no wait", async () => {
-    const { runDir, deps } = await setUp();
+    const { deps, readEvents } = await setUp();
     await recordAgentError.run(failure("rate_limit"), deps);
-    expect(await jsonlEventStore(runDir).read()).toEqual([]);
+    expect(await readEvents()).toEqual([]);
 
     await recordAgentError.run(failure("authentication_failed"), deps);
-    const events = await jsonlEventStore(runDir).read();
+    const events = await readEvents();
     expect(events.map((event) => event.type)).toEqual(["agent.stopped"]);
     expect(events[0]?.payload).toMatchObject({ error: "authentication_failed" });
     expect(spawn).not.toHaveBeenCalled();

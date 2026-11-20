@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { type RunRef, runDirOf } from "@yok/sdk";
+import { type IStorage, type RunRef, runDirOf, StateSchema } from "@yok/sdk";
+import { memoryStorage } from "@yok/sdk/internal";
 import { readClaudeScreen } from "./agents/claude.ts";
 import { renderStatusline } from "./statusline.ts";
 
@@ -36,16 +37,20 @@ type Fixture = Readonly<{
   blocker?: Record<string, unknown>;
   nodeRuns?: Record<string, unknown>;
   workflow?: string | null;
-  state?: string;
+  // the run is named but holds no state yet
+  unstarted?: boolean;
 }>;
 
-const makeRun = ({
+// a run and the storage it is kept in
+type StoredRun = RunRef & Readonly<{ storage: IStorage }>;
+
+const makeRun = async ({
   status = "running",
   blocker,
   nodeRuns = {},
   workflow = `name: w\nnodes:\n${["a", "b", "c", "d"].map((id) => agentYaml(id, 2)).join("")}`,
-  state,
-}: Fixture = {}): RunRef => {
+  unstarted = false,
+}: Fixture = {}): Promise<StoredRun> => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "statusline-")));
   const dir = runDirOf(cwd, "feat-x");
   mkdirSync(dir, { recursive: true });
@@ -75,24 +80,43 @@ const makeRun = ({
     tiers: null,
     eventHandlers: {},
   };
-  writeFileSync(join(dir, "state.json"), state ?? JSON.stringify(body));
   if (workflow !== null) writeFileSync(join(dir, "workflow.yaml"), workflow);
-  return { id: "r-1", cwd, name: "feat-x" };
+  const storage = memoryStorage();
+  const addedAt = ago(10 * MINUTE);
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
+    id: "r-1",
+    project: "repo",
+    workflow: "w",
+    workflowPath: join(dir, "workflow.yaml"),
+    inputs: {},
+    sessions: [],
+    name: unstarted ? "feat-x" : null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: addedAt,
+  });
+  if (!unstarted) {
+    const claimed = await storage.runs.initRun("r-1", "feat-x", StateSchema.parse(body));
+    if (!claimed.ok) throw new Error(claimed.error);
+  }
+  return { id: "r-1", cwd, name: "feat-x", storage };
 };
 
-const lineOf = async (run: RunRef | undefined, stdin = "{}"): Promise<string> =>
-  plain(await renderStatusline(stdin, run));
+const lineOf = async (run: StoredRun | undefined, stdin = "{}"): Promise<string> =>
+  plain(await renderStatusline(run?.storage ?? memoryStorage(), stdin, run));
 
 describe("renderStatusline", () => {
   test("SC1: a running top-level node shows the run, node, bar and count", async () => {
-    const run = makeRun({ nodeRuns: { a: node("completed"), design: node("running") } });
+    const run = await makeRun({ nodeRuns: { a: node("completed"), design: node("running") } });
     expect(await lineOf(run)).toBe("yok feat-x ▸ design [▓▓▓░░░░░░░] 1/4 · 45s");
   });
 
   test("shows (stage S) only when the stage differs from the node id", async () => {
     const workflow = `name: w\nnodes:\n${agentYaml("design", 2, "design")}${agentYaml("plan", 2, "planning")}`;
-    const same = makeRun({ nodeRuns: { design: node("running") }, workflow });
-    const differs = makeRun({ nodeRuns: { plan: node("running") }, workflow });
+    const same = await makeRun({ nodeRuns: { design: node("running") }, workflow });
+    const differs = await makeRun({ nodeRuns: { plan: node("running") }, workflow });
     expect(await lineOf(same)).toStartWith("yok feat-x ▸ design [");
     expect(await lineOf(differs)).toStartWith("yok feat-x ▸ plan (stage planning) [");
   });
@@ -106,11 +130,11 @@ describe("renderStatusline", () => {
         nodes: { code: node("running") },
       }),
     };
-    expect(await lineOf(makeRun({ nodeRuns, workflow }))).toStartWith(
+    expect(await lineOf(await makeRun({ nodeRuns, workflow }))).toStartWith(
       "yok feat-x ▸ build #2 › code (stage coder) [░░░░░░░░░░] 0/1",
     );
     const loopOnly = { build: node("running", { nodeType: "loop", iteration: 3 }) };
-    expect(await lineOf(makeRun({ nodeRuns: loopOnly, workflow }))).toStartWith(
+    expect(await lineOf(await makeRun({ nodeRuns: loopOnly, workflow }))).toStartWith(
       "yok feat-x ▸ build #3 [",
     );
   });
@@ -123,10 +147,10 @@ describe("renderStatusline", () => {
     const inDefault = {
       pick: node("running", { nodeType: "switch", nodes: { fix: node("running") } }),
     };
-    expect(await lineOf(makeRun({ nodeRuns: inCase, workflow }))).toStartWith(
+    expect(await lineOf(await makeRun({ nodeRuns: inCase, workflow }))).toStartWith(
       "yok feat-x ▸ pick › plan (stage planning) [",
     );
-    expect(await lineOf(makeRun({ nodeRuns: inDefault, workflow }))).toStartWith(
+    expect(await lineOf(await makeRun({ nodeRuns: inDefault, workflow }))).toStartWith(
       "yok feat-x ▸ pick › fix (stage implement) [",
     );
   });
@@ -138,13 +162,15 @@ describe("renderStatusline", () => {
       c: node("completed"),
       d: node("completed"),
     };
-    expect(await lineOf(makeRun({ status: "completed", nodeRuns: done }))).toBe(
+    expect(await lineOf(await makeRun({ status: "completed", nodeRuns: done }))).toBe(
       "yok feat-x ▸ ✓ completed [▓▓▓▓▓▓▓▓▓▓] 4/4",
     );
-    expect(await lineOf(makeRun({ status: "failed", nodeRuns: { a: node("completed") } }))).toBe(
-      "yok feat-x ▸ ✗ failed [▓▓▓░░░░░░░] 1/4",
+    expect(
+      await lineOf(await makeRun({ status: "failed", nodeRuns: { a: node("completed") } })),
+    ).toBe("yok feat-x ▸ ✗ failed [▓▓▓░░░░░░░] 1/4");
+    expect(await lineOf(await makeRun({ status: "cancelled" }))).toStartWith(
+      "yok feat-x ▸ ✗ cancelled",
     );
-    expect(await lineOf(makeRun({ status: "cancelled" }))).toStartWith("yok feat-x ▸ ✗ cancelled");
   });
 
   test.each([
@@ -156,17 +182,17 @@ describe("renderStatusline", () => {
     [60 * MINUTE, "1h00m"],
     [65 * MINUTE, "1h05m"],
   ])("SC4: a node running for %pms shows an elapsed time of %s", async (ms, elapsed) => {
-    const run = makeRun({ nodeRuns: { a: node("running", { startedAt: ago(ms) }) } });
+    const run = await makeRun({ nodeRuns: { a: node("running", { startedAt: ago(ms) }) } });
     expect(await lineOf(run)).toEndWith(` · ${elapsed}`);
   });
 
   test("a running run between nodes shows the bar without a node or elapsed time", async () => {
-    const between = makeRun({ nodeRuns: { a: node("completed") } });
+    const between = await makeRun({ nodeRuns: { a: node("completed") } });
     expect(await lineOf(between)).toBe("yok feat-x [▓▓▓░░░░░░░] 1/4");
   });
 
   test("SC5: model and context use appear when present and are left out otherwise", async () => {
-    const run = makeRun({ nodeRuns: { a: node("running") } });
+    const run = await makeRun({ nodeRuns: { a: node("running") } });
     const full = JSON.stringify({
       model: { display_name: "Opus" },
       context_window: { used_percentage: 41.6 },
@@ -180,22 +206,22 @@ describe("renderStatusline", () => {
 
   test("SC6: falls back without a run, without a readable state, and without a workflow file", async () => {
     expect(await lineOf(undefined)).toBe("yok · starting");
-    expect(await lineOf(makeRun({ state: "{ not json" }))).toBe("yok feat-x");
-    const noWorkflow = makeRun({ nodeRuns: { a: node("running") }, workflow: null });
+    expect(await lineOf(await makeRun({ unstarted: true }))).toBe("yok feat-x");
+    const noWorkflow = await makeRun({ nodeRuns: { a: node("running") }, workflow: null });
     expect(await lineOf(noWorkflow)).toBe("yok feat-x ▸ a · 45s");
   });
 
   test("SC7: fixed text never trips yok's screen checks", async () => {
     const lines = [
       await lineOf(undefined),
-      await lineOf(makeRun({ state: "{" })),
+      await lineOf(await makeRun({ unstarted: true })),
       await lineOf(
-        makeRun({ nodeRuns: { a: node("running") } }),
+        await makeRun({ nodeRuns: { a: node("running") } }),
         '{"model":{"display_name":"Opus"}}',
       ),
-      await lineOf(makeRun({ status: "completed" })),
-      await lineOf(makeRun({ status: "failed" })),
-      await lineOf(makeRun({ status: "cancelled" })),
+      await lineOf(await makeRun({ status: "completed" })),
+      await lineOf(await makeRun({ status: "failed" })),
+      await lineOf(await makeRun({ status: "cancelled" })),
     ];
     for (const line of lines) {
       expect(line).toStartWith("yok");
@@ -219,7 +245,11 @@ describe("renderStatusline", () => {
     "SC135: a run blocked on %s shows ⏸ and its phrase and keeps its elapsed time",
     async (reason, details, phrase) => {
       const blocker = { reason, node: "design", since: ago(MINUTE), details };
-      const run = makeRun({ status: "blocked", blocker, nodeRuns: { design: node("running") } });
+      const run = await makeRun({
+        status: "blocked",
+        blocker,
+        nodeRuns: { design: node("running") },
+      });
       const line = await lineOf(run);
       expect(line).toContain(`▸ ⏸ ${phrase}`);
       expect(line).toEndWith(" · 45s");

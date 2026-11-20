@@ -6,7 +6,7 @@ import type { PlanAgentNode, PlanStage } from "./types.ts";
 import { VerifierIssueSchema } from "./verifiers.ts";
 
 // Whether a done is acceptable: the checks every done gets, and the artifacts a stage reads.
-// runs.ts reads and writes the run's records (state.json, event.jsonl); this file never does.
+// runs.ts reads and writes the run's records in yok.db; this file never does.
 
 // Why a done is rejected; each issue names what to fix.
 export const CompletionIssueSchema = z.discriminatedUnion("kind", [

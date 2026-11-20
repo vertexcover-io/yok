@@ -27,7 +27,7 @@ Arrows point from the package that imports to the package it imports. The direct
 
 ### `@yok/sdk`: the vocabulary
 
-Everything two other parts must agree on lives here. The Zod schemas for config, workflow runs, events, state, and stage outputs. The event store that appends to `event.jsonl` and folds into `state.json`. The registry of runs. The subscriber runner. Small helpers for git, processes, files, env, and logging. It depends only on `zod` and `yaml`.
+Everything two other parts must agree on lives here. The Zod schemas for config, workflow runs, events, state, and stage outputs. The storage: one SQLite database, `yok.db` in the yok home, behind `IStorage`, holding runs, events, state, comments, users, projects, and triggers. The subscriber runner. Small helpers for git, processes, files, env, and logging. It depends on `zod`, `yaml`, and `drizzle-orm`.
 
 It has two entry points, by design. `@yok/sdk` is a short curated list for people writing verifiers, subscribers, and schema files in their own projects. `@yok/sdk/internal` is everything the engine needs and extension authors should not touch. A test, `boundaries.test.ts`, keeps the public list honest. The reasoning is in [ADR 0003](../adr/0003-sdk-public-entry-is-curated-engine-behind-internal.md).
 
@@ -35,8 +35,13 @@ It has two entry points, by design. `@yok/sdk` is a short curated list for peopl
 |---|---|
 | `contracts.ts` | the State, NodeRun, Event, and Stage port schemas |
 | `events.ts` | every event type, and the built-in handler that folds each one into state |
-| `state.ts` | `appendRunEvent`, `readState`, the fold, the atomic write |
-| `registry.ts` | `registry.json`, `yokHome`, the run record |
+| `state.ts` | `appendRunEvent`, the fold, the retry when another process stored an event first |
+| `registry.ts` | `yokHome`, the run record |
+| `db.ts` | opens `yok.db`: the SQLite version check, the connection settings, the migrations |
+| `schema.ts` | the Drizzle tables |
+| `repositories.ts` | `IStorage` and the repository interfaces, types only |
+| `storage.ts` | the SQLite repositories, `openStorage`; with `db.ts` and `schema.ts`, the only files that touch SQL |
+| `comments.ts` | the review comment schema, and the text and events made from comments |
 | `config.ts` | `orchestrate.config.yaml`, tiers, extensions, subscribers |
 | `subscribers.ts` | calls a subscriber, blocking or detached, and records the call |
 | `verifier.ts` | what a verifier receives and must return |
@@ -60,7 +65,6 @@ The biggest package, and the one you will edit most.
 | `hooks/` | the handlers behind each agent hook: link-session, continue-workflow, record-guard, and friends |
 | `context-step.ts` | new-session and compact steps, and the model switch |
 | `auto-resume.ts` | pausing a run until a usage limit resets, or retrying after an API error that may pass |
-| `comments.ts` | `comments.json` and replies |
 | `doctor.ts` | the machine, repo, and config checks |
 | `notifier.ts` | the built-in Slack subscriber |
 
@@ -110,14 +114,14 @@ Every box is the same binary. Only the CLI and the hooks are short-lived. The se
 
 | Path | Owner | What |
 |---|---|---|
-| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `registry.json`, `server.port`, `server.pid`, `server.log`, `.env` (`SERVER_DOMAIN`, the domain a proxy in front of yok answers on), `projects.yaml`, `shims/` |
-| `REPO/.yok/RUN_NAME/` | orchestrate | `workflow.yaml`, `event.jsonl`, `state.json`, `comments.json`, `artifacts/` |
+| `~/.yok/` or `~/.yok-dev/` | server, CLI | the yok home: `yok.db` (runs, events, state, comments, users, projects, triggers), `server.port`, `server.pid`, `server.log`, `.env` (`SERVER_DOMAIN`, the domain a proxy in front of yok answers on), `shims/` |
+| `REPO/.yok/RUN_NAME/` | orchestrate | `workflow.yaml`, `artifacts/`, `model.log`, and the lock files subscribers take |
 | `REPO/.worktrees/RUN_NAME/` | create-workspace stage | the git worktree the code is written in |
 | `REPO/orchestrate.config.yaml` | you | packages, commands, tiers, extensions, subscribers, workspace, notifier |
 | `REPO/.env` | you | secrets a run's env starts with, read by the server at run start |
 | `REPO/.yok/types/` | `yok types` | SDK type files for your editor |
 
-The release binary and the dev build never share a home, so they never share a server or a registry. `YOK_HOME` overrides either.
+The release binary and the dev build never share a home, so they never share a server or a database. `YOK_HOME` overrides either.
 
 ## Where to look when you want to change something
 

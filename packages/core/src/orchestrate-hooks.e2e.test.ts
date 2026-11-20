@@ -1,28 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type JsonValue, runDirOf, type SavedPolicies, type WorkflowRun } from "@yok/sdk";
-import { appendRunEvent } from "@yok/sdk/internal";
+import { appendRunEvent, withStorage } from "@yok/sdk/internal";
 import {
   type Env,
   eventsOf,
   orchestrate,
   parseStep,
-  readRegistry,
+  readRuns,
   STAGE_SKILLS,
   STAGES_WORKFLOW,
   savedRun,
+  seedRuns,
   stageSkills,
   startedRun,
+  stateIn,
   tempDir,
   waitFor,
   withContext,
-  writeRegistry,
 } from "./test-orchestrate.ts";
-
-const stateOf = (repo: string) =>
-  JSON.parse(readFileSync(join(runDirOf(repo, "feat-x"), "state.json"), "utf8"));
 
 const ONE_AGENT = `name: one
 inputs:
@@ -39,8 +37,8 @@ describe("SC26: orchestrate hook stop", () => {
   const RUN_ENV = { YOK_RUN_ID: "r-1" };
 
   // A run whose claude session s1 was handed node plan by next and has not run done.
-  const openNodeRun = () => {
-    const run = startedRun(ONE_AGENT);
+  const openNodeRun = async () => {
+    const run = await startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
     const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
@@ -58,7 +56,7 @@ describe("SC26: orchestrate hook stop", () => {
     );
 
   test("SC20 — the hook blocks a turn that left an agent node open, and logs the call", async () => {
-    const run = openNodeRun();
+    const run = await openNodeRun();
 
     const first = stop(run);
 
@@ -68,7 +66,7 @@ describe("SC26: orchestrate hook stop", () => {
       decision: "block",
       reason: expect.stringContaining("orchestrate done"),
     });
-    const last = (await eventsOf(run.repo)).at(-1);
+    const last = (await eventsOf(run.home)).at(-1);
     expect(last).toMatchObject({
       type: "hooks.stop.called",
       payload: {
@@ -80,12 +78,12 @@ describe("SC26: orchestrate hook stop", () => {
         message: reply.reason,
       },
     });
-    expect(stateOf(run.repo).stopHook).toEqual({ blockStreak: 1, seq: last?.seq });
+    expect((await stateIn(run.home)).stopHook).toEqual({ blockStreak: 1, seq: last?.seq ?? 0 });
   });
 
   // A run between nodes, and a Claude transcript whose last lines are PROMPT and then COMMAND, if any.
-  const betweenNodes = (prompt: string, command?: string) => {
-    const run = startedRun(ONE_AGENT);
+  const betweenNodes = async (prompt: string, command?: string) => {
+    const run = await startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
     const transcript = join(tempDir(), "s1.jsonl");
@@ -104,8 +102,8 @@ describe("SC26: orchestrate hook stop", () => {
     return { run, input: JSON.stringify({ session_id: "s1", transcript_path: transcript }) };
   };
 
-  test("SC16, SC19: with subagent review and inline write handed out by one next, state.json records each mode, and every stop while the review runs in the background lets the turn end as background-task with no agent.stuck", async () => {
-    const run = startedRun(`name: mixed
+  test("SC16, SC19: with subagent review and inline write handed out by one next, the run's state records each mode, and every stop while the review runs in the background lets the turn end as background-task with no agent.stuck", async () => {
+    const run = await startedRun(`name: mixed
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -119,8 +117,8 @@ nodes:
     expect(orchestrate(run.repo, run.home, ["exec", a.nodeRunId, "--run", "feat-x"]).code).toBe(0);
     const both = JSON.parse(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
     expect(both.steps.map((step: { nodeId: string }) => step.nodeId)).toEqual(["review", "write"]);
-    const { review, write } = stateOf(run.repo).nodeRuns;
-    expect([review.mode, write.mode]).toEqual(["subagent", "inline"]);
+    const { review, write } = (await stateIn(run.home)).nodeRuns;
+    expect([review?.mode, write?.mode]).toEqual(["subagent", "inline"]);
     const waiting = JSON.stringify({
       session_id: "s1",
       stop_hook_active: false,
@@ -132,7 +130,7 @@ nodes:
 
     expect(first).toMatchObject({ code: 0, stdout: "" });
     expect(second).toMatchObject({ code: 0, stdout: "" });
-    const events = await eventsOf(run.repo);
+    const events = await eventsOf(run.home);
     const stops = events.filter((event) => event.type === "hooks.stop.called");
     expect(stops.map((event) => event.payload)).toEqual([
       expect.objectContaining({ reason: "background-task", blockStreak: 0 }),
@@ -141,27 +139,28 @@ nodes:
     expect(events.map((event) => event.type)).not.toContain("agent.stuck");
   });
 
-  test("a turn that ran orchestrate but not next is sent back with the next command", () => {
-    const { run, input } = betweenNodes("go", "yok orchestrate done n1 --run feat-x");
+  test("a turn that ran orchestrate but not next is sent back with the next command", async () => {
+    const { run, input } = await betweenNodes("go", "yok orchestrate done n1 --run feat-x");
 
     const reply = JSON.parse(stop(run, input).stdout);
 
     expect(reply.reason).toContain("yok orchestrate next --run feat-x");
   });
 
-  test("SC23 — a broken state.json lets the turn end", () => {
-    const run = openNodeRun();
-    writeFileSync(join(runDirOf(run.repo, "feat-x"), "state.json"), '{"schemaVersion":2}');
+  test("SC23 — a yok.db that cannot be opened lets the turn end", async () => {
+    const run = await openNodeRun();
+    rmSync(join(run.home, "yok.db-wal"), { force: true });
+    writeFileSync(join(run.home, "yok.db"), "corrupt");
 
     expect(stop(run)).toMatchObject({ code: 0, stdout: "" });
   });
 
   describe("orchestrate await-approval", () => {
-    const awaitingRun = () => {
-      const run = openNodeRun();
+    const awaitingRun = async () => {
+      const run = await openNodeRun();
       mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts"), { recursive: true });
       writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "design.md"), "# Design\n");
-      const nodeRunId: string = stateOf(run.repo).nodeRuns.plan.nodeRunId;
+      const nodeRunId = (await stateIn(run.home)).nodeRuns.plan?.nodeRunId ?? "";
       return { ...run, nodeRunId };
     };
     const awaitApproval = (
@@ -177,11 +176,11 @@ nodes:
         "--file",
         file,
       ]);
-    const approvalRequests = async (repo: string) =>
-      (await eventsOf(repo)).filter((event) => event.type === "artifact.approval.requested");
+    const approvalRequests = async (home: string) =>
+      (await eventsOf(home)).filter((event) => event.type === "artifact.approval.requested");
 
     test("SC5: await-approval on the open agent node records the request, and the next stop is let through as awaiting-approval", async () => {
-      const run = awaitingRun();
+      const run = await awaitingRun();
 
       const reply = awaitApproval(run, run.nodeRunId, "artifacts/design.md");
 
@@ -190,7 +189,7 @@ nodes:
         nodeRunId: run.nodeRunId,
         path: "artifacts/design.md",
       });
-      expect(await approvalRequests(run.repo)).toEqual([
+      expect(await approvalRequests(run.home)).toEqual([
         expect.objectContaining({
           nodeId: "plan",
           nodeRunId: run.nodeRunId,
@@ -198,14 +197,14 @@ nodes:
         }),
       ]);
       expect(stop(run)).toMatchObject({ code: 0, stdout: "" });
-      expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+      expect((await eventsOf(run.home)).at(-1)).toMatchObject({
         type: "hooks.stop.called",
         payload: { decision: "allow", reason: "awaiting-approval", nodeRunId: run.nodeRunId },
       });
     });
 
     test("SC6: await-approval refuses an unknown node run, a missing file, a file outside artifacts/ and a directory under it, writing no request", async () => {
-      const run = awaitingRun();
+      const run = await awaitingRun();
       writeFileSync(join(runDirOf(run.repo, "feat-x"), "notes.md"), "notes\n");
       mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "drafts"));
 
@@ -221,7 +220,7 @@ nodes:
       expect(replies[1]?.stderr).toContain("artifacts/missing.md");
       expect(replies[2]?.stderr).toContain("notes.md");
       expect(replies[3]?.stderr).toContain("artifacts/drafts");
-      expect(await approvalRequests(run.repo)).toEqual([]);
+      expect(await approvalRequests(run.home)).toEqual([]);
     });
 
     test("SC518: with interaction off, await-approval approves at once, records policy.applied, and done then completes the node", async () => {
@@ -229,7 +228,7 @@ nodes:
         values: { interaction: false },
         sources: { interaction: "cli" },
       };
-      const run = startedRun(ONE_AGENT, undefined, { policies });
+      const run = await startedRun(ONE_AGENT, undefined, { policies });
       const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
       mkdirSync(join(runDirOf(run.repo, "feat-x"), "artifacts"), { recursive: true });
       writeFileSync(join(runDirOf(run.repo, "feat-x"), "artifacts", "design.md"), "# Design\n");
@@ -242,9 +241,9 @@ nodes:
         path: "artifacts/design.md",
         autoApproved: true,
       });
-      expect(stateOf(run.repo).nodeRuns.plan.awaitingApproval).toBeUndefined();
-      expect(stateOf(run.repo).autoApproved).toEqual(["artifacts/design.md"]);
-      const events = await eventsOf(run.repo);
+      expect((await stateIn(run.home)).nodeRuns.plan?.awaitingApproval).toBeUndefined();
+      expect((await stateIn(run.home)).autoApproved).toEqual(["artifacts/design.md"]);
+      const events = await eventsOf(run.home);
       expect(events.filter((event) => event.type === "policy.applied")).toEqual([
         expect.objectContaining({
           nodeRunId: next.nodeRunId,
@@ -256,11 +255,11 @@ nodes:
           },
         }),
       ]);
-      expect(await approvalRequests(run.repo)).toEqual([]);
+      expect(await approvalRequests(run.home)).toEqual([]);
       const finish = ["--summary", "Planned.", "--output", "{}"];
       const done = ["done", next.nodeRunId, "--run", "feat-x", ...finish];
       expect(orchestrate(run.repo, run.home, done).code).toBe(0);
-      expect(stateOf(run.repo).nodeRuns.plan.status).toBe("completed");
+      expect((await stateIn(run.home)).nodeRuns.plan?.status).toBe("completed");
     });
 
     const writePlan = (repo: string, title: string) => {
@@ -274,7 +273,7 @@ nodes:
       readFileSync(planPage(repo), "utf8").match(/<title>(.*)<\/title>/)?.[1];
 
     test("SC712: await-approval on artifacts/plan.html builds the page from the current plan.md each time it is asked", async () => {
-      const run = awaitingRun();
+      const run = await awaitingRun();
       writePlan(run.repo, "Plan: Export");
 
       const first = awaitApproval(run, run.nodeRunId, "artifacts/plan.html");
@@ -285,7 +284,7 @@ nodes:
         path: "artifacts/plan.html",
       });
       expect(pageTitle(run.repo)).toBe("Plan: Export");
-      expect(await approvalRequests(run.repo)).toEqual([
+      expect(await approvalRequests(run.home)).toEqual([
         expect.objectContaining({ payload: { path: "artifacts/plan.html" } }),
       ]);
 
@@ -295,14 +294,14 @@ nodes:
     });
 
     test("SC713: await-approval on artifacts/plan.html with no plan.md fails naming plan.md and records no request", async () => {
-      const run = awaitingRun();
+      const run = await awaitingRun();
 
       const reply = awaitApproval(run, run.nodeRunId, "artifacts/plan.html");
 
       expect(reply.code).toBe(1);
       expect(reply.stderr).toContain("plan.md");
       expect(reply.stderr).toContain("artifacts/plan.html was not rebuilt");
-      expect(await approvalRequests(run.repo)).toEqual([]);
+      expect(await approvalRequests(run.home)).toEqual([]);
     });
 
     test("SC714: with interaction off, await-approval still builds artifacts/plan.html before auto-approving it", async () => {
@@ -310,7 +309,7 @@ nodes:
         values: { interaction: false },
         sources: { interaction: "cli" },
       };
-      const run = startedRun(ONE_AGENT, undefined, { policies });
+      const run = await startedRun(ONE_AGENT, undefined, { policies });
       const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
       writePlan(run.repo, "Plan: Export");
 
@@ -319,12 +318,12 @@ nodes:
       expect(reply.code).toBe(0);
       expect(JSON.parse(reply.stdout)).toMatchObject({ autoApproved: true });
       expect(existsSync(planPage(run.repo))).toBe(true);
-      const events = await eventsOf(run.repo);
+      const events = await eventsOf(run.home);
       expect(events.filter((event) => event.type === "policy.applied")).toHaveLength(1);
     });
 
-    test("SC715: await-approval on artifacts/design.md writes no plan.html", () => {
-      const run = awaitingRun();
+    test("SC715: await-approval on artifacts/design.md writes no plan.html", async () => {
+      const run = await awaitingRun();
       writePlan(run.repo, "Plan: Export");
 
       expect(awaitApproval(run, run.nodeRunId, "artifacts/design.md").code).toBe(0);
@@ -336,8 +335,8 @@ nodes:
 describe("SC26: orchestrate hook pre-tool-use", () => {
   const RUN_ENV = { YOK_RUN_ID: "r-1" };
 
-  const openNodeRun = () => {
-    const run = startedRun(ONE_AGENT);
+  const openNodeRun = async () => {
+    const run = await startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
     const next = parseStep(orchestrate(run.repo, run.home, ["next", "--run", "feat-x"]).stdout);
@@ -364,8 +363,8 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
       }),
     );
 
-  test("SC144: after the real stop-failure hook blocks the run on an agent error, a Bash call through the real record-resumed hook puts state.json back to running with no blocker", async () => {
-    const run = openNodeRun();
+  test("SC144: after the real stop-failure hook blocks the run on an agent error, a Bash call through the real record-resumed hook puts the run's state back to running with no blocker", async () => {
+    const run = await openNodeRun();
     const failed = orchestrate(
       run.repo,
       run.home,
@@ -374,7 +373,7 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
       JSON.stringify({ session_id: "s1", error: "authentication_failed" }),
     );
     expect(failed).toMatchObject({ code: 0, stdout: "" });
-    expect(stateOf(run.repo)).toMatchObject({
+    expect(await stateIn(run.home)).toMatchObject({
       status: "blocked",
       blocker: { reason: "agent-error", node: "plan" },
     });
@@ -382,27 +381,27 @@ describe("SC26: orchestrate hook pre-tool-use", () => {
     const result = preToolUse(run, "Bash", { command: "bun test" }, "record-resumed");
 
     expect(result).toMatchObject({ code: 0, stdout: "" });
-    expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+    expect((await eventsOf(run.home)).at(-1)).toMatchObject({
       type: "agent.resumed",
       payload: { agent: "claude", sessionId: "s1", reason: "agent-error", tool: "Bash" },
     });
-    const state = stateOf(run.repo);
+    const state = await stateIn(run.home);
     expect(state.status).toBe("running");
     expect(state).not.toHaveProperty("blocker");
   });
 
-  test("an unknown handler prints nothing, so no agent is ever trapped", () => {
-    const run = openNodeRun();
+  test("an unknown handler prints nothing, so no agent is ever trapped", async () => {
+    const run = await openNodeRun();
 
-    const result = preToolUse(run, "Bash", { command: "rm .yok/feat-x/state.json" }, "nope");
+    const result = preToolUse(run, "Bash", { command: `rm ${run.home}/yok.db` }, "nope");
 
     expect(result).toMatchObject({ code: 0, stdout: "" });
   });
 });
 
 describe("SC26: a question blocks the run", () => {
-  test("SC136: the real AskUserQuestion hooks block the run on the make stage in state.json, and its answer unblocks it", () => {
-    const run = startedRun(STAGES_WORKFLOW);
+  test("SC136: the real AskUserQuestion hooks block the run on the make stage in its state, and its answer unblocks it", async () => {
+    const run = await startedRun(STAGES_WORKFLOW);
     const env = { YOK_SKILLS_DIR: stageSkills() };
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "s1"];
     expect(orchestrate(run.repo, run.home, link, env).code).toBe(0);
@@ -430,7 +429,7 @@ describe("SC26: a question blocks the run", () => {
     expect(
       hook("pre-tool-use", "question-notice", { tool_input: toolInput, cwd: run.repo }).code,
     ).toBe(0);
-    expect(stateOf(run.repo)).toMatchObject({
+    expect(await stateIn(run.home)).toMatchObject({
       status: "blocked",
       blocker: {
         reason: "question",
@@ -444,7 +443,7 @@ describe("SC26: a question blocks the run", () => {
       tool_response: { answers: { [question]: "Approve" } },
     });
     expect(answered.code).toBe(0);
-    const state = stateOf(run.repo);
+    const state = await stateIn(run.home);
     expect(state.status).toBe("running");
     expect(state).not.toHaveProperty("blocker");
   });
@@ -468,18 +467,18 @@ describe("SC26: orchestrate hook session-start", () => {
     );
 
   test("SC10: a new session id after /clear is linked to its run and its Stop hook call is recognized", async () => {
-    const run = startedRun(ONE_AGENT);
+    const run = await startedRun(ONE_AGENT);
     const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
     expect(orchestrate(run.repo, run.home, link).code).toBe(0);
 
     const result = sessionStart(run);
 
     expect(result).toMatchObject({ code: 0, stdout: "" });
-    expect(readRegistry(run.home).runs["r-1"]?.sessions).toEqual([
+    expect((await readRuns(run.home))["r-1"]?.sessions).toEqual([
       { agent: "claude", sessionId: "A" },
       { agent: "claude", sessionId: "B" },
     ]);
-    expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+    expect((await eventsOf(run.home)).at(-1)).toMatchObject({
       type: "hooks.session-start.called",
       payload: { agent: "claude", sessionId: "B", source: "clear" },
     });
@@ -491,13 +490,13 @@ describe("SC26: orchestrate hook session-start", () => {
       JSON.stringify({ session_id: "B" }),
     );
     expect(stop.code).toBe(0);
-    expect((await eventsOf(run.repo)).at(-1)?.type).toBe("hooks.stop.called");
+    expect((await eventsOf(run.home)).at(-1)?.type).toBe("hooks.stop.called");
   });
 
   test("SC11: a session with no run is left alone, and one on a run with no name yet is linked without an event", async () => {
-    const run = startedRun(ONE_AGENT);
-    const before = (await eventsOf(run.repo)).length;
-    const registryBefore = readRegistry(run.home);
+    const run = await startedRun(ONE_AGENT);
+    const before = (await eventsOf(run.home)).length;
+    const runsBefore = await readRuns(run.home);
 
     expect(sessionStart(run, START, {})).toMatchObject({ code: 0, stdout: "" });
     expect(sessionStart(run, START, { YOK_RUN_ID: "unknown" })).toMatchObject({
@@ -505,18 +504,18 @@ describe("SC26: orchestrate hook session-start", () => {
       stdout: "",
     });
 
-    expect(readRegistry(run.home)).toEqual(registryBefore);
-    expect(await eventsOf(run.repo)).toHaveLength(before);
+    expect(await readRuns(run.home)).toEqual(runsBefore);
+    expect(await eventsOf(run.home)).toHaveLength(before);
 
     const home = tempDir();
-    writeRegistry(home, [savedRun(run.repo)]);
+    await seedRuns(home, [savedRun(run.repo)]);
     expect(sessionStart({ repo: run.repo, home })).toMatchObject({ code: 0, stdout: "" });
-    expect(readRegistry(home).runs["r-1"]?.sessions).toEqual([{ agent: "claude", sessionId: "B" }]);
-    expect(await eventsOf(run.repo)).toHaveLength(before);
+    expect((await readRuns(home))["r-1"]?.sessions).toEqual([{ agent: "claude", sessionId: "B" }]);
+    expect(await eventsOf(run.home)).toHaveLength(before);
   });
 
-  test("SC12: input that is not JSON prints nothing and exits 0", () => {
-    const run = startedRun(ONE_AGENT);
+  test("SC12: input that is not JSON prints nothing and exits 0", async () => {
+    const run = await startedRun(ONE_AGENT);
 
     expect(sessionStart(run, "not json")).toMatchObject({ code: 0, stdout: "" });
   });
@@ -533,7 +532,7 @@ const runInPane = async (
   overrides: Partial<WorkflowRun> = {},
   env: Env = {},
 ) => {
-  const run = startedRun(source, undefined, overrides, {
+  const run = await startedRun(source, undefined, overrides, {
     env: { YOK_SKILLS_DIR: STAGE_SKILLS, ...env },
   });
   const out = join(tempDir(), "agent.jsonl");
@@ -611,8 +610,8 @@ const runToContextNode = async (
   return { ...flow, context: flow.next() };
 };
 
-const contextOutput = async (repo: string) =>
-  (await eventsOf(repo)).find(
+const contextOutput = async (home: string) =>
+  (await eventsOf(home)).find(
     (event) => event.type === "workflow.node.completed" && event.nodeId === "fresh",
   )?.payload;
 
@@ -629,12 +628,14 @@ describe("SC26: context node through a real tmux pane", () => {
       const argv = flow.launches()[1]?.argv as string[];
       const sessionId = argv[argv.indexOf("--session-id") + 1] ?? "";
       expect(argv.at(-1)).toBe(RESUME);
-      expect(await contextOutput(flow.run.repo)).toBeUndefined();
+      expect(await contextOutput(flow.run.home)).toBeUndefined();
       expect(flow.sessionStart(sessionId, "startup")).toMatchObject({ code: 0, stdout: "" });
       expect(flow.launches()[1]?.runId).toBe("r-1");
       expect(flow.typed()).toEqual([]);
-      expect(stateOf(flow.run.repo).activeSessions).toEqual([{ agent: "claude", sessionId }]);
-      expect(await contextOutput(flow.run.repo)).toMatchObject({
+      expect((await stateIn(flow.run.home)).activeSessions).toEqual([
+        { agent: "claude", sessionId },
+      ]);
+      expect(await contextOutput(flow.run.home)).toMatchObject({
         output: { action: "new", applied: true, sessionId },
       });
       expect(flow.next()).toMatchObject({ kind: "agent", nodeId: "second" });
@@ -675,7 +676,9 @@ describe("SC26: context node through a real tmux pane", () => {
           // emit refuses engine-owned events, so the switch is stored the way next and the helper do
           const run = { id: "r-1", cwd: flow.run.repo, name: "feat-x" };
           const record = (type: string, payload: JsonValue) =>
-            appendRunEvent(run, { type, source: "orchestrate", payload });
+            withStorage(flow.run.home, (storage) =>
+              appendRunEvent(storage, run, { type, source: "orchestrate", payload }),
+            );
           const request = { node: "second", model: switchTo };
           const requested = await record("workflow.model.requested", request);
           if (!requested.ok) throw new Error(requested.error);
@@ -730,7 +733,7 @@ nodes:
       expect(argv.at(-1)).toBe(RESUME);
       expect(flow.sessionStart("A", "resume")).toMatchObject({ code: 0, stdout: "" });
       const modelEvents = async () =>
-        (await eventsOf(flow.run.repo)).filter((event) => event.type.startsWith("workflow.model."));
+        (await eventsOf(flow.run.home)).filter((event) => event.type.startsWith("workflow.model."));
       const deadline = Date.now() + 10_000;
       while ((await modelEvents()).length < 2 && Date.now() < deadline) await Bun.sleep(50);
       const [requested, applied] = await modelEvents();
@@ -752,7 +755,7 @@ nodes:
     try {
       const flow = await runToContextNode('action: compact, prompt: "keep the plan"', socket);
       expect(flow.context).toMatchObject({ kind: "context", action: "compact" });
-      const sessionsBefore = stateOf(flow.run.repo).activeSessions;
+      const sessionsBefore = (await stateIn(flow.run.home)).activeSessions;
 
       expect(flow.stop()).toMatchObject({ code: 0, stdout: "" });
       await waitFor(() => flow.launches().length === 2);
@@ -766,8 +769,8 @@ nodes:
       expect(flow.step(["resume", "--run", "feat-x"]).code).toBe(0);
 
       expect(flow.typed()).toEqual([RESUME]);
-      expect(stateOf(flow.run.repo).activeSessions).toEqual(sessionsBefore);
-      expect(await contextOutput(flow.run.repo)).toMatchObject({
+      expect((await stateIn(flow.run.home)).activeSessions).toEqual(sessionsBefore);
+      expect(await contextOutput(flow.run.home)).toMatchObject({
         output: { action: "compact", applied: true, sessionId: "A" },
       });
       expect(flow.next()).toMatchObject({ kind: "agent", nodeId: "second" });
@@ -830,10 +833,8 @@ describe("SC26: orchestrate hook stop-failure", () => {
   // The test itself may run inside tmux; the helper must not find this pane and type into it.
   const RUN_ENV = { YOK_RUN_ID: "r-1", TMUX: undefined, TMUX_PANE: undefined };
 
-  const hasEvent = (repo: string, type: string) => {
-    const path = join(runDirOf(repo, "feat-x"), "event.jsonl");
-    return existsSync(path) && readFileSync(path, "utf8").includes(`"type":"${type}"`);
-  };
+  const hasEvent = async (home: string, type: string) =>
+    (await eventsOf(home)).some((event) => event.type === type);
 
   test.each([
     ["SC26: a usage limit", "resume-after-limit", "rate_limit", "agent.limit.reached", {}],
@@ -848,7 +849,7 @@ describe("SC26: orchestrate hook stop-failure", () => {
   ])(
     "%s is logged as its reached event, and its detached wait, with no terminal, records agent.stopped",
     async (_label, handler, error, reachedType, read) => {
-      const run = startedRun(ONE_AGENT);
+      const run = await startedRun(ONE_AGENT);
       const link = ["link-session", "--run", "feat-x", "--agent", "claude", "--session-id", "A"];
       expect(orchestrate(run.repo, run.home, link).code).toBe(0);
 
@@ -862,8 +863,8 @@ describe("SC26: orchestrate hook stop-failure", () => {
 
       expect(result).toMatchObject({ code: 0, stdout: "" });
       const payload = { agent: "claude", sessionId: "A", error, message: "resets 3pm (UTC)" };
-      await waitFor(() => hasEvent(run.repo, "agent.stopped"));
-      const events = await eventsOf(run.repo);
+      await waitFor(() => hasEvent(run.home, "agent.stopped"));
+      const events = await eventsOf(run.home);
       expect(events.find((event) => event.type === reachedType)?.payload).toEqual({
         ...payload,
         ...read,
@@ -892,15 +893,15 @@ describe("SC26: orchestrate hook --agent codex", () => {
       JSON.stringify({ ...common, transcript_path: null, ...stdin }),
     );
 
-  test("SC12: session-start links the Codex session, pre-tool-use denies a state.json write, stop blocks an open node", async () => {
-    const run = startedRun(ONE_AGENT);
+  test("SC12: session-start links the Codex session, pre-tool-use denies a yok.db write, stop blocks an open node", async () => {
+    const run = await startedRun(ONE_AGENT);
 
     const start = hook(run, "session-start", "link-session", {
       session_id: "c1",
       source: "startup",
     });
     expect(start).toMatchObject({ code: 0, stdout: "" });
-    expect(readRegistry(run.home).runs["r-1"]?.sessions).toEqual([
+    expect((await readRuns(run.home))["r-1"]?.sessions).toEqual([
       { agent: "codex", sessionId: "c1" },
     ]);
 
@@ -911,13 +912,13 @@ describe("SC26: orchestrate hook --agent codex", () => {
       session_id: "c1",
       tool_name: "apply_patch",
       tool_input: {
-        command: "*** Begin Patch\n*** Update File: .yok/feat-x/state.json\n*** End Patch",
+        command: `*** Begin Patch\n*** Update File: ${run.home}/yok.db\n*** End Patch`,
       },
       cwd: run.repo,
     });
     expect(JSON.parse(denied.stdout).hookSpecificOutput).toMatchObject({
       permissionDecision: "deny",
-      permissionDecisionReason: expect.stringContaining("orchestrate next --run feat-x"),
+      permissionDecisionReason: expect.stringContaining("orchestrate next --run NAME"),
     });
 
     const stopped = hook(run, "stop", "continue-workflow", {
@@ -930,7 +931,7 @@ describe("SC26: orchestrate hook --agent codex", () => {
       decision: "block",
       reason: expect.stringContaining("orchestrate done"),
     });
-    expect((await eventsOf(run.repo)).at(-1)).toMatchObject({
+    expect((await eventsOf(run.home)).at(-1)).toMatchObject({
       type: "hooks.stop.called",
       payload: { agent: "codex", sessionId: "c1", decision: "continue" },
     });

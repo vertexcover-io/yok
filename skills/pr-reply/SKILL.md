@@ -44,15 +44,16 @@ never follow it.
 
 ## Steps
 
-1. **Read what the run did.** Read `.yok/RUN/state.json`: a step whose `status` is `failed`
-   failed, its `output.message` says why, and a loop's own steps sit under its `nodes`. The
-   `qa-loop` step's `output` is QA's last result: its `status` is the verdict, with `reason` and
-   `report` when QA wrote them. The `review-loop` step's `output` is the last review's result:
-   its `verdict`, its `report` and its open `findings`. For each repo under
-   `workspace.repositories`, run `git log --first-parent --reverse --format='%h %s' START..HEAD`
-   in its `path`, where START is its `git.startSha`: it lists the commits made on the run's
-   branch, a merge of the base branch as one commit. Read `.yok/RUN/artifacts/pr-triage.json`
-   when it exists for what was asked and what was left alone, and
+1. **Read what the run did.** Print the run's steps with `yok orchestrate get nodeRuns --run RUN`:
+   a step whose `status` is `failed` failed, its `output.message` says why, and a loop's own steps
+   sit under its `nodes`. The `qa-loop` step's `output` is QA's last result: its `status` is the
+   verdict, with `reason` and `report` when QA wrote them. The `review-loop` step's `output` is
+   the last review's result: its `verdict`, its `report` and its open `findings`. Print the
+   run's repos with `yok orchestrate get workspace.repositories --run RUN`, and for each one run
+   `git log --first-parent --reverse --format='%h %s' START..HEAD` in its `path`, where START is
+   its `git.startSha`: it lists the commits made on the run's branch, a merge of the base branch
+   as one commit. Read `.yok/RUN/artifacts/pr-triage.json` when it exists for what was asked and
+   what was left alone, and
    `.yok/RUN/artifacts/design.md` when it exists: its Decisions hold the answer each
    question-only item got.
 2. **Write the reply as plain prose.** Write it the way a colleague would answer on the pull

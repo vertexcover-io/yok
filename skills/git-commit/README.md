@@ -19,7 +19,7 @@ Standalone, invoke it with `/yok:git-commit` in Claude Code or `$git-commit` in 
 
 ## Inputs and outputs
 
-Reads `workspace` from the create-workspace stage and works once per repo in its `worktreeDir`. The repo's base commit comes from `.yok/RUN_NAME/state.json`. A caller that already squashed can pass `--working-commits PATH`.
+Reads `workspace` from the create-workspace stage and works once per repo in its `worktreeDir`. The repo's base commit comes from `yok orchestrate get workspace.repositories.NAME.git.startSha`. A caller that already squashed can pass `--working-commits PATH`.
 
 Produces no artifact: the result is the commits on the branch. Untracked files that do not clearly belong, and generated files, stay out.
 

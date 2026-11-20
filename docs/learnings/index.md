@@ -12,3 +12,4 @@
 - [After pushing to a branch with an open PR, run the pr skill to update the PR description](update-pr-description-on-push.md) — Use when pushing a new commit, or force-pushing, to a branch that has an open PR
 - [Don't add guards for cases only a manual or made-up action can cause](no-guards-for-rare-cases.md) — Use when adding a check or branch for a case yok's own flow never produces
 - [Drive the browser in tests with Playwright, not agent-browser](browser-tests-use-playwright.md) — Use when writing or changing a test that drives a real browser
+- [Open every phase file with a short bullet list of its steps](phase-files-open-with-steps-list.md) — Use when writing a phase-N.md file for a plan

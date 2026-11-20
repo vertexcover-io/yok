@@ -16,12 +16,15 @@ const temp = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix))
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex")
 
-// A stand-in release binary: prints its version, and logs "VERSION ARGS" for anything else.
-const fakeYok = (version: string, log: string): string =>
-  `#!/bin/sh\nif [ "$1" = "--version" ]; then echo ${version}; exit 0; fi\necho "${version} $*" >> "${log}"\n`
+// A stand-in release binary: prints its version, passes its SQLite check or fails it saying
+// SQLITE, and logs "VERSION ARGS" for anything else.
+const fakeYok = (version: string, log: string, sqlite = ""): string => {
+  const check = sqlite === "" ? "exit 0" : `echo "${sqlite}" >&2; exit 1`
+  return `#!/bin/sh\nif [ "$1" = "--version" ]; then echo ${version}; exit 0; fi\nif [ "$1" = "sqlite-check" ]; then ${check}; fi\necho "${version} $*" >> "${log}"\n`
+}
 
-const releaseFiles = (version: string, log: string, checksum?: string): Record<string, string> => {
-  const script = fakeYok(version, log)
+const releaseFiles = (version: string, log: string, checksum?: string, sqlite = ""): Record<string, string> => {
+  const script = fakeYok(version, log, sqlite)
   return { [ASSET]: script, "checksums.txt": `${checksum ?? sha256(script)}  ${ASSET}\n` }
 }
 
@@ -139,6 +142,22 @@ describe("install.sh", () => {
     assert.match(result.stderr, /checksum mismatch/)
     assert.equal(existsSync(join(home, ".yok/bin/yok")), false)
     assert.deepEqual(readdirSync(home), [])
+  })
+
+  test("SC130: a release binary whose SQLite check fails is not installed, and its reason is printed", async () => {
+    const home = temp("yok-install-home-")
+    const log = join(temp("yok-install-log-"), "log")
+    const tooOld = "SQLite 3.37.2 is too old; yok needs 3.38.0 or newer. Update yok."
+    const url = await serve(under("", releaseFiles("0.0.9", log, undefined, tooOld)))
+
+    const result = await install(home, url, fakeAgents(["claude"]))
+
+    assert.notEqual(result.code, 0)
+    assert.ok(result.stderr.includes(tooOld), result.stderr)
+    assert.match(result.stderr, /Nothing installed\./)
+    assert.equal(existsSync(join(home, ".yok/bin/yok")), false)
+    assert.deepEqual(readdirSync(home), [])
+    assert.deepEqual(logLines(log), [])
   })
 
   test("SC140: YOK_AGENTS=codex installs only codex's plugin, and with no YOK_AGENTS yok picks, even with no agent on PATH", async () => {

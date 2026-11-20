@@ -9,14 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  createRegistryReader,
-  readEvents,
-  readRunSessions,
-  registryPath,
-  requireRun,
-  runDirOf,
-} from "@yok/sdk";
+import { readRunSessions, requireRun } from "@yok/sdk";
 import { PLUGIN, readPlugin } from "./plugin.mjs";
 import { parseRecords } from "./transcript.mjs";
 
@@ -59,22 +52,16 @@ export const skillVersion = (manifestPath) => {
   return version ? `${name}@${version}` : "";
 };
 
-// The run's current session, from its event log: the hooks record each session the run starts and
-// each one a context step replaces, for every agent. Undefined when the log names none.
-export const runSessionId = (runDir) => {
-  const path = join(runDir, "event.jsonl");
-  return existsSync(path) ? readRunSessions(readEvents(path)).at(-1)?.sessionId : undefined;
-};
-
+// The run's current session is the last one linked to it: yok links each session the run starts
+// and each one a context step replaces, for every agent.
 const currentRunSessionId = async () => {
   const run = await requireRun({
-    registry: createRegistryReader(registryPath()),
     env: process.env,
     cwd: process.cwd(),
   });
   if (!run.ok) throw new Error(`learn works only in a yok run: ${run.error}`);
-  const sessionId = runSessionId(runDirOf(run.value.cwd, run.value.name));
-  if (sessionId === undefined) throw new Error("the run's event log names no session");
+  const sessionId = (await readRunSessions(run.value)).at(-1)?.sessionId;
+  if (sessionId === undefined) throw new Error("the run has no agent session linked");
   return sessionId;
 };
 

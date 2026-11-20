@@ -20,7 +20,8 @@ Read this when you are Claude Code. It names the tools that SKILL.md describes b
 - **Subagents:**
   - Start one with the `Agent` tool, `subagent_type: "general-purpose"` and
     `run_in_background: true`.
-  - If the reply names a `tier`, look it up under `tiers.models` in the run's `state.json`.
+  - If the reply names a `tier`, print the run's tier models with
+    `yok orchestrate get tiers.models --run NAME` and look the tier up there.
     Set `model` to the family in its model id (one of `opus`, `sonnet`, `haiku`, `fable`;
     `claude-opus-5-5` means `opus`). Set `effort` to the tier's `effort` when it has one.
   - Brief it to send its questions and approval requests with `SendMessage` to `main`. Those

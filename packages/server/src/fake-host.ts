@@ -1,12 +1,14 @@
 import { claudeProvider } from "@yok/core";
 import type {
   IAgentProvider,
+  IStorage,
   ITerminal,
   ITerminalHost,
   LaunchOptions,
   NodeRun,
   Result,
   State,
+  WorkflowRun,
 } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
 
@@ -26,7 +28,10 @@ export const fakeHost = (screen: string | (() => string), alive = true) => {
     },
     capture: async () => ({ ok: true, value: typeof screen === "string" ? screen : screen() }),
     isAlive: async () => alive,
-    kill: async () => ({ ok: true, value: undefined }),
+    kill: async () => {
+      calls.push("kill");
+      return { ok: true, value: undefined };
+    },
     rename: async () => ({ ok: true, value: undefined }),
     respawn: async () => ({ ok: true, value: undefined }),
     attachCommand: () => ["true"],
@@ -100,3 +105,44 @@ export const seedState = (runDir: string, nodeRuns: Readonly<Record<string, Node
   eventHandlers: {},
   subscribers: {},
 });
+
+type SeededUser = Readonly<{
+  name: string;
+  email?: string;
+  github: Readonly<{ id: number; login: string; token?: string }>;
+  slack?: string;
+}>;
+
+// A yok user as a GitHub sign-in leaves one; with no token given, the sign-in's token is dropped.
+export const seedUser = async (storage: IStorage, user: SeededUser): Promise<string> => {
+  const { id, login, token } = user.github;
+  const signIn = { id, login, name: user.name, email: user.email ?? "", token: token ?? "gho_x" };
+  const [userId] = await storage.users.saveGitHubUser(signIn);
+  if (token === undefined) {
+    const github = { provider: "github", providerId: String(id), username: login };
+    await storage.users.addUserAccount(userId, github);
+  }
+  if (user.slack !== undefined) {
+    await storage.users.addUserAccount(userId, { provider: "slack", providerId: user.slack });
+  }
+  return userId;
+};
+
+// Stores RUN, first adding its project at the run's folder when there is no such project. A
+// named run given STATE is stored unnamed and named by init with it, as orchestrate init does.
+export const seedRun = async (
+  storage: IStorage,
+  run: WorkflowRun,
+  state?: State,
+): Promise<void> => {
+  if ((await storage.projects.find(run.project)) === undefined) {
+    const project = { path: run.cwd, addedBy: { channel: "api" }, addedAt: run.createdAt };
+    const added = await storage.projects.add(run.project, project);
+    if (!added.ok) throw new Error(added.error);
+  }
+  const { cwd: _cwd, ...draft } = run;
+  if (state === undefined || run.name === null) return storage.runs.addRun(draft);
+  await storage.runs.addRun({ ...draft, name: null });
+  const named = await storage.runs.initRun(run.id, run.name, state);
+  if (!named.ok) throw new Error(named.error);
+};

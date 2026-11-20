@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registryPath, type WorkflowRun } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import type { WorkflowRun } from "@yok/sdk";
+import { seedRuns } from "./test-runs.ts";
 
 const CLI = join(import.meta.dir, "index.ts");
 
@@ -15,6 +15,7 @@ afterEach(() => {
 
 const runRecord = (cwd: string, id: string, name: string): WorkflowRun => ({
   id,
+  project: "repo",
   workflow: "ok",
   workflowPath: join(cwd, "ok.yaml"),
   inputs: {},
@@ -40,9 +41,10 @@ const setup = async () => {
   writeFileSync(join(artifacts, "plan.md"), "# Plan: Feature X\n\nThe plan.\n");
   writeFileSync(join(artifacts, "phases", "phase-1.md"), "# Phase 1: First\n");
   mkdirSync(join(cwd, ".yok", "bare", "artifacts"), { recursive: true });
-  const registry = createRegistry(registryPath(home));
-  await registry.addRun(runRecord(cwd, "r-feat0001", "feat-x"));
-  await registry.addRun(runRecord(cwd, "r-bare0001", "bare"));
+  await seedRuns(home, [
+    runRecord(cwd, "r-feat0001", "feat-x"),
+    runRecord(cwd, "r-bare0001", "bare"),
+  ]);
   // This pipeline exports YOK_RUN_ID; left in, build-plan would build that run instead.
   const { YOK_RUN_ID: _session, ...parentEnv } = process.env;
   const env = { ...parentEnv, YOK_HOME: home };

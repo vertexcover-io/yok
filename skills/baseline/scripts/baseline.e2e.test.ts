@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDirOf, type WorkflowRun } from "@yok/sdk";
-import { createState } from "@yok/sdk/internal";
+import { runDirOf, type State } from "@yok/sdk";
+import { createState, type RunDraft, withStorage } from "@yok/sdk/internal";
 
 const CLI = join(import.meta.dir, "../../../packages/cli/src/index.ts");
 const BASELINE = ["--no-env-file", CLI, "orchestrate", "skill", "run", "baseline.script"];
@@ -21,9 +21,12 @@ const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "baseline-
 const WORKFLOW =
   'name: ok\nnodes:\n  - { id: a, type: exec, input: null, runtime: sh, script: "true" }\n';
 
-// A repo holding orchestrate.config.json with `baseline`, and a run named feat-x registered in
-// YOK_HOME, as `orchestrate init` leaves it.
-const baselineRun = (baseline: string | undefined): Readonly<{ repo: string; home: string }> => {
+// A repo holding orchestrate.config.json with `baseline`, and a run named feat-x in YOK_HOME's
+// yok.db, as `orchestrate init` leaves it; config is the config file its state records.
+const baselineRun = async (
+  baseline: string | undefined,
+  config?: State["config"],
+): Promise<Readonly<{ repo: string; home: string }>> => {
   const repo = tempDir();
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
   git("init", "-q", "-b", "main");
@@ -31,23 +34,39 @@ const baselineRun = (baseline: string | undefined): Readonly<{ repo: string; hom
   writeFileSync(join(repo, "orchestrate.config.json"), JSON.stringify({ version: 2, baseline }));
   const workflowPath = join(repo, "ok.yaml");
   writeFileSync(workflowPath, "name: ok\nnodes: []\n");
-  const run: WorkflowRun = {
+  const run: RunDraft = {
     id: "r-1",
+    project: "repo",
     workflow: "ok",
     workflowPath,
     inputs: { prompt: "hi" },
-    cwd: repo,
     sessions: [],
-    name: "feat-x",
+    name: null,
     terminal: null,
     config: null,
     tiers: null,
     createdAt: new Date().toISOString(),
   };
   const home = tempDir();
-  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
-  mkdirSync(runDirOf(repo, "feat-x"), { recursive: true });
-  writeFileSync(join(runDirOf(repo, "feat-x"), "workflow.yaml"), WORKFLOW);
+  const runDir = runDirOf(repo, "feat-x");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "workflow.yaml"), WORKFLOW);
+  const recorded = config === undefined ? {} : { config };
+  const state = await createState({
+    runId: "r-1",
+    runDir,
+    version: "1.0.0",
+    eventHandlers: {},
+    ...recorded,
+  });
+  await withStorage(home, async (storage) => {
+    const project = { path: repo, addedBy: { channel: "cli" }, addedAt: run.createdAt };
+    const added = await storage.projects.add("repo", project);
+    if (!added.ok) throw new Error(added.error);
+    await storage.runs.addRun(run);
+    const named = await storage.runs.initRun("r-1", "feat-x", state);
+    if (!named.ok) throw new Error(named.error);
+  });
   return { repo, home };
 };
 
@@ -86,8 +105,8 @@ const waitFor = async (condition: () => boolean, timeoutMs = 10_000): Promise<vo
 };
 
 describe("SC48: yok orchestrate skill run baseline.script with no extension, as baseline.ts did", () => {
-  test("runs the configured script and writes artifacts/baseline.json", () => {
-    const { repo, home } = baselineRun(`echo '{"tests":3}'`);
+  test("runs the configured script and writes artifacts/baseline.json", async () => {
+    const { repo, home } = await baselineRun(`echo '{"tests":3}'`);
 
     const run = baseline(repo, home, ["--run", "feat-x", "--dir", repo]);
 
@@ -100,8 +119,8 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     });
   });
 
-  test("with no baseline script configured, it prints a null path and no exit codes", () => {
-    const { repo, home } = baselineRun(undefined);
+  test("with no baseline script configured, it prints a null path and no exit codes", async () => {
+    const { repo, home } = await baselineRun(undefined);
 
     const run = baseline(repo, home, ["--run", "feat-x", "--dir", repo]);
 
@@ -109,19 +128,15 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     expect(JSON.parse(run.stdout)).toEqual({ path: null, workspace: null, packages: {} });
   });
 
-  test("a run whose state.json records a config file runs that file's baseline, not the repo's", async () => {
-    const { repo, home } = baselineRun("echo from-repo-config");
+  test("a run whose state records a config file runs that file's baseline, not the repo's", async () => {
     const elsewhere = tempDir();
     const file = join(elsewhere, "custom.json");
     writeFileSync(file, JSON.stringify({ version: 2, baseline: "echo from-run-config" }));
-    const runDir = runDirOf(repo, "feat-x");
-    await createState({
-      runId: "r-1",
-      runDir,
-      version: "1.0.0",
-      eventHandlers: {},
-      config: { path: file, root: elsewhere },
+    const { repo, home } = await baselineRun("echo from-repo-config", {
+      path: file,
+      root: elsewhere,
     });
+    const runDir = runDirOf(repo, "feat-x");
 
     const run = baseline(repo, home, ["--run", "feat-x", "--dir", repo]);
 
@@ -130,8 +145,8 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
     expect(recorded.workspace.command).toBe("echo from-run-config");
   });
 
-  test("$YOK_RUN_ID picks the run with no flag, and --run-id picks it from outside the repo", () => {
-    const { repo, home } = baselineRun("echo ok");
+  test("$YOK_RUN_ID picks the run with no flag, and --run-id picks it from outside the repo", async () => {
+    const { repo, home } = await baselineRun("echo ok");
     const path = join(runDirOf(repo, "feat-x"), "artifacts", "baseline.json");
 
     const fromSession = baseline(repo, home, ["--dir", repo], { YOK_RUN_ID: "r-1" });
@@ -144,7 +159,7 @@ describe("SC48: yok orchestrate skill run baseline.script with no extension, as 
   });
 
   test("SIGTERM kills the running baseline script, exits 143 and writes nothing", async () => {
-    const { repo, home } = baselineRun("echo $$ > pid; sleep 30");
+    const { repo, home } = await baselineRun("echo $$ > pid; sleep 30");
     const pidFile = join(repo, "pid");
     const child = Bun.spawn(["bun", ...BASELINE, "--run", "feat-x", "--dir", repo], {
       cwd: repo,

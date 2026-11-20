@@ -125,8 +125,8 @@ const PUBLIC_RUNTIME_NAMES = [
   "bodyOf",
   "checkBinary",
   "closingLine",
+  "collectEventSessions",
   "createGit",
-  "createRegistryReader",
   "emitRunEvent",
   "eventError",
   "execWithTimeout",
@@ -161,15 +161,14 @@ const PUBLIC_RUNTIME_NAMES = [
   "parseTime",
   "parseYaml",
   "pickRun",
-  "readEvents",
   "readIfExists",
   "readPlanText",
   "readPolicies",
   "readProjectEnv",
+  "readRunEvents",
   "readRunSessions",
   "readState",
   "readText",
-  "registryPath",
   "requireRun",
   "resolveRun",
   "runDirOf",
@@ -274,36 +273,55 @@ describe("source boundaries", () => {
     expect(filesContaining("packages/sdk/**/*.ts", coreImport)).toEqual([]);
   });
 
-  // A write can name the file through a variable or helper, so the check is on the path itself:
-  // only state.ts may build a path to state.json at all. Others read it through readState.
-  test("EH11 — only packages/sdk/src/state.ts builds a path to state.json, so every write goes through its lock", () => {
+  // A write can name the file through a variable or helper, so the check is on the path itself.
+  // yok import-files reads the old files once, and its test helper writes them.
+  test("EH11 — no source but yok import-files builds a path to state.json: a run's state lives in yok.db", () => {
     const statePath = /[/"'`]state\.json["'`]/;
-    // The learn sim writes a finished run's state.json into a fake run before any agent starts.
-    const sim = "skills/learn/evals/sim/run.mjs";
     const sources = ["packages/*/src/**/*.ts", "skills/**/*.{ts,mts,js,mjs}"].flatMap((pattern) =>
       filesContaining(pattern, statePath, { excludeTests: true }),
     );
-    expect(sources.filter((source) => source !== sim)).toEqual(["packages/sdk/src/state.ts"]);
+    expect(sources).toEqual(["packages/cli/src/import-files.ts", "packages/cli/src/test-runs.ts"]);
+  });
+
+  test("SC404: no skill script names state.json, event.jsonl or registry.json, and the sdk offers the run readers in place of readEvents", async () => {
+    // Built from parts so this file's own needle text can't match itself.
+    const oldRecords = new RegExp(
+      [
+        ["state", "json"],
+        ["event", "jsonl"],
+        ["registry", "json"],
+      ]
+        .map((parts) => parts.join("\\."))
+        .join("|"),
+    );
+    expect(
+      filesContaining("skills/**/*.{ts,mts,js,mjs}", oldRecords, { excludeTests: true }),
+    ).toEqual([]);
+    const names = Object.keys(await import("@yok/sdk"));
+    expect(names).toEqual(
+      expect.arrayContaining(["readRunEvents", "readRunSessions", "collectEventSessions"]),
+    );
+    expect(names).not.toContain("readEvents");
   });
 
   test("EH12 — no skill script imports @yok/core; skills act on a run through the orchestrate script or the sdk", () => {
     expect(filesContaining("skills/**/*.{ts,mts,js,mjs}", /["']@yok\/core["'/]/)).toEqual([]);
   });
 
-  test("SC5, SC7: @yok/sdk exports exactly the agreed runtime names", async () => {
+  test("SC5, SC7, SC215: @yok/sdk exports exactly the agreed runtime names, minus the registry reader, and never the storage openers", async () => {
     const names = Object.keys(await import("@yok/sdk")).sort();
     expect(names).toEqual(PUBLIC_RUNTIME_NAMES);
     expect(names).toEqual(
-      expect.arrayContaining([
-        "emitRunEvent",
-        "createRegistryReader",
-        "resolveRun",
-        "readState",
-        "VerifierResultSchema",
-      ]),
+      expect.arrayContaining(["emitRunEvent", "resolveRun", "readState", "VerifierResultSchema"]),
     );
     for (const hidden of [
       "createRegistry",
+      "createRegistryReader",
+      "registryPath",
+      "openStorage",
+      "memoryStorage",
+      "withStorage",
+      "useStorage",
       "syncState",
       "createState",
       "appendRunEvent",
@@ -316,6 +334,26 @@ describe("source boundaries", () => {
     }
   });
 
+  test("SC106: @yok/sdk still offers sessionEnv but never openStorage, memoryStorage or the SQLite version check", async () => {
+    const names = Object.keys(await import("@yok/sdk"));
+    expect(names).toContain("sessionEnv");
+    for (const hidden of ["openStorage", "memoryStorage", "checkSqliteVersion", "sqliteVersion"]) {
+      expect(names).not.toContain(hidden);
+    }
+  });
+
+  test("SC105: only db.ts, schema.ts and storage.ts import bun:sqlite or drizzle-orm", () => {
+    // Built from parts so this file's own needle text can't match itself.
+    const storeImport = new RegExp(
+      `from "(${["bun", "sqlite"].join(":")}|${["drizzle", "orm"].join("-")})`,
+    );
+    expect(filesContaining("packages/*/src/**/*.ts", storeImport, { excludeTests: true })).toEqual([
+      "packages/sdk/src/db.ts",
+      "packages/sdk/src/schema.ts",
+      "packages/sdk/src/storage.ts",
+    ]);
+  });
+
   test("SC6: the public index and the internal entry name every export", () => {
     const star = ["export", "*"].join(" ");
     expect(
@@ -325,10 +363,11 @@ describe("source boundaries", () => {
     ).toEqual([]);
   });
 
-  test("SC7: no skill script imports the sdk's internal entry", () => {
+  test("SC7, SC404: no skill script but the learn sim's seed imports the sdk's internal entry", () => {
     const internalImport = ["@yok/sdk", "internal"].join("/");
+    // The learn sim builds its fake run in yok.db before any agent starts.
     expect(
       filesContaining("skills/**/*.{ts,mts,js,mjs}", internalImport, { excludeTests: true }),
-    ).toEqual([]);
+    ).toEqual(["skills/learn/evals/sim/seed.ts"]);
   });
 });

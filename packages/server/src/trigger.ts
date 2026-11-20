@@ -1,14 +1,14 @@
 import { resolve } from "node:path";
 import { isWorkflowFile, unwrap, WorkflowError } from "@yok/core";
 import type { ILogger } from "@yok/sdk";
-import { runDirOf, SlugSchema, withLock } from "@yok/sdk";
-import { type Fire, isRunLive, type Trigger, type TriggerStore } from "@yok/sdk/internal";
+import { SlugSchema } from "@yok/sdk";
+import { type Fire, isRunLive, type Trigger } from "@yok/sdk/internal";
 import { Cron } from "croner";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull } from "./delivery.ts";
-import { findOrAddFolderProject, pickProject, projectsLockPath, readProjects } from "./projects.ts";
+import { pickProject } from "./projects.ts";
 import {
   type AddTriggerBody,
   AddTriggerBodySchema,
@@ -61,7 +61,7 @@ export const dueSlot = (
   };
 };
 
-export type TriggerRouteDeps = RunDeps & GitDeps & Readonly<{ triggers: TriggerStore }>;
+export type TriggerRouteDeps = RunDeps & GitDeps;
 export type TriggerDeps = TriggerRouteDeps & Readonly<{ log: ILogger; now: () => Date }>;
 
 type Outcome = Pick<Fire, "status" | "reason" | "runId" | "runName">;
@@ -91,15 +91,15 @@ const runNameFor = (trigger: Trigger, slot: Date): string => {
 const STARTING_MS = 5 * 60 * 1000;
 
 const isLastRunGoing = async (trigger: Trigger, deps: TriggerDeps): Promise<boolean> => {
-  const fires = await deps.triggers.readFires(trigger.id, Number.MAX_SAFE_INTEGER);
+  const fires = await deps.storage.triggers.readFires(trigger.id, Number.MAX_SAFE_INTEGER);
   const started = fires.findLast((fire) => fire.status === "started");
   if (started?.runId === undefined) return false;
-  const run = await deps.registry.findRun(started.runId);
+  const run = await deps.storage.runs.findRun(started.runId);
   if (run === undefined || !(await isAgentAlive(run, deps.host))) return false;
   if (run.name === null) {
     return deps.now().getTime() - new Date(started.at).getTime() < STARTING_MS;
   }
-  const state = await readStateOrNull(runDirOf(run.cwd, run.name));
+  const state = await readStateOrNull(deps.storage, run.id);
   return state === null || isRunLive(state.status);
 };
 
@@ -108,7 +108,7 @@ const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Pr
     return { status: "skipped", reason: "previous run still running" };
   }
   // Compiled here only to read the trigger block; startProjectRun compiles it again after the pull.
-  const root = unwrap(await pickProject(deps.home, trigger.project)).path;
+  const root = unwrap(await pickProject(deps.storage, deps.home, trigger.project)).path;
   const { plan } = unwrap(await compileWorkflow(trigger.workflow, root, trigger.config));
   if (plan.trigger === undefined) {
     return { status: "failed", reason: `${trigger.workflow} has no trigger block any more` };
@@ -132,7 +132,7 @@ const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Pr
       // `yok trigger rm` may have run while the doctor was checking; don't start a removed trigger.
       // The id, not the name: a trigger removed and re-added meanwhile is another trigger.
       stillWanted: async () =>
-        (await deps.triggers.find(trigger.project, trigger.name))?.id === trigger.id,
+        (await deps.storage.triggers.find(trigger.project, trigger.name))?.id === trigger.id,
     },
   );
   // Only the registration step refuses with a conflict, and a project with triggers cannot be
@@ -161,7 +161,7 @@ const recordFire = async (
     ...outcome,
     at: deps.now().toISOString(),
   };
-  await deps.triggers.appendFire(fire);
+  await deps.storage.triggers.appendFire(fire);
   deps.log.info(
     { trigger: trigger.name, project: trigger.project, ...fire },
     `trigger ${fire.status}`,
@@ -169,7 +169,8 @@ const recordFire = async (
   return fire;
 };
 
-// Never throws: every outcome, an error included, becomes one line in the fire log.
+// Never throws: every outcome, an error included, becomes a row in the fire log, unless the
+// trigger was removed meanwhile and its log went with it.
 export const fireTrigger = async (
   trigger: Trigger,
   slot: Date,
@@ -183,12 +184,12 @@ export const fireTrigger = async (
 
 export const tick = async (deps: TriggerDeps): Promise<void> => {
   const now = deps.now();
-  for (const trigger of await deps.triggers.list()) {
+  for (const trigger of await deps.storage.triggers.list()) {
     const due = dueSlot(trigger, now);
     if (due === null) continue;
     // Move nextFireAt on before firing, so a crash mid-firing can't fire this slot again.
     // False means the trigger was removed or re-added meanwhile: leave it alone.
-    if (!(await deps.triggers.setNextFireAt(trigger, due.next.toISOString()))) continue;
+    if (!(await deps.storage.triggers.setNextFireAt(trigger, due.next.toISOString()))) continue;
     if (due.missedFrom !== null) {
       const reason = `missed: slept through the slots up to ${due.slot.toISOString()}`;
       await recordFire(trigger, due.missedFrom, { status: "skipped", reason }, deps);
@@ -239,27 +240,6 @@ export const stopScheduler = (): Promise<void> => {
   return firing.then(() => undefined);
 };
 
-// A trigger saved on main names a folder. Each moves to the project at that folder, which is
-// added when there is none, so nothing is dropped. Run before the first tick.
-export const adoptLegacyTriggers = async (
-  home: string,
-  deps: Readonly<{ triggers: TriggerStore; log: ILogger }>,
-): Promise<void> => {
-  for (const legacy of await deps.triggers.listLegacy()) {
-    try {
-      const project = await findOrAddFolderProject(home, legacy.cwd);
-      await deps.triggers.adopt(legacy.id, project);
-      deps.log.info(
-        { trigger: legacy.name, cwd: legacy.cwd, project },
-        "trigger moved to its project",
-      );
-    } catch (error) {
-      // It stays legacy, so the next start tries it again, and no tick fires it meanwhile.
-      deps.log.error({ trigger: legacy.name, cwd: legacy.cwd, err: error }, "trigger not moved");
-    }
-  }
-};
-
 const LOG_LIMIT = 20;
 
 const addTrigger = async (
@@ -267,7 +247,7 @@ const addTrigger = async (
   deps: TriggerRouteDeps,
   { project, workflow, config }: AddTriggerBody,
 ) => {
-  const picked = await pickProject(deps.home, project);
+  const picked = await pickProject(deps.storage, deps.home, project);
   if (!picked.ok) return errorResponse(c, 400, "bad-request", picked.error);
   const root = picked.value.path;
   const configPath = config === undefined ? null : resolve(root, config);
@@ -299,11 +279,12 @@ const addTrigger = async (
     config: configPath,
     nextFireAt: nextSlot(schedule, new Date()).toISOString(),
   };
-  // Under the projects lock, so a removal of this project either sees the trigger or has already
-  // happened.
-  const saved = await withLock(projectsLockPath(deps.home), async () =>
-    (await readProjects(deps.home))[project]?.path === root ? deps.triggers.save(draft) : null,
-  );
+  // Checked again just before the save: the project may have been removed during the compile.
+  // A removal after the check deletes the saved trigger with its project.
+  const saved =
+    (await deps.storage.projects.find(project))?.path === root
+      ? await deps.storage.triggers.save(draft)
+      : null;
   if (saved === null) return errorResponse(c, 409, "conflict", `project ${project} was removed`);
   if (!saved.ok) {
     const clash = saved.error;
@@ -328,16 +309,16 @@ export const triggerRoutes = (deps: TriggerRouteDeps) =>
     .post("/", jsonBody(AddTriggerBodySchema), (c) => addTrigger(c, deps, c.req.valid("json")))
     .get("/", async (c) => {
       const triggers = await Promise.all(
-        (await deps.triggers.list()).map(async (trigger) => ({
+        (await deps.storage.triggers.list()).map(async (trigger) => ({
           ...trigger,
-          lastFire: (await deps.triggers.readFires(trigger.id, 1))[0] ?? null,
+          lastFire: (await deps.storage.triggers.readFires(trigger.id, 1))[0] ?? null,
         })),
       );
       return c.json({ triggers }, 200);
     })
     .post("/fire", jsonBody(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("json");
-      const trigger = await deps.triggers.find(ref.project, ref.name);
+      const trigger = await deps.storage.triggers.find(ref.project, ref.name);
       if (trigger === undefined) return notFound(c, ref);
       const fire = await inTurn(() =>
         fireTrigger(trigger, new Date(), {
@@ -350,14 +331,14 @@ export const triggerRoutes = (deps: TriggerRouteDeps) =>
     })
     .get("/log", queryParams(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("query");
-      const trigger = await deps.triggers.find(ref.project, ref.name);
+      const trigger = await deps.storage.triggers.find(ref.project, ref.name);
       if (trigger === undefined) return notFound(c, ref);
-      return c.json({ fires: await deps.triggers.readFires(trigger.id, LOG_LIMIT) }, 200);
+      return c.json({ fires: await deps.storage.triggers.readFires(trigger.id, LOG_LIMIT) }, 200);
     })
     .delete("/", queryParams(TriggerRefSchema), async (c) => {
       const ref = c.req.valid("query");
-      const trigger = await deps.triggers.find(ref.project, ref.name);
-      if (trigger === undefined || !(await deps.triggers.remove(trigger.id))) {
+      const trigger = await deps.storage.triggers.find(ref.project, ref.name);
+      if (trigger === undefined || !(await deps.storage.triggers.remove(trigger.id))) {
         return notFound(c, ref);
       }
       c.get("log").info({ trigger }, "trigger removed");

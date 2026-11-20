@@ -28,7 +28,7 @@ flowchart LR
 
 **The agent asks what it can do now.** It runs `yok orchestrate next`, gets back a card for every node that can start, does the work (in the background where it can), and reports each with `yok orchestrate done`. The engine decides what the cards are. The agent never sees the whole plan.
 
-**Everything is written down as events.** Every start, finish, rejection, hook call, and comment is a line in `event.jsonl`. The run's current state is computed from that log, never edited by hand. Delete the state file and it comes back.
+**Everything is written down as events.** Every start, finish, rejection, hook call, and comment is an event in the run's log in `yok.db`. The run's current state is computed from that log, never edited by hand. Fold the log again and the same state comes back.
 
 ## What you get at the end
 

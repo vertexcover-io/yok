@@ -32,7 +32,6 @@ import {
   type TierModel,
   TierModelSchema,
 } from "./contracts.ts";
-import type { IEventStore } from "./event-store.ts";
 import { PoliciesSchema } from "./policies.ts";
 import type { EventHandler, EventHandlers } from "./state.ts";
 import { VerifierRunSchema } from "./verifier.ts";
@@ -70,7 +69,7 @@ export const NodeStartedEvent = nodeEvent(
     ...placement,
   }),
 );
-// A script's process record stays in the event log; state.json keeps only the node's output value.
+// A script's process record stays in the event log; the run's state keeps only the node's output value.
 export const ProcessRecordSchema = z.strictObject({
   stdout: z.string(),
   stderr: z.string(),
@@ -455,7 +454,7 @@ const StepReportSchema = z.strictObject({
 export type StepReport = z.infer<typeof StepReportSchema>;
 
 // A call of orchestrate next, exec or done: what it was called with, and the reply it printed, or
-// the error it failed with. state.json takes nothing from them.
+// the error it failed with. The run's state takes nothing from them.
 const callEvent = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O) =>
   z.object({ payload: z.strictObject({ input, output }) });
 const reportOrError = z.union([StepReportSchema, ErrorSchema.extend({ kind: z.literal("error") })]);
@@ -622,10 +621,6 @@ export const EmitInputSchema = z.strictObject({
 });
 export type EmitInput = z.input<typeof EmitInputSchema>;
 
-export interface IEventEmitter {
-  emit(input: EmitInput): Promise<Result<Event>>;
-}
-
 const checkCatalog = (input: EmitInput): Result<EmitInput> => {
   const schema = catalog[input.type];
   if (!schema) return { ok: true, value: input };
@@ -636,21 +631,19 @@ const checkCatalog = (input: EmitInput): Result<EmitInput> => {
   return { ok: true, value: input };
 };
 
-export const emitEvent = async (
-  store: IEventStore,
+export const buildEvent = (
   runId: string,
-  input: EmitInput,
-): Promise<Result<Event>> => {
-  const checked = checkCatalog(input);
+  draft: EmitInput & Readonly<{ id: string }>,
+  seq: number,
+): Result<Event> => {
+  const checked = checkCatalog(draft);
   if (!checked.ok) return checked;
-  // A corrupt log or a failed write throws inside the store; callers get it as a failed Result.
-  const stored = await store
-    .append({ ...input, runId, id: input.id ?? crypto.randomUUID(), ts: new Date().toISOString() })
-    .catch((error: unknown) => ({
-      ok: false as const,
-      error: `event not stored: ${error instanceof Error ? error.message : String(error)}`,
-    }));
-  return stored;
+  const ts = new Date().toISOString();
+  const parsed = EventSchema.safeParse({ ...draft, schemaVersion: 1, seq, runId, ts });
+  if (!parsed.success) {
+    return { ok: false, error: `Event ${draft.id} is invalid: ${z.prettifyError(parsed.error)}` };
+  }
+  return { ok: true, value: parsed.data };
 };
 
 export const runDirOf = (cwd: string, name: string): string => join(cwd, ".yok", name);
@@ -731,7 +724,7 @@ const updateNode = (
   if (container === undefined) return { ...nodes, [nodeId]: update(nodes[nodeId]) };
   const holder = nodes[container];
   if (holder === undefined) {
-    throw new Error(`${nodeId}: its container ${container} is not in state.json`);
+    throw new Error(`${nodeId}: its container ${container} is not in the run's state`);
   }
   return {
     ...nodes,
@@ -824,7 +817,7 @@ const onEnded = (status: EndStatus, state: State, event: Event): State => {
   return { ...state, nodeRuns: updateNode(state.nodeRuns, payload.parents ?? [], nodeId, end) };
 };
 
-// The next pass of a loop starts empty: the last pass's children are history now (event.jsonl).
+// The next pass of a loop starts empty: the last pass's children are history now (the event log).
 const onIterated: EventHandler = (state, event) => {
   const parsed = NodeIteratedEvent.safeParse(event);
   if (!parsed.success) return state;
@@ -871,7 +864,7 @@ const onWorkflowResumed: EventHandler = (state) => ({
 
 type WorkspaceRepository = z.infer<typeof WorkspaceRepositorySchema>;
 
-// state.json keeps its own `path` names; only payloads use the worktreeDir naming.
+// The run's state keeps its own `path` names; only payloads use the worktreeDir naming.
 const toRepositoryState = (repo: WorkspaceRepository, branch: string) => ({
   path: repo.worktreeDir,
   git: { branch, baseBranch: repo.baseBranch, startSha: repo.startSha },

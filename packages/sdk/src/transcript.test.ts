@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Event, EventSchema } from "./contracts.ts";
-import { answers, findTranscript, humanMessages, type Rec, readRunSessions } from "./transcript.ts";
+import {
+  answers,
+  collectEventSessions,
+  findTranscript,
+  humanMessages,
+  type Rec,
+} from "./transcript.ts";
 
 const recs = (rows: readonly Record<string, unknown>[]): readonly Rec[] =>
   rows.map((data, i) => ({ line: i + 1, data }));
@@ -95,7 +101,7 @@ const event = (type: string, ts: string, payload: Record<string, unknown>): Even
     payload,
   });
 
-describe("readRunSessions", () => {
+describe("collectEventSessions", () => {
   test("lists the sessions from workflow.started and later events in first-seen order, once each", () => {
     const events = [
       event("workflow.started", at(0), {
@@ -107,7 +113,7 @@ describe("readRunSessions", () => {
       event("hooks.stop.called", at(2), { agent: "codex", sessionId: "B", decision: "allow" }),
     ];
 
-    expect(readRunSessions(events)).toEqual([
+    expect(collectEventSessions(events)).toEqual([
       { agent: "claude", sessionId: "A" },
       { agent: "codex", sessionId: "B" },
     ]);

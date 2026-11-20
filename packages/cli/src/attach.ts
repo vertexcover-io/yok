@@ -2,41 +2,50 @@ import { Command } from "@commander-js/extra-typings";
 import { yokTerminalHost } from "@yok/core";
 import {
   findRunPane,
+  type IStorage,
   type Result,
-  registryPath,
   requireRun,
   spawnInteractive,
   type WorkflowRun,
+  yokHome,
 } from "@yok/sdk";
-import { createRegistry, type Registry } from "@yok/sdk/internal";
+import { withStorage } from "@yok/sdk/internal";
 import { commandLog, fail } from "./client.ts";
 
-const findById = async (registry: Registry, id: string): Promise<Result<WorkflowRun>> => {
-  const run = await registry.findRun(id);
+const findById = async (storage: IStorage, id: string): Promise<Result<WorkflowRun>> => {
+  const run = await storage.runs.findRun(id);
   return run === undefined ? { ok: false, error: `run ${id} not found` } : { ok: true, value: run };
 };
 
 // An id on its own is looked up as is, so a run can be attached before init names it. A name, or
 // $YOK_RUN_ID, goes through requireRun, the way orchestrate picks a run.
 const findRunToAttach = async (
-  registry: Registry,
+  storage: IStorage,
   name: string | undefined,
   runId: string | undefined,
 ): Promise<Result<WorkflowRun>> => {
-  if (runId !== undefined && name === undefined) return findById(registry, runId);
+  if (runId !== undefined && name === undefined) return findById(storage, runId);
   const picked = await requireRun({
-    registry,
+    storage,
     name,
     id: runId,
     env: process.env,
     cwd: process.cwd(),
   });
-  return picked.ok ? findById(registry, picked.value.id) : picked;
+  return picked.ok ? findById(storage, picked.value.id) : picked;
 };
 
-const attachArgv = async (run: WorkflowRun): Promise<Result<readonly string[]>> => {
-  const pane = await findRunPane(yokTerminalHost(), run);
-  return pane.ok ? { ok: true, value: pane.value.attachCommand() } : pane;
+type Attach = Readonly<{ run: WorkflowRun; argv: readonly string[] }>;
+
+const findAttach = async (
+  storage: IStorage,
+  name: string | undefined,
+  runId: string | undefined,
+): Promise<Result<Attach>> => {
+  const run = await findRunToAttach(storage, name, runId);
+  if (!run.ok) return run;
+  const pane = await findRunPane(yokTerminalHost(), run.value, storage);
+  return pane.ok ? { ok: true, value: { run: run.value, argv: pane.value.attachCommand() } } : pane;
 };
 
 export const attachCommand = () =>
@@ -46,19 +55,21 @@ export const attachCommand = () =>
     .option("--run-id <id>", "attach by run id instead of name")
     .option("--print", "print the attach command instead of running it")
     .action(async (name, opts) => {
-      const run = await findRunToAttach(createRegistry(registryPath()), name, opts.runId);
-      if (!run.ok) return fail(run.error);
-      const argv = await attachArgv(run.value);
-      if (!argv.ok) return fail(argv.error);
+      // Closed before the session takes the terminal, so a long attach holds no database handle.
+      const found = await withStorage(yokHome(), (storage) =>
+        findAttach(storage, name, opts.runId),
+      );
+      if (!found.ok) return fail(found.error);
+      const { run, argv } = found.value;
       if (opts.print === true) {
-        console.log(argv.value.join(" "));
+        console.log(argv.join(" "));
         return;
       }
-      const [command, ...args] = argv.value;
+      const [command, ...args] = argv;
       const exitCode = await spawnInteractive(command as string, args, {
         cwd: process.cwd(),
         env: { TMUX: undefined },
       });
-      commandLog("attach").info({ runId: run.value.id, exitCode }, "detached from the session");
+      commandLog("attach").info({ runId: run.id, exitCode }, "detached from the session");
       process.exitCode = exitCode;
     });

@@ -57,8 +57,8 @@ When the `retro` script cannot run, stop and report that; do not read the transc
 stage then finishes with an error.
 
 For a transcript with no run around it, run it with `extract --main PATH --out DIR`. The run's
-sessions come from its `.yok/RUN/event.jsonl`; `00-run.txt` lists each one, with Codex
-sessions and missing transcripts marked skipped.
+sessions come from its events, which `yok orchestrate events --run RUN` prints; `00-run.txt`
+lists each one, with Codex sessions and missing transcripts marked skipped.
 
 Times print in the machine's timezone. Add `--tz ZONE` only when the brief or the user names a
 timezone. The report names the zone that was used.
@@ -164,9 +164,9 @@ which finishes only after that approval. Everything after it is post-gate.
 The extractor sets the plan gate for you. It prints the time in `00-run.txt` and in the summary,
 marks the spot in `01-spine.txt` with a `THE LINE` row, and tags every later message `POST-GATE`.
 With no `planning` node, or with `--main` and no run, it reports the plan gate as not found. Then
-take the time of the `planning` node's last `workflow.node.completed` event from the run's
-`event.jsonl` when you have that file, pass it as `--gate-time ISO` and re-run. With no time to
-pass, say so under "What the recordings could not tell me".
+take the time of the `planning` node's last `workflow.node.completed` event from the run's events
+(`yok orchestrate events --run RUN`, or the event log file you were given), pass it as
+`--gate-time ISO` and re-run. With no time to pass, say so under "What the recordings could not tell me".
 
 The pipeline's contract is that it runs from the plan gate to the PR with no stopping, no
 pausing, and no questions. So the two halves of a run mean opposite things.

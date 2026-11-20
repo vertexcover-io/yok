@@ -8,12 +8,12 @@ import {
   type Event,
   type IAgentProvider,
   type ILogger,
+  type IStorage,
   type ITerminal,
   type JsonValue,
   type LaunchOptions,
   type NodeRun,
   type RunRef,
-  readState,
   runDirOf,
   SessionReplacedEvent,
   SessionStartCalledEvent,
@@ -27,9 +27,7 @@ import {
   foldModelSwitch,
   type IEventStore,
   isProcessAlive,
-  jsonlEventStore,
   pickTierModel,
-  type Registry,
   runLockPath,
   selfArgv,
   writeShim,
@@ -78,7 +76,7 @@ export type ContextStepOptions = Readonly<{
   oldSessionId: string;
   // undefined when the helper was not started inside a tmux pane
   terminal: ITerminal | undefined;
-  registry: Registry;
+  storage: IStorage;
   provider: IAgentProvider;
   // how the agent was launched; relaunching adds the session's env, the resume prompt and the
   // run's name
@@ -131,6 +129,7 @@ const resumePrompt = (run: RunRef): string => `/yok:orchestrate --resume ${run.n
 // The session a line goes to, and the step it is typed for.
 type LineTarget = Readonly<{
   run: RunRef;
+  storage: IStorage;
   sessionId: string;
   step: string;
   terminal: ITerminal;
@@ -283,22 +282,22 @@ export const clearDeadSwitchLocks = async (
 };
 
 const replaceSession = (
-  { run }: ContextStepOptions,
+  { run, storage }: ContextStepOptions,
   previousSessionId: string,
   sessionId: string,
 ): Promise<unknown> =>
-  appendRunEvent(run, {
+  appendRunEvent(storage, run, {
     type: "workflow.session.replaced",
     source: "orchestrate",
     payload: { agent: "claude", previousSessionId, sessionId },
   });
 
 const recordStarted = (
-  { run, nodeRunId }: ContextStepOptions,
+  { run, storage, nodeRunId }: ContextStepOptions,
   action: "new" | "compact",
   sessionId: string,
 ): Promise<unknown> =>
-  appendRunEvent(run, {
+  appendRunEvent(storage, run, {
     type: "workflow.context.started",
     source: "orchestrate",
     payload: { nodeRunId, action, sessionId },
@@ -306,24 +305,24 @@ const recordStarted = (
 
 // The SessionStart hook records success (completeContextOnSessionStart); the helper only watches
 // for failure: no SessionStart in time, or a compact Claude refuses.
-const watchNewSession = ({ run, nodeRunId }: ContextStepOptions): Promise<true> =>
+const watchNewSession = ({ run, storage, nodeRunId }: ContextStepOptions): Promise<true> =>
   pollUntil(
     {
       everyMs: DONE_POLL_MS,
       timeoutMs: DONE_TIMEOUT_MS.new,
       timeoutError: `no SessionStart for the new within ${DONE_TIMEOUT_MS.new / 1000} seconds`,
     },
-    async () => ((await findContextPlanNode(run, nodeRunId)).ok ? undefined : true),
+    async () => ((await findContextPlanNode(storage, run, nodeRunId)).ok ? undefined : true),
   );
 
 const watchCompact = async (
-  { run, nodeRunId }: ContextStepOptions,
+  { run, storage, nodeRunId }: ContextStepOptions,
   terminal: ITerminal,
 ): Promise<void> => {
   const startedAt = Date.now();
   let busyAt = startedAt;
   for (;;) {
-    if (!(await findContextPlanNode(run, nodeRunId)).ok) return;
+    if (!(await findContextPlanNode(storage, run, nodeRunId)).ok) return;
     // Only watching: one failed read must not end a compaction that is under way.
     const captured = await terminal.capture();
     const screen = captured.ok ? captured.value : "";
@@ -348,16 +347,22 @@ const watchCompact = async (
 // from its first moment. A relaunch that fails leaves the old session in the pane, so the swap is
 // undone and the step fails, which resumes the old session.
 const startNewSession = async (options: ContextStepOptions, terminal: ITerminal): Promise<void> => {
-  const { run, registry, provider, oldSessionId, log } = options;
-  const env = unwrap(await loadSessionEnv(run, provider.type));
+  const { run, storage, provider, oldSessionId, log } = options;
+  const env = unwrap(await loadSessionEnv(storage, run, provider.type));
   await waitForIdle(terminal);
   const sessionId = randomUUID();
-  await registry.linkSession(run.id, { agent: "claude", sessionId });
+  await storage.runs.linkSession(run.id, { agent: "claude", sessionId });
   await replaceSession(options, oldSessionId, sessionId);
   await recordStarted(options, "new", sessionId);
   const launch = {
     ...options.launch,
-    env: await sessionEnv(env, run.id, options.home, writeShim(selfArgv(), options.home)),
+    env: await sessionEnv(
+      options.storage,
+      env,
+      run.id,
+      options.home,
+      writeShim(selfArgv(), options.home),
+    ),
     prompt: resumePrompt(run),
     name: run.name,
   };
@@ -398,9 +403,9 @@ const compact = async (
   target: LineTarget,
   prompt: string | undefined,
 ): Promise<void> => {
-  const { run, provider, home, log } = options;
+  const { run, provider, storage, home, log } = options;
   await recordStarted(options, "compact", target.sessionId);
-  const env = unwrap(await loadSessionEnv(run, provider.type));
+  const env = unwrap(await loadSessionEnv(storage, run, provider.type));
   await waitForIdle(target.terminal);
   await logDraft(target.terminal, log);
   const command = prompt === undefined ? "/compact" : `/compact ${prompt}`;
@@ -408,7 +413,7 @@ const compact = async (
     await provider.relaunch(target.terminal, target.sessionId, {
       ...options.launch,
       resume: true,
-      env: await sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
+      env: await sessionEnv(storage, env, run.id, home, writeShim(selfArgv(), home)),
       prompt: command,
       name: run.name,
     }),
@@ -434,8 +439,8 @@ export const findOpenContextRun = (
 };
 
 // The action the helper began for this node run, from its workflow.context.started event.
-const findStartedAction = async (runDir: string, nodeRunId: string) => {
-  const events = await jsonlEventStore(runDir).read();
+const findStartedAction = async (storage: IStorage, run: RunRef, nodeRunId: string) => {
+  const events = await storage.events(run.id).read();
   const started = events
     .filter((event) => event.type === "workflow.context.started")
     .map((event) => ContextStartedEvent.safeParse(event))
@@ -447,21 +452,21 @@ const findStartedAction = async (runDir: string, nodeRunId: string) => {
 // prompt, so that is when the action is done; it counts only if it matches the action the helper
 // began.
 export const completeContextOnSessionStart = async (
+  storage: IStorage,
   run: RunRef,
   sessionId: string,
   source: string,
 ): Promise<void> => {
-  const runDir = runDirOf(run.cwd, run.name);
-  const state = await readState(runDir);
+  const state = await storage.events(run.id).readState();
   const open = state === null ? undefined : findOpenContextRun(state.nodeRuns);
   if (open === undefined) return;
-  const started = await findStartedAction(runDir, open.nodeRunId);
+  const started = await findStartedAction(storage, run, open.nodeRunId);
   if (started === undefined || started.sessionId !== sessionId) return;
   const matches =
     (started.action === "new" && source === "startup") ||
     (started.action === "compact" && source === "compact");
   if (!matches) return;
-  await completeContextStep(run, open.nodeRunId, {
+  await completeContextStep(storage, run, open.nodeRunId, {
     action: started.action,
     applied: true,
     sessionId,
@@ -472,14 +477,14 @@ export const completeContextOnSessionStart = async (
 // the proof. Only a line never typed on any try pings a person: nobody drives the run. Once typed,
 // a notice asking the person to type it could resume twice, so that is only logged.
 const resumeRun = async (
-  { run, sessionId, step, terminal, log }: LineTarget,
+  { run, storage, sessionId, step, terminal, log }: LineTarget,
   // set when the session was launched with the line as its prompt: it is then never typed
   launchedAfterSeq?: number,
 ): Promise<void> => {
   const line = resumePrompt(run);
   let typedOnce = false;
   try {
-    const store = jsonlEventStore(runDirOf(run.cwd, run.name));
+    const store = storage.events(run.id);
     const afterSeq = launchedAfterSeq ?? (await store.read()).at(-1)?.seq ?? 0;
     const attempts = launchedAfterSeq === undefined ? RESUME_ATTEMPTS : 1;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -510,7 +515,7 @@ const resumeRun = async (
     log.error({ err: error, line }, "error while sending resume prompt");
   }
   if (typedOnce) return;
-  await appendRunEvent(run, {
+  await appendRunEvent(storage, run, {
     type: "agent.input.unreachable",
     source: "orchestrate",
     payload: { agent: "claude", sessionId, step, line },
@@ -519,13 +524,15 @@ const resumeRun = async (
 
 // A context step that did not happen still completes, so the steps after it run.
 const completeNotApplied = async (
-  { run, nodeRunId, log }: ContextStepOptions,
+  { run, storage, nodeRunId, log }: ContextStepOptions,
   action: ContextOutput["action"],
   reason: string,
 ): Promise<void> => {
   const output = { action, applied: false as const, reason };
   const failed = await failureOf(
-    completeContextStep(run, nodeRunId, output).then((completed) => void unwrap(completed)),
+    completeContextStep(storage, run, nodeRunId, output).then(
+      (completed) => void unwrap(completed),
+    ),
   );
   if (failed !== undefined) log.error({ err: failed }, "context node not completed");
 };
@@ -547,21 +554,22 @@ const recover = async (
 // Runs after the Stop hook that found a context node open: starts a new session in the agent's
 // pane, or compacts the one it has, then lets the run carry on.
 export const runContextStep = async (options: ContextStepOptions): Promise<void> => {
-  const { run, nodeRunId, terminal, log } = options;
+  const { run, storage, nodeRunId, terminal, log } = options;
   if (!(await claimLock(run, `context-${nodeRunId}`))) {
     return log.info({ nodeRunId }, "another helper has this node");
   }
-  const planNode = await findContextPlanNode(run, nodeRunId);
+  const planNode = await findContextPlanNode(storage, run, nodeRunId);
   if (!planNode.ok) return log.info({ nodeRunId, reason: planNode.error }, "no open context node");
   const { action, prompt, id: step } = planNode.value;
   log.info({ nodeRunId, action }, "context step started");
   if (terminal === undefined) return completeNotApplied(options, action, "not inside tmux");
-  const target = { run, sessionId: options.oldSessionId, step, terminal, log };
+  const target = { run, storage, sessionId: options.oldSessionId, step, terminal, log };
   const failure = await failureOf(
     action === "new" ? startNewSession(options, terminal) : compact(options, target, prompt),
   );
   if (failure === undefined) return;
-  await recover(options, target, action, failure, await sessionInPane(run, options.oldSessionId));
+  const pane = await sessionInPane(storage, run, options.oldSessionId);
+  await recover(options, target, action, failure, pane);
 };
 
 // The session in the pane after a step; launchedAfterSeq is set when a new session was launched
@@ -570,8 +578,13 @@ type PaneSession = Readonly<{ sessionId: string; launchedAfterSeq?: number }>;
 
 // A new session's relaunch swaps it in, and a relaunch that fails swaps OLD back, so the last swap
 // involving OLD says which is there. A log that cannot be read leaves the old session assumed.
-const sessionInPane = async (run: RunRef, oldSessionId: string): Promise<PaneSession> => {
-  const events = await jsonlEventStore(runDirOf(run.cwd, run.name))
+const sessionInPane = async (
+  storage: IStorage,
+  run: RunRef,
+  oldSessionId: string,
+): Promise<PaneSession> => {
+  const events = await storage
+    .events(run.id)
     .read()
     .catch(() => []);
   const swap = events
@@ -601,6 +614,7 @@ export type ModelStepOptions = Readonly<{
   // how the agent was launched; the relaunch adds the model, the session's env, the resume prompt
   // and the run's name
   launch: Omit<LaunchOptions, "prompt" | "env" | "model" | "effort" | "resume" | "name">;
+  storage: IStorage;
   home: string;
   log: ILogger;
 }>;
@@ -612,17 +626,17 @@ const resumeOnModel = async (
   terminal: ITerminal,
   target: TierModel,
 ): Promise<void> => {
-  const { run, provider, sessionId, launch, home } = options;
-  const env = unwrap(await loadSessionEnv(run, provider.type));
+  const { run, provider, sessionId, launch, storage, home } = options;
+  const env = unwrap(await loadSessionEnv(storage, run, provider.type));
   await waitForIdle(terminal);
-  const store = jsonlEventStore(runDirOf(run.cwd, run.name));
+  const store = storage.events(run.id);
   const before = (await store.read()).at(-1)?.seq ?? 0;
   unwrap(
     await provider.relaunch(terminal, sessionId, {
       ...launch,
       ...tierLaunch(target),
       resume: true,
-      env: await sessionEnv(env, run.id, home, writeShim(selfArgv(), home)),
+      env: await sessionEnv(storage, env, run.id, home, writeShim(selfArgv(), home)),
       prompt: resumePrompt(run),
       name: run.name,
     }),
@@ -656,17 +670,18 @@ const waitForResume = (
     },
   );
 
-const recordModelApplied = (run: RunRef, payload: JsonValue) =>
-  appendRunEvent(run, { type: "workflow.model.applied", source: "orchestrate", payload });
+const recordModelApplied = (storage: IStorage, run: RunRef, payload: JsonValue) =>
+  appendRunEvent(storage, run, { type: "workflow.model.applied", source: "orchestrate", payload });
 
 // Runs after the Stop hook that found a model switch requested: switches the session's model,
 // records how it went, and resumes the run. A failed switch is recorded, and next fails the stage.
 export const runModelStep = async (options: ModelStepOptions): Promise<void> => {
-  const { run, seq, terminal, log } = options;
+  const { run, storage, seq, terminal, log } = options;
   const lock = `model-${seq}`;
   if (!(await claimLock(run, lock))) return log.info({ seq }, "another helper has this switch");
   const runDir = runDirOf(run.cwd, run.name);
-  const [state, events] = await Promise.all([readState(runDir), jsonlEventStore(runDir).read()]);
+  const store = storage.events(run.id);
+  const [state, events] = await Promise.all([store.readState(), store.read()]);
   const { pending } = foldModelSwitch(events, state?.tiers ?? null);
   if (pending?.seq !== seq) return log.info({ seq }, "no open model switch");
   const target = pickTierModel(pending);
@@ -676,6 +691,7 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
       : await failureOf(resumeOnModel(options, terminal, target));
   const request = { requestSeq: seq, node: pending.node, ...target };
   const stored = await recordModelApplied(
+    storage,
     run,
     failure === undefined
       ? { ...request, applied: true }
@@ -691,6 +707,14 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
   }
   log.error({ err: failure, target }, "model switch failed");
   if (terminal !== undefined) {
-    await resumeRun({ run, sessionId: options.sessionId, step: pending.node, terminal, log });
+    const target = {
+      run,
+      storage,
+      sessionId: options.sessionId,
+      step: pending.node,
+      terminal,
+      log,
+    };
+    await resumeRun(target);
   }
 };

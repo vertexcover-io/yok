@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { runDirOf, type SavedPolicies, type WorkflowRun } from "@yok/sdk";
-import { appendRunEvent } from "@yok/sdk/internal";
+import { appendRunEvent, type CommentDraft, createState, withStorage } from "@yok/sdk/internal";
 import { validateTicketDir } from "../../../skills/ticket-fetcher/scripts/ticket.ts";
 import {
   eventsOf,
@@ -13,31 +13,29 @@ import {
   orchestrate,
   orchestrateAsync,
   parseStep,
-  readRegistry,
   STAGE_SKILLS,
   STAGES_WORKFLOW,
   savedRun,
+  seedRuns,
+  seedState,
   stageSkills,
   startedRun,
+  stateIn,
   tempDir,
   tempRepo,
   waitFor,
   withContext,
-  writeRegistry,
 } from "./test-orchestrate.ts";
 import { DEMO_STAGES, writeStages } from "./workflow/test-stages.ts";
 
-const stateOf = (repo: string) =>
-  JSON.parse(readFileSync(join(runDirOf(repo, "feat-x"), "state.json"), "utf8"));
-
 describe("SC26: stage verifiers", () => {
-  const verifiedRun = (verifiers: string | undefined, workflow = STAGES_WORKFLOW) => {
+  const verifiedRun = async (verifiers: string | undefined, workflow = STAGES_WORKFLOW) => {
     const skills = tempDir();
     writeStages(skills, {
       producer: { produces: DEMO_STAGES.producer.produces },
       consumer: { consumes: DEMO_STAGES.consumer.consumes, ...(verifiers ? { verifiers } : {}) },
     });
-    const run = startedRun(workflow);
+    const run = await startedRun(workflow);
     const env = { YOK_SKILLS_DIR: skills };
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args, env);
     const artifactsDir = join(runDirOf(run.repo, "feat-x"), "artifacts");
@@ -79,11 +77,14 @@ describe("SC26: stage verifiers", () => {
 
   const refusal = (stderr: string) => JSON.parse(stderr);
 
-  test("SC31: a function verifier receives its input, args and context", () => {
+  test("SC31: a function verifier receives its input, args and context", async () => {
     const file = join(tempDir(), "seen.json");
     const args = `, args: { file: ${JSON.stringify(file)} }`;
     const workflow = STAGES_WORKFLOW.replace("input: {}", "input: { source: review, round: 2 }");
-    const { repo, finishProducer, step } = verifiedRun(`[${fn("rec", "record", args)}]`, workflow);
+    const { repo, finishProducer, step } = await verifiedRun(
+      `[${fn("rec", "record", args)}]`,
+      workflow,
+    );
     const use = finishProducer();
     const pr = { type: "pull-request", name: "api", url: "https://github.com/o/r/pull/1" };
     const done = step([
@@ -111,7 +112,7 @@ describe("SC26: stage verifiers", () => {
   test("SC31: the third rejected done fails the node for good, whatever the rejections were, however long", async () => {
     const file = join(tempDir(), "seen.json");
     const record = fn("rec", "record", `, args: { file: ${JSON.stringify(file)} }`);
-    const { repo, finishProducer, finish, step } = verifiedRun(
+    const { home, finishProducer, finish, step } = await verifiedRun(
       `[${fn("lint", "failLong")}, ${record}]`,
     );
     const use = finishProducer();
@@ -144,15 +145,15 @@ describe("SC26: stage verifiers", () => {
       nodeRunId: use.nodeRunId,
       issues: [{ kind: "verifier", verifier: "lint" }],
     });
-    expect(stateOf(repo).nodeRuns.use.status).toBe("failed");
+    expect((await stateIn(home)).nodeRuns.use?.status).toBe("failed");
     const again = finish(use.nodeRunId);
     expect(refusal(again.stderr)).toMatchObject({ kind: "not-running", retryable: false });
     const next = step(["next", "--run", "feat-x"]);
     expect(parseStep(next.stdout)).toEqual({ kind: "finished", status: "failed" });
   });
 
-  test("node show prints the node run's facts as JSON", () => {
-    const { repo, finishProducer, step, artifactsDir } = verifiedRun(undefined);
+  test("node show prints the node run's facts as JSON", async () => {
+    const { repo, finishProducer, step, artifactsDir } = await verifiedRun(undefined);
     const use = finishProducer();
     const shown = step(["node", "show", "--run", "feat-x", "--node-run", use.nodeRunId]);
     expect(shown.code).toBe(0);
@@ -172,20 +173,20 @@ describe("SC26: stage verifiers", () => {
 });
 
 describe("SC26: orchestrate next and done with stages", () => {
-  const stageRun = (
+  const stageRun = async (
     produces?: string,
     config?: object,
     files: Readonly<Record<string, string>> = {},
   ) => {
     const skills = stageSkills(produces);
-    const run = startedRun(STAGES_WORKFLOW, config, {}, { files });
+    const run = await startedRun(STAGES_WORKFLOW, config, {}, { files });
     const env = { YOK_SKILLS_DIR: skills };
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args, env);
     return { ...run, skills, step };
   };
 
-  test("SC9: IW17, SC23 — next replies with the stage's skill path, the project's extension path, its input, a done command and mode inline only", () => {
-    const { repo, skills, step } = stageRun(
+  test("SC9: IW17, SC23 — next replies with the stage's skill path, the project's extension path, its input, a done command and mode inline only", async () => {
+    const { repo, skills, step } = await stageRun(
       undefined,
       { extensions: { producer: { skill: "docs/producer-ext.md" } } },
       { "docs/producer-ext.md": "use short names\n" },
@@ -208,7 +209,7 @@ describe("SC26: orchestrate next and done with stages", () => {
     });
   });
 
-  test("SC508: init copies the saved policies into state.json, and the stage and agent replies carry interaction false", () => {
+  test("SC508: init copies the saved policies into state.json, and the stage and agent replies carry interaction false", async () => {
     const POLICED = `name: policed
 inputs:
   prompt: { type: string, required: true }
@@ -220,10 +221,10 @@ nodes:
       values: { interaction: false },
       sources: { interaction: "workflow" },
     };
-    const run = startedRun(POLICED, undefined, { policies });
+    const run = await startedRun(POLICED, undefined, { policies });
     const step = (args: readonly string[]) =>
       orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS });
-    expect(stateOf(run.repo).policies).toEqual(policies);
+    expect((await stateIn(run.home)).policies).toEqual(policies);
 
     const make = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(make).toMatchObject({ kind: "stage", policies: { interaction: false } });
@@ -233,15 +234,15 @@ nodes:
     const plan = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(plan).toMatchObject({ kind: "agent", policies: { interaction: false } });
 
-    const unsaved = startedRun(POLICED);
+    const unsaved = await startedRun(POLICED);
     const first = orchestrate(unsaved.repo, unsaved.home, ["next", "--run", "feat-x"], {
       YOK_SKILLS_DIR: STAGE_SKILLS,
     });
     expect(parseStep(first.stdout)).toMatchObject({ policies: { interaction: true } });
   });
 
-  test("next hands a stage its summary hint, and done records the summary in state", () => {
-    const run = startedRun(`name: hinted
+  test("next hands a stage its summary hint, and done records the summary in state", async () => {
+    const run = await startedRun(`name: hinted
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -260,12 +261,12 @@ nodes:
     const check = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(check).not.toHaveProperty("summaryHint");
 
-    const nodes = stateOf(run.repo).nodeRuns;
+    const nodes = (await stateIn(run.home)).nodeRuns;
     expect(nodes.edit).toMatchObject({ notify: true, summary: "Changed three files." });
     expect(nodes.check).toMatchObject({ notify: false });
   });
 
-  test("init returns a typed compile error for a workflow with a broken output schema and makes no run folder", () => {
+  test("init returns a typed compile error for a workflow with a broken output schema and makes no run folder", async () => {
     const repo = tempRepo();
     const home = tempDir();
     const workflowPath = join(repo, "broken.yaml");
@@ -273,7 +274,7 @@ nodes:
       workflowPath,
       `name: broken\nnodes:\n  - id: ask\n    type: agent\n    prompt: Ask\n    input: null\n    output: { module: ./missing-schema.ts, zodSchema: answer }\n`,
     );
-    writeRegistry(home, [savedRun(repo, { workflowPath })]);
+    await seedRuns(home, [savedRun(repo, { workflowPath })]);
 
     const init = orchestrate(repo, home, ["init", "feat-x", "--run-id", "r-1"]);
 
@@ -287,7 +288,7 @@ nodes:
   });
 
   test("IW18 — done records a stage's output and artifacts, and refuses an artifact file that does not exist", async () => {
-    const { repo, step } = stageRun();
+    const { repo, home, step } = await stageRun();
     const reply = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(reply).toMatchObject({ kind: "stage", nodeId: "make", extension: null });
     const done = [
@@ -310,12 +311,12 @@ nodes:
       nodeRunId: reply.nodeRunId,
       issues: [{ kind: "required-artifact", name: "plan" }],
     });
-    expect(stateOf(repo).nodeRuns.make.status).toBe("running");
+    expect((await stateIn(home)).nodeRuns.make?.status).toBe("running");
 
     const missing = step([...done, ...artifact]);
     expect(missing.code).toBe(1);
     expect(missing.stderr).toContain(join(runDirOf(repo, "feat-x"), "artifacts/plan.md"));
-    expect((await eventsOf(repo)).map((event) => event.type)).toEqual([
+    expect((await eventsOf(home)).map((event) => event.type)).toEqual([
       "workflow.started",
       "workflow.node.started",
       "orchestrate.next",
@@ -328,7 +329,7 @@ nodes:
     const recorded = step([...done, ...artifact]);
     expect(recorded.code).toBe(0);
     expect(JSON.parse(recorded.stdout)).toMatchObject({ nodeId: "make", status: "completed" });
-    expect(stateOf(repo).nodeRuns.make).toMatchObject({
+    expect((await stateIn(home)).nodeRuns.make).toMatchObject({
       nodeRunId: reply.nodeRunId,
       output: { ok: true },
       artifacts: [{ type: "plan", name: "plan", path: "artifacts/plan.md" }],
@@ -336,7 +337,7 @@ nodes:
   });
 
   test("concurrent done calls record exactly one completion", async () => {
-    const { repo, home, skills, step } = stageRun();
+    const { repo, home, skills, step } = await stageRun();
     const reply = parseStep(step(["next", "--run", "feat-x"]).stdout);
     writeFileSync(join(runDirOf(repo, "feat-x"), "artifacts", "plan.md"), "plan\n");
     const args = [
@@ -363,12 +364,12 @@ nodes:
       nodeRunId: reply.nodeRunId,
     });
     expect(
-      (await eventsOf(repo)).filter((event) => event.type === "workflow.node.completed"),
+      (await eventsOf(home)).filter((event) => event.type === "workflow.node.completed"),
     ).toHaveLength(1);
   });
 
-  test("SC10: yok orchestrate next prints a subagent prompt node with its mode", () => {
-    const run = startedRun(`name: delegated
+  test("SC10: yok orchestrate next prints a subagent prompt node with its mode", async () => {
+    const run = await startedRun(`name: delegated
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -384,8 +385,8 @@ nodes:
     });
   });
 
-  test("IW30 — done reads --output - and --error - from stdin, keeping quotes and $(…) as plain text", () => {
-    const { repo, home, skills } = stageRun();
+  test("IW30 — done reads --output - and --error - from stdin, keeping quotes and $(…) as plain text", async () => {
+    const { repo, home, skills } = await stageRun();
     const env = { YOK_SKILLS_DIR: skills };
     const next = () => parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
     const make = next();
@@ -406,7 +407,9 @@ nodes:
     ];
     const done = orchestrate(repo, home, doneArgs, env, output);
     expect(done.code).toBe(0);
-    expect(stateOf(repo).nodeRuns.make.output).toEqual({ note: "can't stop; $(touch PWNED)" });
+    expect((await stateIn(home)).nodeRuns.make?.output).toEqual({
+      note: "can't stop; $(touch PWNED)",
+    });
 
     const use = next();
     const reason = "couldn't read the plan; `rm -rf x`\n";
@@ -418,7 +421,7 @@ nodes:
       reason,
     );
     expect(failed.code).toBe(1);
-    expect(stateOf(repo).nodeRuns.use.output).toEqual({
+    expect((await stateIn(home)).nodeRuns.use?.output).toEqual({
       kind: "exception",
       message: reason.trim(),
     });
@@ -426,10 +429,10 @@ nodes:
   });
 
   test("IW20 — done refuses bad flags before touching the run, and done --error fails the node", async () => {
-    const { repo, step } = stageRun();
+    const { home, step } = await stageRun();
     const reply = parseStep(step(["next", "--run", "feat-x"]).stdout);
     const done = ["done", reply.nodeRunId, "--run", "feat-x"];
-    const before = (await eventsOf(repo)).length;
+    const before = (await eventsOf(home)).length;
     const refusals = [
       {
         flags: ["--summary", "Did the work.", "--output", "{}", "--error", "no"],
@@ -445,7 +448,7 @@ nodes:
       expect(JSON.parse(refused.stderr)).toMatchObject({ kind: "input", retryable: true });
       for (const name of names) expect(refused.stderr).toContain(name);
     }
-    expect(await eventsOf(repo)).toHaveLength(before);
+    expect(await eventsOf(home)).toHaveLength(before);
 
     const wrongCommand = step(["exec", reply.nodeRunId, "--run", "feat-x"]);
     expect(wrongCommand.code).toBe(1);
@@ -467,8 +470,8 @@ nodes:
   - { id: after, type: agent, prompt: go on, input: {} }
 `;
   // Starts ALLOWED_TO_FAIL with OVERRIDES on its registry entry, and fails `make` with QUESTION.
-  const failMake = (overrides: Partial<WorkflowRun>) => {
-    const run = startedRun(ALLOWED_TO_FAIL, undefined, overrides);
+  const failMake = async (overrides: Partial<WorkflowRun>) => {
+    const run = await startedRun(ALLOWED_TO_FAIL, undefined, overrides);
     const step = (args: readonly string[], input = "") =>
       orchestrate(run.repo, run.home, args, { YOK_SKILLS_DIR: STAGE_SKILLS }, input);
     const make = parseStep(step(["next", "--run", "feat-x"]).stdout);
@@ -477,25 +480,31 @@ nodes:
     return { ...run, step, question };
   };
 
-  test("SC516: with interaction off, done --error fails an allowFailure stage as needs-input and next ends the run failed", () => {
+  test("SC516: with interaction off, done --error fails an allowFailure stage as needs-input and next ends the run failed", async () => {
     const policies: SavedPolicies = {
       values: { interaction: false },
       sources: { interaction: "cli" },
     };
-    const { repo, step, question } = failMake({ policies });
+    const { home, step, question } = await failMake({ policies });
 
-    expect(stateOf(repo).nodeRuns.make.output).toEqual({ kind: "needs-input", message: question });
+    expect((await stateIn(home)).nodeRuns.make?.output).toEqual({
+      kind: "needs-input",
+      message: question,
+    });
     expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toEqual({
       kind: "finished",
       status: "failed",
     });
-    expect(stateOf(repo).nodeRuns.after).toBeUndefined();
+    expect((await stateIn(home)).nodeRuns.after).toBeUndefined();
   });
 
-  test("SC517: with no saved policies, done --error fails an allowFailure stage as exception and next starts the following node", () => {
-    const { repo, step, question } = failMake({});
+  test("SC517: with no saved policies, done --error fails an allowFailure stage as exception and next starts the following node", async () => {
+    const { home, step, question } = await failMake({});
 
-    expect(stateOf(repo).nodeRuns.make.output).toEqual({ kind: "exception", message: question });
+    expect((await stateIn(home)).nodeRuns.make?.output).toEqual({
+      kind: "exception",
+      message: question,
+    });
     expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({
       kind: "agent",
       nodeId: "after",
@@ -525,12 +534,13 @@ describe("SC26: the task workflow's ticket-fetcher stage", () => {
   };
 
   // Registered with no tiers, so its stages need no model switch; they are the yok's own skills.
-  const taskRun = (prompt: string) => {
-    const run = startedRun(TASK, {}, {}, { env: { YOK_SKILLS_DIR: undefined } });
-    const registry = readRegistry(run.home);
-    writeRegistry(run.home, [
-      ...Object.values(registry.runs).map((r) => ({ ...r, inputs: { prompt } })),
-    ]);
+  const taskRun = async (prompt: string) => {
+    const run = await startedRun(
+      TASK,
+      {},
+      { inputs: { prompt } },
+      { env: { YOK_SKILLS_DIR: undefined } },
+    );
     const step = (args: readonly string[]) => orchestrate(run.repo, run.home, args);
     return { ...run, step };
   };
@@ -563,7 +573,7 @@ describe("SC26: the task workflow's ticket-fetcher stage", () => {
   };
 
   test("a ticket bundle registers as an artifact and its task text reaches create-workspace", async () => {
-    const { repo, step } = taskRun("work on ENG-1");
+    const { repo, step } = await taskRun("work on ENG-1");
     const dir = join(runDirOf(repo, "feat-x"), "artifacts", "ticket");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "ticket.json"), JSON.stringify(TICKET));
@@ -590,34 +600,37 @@ describe("SC26: the task workflow's ticket-fetcher stage", () => {
 });
 
 describe("SC26: orchestrate statusline", () => {
-  const runWithRunningNode = () => {
+  const runWithRunningNode = async () => {
     const repo = tempRepo();
     const home = tempDir();
-    writeRegistry(home, [savedRun(repo)]);
-    orchestrate(repo, home, ["init", "feat-x", "--run-id", "r-1"]);
+    await seedRuns(home, [savedRun(repo)]);
     const dir = runDirOf(repo, "feat-x");
-    const statePath = join(dir, "state.json");
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
-    state.nodeRuns = {
-      design: {
-        nodeRunId: "nr-1",
-        nodeType: "agent",
-        status: "running",
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        artifacts: [],
-      },
-    };
-    writeFileSync(statePath, JSON.stringify(state));
+    mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "workflow.yaml"),
       "name: ok\nnodes:\n  - id: design\n    type: agent\n    input: {}\n    prompt: do it\n  - id: plan\n    type: agent\n    input: {}\n    prompt: do it\n",
     );
-    return { repo, home, statePath };
+    const design = {
+      nodeRunId: "nr-1",
+      nodeType: "agent" as const,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      artifacts: [],
+    };
+    const state = await createState({
+      runId: "r-1",
+      runDir: dir,
+      version: "0.0.0",
+      eventHandlers: {},
+    });
+    const seeded = await seedState(home, "r-1", "feat-x", { ...state, nodeRuns: { design } });
+    if (!seeded.ok) throw new Error(seeded.error);
+    return { repo, home };
   };
 
-  test("SC9: prints the run and its running node from Claude's stdin, and exits 0", () => {
-    const { repo, home } = runWithRunningNode();
+  test("SC9: prints the run and its running node from Claude's stdin, and exits 0", async () => {
+    const { repo, home } = await runWithRunningNode();
     const stdin = JSON.stringify({ model: { display_name: "Opus" } });
 
     const result = orchestrate(repo, home, ["statusline"], { YOK_RUN_ID: "r-1" }, stdin);
@@ -628,8 +641,8 @@ describe("SC26: orchestrate statusline", () => {
     );
   });
 
-  test("SC14, SC17: --run-id prints the running node of that run with empty stdin and no YOK_RUN_ID", () => {
-    const { repo, home } = runWithRunningNode();
+  test("SC14, SC17: --run-id prints the running node of that run with empty stdin and no YOK_RUN_ID", async () => {
+    const { repo, home } = await runWithRunningNode();
 
     const result = orchestrate(repo, home, ["statusline", "--run-id", "r-1"], {}, "");
 
@@ -641,15 +654,13 @@ describe("SC26: orchestrate statusline", () => {
 
   test.each([
     ["with YOK_RUN_ID unset it prints nothing", {}, false, ""],
-    [
-      "a corrupt registry prints the starting line",
-      { YOK_RUN_ID: "r-1" },
-      true,
-      "yok · starting\n",
-    ],
-  ])("SC9: %s and exits 0", (_case, env, corrupt, stdout) => {
-    const { repo, home } = runWithRunningNode();
-    if (corrupt) writeFileSync(join(home, "registry.json"), "{ corrupt");
+    ["a corrupt yok.db prints the starting line", { YOK_RUN_ID: "r-1" }, true, "yok · starting\n"],
+  ])("SC9: %s and exits 0", async (_case, env, corrupt, stdout) => {
+    const { repo, home } = await runWithRunningNode();
+    if (corrupt) {
+      rmSync(join(home, "yok.db-wal"), { force: true });
+      writeFileSync(join(home, "yok.db"), "corrupt");
+    }
 
     const result = orchestrate(repo, home, ["statusline"], env, "{}");
 
@@ -658,24 +669,23 @@ describe("SC26: orchestrate statusline", () => {
 });
 
 describe("SC26: orchestrate comments", () => {
-  test("SC27: the agent lists open comments and replies from the command line", async () => {
+  test("SC323 (SC27): the agent lists open comments and replies from the command line, and an unknown id or status exits 1", async () => {
     const repo = tempRepo();
     const home = tempDir();
-    initializedRun(home, repo);
-    const anchor = { quote: "one file", before: "a", after: "b", lines: [14, 16] };
-    const base = { file: "artifacts/design.md", kind: "comment", text: "Why?", anchor };
-    const user = { by: "user", text: "Why?", at: "2026-01-01T00:00:00.000Z" };
-    const at = "2026-01-01T00:00:00.000Z";
-    writeFileSync(
-      join(runDirOf(repo, "feat-x"), "comments.json"),
-      JSON.stringify({
-        version: 1,
-        comments: [
-          { ...base, id: "c1", status: "delivered", createdAt: at, thread: [user] },
-          { ...base, id: "c2", status: "answered", createdAt: at, thread: [user] },
-        ],
-      }),
-    );
+    await initializedRun(home, repo);
+    const lines: [number, number] = [14, 16];
+    const anchor = { quote: "one file", before: "a", after: "b", lines };
+    const base: CommentDraft = {
+      file: "artifacts/design.md",
+      kind: "comment",
+      text: "Why?",
+      anchor,
+    };
+    await withStorage(home, async (storage) => {
+      const added = await storage.comments.add("r-1", [base, base]);
+      await storage.comments.markDelivered("r-1", added.slice(0, 1));
+      await storage.comments.reply("r-1", "c2", { status: "answered", text: "Because." });
+    });
     const ids = (stdout: string): string[] =>
       JSON.parse(stdout).comments.map((c: { id: string }) => c.id);
 
@@ -716,7 +726,7 @@ describe("SC26: orchestrate comments", () => {
     expect([ids(open.stdout), ids(all.stdout)]).toEqual([["c1"], ["c1", "c2"]]);
     expect(reply.code).toBe(0);
     expect(JSON.parse(reply.stdout)).toMatchObject({ id: "c1", status: "changed" });
-    const replied = (await eventsOf(repo)).filter((e) => e.type === "artifact.comment.replied");
+    const replied = (await eventsOf(home)).filter((e) => e.type === "artifact.comment.replied");
     expect(replied.map((e) => e.payload)).toEqual([
       {
         id: "c1",
@@ -735,13 +745,13 @@ describe("SC26: orchestrate comments", () => {
 
 describe("SC26: orchestrate resume", () => {
   const env = { YOK_SKILLS_DIR: STAGE_SKILLS };
-  const nodeEventTypes = async (repo: string) =>
-    (await eventsOf(repo))
+  const nodeEventTypes = async (home: string) =>
+    (await eventsOf(home))
       .map((event) => event.type)
       .filter((type) => type.startsWith("workflow.node."));
 
   test("SC311: resume interrupts the open stage, records it as an event, and next hands the stage out again under a new id", async () => {
-    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    const { repo, home } = await startedRun(STAGES_WORKFLOW);
     const first = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
 
     const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
@@ -749,13 +759,13 @@ describe("SC26: orchestrate resume", () => {
     expect(JSON.parse(resumed.stdout)).toEqual({
       interrupted: [{ nodeRunId: first.nodeRunId, nodeId: "make" }],
     });
-    const interrupted = (await eventsOf(repo)).filter(
+    const interrupted = (await eventsOf(home)).filter(
       (event) => event.type === "workflow.node.interrupted",
     );
     expect(interrupted).toEqual([
       expect.objectContaining({ nodeId: "make", nodeRunId: first.nodeRunId }),
     ]);
-    expect(stateOf(repo).nodeRuns.make.status).toBe("interrupted");
+    expect((await stateIn(home)).nodeRuns.make?.status).toBe("interrupted");
 
     const again = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
     expect(again).toMatchObject({ kind: "stage", nodeId: "make" });
@@ -763,17 +773,17 @@ describe("SC26: orchestrate resume", () => {
   });
 
   test("SC312: resume with no step open prints an empty list and records no node event", async () => {
-    const { repo, home } = startedRun(STAGES_WORKFLOW);
-    const before = await nodeEventTypes(repo);
+    const { repo, home } = await startedRun(STAGES_WORKFLOW);
+    const before = await nodeEventTypes(home);
 
     const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout)).toEqual({ interrupted: [] });
-    expect(await nodeEventTypes(repo)).toEqual(before);
+    expect(await nodeEventTypes(home)).toEqual(before);
   });
 
   test("SC313: resume leaves an open context step running, since its helper finishes it", async () => {
-    const { repo, home } = startedRun(withContext("action: new"));
+    const { repo, home } = await startedRun(withContext("action: new"));
     const first = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
     const done = [
       "done",
@@ -791,14 +801,14 @@ describe("SC26: orchestrate resume", () => {
 
     const resumed = orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
     expect(JSON.parse(resumed.stdout)).toEqual({ interrupted: [] });
-    expect(stateOf(repo).nodeRuns.fresh).toMatchObject({
+    expect((await stateIn(home)).nodeRuns.fresh).toMatchObject({
       nodeRunId: context.nodeRunId,
       status: "running",
     });
   });
 
   test("SC315: a late exec result for an interrupted run is refused and leaves the newer run open", async () => {
-    const { repo, home } = startedRun(`name: slow
+    const { repo, home } = await startedRun(`name: slow
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -814,14 +824,14 @@ nodes:
     const refused = await late;
     expect(refused.code).toBe(1);
     expect(refused.stderr.length).toBeGreaterThan(0);
-    expect(stateOf(repo).nodeRuns.a).toMatchObject({
+    expect((await stateIn(home)).nodeRuns.a).toMatchObject({
       nodeRunId: again.nodeRunId,
       status: "running",
     });
   });
 
-  test("SC318: resume interrupts a step inside a loop in place, and next hands it out again in the same pass", () => {
-    const { repo, home } = startedRun(`name: looped
+  test("SC318: resume interrupts a step inside a loop in place, and next hands it out again in the same pass", async () => {
+    const { repo, home } = await startedRun(`name: looped
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -841,10 +851,10 @@ nodes:
     expect(JSON.parse(step(["resume", "--run", "feat-x"]).stdout)).toEqual({
       interrupted: [{ nodeRunId: second.nodeRunId, nodeId: "test" }],
     });
-    const nodes = stateOf(repo).nodeRuns;
+    const nodes = (await stateIn(home)).nodeRuns;
     expect(Object.keys(nodes)).toEqual(["fix"]);
     expect(nodes.fix).toMatchObject({ status: "running", iteration: 2 });
-    expect(nodes.fix.nodes.test).toMatchObject({
+    expect(nodes.fix?.nodes?.test).toMatchObject({
       nodeRunId: second.nodeRunId,
       status: "interrupted",
     });
@@ -852,15 +862,15 @@ nodes:
     const again = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(again).toMatchObject({ kind: "exec", nodeId: "test" });
     expect(again.nodeRunId).not.toBe(second.nodeRunId);
-    expect(stateOf(repo).nodeRuns.fix.nodes.test).toMatchObject({
+    expect((await stateIn(home)).nodeRuns.fix?.nodes?.test).toMatchObject({
       nodeRunId: again.nodeRunId,
       status: "running",
       input: "pass 2",
     });
   });
 
-  test("SC314: done for a node run that resume interrupted is refused as not running", () => {
-    const { repo, home } = startedRun(STAGES_WORKFLOW);
+  test("SC314: done for a node run that resume interrupted is refused as not running", async () => {
+    const { repo, home } = await startedRun(STAGES_WORKFLOW);
     const first = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"], env).stdout);
     orchestrate(repo, home, ["resume", "--run", "feat-x"], env);
 
@@ -881,8 +891,8 @@ nodes:
 });
 
 describe("SC26: orchestrate retry", () => {
-  const workflowEventTypes = async (repo: string) =>
-    (await eventsOf(repo))
+  const workflowEventTypes = async (home: string) =>
+    (await eventsOf(home))
       .map((event) => event.type)
       .filter((type) => type.startsWith("workflow."));
 
@@ -897,8 +907,8 @@ describe("SC26: orchestrate retry", () => {
     }
   };
 
-  test("SC6: retry reopens the exec that failed the run, next hands it out under a new id, and the node before it stays completed", () => {
-    const { repo, home } = startedRun(`name: three
+  test("SC6: retry reopens the exec that failed the run, next hands it out under a new id, and the node before it stays completed", async () => {
+    const { repo, home } = await startedRun(`name: three
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -908,26 +918,26 @@ nodes:
 `);
     const { steps } = driveToEnd(repo, home);
     const [one, two] = steps;
-    expect(stateOf(repo).status).toBe("failed");
+    expect((await stateIn(home)).status).toBe("failed");
 
     const retried = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
     expect(retried.code).toBe(0);
     expect(JSON.parse(retried.stdout)).toEqual({
       retried: [{ nodeRunId: two?.nodeRunId, nodeId: "two" }],
     });
-    expect(stateOf(repo).status).toBe("running");
+    expect((await stateIn(home)).status).toBe("running");
 
     const again = parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout);
     expect(again).toMatchObject({ kind: "exec", nodeId: "two" });
     expect(again.nodeRunId).not.toBe(two?.nodeRunId);
-    expect(stateOf(repo).nodeRuns.one).toMatchObject({
+    expect((await stateIn(home)).nodeRuns.one).toMatchObject({
       nodeRunId: one?.nodeRunId,
       status: "completed",
     });
   });
 
-  test("SC7: a loop pass that failed reruns in the same pass, reading the same iteration.previous", () => {
-    const { repo, home } = startedRun(`name: looped
+  test("SC7: a loop pass that failed reruns in the same pass, reading the same iteration.previous", async () => {
+    const { repo, home } = await startedRun(`name: looped
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -948,7 +958,7 @@ nodes:
     expect(step(["exec", first.nodeRunId, "--run", "feat-x"]).code).toBe(0);
     writeFileSync(join(repo, "broken"), "");
     const second = parseStep(step(["next", "--run", "feat-x"]).stdout);
-    const failedInput = stateOf(repo).nodeRuns.fix.nodes.test.input;
+    const failedInput = (await stateIn(home)).nodeRuns.fix?.nodes?.test?.input;
     expect(failedInput).toMatchObject({
       index: 2,
       previous: expect.stringContaining('"index":1'),
@@ -963,20 +973,20 @@ nodes:
     const again = parseStep(step(["next", "--run", "feat-x"]).stdout);
     expect(again).toMatchObject({ kind: "exec", nodeId: "test" });
     expect(again.nodeRunId).not.toBe(second.nodeRunId);
-    const fix = stateOf(repo).nodeRuns.fix;
+    const fix = (await stateIn(home)).nodeRuns.fix;
     expect(fix).toMatchObject({ status: "running", iteration: 2 });
-    expect(fix.nodes.test.input).toEqual(failedInput);
+    expect(fix?.nodes?.test?.input).toEqual(failedInput);
   });
 
   test("SC8: retry refuses a run that has not failed and stores no workflow event", async () => {
-    const { repo, home } = startedRun(STAGES_WORKFLOW);
+    const { repo, home } = await startedRun(STAGES_WORKFLOW);
     orchestrate(repo, home, ["next", "--run", "feat-x"], { YOK_SKILLS_DIR: STAGE_SKILLS });
-    const before = await workflowEventTypes(repo);
+    const before = await workflowEventTypes(home);
 
     const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain("run feat-x is running; retry brings back only a failed run");
-    expect(await workflowEventTypes(repo)).toEqual(before);
+    expect(await workflowEventTypes(home)).toEqual(before);
   });
 
   test("SC9: retry refuses a needs-input failure, quoting the question, until --answered says a person dealt with it", async () => {
@@ -984,7 +994,7 @@ nodes:
       values: { interaction: false },
       sources: { interaction: "cli" },
     };
-    const { repo, home } = startedRun(
+    const { repo, home } = await startedRun(
       `name: asks
 inputs:
   prompt: { type: string, required: true }
@@ -998,13 +1008,13 @@ nodes:
     const ask = parseStep(step(["next", "--run", "feat-x"]).stdout);
     step(["done", ask.nodeRunId, "--run", "feat-x", "--error", "-"], "Which database?");
     expect(parseStep(step(["next", "--run", "feat-x"]).stdout)).toMatchObject({ status: "failed" });
-    const before = await workflowEventTypes(repo);
+    const before = await workflowEventTypes(home);
 
     const refused = step(["retry", "--run", "feat-x"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain("Which database?");
     expect(refused.stderr).toContain("--answered");
-    expect(await workflowEventTypes(repo)).toEqual(before);
+    expect(await workflowEventTypes(home)).toEqual(before);
 
     expect(step(["retry", "--run", "feat-x", "--answered"]).code).toBe(0);
     const again = parseStep(step(["next", "--run", "feat-x"]).stdout);
@@ -1013,7 +1023,7 @@ nodes:
   });
 
   test("SC10: retry refuses a loop that ran out of passes, since nothing inside it failed", async () => {
-    const { repo, home } = startedRun(`name: endless
+    const { repo, home } = await startedRun(`name: endless
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -1026,20 +1036,20 @@ nodes:
       - { id: test, type: exec, runtime: sh, script: "true", input: {} }
 `);
     driveToEnd(repo, home);
-    expect(stateOf(repo).status).toBe("failed");
-    const before = await workflowEventTypes(repo);
+    expect((await stateIn(home)).status).toBe("failed");
+    const before = await workflowEventTypes(home);
 
     const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain("has no failed step to retry: fix failed on its own");
-    expect(await workflowEventTypes(repo)).toEqual(before);
+    expect(await workflowEventTypes(home)).toEqual(before);
   });
 
-  test("retry refuses while the run's agent session is still alive, and reopens the run once that session is gone", () => {
+  test("retry refuses while the run's agent session is still alive, and reopens the run once that session is gone", async () => {
     const socket = `yok-e2e-${crypto.randomUUID()}`;
     const tmux = (...args: string[]) =>
       execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8" });
-    const { repo, home } = startedRun(
+    const { repo, home } = await startedRun(
       `name: two
 inputs:
   prompt: { type: string, required: true }
@@ -1056,11 +1066,11 @@ nodes:
       const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"], env);
       expect(refused.code).toBe(1);
       expect(refused.stderr).toContain("run feat-x still has its agent session");
-      expect(stateOf(repo).status).toBe("failed");
+      expect((await stateIn(home)).status).toBe("failed");
 
       tmux("kill-session", "-t", "agent-x");
       expect(orchestrate(repo, home, ["retry", "--run", "feat-x"], env).code).toBe(0);
-      expect(stateOf(repo).status).toBe("running");
+      expect((await stateIn(home)).status).toBe("running");
     } finally {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
     }
@@ -1101,10 +1111,10 @@ nodes:
     });
   };
 
-  test("a step that failed beside a loop it stopped is handed out again after retry, and the run completes once the step passes", () => {
-    const { repo, home } = startedRun(besideLoop("{{ iteration.index >= 1 }}"));
+  test("a step that failed beside a loop it stopped is handed out again after retry, and the run completes once the step passes", async () => {
+    const { repo, home } = await startedRun(besideLoop("{{ iteration.index >= 1 }}"));
     failBesideLoop(repo, home, false);
-    expect(stateOf(repo).nodeRuns.polish.output).toMatchObject({ kind: "drained" });
+    expect((await stateIn(home)).nodeRuns.polish?.output).toMatchObject({ kind: "drained" });
 
     expect(orchestrate(repo, home, ["retry", "--run", "feat-x"]).code).toBe(0);
     writeFileSync(join(repo, "fixed"), "");
@@ -1118,21 +1128,21 @@ nodes:
   });
 
   test("retry refuses a run where a loop beside the failed step ran out of passes on its own, and stores no workflow event", async () => {
-    const { repo, home } = startedRun(besideLoop("{{ false }}"));
+    const { repo, home } = await startedRun(besideLoop("{{ false }}"));
     failBesideLoop(repo, home, true);
-    expect(stateOf(repo).nodeRuns.polish.output).toMatchObject({ kind: "exhausted" });
-    const before = await workflowEventTypes(repo);
+    expect((await stateIn(home)).nodeRuns.polish?.output).toMatchObject({ kind: "exhausted" });
+    const before = await workflowEventTypes(home);
 
     const refused = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain(
       "run feat-x has no failed step to retry: polish failed on its own, so it would fail again",
     );
-    expect(await workflowEventTypes(repo)).toEqual(before);
+    expect(await workflowEventTypes(home)).toEqual(before);
   });
 
   test("a retry that stopped after reopening two but before resuming the run is finished by a second retry", async () => {
-    const { repo, home } = startedRun(`name: two
+    const { repo, home } = await startedRun(`name: two
 inputs:
   prompt: { type: string, required: true }
 nodes:
@@ -1140,24 +1150,26 @@ nodes:
   - { id: two, type: exec, runtime: sh, script: "exit 1", dependsOn: [one], input: {} }
 `);
     const [, two] = driveToEnd(repo, home).steps;
-    const run = { id: stateOf(repo).runId, cwd: repo, name: "feat-x" };
-    const reopened = await appendRunEvent(run, {
-      type: "workflow.node.retried",
-      source: "workflow",
-      nodeId: "two",
-      nodeRunId: two?.nodeRunId,
-      payload: { nodeType: "exec", attempts: 1 },
-    });
+    const run = { id: (await stateIn(home)).runId, cwd: repo, name: "feat-x" };
+    const reopened = await withStorage(home, (storage) =>
+      appendRunEvent(storage, run, {
+        type: "workflow.node.retried",
+        source: "workflow",
+        nodeId: "two",
+        nodeRunId: two?.nodeRunId,
+        payload: { nodeType: "exec", attempts: 1 },
+      }),
+    );
     expect(reopened.ok).toBe(true);
-    expect(stateOf(repo).status).toBe("failed");
+    expect((await stateIn(home)).status).toBe("failed");
 
     const retried = orchestrate(repo, home, ["retry", "--run", "feat-x"]);
     expect(retried.code).toBe(0);
-    expect((await workflowEventTypes(repo)).slice(-2)).toEqual([
+    expect((await workflowEventTypes(home)).slice(-2)).toEqual([
       "workflow.node.retried",
       "workflow.resumed",
     ]);
-    expect(stateOf(repo).status).toBe("running");
+    expect((await stateIn(home)).status).toBe("running");
     expect(parseStep(orchestrate(repo, home, ["next", "--run", "feat-x"]).stdout)).toMatchObject({
       kind: "exec",
       nodeId: "two",
