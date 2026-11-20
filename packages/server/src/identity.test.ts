@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -600,6 +600,48 @@ describe("Slack link page", () => {
     });
     expect(unlink.status).toBe(302);
     expect((await s.storage.users.find(userId))?.slack).toBeUndefined();
+  });
+});
+
+describe("a CLI token's last use", () => {
+  const withToken = async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const userId = (await s.storage.users.list())[0]?.[0] ?? "";
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const ask = () => s.app.request("/settings", { headers: { authorization: "Bearer yok_abc" } });
+    return { s, ask };
+  };
+
+  test("two requests a minute apart write the stamp once", async () => {
+    const { s, ask } = await withToken();
+    const touch = spyOn(s.storage.users, "touchToken");
+
+    expect((await ask()).status).toBe(200);
+    s.setClock(new Date(NOW.getTime() + 60_000));
+    expect((await ask()).status).toBe(200);
+
+    expect(touch).toHaveBeenCalledTimes(1);
+  });
+
+  test("a request ten minutes after the stamp writes it again", async () => {
+    const { s, ask } = await withToken();
+    const touch = spyOn(s.storage.users, "touchToken");
+
+    expect((await ask()).status).toBe(200);
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000));
+    expect((await ask()).status).toBe(200);
+
+    expect(touch).toHaveBeenCalledTimes(2);
+  });
+
+  test("a stamp that cannot be written does not fail the request", async () => {
+    const { s, ask } = await withToken();
+    spyOn(s.storage.users, "touchToken").mockImplementation(async () => {
+      throw new Error("database is locked");
+    });
+
+    expect((await ask()).status).toBe(200);
   });
 });
 

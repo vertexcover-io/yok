@@ -275,12 +275,22 @@ const activeUser = async (storage: IStorage, userId: string): Promise<User | und
   return user?.accessRevokedAt === undefined ? user : undefined;
 };
 
+// Each write takes SQLite's write lock, so a busy CLI stamps its token at most this often.
+const TOUCH_AFTER_MS = 5 * 60_000;
+
+const touchStale = async (deps: CallerDeps, token: ApiToken): Promise<void> => {
+  const now = deps.now();
+  const last = token.lastUsedAt;
+  if (last !== null && now.getTime() - Date.parse(last) < TOUCH_AFTER_MS) return;
+  await deps.storage.users.touchToken(token.id, now).catch(() => undefined);
+};
+
 const callerByToken = async (deps: CallerDeps, token: string): Promise<Caller | undefined> => {
   const found = await deps.storage.users.findToken(hashToken(token));
   if (found === undefined) return undefined;
   const user = await activeUser(deps.storage, found.userId);
   if (user === undefined) return undefined;
-  await deps.storage.users.touchToken(found.id, deps.now());
+  await touchStale(deps, found);
   return { userId: found.userId, user, via: "token", tokenId: found.id };
 };
 
