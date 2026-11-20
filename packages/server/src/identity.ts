@@ -469,10 +469,14 @@ const liveRequests = (requests: DeviceRequests, now: Date): DeviceRequests => {
   return requests;
 };
 
-const findByUserCode = (requests: DeviceRequests, typed: string) => {
+// A request this person already approved is still theirs, so Back and Approve again is no error;
+// one someone else approved is not found.
+const findByUserCode = (requests: DeviceRequests, typed: string, userId: string) => {
   const userCode = normalizeUserCode(typed);
   return [...requests].find(
-    ([, request]) => request.userCode === userCode && request.approvedBy === undefined,
+    ([, request]) =>
+      request.userCode === userCode &&
+      (request.approvedBy === undefined || request.approvedBy === userId),
   );
 };
 
@@ -854,7 +858,7 @@ export const identityRoutes = (deps: IdentityDeps) => {
         if (signedIn === null) return c.redirect(loginRedirect("/device"));
         const typed = c.req.query("code");
         if (typed === undefined) return c.html(page("Approve the yok CLI", deviceCodeForm));
-        const found = findByUserCode(liveRequests(requests, deps.now()), typed);
+        const found = findByUserCode(liveRequests(requests, deps.now()), typed, signedIn[0]);
         return found === undefined
           ? unknownCodePage(c)
           : c.html(deviceConfirmPage(signedIn[1], found[1]));
@@ -866,6 +870,7 @@ export const identityRoutes = (deps: IdentityDeps) => {
         const found = findByUserCode(
           liveRequests(requests, deps.now()),
           typeof typed === "string" ? typed : "",
+          signedIn[0],
         );
         if (found === undefined) return unknownCodePage(c);
         const [deviceCode, request] = found;

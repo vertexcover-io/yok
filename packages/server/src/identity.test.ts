@@ -907,6 +907,22 @@ describe("CLI device login", () => {
     expect(await s.storage.users.listTokens(firstId)).toHaveLength(1);
   });
 
+  test("the same person pressing Back and Approve again before the CLI polls sees the approved page again, and the CLI gets one token", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    await approveDevice(s, headers, userCode);
+
+    const again = await approveDevice(s, headers, userCode);
+    const poll = await pollDevice(s, deviceCode);
+
+    expect(again.status).toBe(200);
+    expect(await again.text()).toContain("yok CLI approved");
+    expect(((await poll.json()) as { status: string }).status).toBe("approved");
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
   test("SC20: /device with no session cookie goes to sign-in and comes back to /device", async () => {
     const s = setup();
 
