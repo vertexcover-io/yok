@@ -23,7 +23,7 @@ import type { Vars } from "./api.ts";
 import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
-import { identityRoutes, requireCaller } from "./identity.ts";
+import { identityRoutes, missingSignInKeys, requireCaller } from "./identity.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
 import { isGated, pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
@@ -183,6 +183,9 @@ export const startServer = async ({
   const boundPort = server.port as number;
   const domain = serverDomain(home, boundPort);
   const origin = publicOrigin(domain);
+  const gated = isGated(home);
+  const noWayIn = gated ? missingSignInKeys(home) : undefined;
+  if (noWayIn !== undefined) serverLog.warn({}, noWayIn);
 
   const { host, providerFor, checkCheckout } = runtime ?? defaultRuntime(log);
   const version = VERSION;
@@ -217,7 +220,7 @@ export const startServer = async ({
     checkCheckout,
     port: boundPort,
     domain,
-    gated: isGated(home),
+    gated,
     now: () => new Date(),
     openInEditor: (target) => openInEditor({ ...target, env: process.env }),
   });

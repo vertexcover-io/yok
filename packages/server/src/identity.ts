@@ -17,7 +17,8 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // One grant: who the person is, push and pull on every repo they can reach, and pushes that
 // change workflow files, which GitHub refuses without `workflow` (ADR 0041).
-const GITHUB_SCOPE = "repo workflow read:user user:email";
+// read:org lets /user/orgs list private memberships, which GITHUB_ORGS is checked against.
+const GITHUB_SCOPE = "repo workflow read:user user:email read:org";
 
 export type IdentityDeps = Readonly<{
   home: string;
@@ -26,6 +27,9 @@ export type IdentityDeps = Readonly<{
   publicOrigin: string;
   now: () => Date;
   log: ILogger;
+  // SERVER_DOMAIN was set when the server started: only then does a sign-in need an org or a
+  // super-admin login
+  gated: boolean;
   // what calls github.com; the network's fetch unless a test answers for GitHub
   githubFetch?: notifierHooks.Fetch | undefined;
 }>;
@@ -92,6 +96,27 @@ const oauthApp = (home: string): OAuthApp | null => {
   return clientId && clientSecret ? { clientId, clientSecret } : null;
 };
 
+const commaList = (value: string | undefined): readonly string[] =>
+  (value ?? "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item !== "");
+
+// Read from .env on each sign-in, so a change needs no restart. GitHub logins and org slugs are
+// case-insensitive, so both lists are lowercased.
+const readSignInRules = (home: string) => {
+  const env = readHomeEnv(home);
+  return { admins: commaList(env.SUPER_ADMIN_LOGINS), orgs: commaList(env.GITHUB_ORGS) };
+};
+
+// What a gated server says when no one can sign in; undefined when somebody can.
+export const missingSignInKeys = (home: string): string | undefined => {
+  const { admins, orgs } = readSignInRules(home);
+  return admins.length + orgs.length > 0
+    ? undefined
+    : "No one can sign in yet: set SUPER_ADMIN_LOGINS (GitHub logins) or GITHUB_ORGS (GitHub org slugs), or both, in the yok home's .env";
+};
+
 const NOT_SET_UP =
   "GitHub sign-in is not set up: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are missing from the yok home's .env";
 
@@ -99,7 +124,9 @@ const NOT_SET_UP =
 export const safeNext = (next: string | undefined): string =>
   next?.startsWith("/") === true && !next.startsWith("//") ? next : "/";
 
-const githubFetch = (deps: IdentityDeps): notifierHooks.Fetch => deps.githubFetch ?? fetch;
+type GitHubCalls = Pick<IdentityDeps, "githubFetch">;
+
+const githubFetch = (deps: GitHubCalls): notifierHooks.Fetch => deps.githubFetch ?? fetch;
 
 // A reply that is not JSON (an outage page) reads as null, which every schema here refuses.
 const readJson = (res: Response): Promise<unknown> => res.json().catch(() => null);
@@ -122,7 +149,7 @@ export const exchangeCode = async (
     : { ok: false, error: "GitHub refused the sign-in code" };
 };
 
-const api = (deps: IdentityDeps, token: string, path: string): Promise<Response> =>
+const api = (deps: GitHubCalls, token: string, path: string): Promise<Response> =>
   githubFetch(deps)(`${GITHUB_API}${path}`, {
     headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
   });
@@ -150,6 +177,45 @@ export const fetchIdentity = async (
   return { ok: true, value: { id, login, name: name || login, email: primary } };
 };
 
+const OrgsSchema = z.array(z.looseObject({ login: z.string() }));
+const NEXT_PAGE = /<([^>]+)>;\s*rel="next"/;
+
+// Every org slug the account belongs to, lowercased, following GitHub's Link header page by page.
+// Private memberships appear only because the grant carries read:org.
+const fetchOrgs = async (
+  deps: IdentityDeps,
+  token: string,
+  path = "/user/orgs?per_page=100",
+  found: readonly string[] = [],
+): Promise<Result<readonly string[]>> => {
+  const res = await api(deps, token, path);
+  const orgs = OrgsSchema.safeParse(await readJson(res));
+  if (!res.ok || !orgs.success)
+    return { ok: false, error: "GitHub did not list the account's orgs" };
+  const all = [...found, ...orgs.data.map((org) => org.login.toLowerCase())];
+  const next = NEXT_PAGE.exec(res.headers.get("link") ?? "")?.[1];
+  return next?.startsWith(`${GITHUB_API}/`)
+    ? fetchOrgs(deps, token, next.slice(GITHUB_API.length), all)
+    : { ok: true, value: all };
+};
+
+// A super-admin needs no org, so GitHub is asked for orgs only when the login alone is not enough.
+const mayEnter = async (
+  deps: IdentityDeps,
+  token: string,
+  login: string,
+): Promise<Result<boolean>> => {
+  const { admins, orgs } = readSignInRules(deps.home);
+  if (admins.includes(login.toLowerCase())) return { ok: true, value: true };
+  if (orgs.length === 0) return { ok: true, value: false };
+  const memberOf = await fetchOrgs(deps, token).catch(
+    (): Result<readonly string[]> => ({ ok: false, error: "GitHub could not be reached" }),
+  );
+  return memberOf.ok
+    ? { ok: true, value: memberOf.value.some((org) => orgs.includes(org)) }
+    : memberOf;
+};
+
 // GitHub keeps a token valid until it is revoked, so a token yok will not keep is revoked now.
 export const revokeToken = async (
   deps: IdentityDeps,
@@ -166,7 +232,7 @@ export const revokeToken = async (
 };
 
 // Only a 401 means the person revoked it; an outage must not disconnect anyone.
-export const tokenAlive = async (deps: IdentityDeps, token: string): Promise<boolean> => {
+export const tokenAlive = async (deps: GitHubCalls, token: string): Promise<boolean> => {
   const res = await api(deps, token, "/user").catch(() => null);
   return res?.status !== 401;
 };
@@ -384,6 +450,36 @@ const failed = (c: Context, message: string, status: 400 | 502 | 503 = 400) =>
     status,
   );
 
+const revokeQuietly = (deps: IdentityDeps, app: OAuthApp, token: string): Promise<void> =>
+  revokeToken(deps, app, token).catch((error: unknown) =>
+    deps.log.warn({ err: error }, "GitHub could not be reached to revoke the token"),
+  );
+
+// The token just granted is revoked and no user is made. A person yok already knows loses the
+// CLI tokens too and is marked, so their cookie and Slack stop working until a later sign-in.
+const refuseSignIn = async (
+  c: Context,
+  deps: IdentityDeps,
+  app: OAuthApp,
+  token: string,
+  identity: GitHubIdentity,
+) => {
+  await revokeQuietly(deps, app, token);
+  const known = await deps.storage.users.findByAccount("github", String(identity.id));
+  if (known !== undefined) {
+    await deps.storage.users.setAccessRevokedAt(known[0], deps.now().toISOString());
+    await deps.storage.users.deleteTokens(known[0]);
+  }
+  deps.log.info({ login: identity.login }, "sign-in refused");
+  return c.html(
+    page(
+      "Not allowed in",
+      html`<p>GitHub account <code>${identity.login}</code> does not belong to one of the GitHub orgs registered on this server, and is not a super-admin.</p><p class="muted">Ask whoever runs this yok server to add your org or your login.</p>`,
+    ),
+    403,
+  );
+};
+
 const finishLogin = async (
   c: Context,
   deps: IdentityDeps,
@@ -395,12 +491,19 @@ const finishLogin = async (
     (): Result<GitHubIdentity> => ({ ok: false, error: "GitHub could not be reached" }),
   );
   if (!identity.ok) {
-    await revokeToken(deps, app, token).catch((error: unknown) =>
-      deps.log.warn({ err: error }, "GitHub could not be reached to revoke the token"),
-    );
+    await revokeQuietly(deps, app, token);
     return failed(c, identity.error, 502);
   }
-  const [userId] = await deps.storage.users.saveGitHubUser({ ...identity.value, token });
+  const allowed = deps.gated
+    ? await mayEnter(deps, token, identity.value.login)
+    : ({ ok: true, value: true } as const);
+  if (!allowed.ok) {
+    await revokeQuietly(deps, app, token);
+    return failed(c, allowed.error, 502);
+  }
+  if (!allowed.value) return refuseSignIn(c, deps, app, token, identity.value);
+  const [userId, user] = await deps.storage.users.saveGitHubUser({ ...identity.value, token });
+  if (user.accessRevokedAt !== undefined) await deps.storage.users.setAccessRevokedAt(userId, null);
   await startSession(c, deps, userId);
   deps.log.info({ userId, login: identity.value.login }, "signed in");
   return c.redirect(safeNext(next));
@@ -494,6 +597,8 @@ export const identityRoutes = (deps: IdentityDeps) =>
     .get("/login", (c) => {
       const next = safeNext(c.req.query("next"));
       if (signedInUser(c) !== null) return c.redirect(next);
+      const missing = deps.gated ? missingSignInKeys(deps.home) : undefined;
+      if (missing !== undefined) return failed(c, missing, 503);
       const start = `/auth/github?next=${encodeURIComponent(next)}`;
       return c.html(
         page(

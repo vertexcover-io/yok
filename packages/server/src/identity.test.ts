@@ -58,7 +58,9 @@ describe("signed values", () => {
 
 type Call = Readonly<{ url: string; method: string; body: string }>;
 
-const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => {
+const OAUTH_APP = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n";
+
+const setup = (env = OAUTH_APP, gated = false) => {
   const home = mkdtempSync(join(tmpdir(), "identity-"));
   writeFileSync(join(home, ".env"), env);
   const calls: Call[] = [];
@@ -67,13 +69,32 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
     name: "Ritesh" as string | null,
     down: false,
     // a reply that replaces GitHub's usual one for that endpoint
-    replies: {} as Partial<Record<"token" | "user" | "emails", () => Response>>,
+    replies: {} as Partial<Record<"token" | "user" | "emails" | "orgs", () => Response>>,
+    // the org slugs /user/orgs lists, one array per page
+    orgPages: [] as string[][],
   };
   const githubFetch = async (url: string, init: RequestInit) => {
     calls.push({ url, method: init.method ?? "GET", body: String(init.body ?? "") });
     if (github.down) throw new TypeError("fetch failed");
     if (url.endsWith("/login/oauth/access_token"))
       return github.replies.token?.() ?? Response.json({ access_token: github.token });
+    if (url.includes("/user/orgs")) {
+      const page = Number(new URL(url).searchParams.get("page") ?? 1);
+      const hasNext = page < github.orgPages.length;
+      return (
+        github.replies.orgs?.() ??
+        Response.json(
+          (github.orgPages[page - 1] ?? []).map((login) => ({ login })),
+          hasNext
+            ? {
+                headers: {
+                  link: `<https://api.github.com/user/orgs?per_page=100&page=${page + 1}>; rel="next"`,
+                },
+              }
+            : {},
+        )
+      );
+    }
     if (url.endsWith("/user/emails"))
       return (
         github.replies.emails?.() ??
@@ -89,7 +110,7 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
   let clock = NOW;
   const storage = memoryStorage();
   const now = () => clock;
-  const app = new Hono().use("*", requireCaller({ home, storage, now, gated: false })).route(
+  const app = new Hono().use("*", requireCaller({ home, storage, now, gated })).route(
     "/",
     identityRoutes({
       home,
@@ -98,6 +119,7 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
       now,
       log: noopLogger,
       githubFetch,
+      gated,
     }),
   );
   return { app, home, storage, calls, github, setClock: (at: Date) => (clock = at) };
@@ -135,7 +157,7 @@ describe("GitHub sign-in", () => {
     const s = setup();
     const { authorize, done } = await signIn(s);
 
-    expect(authorize.searchParams.get("scope")).toBe("repo workflow read:user user:email");
+    expect(authorize.searchParams.get("scope")).toBe("repo workflow read:user user:email read:org");
     expect(authorize.searchParams.get("redirect_uri")).toBe(
       "http://localhost:4000/auth/github/callback",
     );
@@ -286,6 +308,117 @@ describe("GitHub sign-in", () => {
     const text = await res.text();
     expect(text).toContain("GITHUB_CLIENT_ID");
     expect(text).toContain("GITHUB_CLIENT_SECRET");
+  });
+});
+
+const setSignInEnv = (home: string, keys: string): void =>
+  writeFileSync(join(home, ".env"), OAUTH_APP + keys);
+
+describe("who may sign in on a shared server", () => {
+  test("SC10: a login in SUPER_ADMIN_LOGINS, written in another case, signs in without asking GitHub for orgs", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=other, Ritesh-GH\n`, true);
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect(cookieOf(done)).toStartWith("yok_session=");
+    expect(await s.storage.users.list()).toHaveLength(1);
+    expect(s.calls.some((call) => call.url.includes("/user/orgs"))).toBe(false);
+  });
+
+  test("SC11: a member of an org in GITHUB_ORGS, written in another case and listed on the second page of /user/orgs, signs in", async () => {
+    const s = setup(`${OAUTH_APP}GITHUB_ORGS=Acme,beta\n`, true);
+    s.github.orgPages = [["elsewhere"], ["ACME"]];
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect(cookieOf(done)).toStartWith("yok_session=");
+    expect(await s.storage.users.list()).toHaveLength(1);
+    expect(s.calls.filter((call) => call.url.includes("/user/orgs"))).toHaveLength(2);
+  });
+
+  test("SC12: an account that is no super-admin and in no registered org gets a 403 page, its fresh GitHub token is revoked and no user is created", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=someone\nGITHUB_ORGS=acme\n`, true);
+    s.github.orgPages = [["elsewhere"]];
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(403);
+    expect(await done.text()).toContain("registered");
+    expect(cookieOf(done)).toBe("");
+    expect(await s.storage.users.list()).toEqual([]);
+    const revoke = s.calls.find((call) => call.method === "DELETE");
+    expect(JSON.parse(revoke?.body ?? "{}")).toEqual({ access_token: "gho_a" });
+  });
+
+  test("SC13: a refused sign-in by a known GitHub id sets access_revoked_at, deletes its CLI tokens and ends its old session", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    const cookie = cookieOf((await signIn(s)).done);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(403);
+    const user = await s.storage.users.find(userId);
+    expect(user?.accessRevokedAt).toBe(NOW.toISOString());
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+    expect(await s.storage.users.list()).toHaveLength(1);
+    const old = await s.app.request("/settings", { headers: { cookie, accept: "text/html" } });
+    expect(old.headers.get("location")).toBe("/login?next=%2Fsettings");
+  });
+
+  test("SC14: a revoked user who is later allowed signs in again with access_revoked_at cleared", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+    await signIn(s);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeDefined();
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=ritesh-gh\n");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    const page = await s.app.request("/settings", { headers: { cookie: cookieOf(done) } });
+    expect(page.status).toBe(200);
+  });
+
+  test("SC15: a gated server with neither SUPER_ADMIN_LOGINS nor GITHUB_ORGS answers /login naming both keys and offers no GitHub button", async () => {
+    const s = setup(OAUTH_APP, true);
+
+    const res = await s.app.request("/login");
+
+    expect(res.status).toBe(503);
+    const text = await res.text();
+    expect(text).toContain("SUPER_ADMIN_LOGINS");
+    expect(text).toContain("GITHUB_ORGS");
+    expect(text).not.toContain("/auth/github?next");
+  });
+
+  test("SC16: SUPER_ADMIN_LOGINS edited in .env between two sign-ins decides the second one, with no restart", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    expect((await signIn(s)).done.status).toBe(302);
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+
+    expect((await signIn(s)).done.status).toBe(403);
+  });
+
+  test("a /user/orgs reply GitHub fails answers 502, revokes the token and leaves the known user's access alone", async () => {
+    const s = setup(`${OAUTH_APP}GITHUB_ORGS=acme\n`, true);
+    s.github.orgPages = [["acme"]];
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    s.github.replies.orgs = () => new Response("busy", { status: 502 });
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(502);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    expect(s.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
   });
 });
 

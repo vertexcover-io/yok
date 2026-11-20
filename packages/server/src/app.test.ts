@@ -1262,7 +1262,8 @@ describe("createRoot caller gate", () => {
   });
 
   test("SC1: the open routes still answer a bare request", async () => {
-    const { app } = await gatedRoot();
+    const { app, deps } = await gatedRoot();
+    writeFileSync(join(deps.home, ".env"), "SUPER_ADMIN_LOGINS=ada\n");
     const get = async (path: string, method = "GET") =>
       (await app.request(path, { method, headers: { host: DOMAIN } })).status;
 

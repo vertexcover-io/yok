@@ -149,6 +149,29 @@ test.each([
   },
 );
 
+test("SC15: a started gated server with neither SUPER_ADMIN_LOGINS nor GITHUB_ORGS still answers /api/health and tells /login which keys are missing", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-gate-")));
+  writeFileSync(
+    join(home, ".env"),
+    "SERVER_DOMAIN=yok.example.com\nGITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n",
+  );
+  const { host } = fakeHost(EMPTY_BOX);
+  const server = await startServer({
+    home,
+    runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+  });
+  try {
+    const base = `http://127.0.0.1:${readPort(home)}`;
+    const headers = { host: "yok.example.com" };
+    expect((await fetch(`${base}/api/health`, { headers })).status).toBe(200);
+    const login = await fetch(`${base}/login`, { headers });
+    expect(login.status).toBe(503);
+    expect(await login.text()).toContain("SUPER_ADMIN_LOGINS");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("SC128: each agent's runtime checks carry its plugin check, run against the binary agentBinary names", () => {
   expect(runtimeChecks("claude").map((check) => check.name)).toContain("claude-plugin");
   expect(runtimeChecks("codex").map((check) => check.name)).toContain("codex-plugin");
