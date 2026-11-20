@@ -1,5 +1,5 @@
 ---
-status: active
+status: inactive
 date: 2026-10-27
 source: server.md (sections 1 and 8, "Decision records"), .yok/server-run-architecture/artifacts/design.md (D3)
 tags: [harness-server, harness-cli, cli-to-server]

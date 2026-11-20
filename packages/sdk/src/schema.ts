@@ -22,6 +22,8 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull(),
+  // set when a GitHub sign-in is refused; the user keeps their runs but no cookie or token works
+  accessRevokedAt: text("access_revoked_at"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -45,6 +47,18 @@ export const userAccounts = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.provider] }), unique().on(t.provider, t.providerId)],
 );
+
+// A CLI token: only its SHA-256 is kept, so a copy of yok.db cannot sign anyone in.
+export const apiTokens = sqliteTable("api_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdAt: createdAt(),
+  lastUsedAt: text("last_used_at"),
+});
 
 export const projects = sqliteTable("projects", {
   name: text("name").primaryKey(),

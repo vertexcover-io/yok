@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { and, asc, desc, eq, getTableColumns, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { type Comment, CommentSchema } from "./comments.ts";
@@ -50,14 +50,22 @@ import {
   type TriggerDraft,
   TriggerSchema,
 } from "./triggers.ts";
-import { type Accounts, type UserEntry, UserSchema } from "./users.ts";
+import {
+  type Accounts,
+  type ApiToken,
+  ApiTokenSchema,
+  type UserEntry,
+  UserSchema,
+} from "./users.ts";
 
 // The database, or a transaction on it: every helper below runs inside one or outside any.
 type Db = BaseSQLiteDatabase<"sync", void, typeof tables>;
 type UserRow = typeof tables.users.$inferSelect;
 type AccountRow = typeof tables.userAccounts.$inferSelect;
 
-const { users, userAccounts } = tables;
+const { users, userAccounts, apiTokens } = tables;
+// A busy CLI would otherwise write last_used_at on every call.
+const TOUCH_EVERY_MS = 5 * 60_000;
 const GITHUB = "github";
 const SLACK = "slack";
 // Every write transaction takes the write lock at BEGIN: a deferred one fails with SQLITE_BUSY
@@ -85,6 +93,7 @@ const toUserEntry = (row: UserRow, accounts: readonly AccountRow[]): UserEntry =
     email: row.email,
     accounts: githubAccount(accounts.find((account) => account.provider === GITHUB)),
     ...(slack === undefined ? {} : { slack: slack.providerId }),
+    ...(row.accessRevokedAt === null ? {} : { accessRevokedAt: row.accessRevokedAt }),
   });
   return [row.id, user];
 };
@@ -191,6 +200,17 @@ const importUserIn = (db: Db, id: string, user: ImportedUser, at: string): void 
     if (accounts.length > 0) tx.insert(userAccounts).values(accounts).onConflictDoNothing().run();
   }, IMMEDIATE);
 
+const newTokenId = (): string => `t_${randomBytes(4).toString("hex")}`;
+
+const toApiToken = (row: typeof apiTokens.$inferSelect): ApiToken =>
+  ApiTokenSchema.parse({
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    createdAt: row.createdAt,
+    lastUsedAt: row.lastUsedAt,
+  });
+
 const userRepository = (db: Db): IUserRepository => ({
   list: async () => userEntries(db),
   find: async (id) => userEntries(db, [id])[0]?.[1],
@@ -213,6 +233,50 @@ const userRepository = (db: Db): IUserRepository => ({
       .run();
   },
   importUser: async (id, user) => importUserIn(db, id, user, now()),
+  setAccessRevokedAt: async (userId, at) => {
+    db.update(users).set({ accessRevokedAt: at }).where(eq(users.id, userId)).run();
+  },
+  createToken: async (userId, name, tokenHash) =>
+    toApiToken(
+      db
+        .insert(apiTokens)
+        .values({ id: newTokenId(), userId, name, tokenHash, createdAt: now() })
+        .returning()
+        .get(),
+    ),
+  findToken: async (tokenHash) => {
+    const row = db.select().from(apiTokens).where(eq(apiTokens.tokenHash, tokenHash)).get();
+    return row === undefined ? undefined : toApiToken(row);
+  },
+  listTokens: async (userId) =>
+    db
+      .select()
+      .from(apiTokens)
+      .where(eq(apiTokens.userId, userId))
+      .orderBy(sql`rowid`)
+      .all()
+      .map(toApiToken),
+  deleteToken: async (userId, tokenId) =>
+    db
+      .delete(apiTokens)
+      .where(and(eq(apiTokens.userId, userId), eq(apiTokens.id, tokenId)))
+      .returning({ id: apiTokens.id })
+      .all().length > 0,
+  deleteTokens: async (userId) => {
+    db.delete(apiTokens).where(eq(apiTokens.userId, userId)).run();
+  },
+  touchToken: async (tokenId, at) => {
+    const stale = new Date(at.getTime() - TOUCH_EVERY_MS).toISOString();
+    db.update(apiTokens)
+      .set({ lastUsedAt: at.toISOString() })
+      .where(
+        and(
+          eq(apiTokens.id, tokenId),
+          or(isNull(apiTokens.lastUsedAt), lt(apiTokens.lastUsedAt, stale)),
+        ),
+      )
+      .run();
+  },
 });
 
 const runColumns = { ...getTableColumns(tables.runs), cwd: tables.projects.path };
@@ -377,7 +441,7 @@ const toProject = (row: ProjectRow): Project =>
   ProjectSchema.parse({
     path: row.path,
     ...(row.git === null ? {} : { git: row.git }),
-    addedBy: { channel: row.channel },
+    addedBy: { channel: row.channel, ...(row.addedBy === null ? {} : { user: row.addedBy }) },
     addedAt: row.createdAt,
   });
 
@@ -386,6 +450,7 @@ const toProjectRow = (name: string, project: Project) => ({
   path: project.path,
   git: project.git ?? null,
   channel: project.addedBy.channel,
+  addedBy: project.addedBy.user ?? null,
   createdAt: project.addedAt,
   updatedAt: now(),
 });

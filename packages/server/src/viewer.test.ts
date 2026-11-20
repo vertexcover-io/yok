@@ -820,6 +820,62 @@ describe("shared page script", () => {
       "1h 3m",
     ]);
   });
+
+  describe("sending a signed-out page to /login", () => {
+    const realFetch = globalThis.fetch;
+    const realLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realLocation === undefined) Reflect.deleteProperty(globalThis, "location");
+      else Object.defineProperty(globalThis, "location", realLocation);
+    });
+
+    // The page's fetch answers STATUS; the page is at /runs/r-1?tab=files and records where it goes.
+    const pageAnswering = (status: number) => {
+      const asked: string[] = [];
+      const assigned: string[] = [];
+      globalThis.fetch = (async (input: string) => {
+        asked.push(input);
+        return new Response("", { status });
+      }) as unknown as typeof fetch;
+      Object.defineProperty(globalThis, "location", {
+        configurable: true,
+        value: {
+          pathname: "/runs/r-1",
+          search: "?tab=files",
+          assign: (url: string) => assigned.push(url),
+        },
+      });
+      return { asked, assigned };
+    };
+
+    test("a 401 reply to a dashboard fetch sends the page to /login with itself as next; other replies leave it", async () => {
+      const shared = await import("./page-shared.ts");
+
+      const signedOut = pageAnswering(401);
+      expect((await shared.fetchSignedIn("/runs/r-1/files")).status).toBe(401);
+      expect(signedOut.assigned).toEqual(["/login?next=%2Fruns%2Fr-1%3Ftab%3Dfiles"]);
+
+      for (const status of [200, 404, 500]) {
+        const other = pageAnswering(status);
+        await shared.fetchSignedIn("/runs/r-1/files");
+        expect([status, other.assigned]).toEqual([status, []]);
+      }
+    });
+
+    test("a stream that fails asks /api/me and goes to /login only when it answers 401", async () => {
+      const shared = await import("./page-shared.ts");
+
+      const signedOut = pageAnswering(401);
+      await shared.checkSignedIn();
+      expect(signedOut.asked).toEqual(["/api/me"]);
+      expect(signedOut.assigned).toHaveLength(1);
+
+      const signedIn = pageAnswering(200);
+      await shared.checkSignedIn();
+      expect(signedIn.assigned).toEqual([]);
+    });
+  });
 });
 
 describe("editorCommand", () => {

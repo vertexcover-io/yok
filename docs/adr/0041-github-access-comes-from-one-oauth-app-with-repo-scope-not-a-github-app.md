@@ -24,3 +24,5 @@ Chosen: one OAuth app in one step, because nothing has to be installed and every
 ## Consequences
 
 Moving to a GitHub App later means a new app and every person signing in again. Disconnect revokes the token on GitHub; signing in again reconnects. Adding a scope later, as `workflow` was on 2026-11-06 when pushes that touched `.github/workflows` were refused, widens no stored token: every connected person signs in again to get it.
+
+> Amended by [0046](0046-sign-in-is-decided-by-github-org-or-a-super-admin-login.md): sign-in now asks for `repo workflow read:user user:email read:org`. `read:org` lets `/user/orgs` list private memberships, which `GITHUB_ORGS` is checked against, so a person signs in again to get it, as with `workflow`.

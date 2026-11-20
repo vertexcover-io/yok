@@ -2,14 +2,17 @@ import { zValidator } from "@hono/zod-validator";
 import type { ILogger, JsonValue } from "@yok/sdk";
 import type { Context } from "hono";
 import * as z from "zod";
+import type { Caller } from "./identity.ts";
 import type { ErrorBody, ErrorCode } from "./protocol.ts";
 
-// Set by the request logger in app.ts: a logger bound to this request's reqId.
-export type Vars = { log: ILogger };
+// log is set by the request logger in app.ts: a logger bound to this request's reqId. caller is
+// set by requireCaller (identity.ts) in createRoot; it is absent when nobody signed in, and in
+// the in-memory client Slack commands use.
+export type Vars = { log: ILogger; caller: Caller | undefined };
 
 export const errorResponse = (
   c: Context,
-  status: 400 | 404 | 409 | 422 | 500 | 502,
+  status: 400 | 401 | 404 | 409 | 422 | 429 | 500 | 502,
   code: ErrorCode,
   message: string,
   details?: JsonValue,

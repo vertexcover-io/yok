@@ -391,8 +391,10 @@ const startRun = async (
   deps: RunDeps & GitDeps,
   body: StartRunBody,
 ) => {
+  const user = c.get("caller")?.userId;
   const launched = await startProjectRun(body, deps, c.get("log").child({ component: "runs" }), {
     source: "api",
+    ...(user === undefined ? {} : { user }),
   });
   if (!launched.ok) {
     const { status, code, message, details } = launched.error;

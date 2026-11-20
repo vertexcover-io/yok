@@ -24,3 +24,5 @@ Chosen: a yok user record, because every entry point (Slack now, the dashboard o
 ## Consequences
 
 `registry.json` runs carry a `source` (`api`, `slack` or `trigger`; absent on runs saved before it, which read as `api`) and an optional `user` (the yok user who started the run, absent when none did), which ADR 0034 had avoided. Every agent session's env goes through `sessionEnv`, which gives a Slack run its starter's isolated GitHub env, or an empty one when no yok user started it.
+
+> Amended by [0045](0045-yok-checks-the-caller-on-every-route-of-a-gated-server.md) and [0046](0046-sign-in-is-decided-by-github-org-or-a-super-admin-login.md): Caddy's password no longer decides who gets in; yok does. On a gated server every route needs a caller, a user's `access_revoked_at` refuses them by cookie, by token and in Slack, and runs and projects record the user who started or added them from an API caller as well as from Slack. Attribution now sits beside a real gate and is no longer all a user record is for. A yok token never reaches an agent session: `sessionEnv` sets `YOK_SERVER_TOKEN` to an empty string, as it does for `GH_TOKEN`.

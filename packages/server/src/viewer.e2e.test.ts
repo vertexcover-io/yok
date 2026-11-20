@@ -4,10 +4,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { yokTerminalHost } from "@yok/core";
+import { summarize, yokTerminalHost } from "@yok/core";
 import type { IStorage, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { memoryStorage, openStorage } from "@yok/sdk/internal";
+import { memoryStorage, openStorage, withStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import { type Browser, chromium, type Page } from "playwright";
@@ -21,7 +21,10 @@ import {
   seedState,
   seedUser,
 } from "./fake-host.ts";
+import { sessionSecret, signValue } from "./identity.ts";
 import { forgetFinishedRun } from "./overview.ts";
+import { readPort } from "./protocol.ts";
+import { startServer } from "./server.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
 
@@ -1752,6 +1755,140 @@ describe("resume and retry buttons in a browser", () => {
       ).toBe(0);
     } finally {
       await page.setViewportSize({ width: 1280, height: 800 });
+    }
+  }, 30000);
+});
+
+describe("a shared server's dashboard in a browser", () => {
+  const readyCheckout = async () => ({
+    env: { ok: true as const, value: {} },
+    report: summarize([]),
+  });
+
+  // A started server with SERVER_DOMAIN set, holding run r-1 and the user Ada.
+  const sharedServer = async () => {
+    const home = tempDir();
+    writeFileSync(join(home, ".env"), "SERVER_DOMAIN=yok.example.com\n");
+    const cwd = tempDir();
+    const userId = await withStorage(home, async (store) => {
+      await seedRun(store, {
+        id: "r-1",
+        project: "demo",
+        workflow: "w",
+        workflowPath: join(cwd, "w.yaml"),
+        inputs: {},
+        cwd,
+        sessions: [],
+        name: null,
+        terminal: null,
+        config: null,
+        tiers: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      return seedUser(store, { name: "Ada", github: { id: 1, login: "ada" } });
+    });
+    const { host } = fakeHost(EMPTY_BOX);
+    const server = await startServer({
+      home,
+      runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+    });
+    const session = signValue(await sessionSecret(home), {
+      sub: userId,
+      purpose: "session",
+      exp: Date.now() + 60_000,
+    });
+    return { server, origin: `http://127.0.0.1:${readPort(home)}`, session };
+  };
+
+  test("SC6: a signed-out browser opening a run's page lands on /login, and a request the page makes after its cookie goes also does", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      await page.goto(`${origin}/runs/r-1`);
+      expect(new URL(page.url()).pathname).toBe("/login");
+      expect(new URL(page.url()).searchParams.get("next")).toBe("/runs/r-1");
+
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/runs/r-1`);
+      await until("document.querySelector('#runId').textContent === 'r-1'");
+      await page.context().clearCookies();
+      await page.evaluate(
+        'import("/assets/shared.js").then((shared) => shared.fetchSignedIn("/runs/r-1/files"))',
+      );
+      await page.waitForURL(`${origin}/login?next=%2Fruns%2Fr-1`);
+    } finally {
+      await server.stop();
+    }
+  }, 30000);
+
+  test("a button on a run's page, pressed after the cookie goes, sends the browser to /login and back to that run", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/runs/r-1`);
+      await until("document.querySelector('#runId').textContent === 'r-1'");
+      await page.context().clearCookies();
+      await evaluate("document.querySelector('#retryBtn').hidden = false");
+
+      await page.click("#retryBtn");
+
+      await page.waitForURL(`${origin}/login?next=%2Fruns%2Fr-1`);
+    } finally {
+      await server.stop();
+    }
+  }, 30000);
+
+  test("SC17, SC22: a CLI's login is approved on /device and its token is listed in /settings, and a CI token made there is shown once and revoked with one click", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      const started = await fetch(`${origin}/api/auth/device`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hostname: "build-box" }),
+      });
+      const { deviceCode, userCode } = (await started.json()) as {
+        deviceCode: string;
+        userCode: string;
+      };
+      const poll = () =>
+        fetch(`${origin}/api/auth/device/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deviceCode }),
+        });
+      expect(await (await poll()).json()).toEqual({ status: "pending" });
+
+      await page.goto(`${origin}/device`);
+      expect(new URL(page.url()).pathname).toBe("/login");
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/device`);
+      await page.fill("input[name=code]", userCode);
+      await page.click("text=Continue");
+      await page.waitForSelector("text=Give the yok CLI on build-box access as Ada?");
+      await page.click("button:has-text('Approve')");
+      await page.waitForSelector("text=Go back to your terminal");
+      const approved = (await (await poll()).json()) as { status: string; token: string };
+      expect(approved.status).toBe("approved");
+      expect(approved.token).toStartWith("yok_");
+      expect((await poll()).status).toBe(404);
+
+      await page.goto(`${origin}/settings`);
+      await page.waitForSelector("text=CLI on build-box");
+      await page.fill("input[name=name]", "github actions");
+      await page.click("button:has-text('Create token')");
+      const shown = (await page.locator("main p code").last().textContent()) ?? "";
+      expect(shown).toMatch(/^yok_[A-Za-z0-9_-]{43}$/);
+      const ciWorks = (token: string) =>
+        fetch(`${origin}/api/me`, { headers: { authorization: `Bearer ${token}` } });
+      expect((await ciWorks(shown)).status).toBe(200);
+
+      await page.click("text=Settings");
+      expect(await page.content()).not.toContain(shown);
+      await page.locator(".token", { hasText: "github actions" }).locator("button").click();
+      await page.waitForSelector(".token:has-text('github actions')", { state: "detached" });
+      expect((await ciWorks(shown)).status).toBe(401);
+      expect((await ciWorks(approved.token)).status).toBe(200);
+    } finally {
+      await server.stop();
     }
   }, 30000);
 });

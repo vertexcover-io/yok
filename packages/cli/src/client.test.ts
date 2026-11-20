@@ -1,5 +1,16 @@
-import { describe, expect, test } from "bun:test";
-import { checkRemoteFlag, checkServerUrl, isCurrentServer, shouldOpenBrowser } from "./client.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { VERSION } from "@yok/sdk/internal";
+import {
+  checkRemoteFlag,
+  checkServerUrl,
+  connect,
+  isCurrentServer,
+  shouldOpenBrowser,
+  yokClient,
+} from "./client.ts";
 
 const base = { noOpen: false, isTTY: true, env: {}, platform: "darwin" as NodeJS.Platform };
 
@@ -76,6 +87,9 @@ describe("checkRemoteFlag", () => {
     ["trigger fire", true],
     ["doctor", true],
     ["login", true],
+    ["login", false],
+    ["logout", true],
+    ["logout", false],
     ["server status", true],
     ["resume", true],
     ["retry", true],
@@ -107,11 +121,6 @@ describe("checkRemoteFlag", () => {
       true,
       "yok server stop works only on the server's machine: run it there, without --remote",
     ],
-    [
-      "login",
-      false,
-      "yok login works only with a server on another machine: run it as yok-remote login",
-    ],
   ])("SC4025: %s with remote=%p is refused with its own line", (path, remote, message) => {
     expect(() => checkRemoteFlag(remote, path)).toThrow(message);
   });
@@ -125,6 +134,63 @@ describe("checkRemoteFlag", () => {
   test("SC701: yok import-files with --remote is refused before anything is read, as it opens this machine's yok.db", () => {
     expect(() => checkRemoteFlag(true, "import-files")).toThrow(
       "yok import-files works only on this machine: run it as yok import-files, without --remote",
+    );
+  });
+});
+
+const homes: string[] = [];
+afterAll(() => {
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+// A gated yok server: health is open, every other route answers 401 as requireCaller does.
+const refusingServer = () =>
+  Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request) =>
+      new URL(request.url).pathname === "/api/health"
+        ? Response.json({ pid: 1, version: VERSION, startedAt: 1 })
+        : Response.json(
+            { error: { code: "unauthenticated", message: "sign in" } },
+            { status: 401 },
+          ),
+  });
+
+describe("a 401 from a gated server", () => {
+  test("SC28 (CLI): a plain local command is told to run yok login and use --remote", async () => {
+    const server = refusingServer();
+    const home = mkdtempSync(join(tmpdir(), "yok-401-home-"));
+    homes.push(home);
+    writeFileSync(join(home, "server.port"), String(server.port));
+    writeFileSync(join(home, ".env"), "SERVER_DOMAIN=yok.example.com\n");
+
+    const listed = await yokClient(home).projects();
+    server.stop(true);
+
+    expect(listed).toEqual({
+      ok: false,
+      error: {
+        code: "unauthenticated",
+        message:
+          "this server needs you signed in: run yok login --server https://yok.example.com, then use --remote on your commands",
+      },
+    });
+  });
+
+  test("a --remote command is told to run yok login --server URL again", async () => {
+    const server = refusingServer();
+    const home = mkdtempSync(join(tmpdir(), "yok-401-home-"));
+    homes.push(home);
+    const url = `http://127.0.0.1:${server.port}`;
+    const env = { YOK_SERVER_URL: url, YOK_SERVER_TOKEN: "yok_revoked" };
+
+    const { client } = await connect(env, home);
+    const listed = await client.projects();
+    server.stop(true);
+
+    expect(listed.ok ? "" : listed.error.message).toBe(
+      `the server did not accept this login: run yok login --server ${url}`,
     );
   });
 });

@@ -355,6 +355,7 @@ describe("runContextStep: new", () => {
       PATH: expect.stringContaining(join(HOME, "shims")),
       YOK_RUN_ID: "r-1",
       YOK_HOME: HOME,
+      YOK_SERVER_TOKEN: "",
     });
   });
 

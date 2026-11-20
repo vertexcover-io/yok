@@ -17,9 +17,20 @@ export const UserSchema = z.strictObject({
   accounts: z.strictObject({ github: GitHubAccountSchema.optional() }),
   // the Slack member id `@yok login` linked; absent until the person links
   slack: NonEmptyStringSchema.optional(),
+  // when a GitHub sign-in was refused for this person; absent while they have access
+  accessRevokedAt: z.iso.datetime().optional(),
 });
 export type User = z.infer<typeof UserSchema>;
 export type Accounts = User["accounts"];
+
+export const ApiTokenSchema = z.strictObject({
+  id: NonEmptyStringSchema,
+  userId: NonEmptyStringSchema,
+  name: NonEmptyStringSchema,
+  createdAt: z.iso.datetime(),
+  lastUsedAt: z.iso.datetime().nullable(),
+});
+export type ApiToken = z.infer<typeof ApiTokenSchema>;
 
 export type UserEntry = readonly [id: string, user: User];
 

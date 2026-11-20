@@ -40,14 +40,18 @@ export const readHomeEnv = (home: string): Record<string, string | undefined> =>
 
 // The domain a reverse proxy in front of yok answers on; this machine's own address without one.
 // A browser sends its Host lowercase and without a scheme, so the saved value is cleaned to match.
-export const serverDomain = (home: string, port: number): string => {
-  const domain = (readHomeEnv(home).SERVER_DOMAIN ?? "")
+const savedDomain = (home: string): string =>
+  (readHomeEnv(home).SERVER_DOMAIN ?? "")
     .trim()
     .toLowerCase()
     .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
     .replace(/\/+$/, "");
-  return domain || `localhost:${port}`;
-};
+
+export const serverDomain = (home: string, port: number): string =>
+  savedDomain(home) || `localhost:${port}`;
+
+// A server with a SERVER_DOMAIN is shared, and every caller must sign in; one without is local and open.
+export const isGated = (home: string): boolean => savedDomain(home) !== "";
 
 // Plain http only for this machine: any other domain is reached through a proxy doing https.
 export const publicOrigin = (domain: string): string =>
@@ -86,8 +90,10 @@ export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
       "bad-request",
+      "unauthenticated",
       "not-found",
       "conflict",
+      "too-many-requests",
       "agent-failed",
       "git-failed",
       "internal",
@@ -99,6 +105,28 @@ export const ErrorBodySchema = z.strictObject({
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 export type ErrorCode = ErrorBody["error"]["code"];
+
+export const DeviceStartBodySchema = z.strictObject({
+  hostname: z.string().trim().min(1).max(100),
+});
+
+export const DeviceStartReplySchema = z.strictObject({
+  deviceCode: NonEmptyStringSchema,
+  // what the person types at verificationUrl, like ABCD-EFGH
+  userCode: NonEmptyStringSchema,
+  verificationUrl: z.url(),
+  expiresIn: z.number().int(),
+  interval: z.number().int(),
+});
+
+export const DeviceTokenBodySchema = z.strictObject({ deviceCode: NonEmptyStringSchema });
+
+// An expired or unknown device code is a 404, not a status.
+export const DeviceTokenReplySchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("pending") }),
+  z.strictObject({ status: z.literal("approved"), token: NonEmptyStringSchema }),
+]);
+export type DeviceTokenReply = z.infer<typeof DeviceTokenReplySchema>;
 
 // The agent, tiers and env come from the compiled workflow and the checkout, on the server.
 export const StartRunBodySchema = z.strictObject({
