@@ -52,6 +52,13 @@ export const createApi = (deps: ApiDeps) =>
     .get("/health", (c) =>
       c.json({ pid: deps.pid, version: deps.version, startedAt: deps.startedAt }, 200),
     )
+    .get("/me", (c) => {
+      const caller = c.get("caller");
+      if (caller === undefined) return c.json({ user: null }, 200);
+      const { userId: id, user } = caller;
+      const login = user.accounts.github?.login ?? null;
+      return c.json({ user: { id, name: user.name, email: user.email, login } }, 200);
+    })
     .route("/runs", runRoutes(deps))
     .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))

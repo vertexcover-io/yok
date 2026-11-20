@@ -10,6 +10,7 @@ import type { IStorage } from "./repositories.ts";
 import { memoryStorage, openStorage } from "./storage.ts";
 
 const TABLES = [
+  "api_tokens",
   "artifacts",
   "comments",
   "events",
@@ -69,13 +70,13 @@ const RITESH = {
 };
 
 describe("opening yok.db", () => {
-  test("SC107: a fresh home gets yok.db, -wal and -shm at mode 0600 in a 0700 home, WAL, foreign keys and all nine tables", async () => {
+  test("SC107: a fresh home gets yok.db, -wal and -shm at mode 0600 in a 0700 home, WAL, foreign keys and all ten tables", async () => {
     const home = freshHome();
     const storage = openStorage(home);
     const db = join(home, "yok.db");
     expect(mode(home)).toBe(0o700);
     for (const file of [db, `${db}-wal`, `${db}-shm`]) expect(mode(file)).toBe(0o600);
-    expect(readPragma(db, "user_version")).toBe(1);
+    expect(readPragma(db, "user_version")).toBe(2);
     expect(readPragma(db, "journal_mode")).toBe("wal");
     expect(tablesIn(db)).toEqual(TABLES);
     // foreign_keys is a per-connection setting, so it is proved through the storage's own one
@@ -103,22 +104,22 @@ describe("opening yok.db", () => {
     const saved = await first.users.saveGitHubUser(RITESH);
     await first.close();
     const second = openStorage(home);
-    expect(readPragma(join(home, "yok.db"), "user_version")).toBe(1);
+    expect(readPragma(join(home, "yok.db"), "user_version")).toBe(2);
     expect(await second.users.list()).toEqual([saved]);
     await second.close();
   });
 
-  test("SC110: a yok.db at user_version 2 is refused as written by a newer yok and left at 2", async () => {
+  test("SC110: a yok.db at user_version 3 is refused as written by a newer yok and left at 3", async () => {
     const home = freshHome();
     await openStorage(home).close();
     const path = join(home, "yok.db");
     const raw = new Database(path);
-    raw.run("PRAGMA user_version = 2");
+    raw.run("PRAGMA user_version = 3");
     raw.close();
     expect(() => openStorage(home)).toThrow(
-      "yok.db was written by a newer yok (schema 2); update yok",
+      "yok.db was written by a newer yok (schema 3); update yok",
     );
-    expect(readPragma(path, "user_version")).toBe(2);
+    expect(readPragma(path, "user_version")).toBe(3);
   });
 
   test("SC111: four processes opening one fresh home at once all exit 0 and leave it migrated once", async () => {
@@ -129,7 +130,7 @@ describe("opening yok.db", () => {
     const errors = await Promise.all(procs.map((proc) => new Response(proc.stderr).text()));
     expect({ exits, errors }).toEqual({ exits: [0, 0, 0, 0], errors: ["", "", "", ""] });
     const path = join(home, "yok.db");
-    expect(readPragma(path, "user_version")).toBe(1);
+    expect(readPragma(path, "user_version")).toBe(2);
     expect(tablesIn(path)).toEqual(TABLES);
   });
 });
@@ -246,6 +247,76 @@ describe("users", () => {
       storage.users.addUserAccount("u_missing", { provider: "slack", providerId: "U7" }),
     ).rejects.toThrow();
     expect((await storage.users.findByAccount("slack", "U7"))?.[0]).toBe(a);
+  });
+});
+
+describe("api tokens and revoked access", () => {
+  let storage: IStorage;
+  afterEach(async () => {
+    await storage.close();
+  });
+
+  test("a token stored by its hash is found by that hash, listed for its user, and deleted only by its own user", async () => {
+    storage = memoryStorage();
+    const [id] = await storage.users.saveGitHubUser(RITESH);
+    const [other] = await storage.users.saveGitHubUser({ ...RITESH, id: 2, login: "other" });
+
+    const made = await storage.users.createToken(id, "laptop", "hash-1");
+    await storage.users.createToken(id, "ci", "hash-2");
+
+    expect(made).toMatchObject({ userId: id, name: "laptop", lastUsedAt: null });
+    expect(await storage.users.findToken("hash-1")).toEqual(made);
+    expect(await storage.users.findToken("nope")).toBeUndefined();
+    expect((await storage.users.listTokens(id)).map((token) => token.name)).toEqual([
+      "laptop",
+      "ci",
+    ]);
+    expect(await storage.users.listTokens(other)).toEqual([]);
+    expect(await storage.users.deleteToken(other, made.id)).toBe(false);
+    expect(await storage.users.deleteToken(id, made.id)).toBe(true);
+    expect(await storage.users.findToken("hash-1")).toBeUndefined();
+    await storage.users.deleteTokens(id);
+    expect(await storage.users.listTokens(id)).toEqual([]);
+  });
+
+  test("two tokens cannot share a hash, and a token for a missing user is rejected", async () => {
+    storage = memoryStorage();
+    const [id] = await storage.users.saveGitHubUser(RITESH);
+    await storage.users.createToken(id, "laptop", "same");
+
+    await expect(storage.users.createToken(id, "ci", "same")).rejects.toThrow();
+    await expect(storage.users.createToken("u_missing", "x", "other")).rejects.toThrow(
+      "FOREIGN KEY",
+    );
+  });
+
+  test("last use is written on the first use and then at most every 5 minutes", async () => {
+    storage = memoryStorage();
+    const [id] = await storage.users.saveGitHubUser(RITESH);
+    const made = await storage.users.createToken(id, "laptop", "hash-1");
+    const lastUsed = async () => (await storage.users.findToken("hash-1"))?.lastUsedAt;
+    const first = new Date("2026-11-19T10:00:00.000Z");
+
+    await storage.users.touchToken(made.id, first);
+    await storage.users.touchToken(made.id, new Date(first.getTime() + 4 * 60_000));
+    expect(await lastUsed()).toBe(first.toISOString());
+
+    const later = new Date(first.getTime() + 6 * 60_000);
+    await storage.users.touchToken(made.id, later);
+    expect(await lastUsed()).toBe(later.toISOString());
+  });
+
+  test("access revoked is stamped on the user and cleared again, and the user stays in list and find", async () => {
+    storage = memoryStorage();
+    const [id, signedIn] = await storage.users.saveGitHubUser(RITESH);
+    expect(signedIn.accessRevokedAt).toBeUndefined();
+
+    await storage.users.setAccessRevokedAt(id, "2026-11-19T10:00:00.000Z");
+    expect((await storage.users.find(id))?.accessRevokedAt).toBe("2026-11-19T10:00:00.000Z");
+    expect((await storage.users.list())[0]?.[1].accessRevokedAt).toBe("2026-11-19T10:00:00.000Z");
+
+    await storage.users.setAccessRevokedAt(id, null);
+    expect(await storage.users.find(id)).toEqual(signedIn);
   });
 });
 

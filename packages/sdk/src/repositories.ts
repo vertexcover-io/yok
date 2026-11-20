@@ -4,7 +4,7 @@ import type { Event, EventSchema, Result, State } from "./contracts.ts";
 import type { CommentDraft } from "./events.ts";
 import type { Project, RunDraft, SessionRef, WorkflowRun } from "./registry.ts";
 import type { Fire, Trigger, TriggerDraft } from "./triggers.ts";
-import type { User, UserEntry } from "./users.ts";
+import type { ApiToken, User, UserEntry } from "./users.ts";
 
 // What a GitHub sign-in learns of the person, and the token it was granted.
 export type GitHubSignIn = Readonly<{
@@ -31,6 +31,19 @@ export interface IUserRepository {
   saveGitHubUser(input: GitHubSignIn): Promise<UserEntry>;
   addUserAccount(userId: string, account: UserAccount): Promise<void>;
   removeUserAccount(userId: string, provider: string): Promise<void>;
+  // Stamps the time a sign-in was refused, or clears it with null.
+  setAccessRevokedAt(userId: string, at: string | null): Promise<void>;
+  // Only the SHA-256 of a CLI token is stored, never the token.
+  createToken(userId: string, name: string, tokenHash: string): Promise<ApiToken>;
+  findToken(tokenHash: string): Promise<ApiToken | undefined>;
+  // oldest first
+  listTokens(userId: string): Promise<readonly ApiToken[]>;
+  // false when the user has no such token
+  deleteToken(userId: string, tokenId: string): Promise<boolean>;
+  deleteTokens(userId: string): Promise<void>;
+  // Writes last-used only when it was never set or is over 5 minutes old, so a busy CLI does not
+  // write on every call.
+  touchToken(tokenId: string, at: Date): Promise<void>;
   // Only for `yok import-files`: stores the user under its old id. Deleted with that command.
   importUser(id: string, user: ImportedUser): Promise<void>;
 }

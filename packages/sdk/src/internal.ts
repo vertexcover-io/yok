@@ -90,5 +90,5 @@ export {
   type TriggerDraft,
   TriggerSchema,
 } from "./triggers.ts";
-export { type Accounts, type User, type UserEntry, UserSchema } from "./users.ts";
+export { type Accounts, type ApiToken, type User, type UserEntry, UserSchema } from "./users.ts";
 export { VERSION } from "./version.ts";

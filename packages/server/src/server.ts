@@ -19,12 +19,13 @@ import { openStorage, VERSION } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import prettyFactory from "pino-pretty";
+import type { Vars } from "./api.ts";
 import { type ApiDeps, createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
 import { resumeDeliveries, stopDeliveries } from "./delivery.ts";
-import { identityRoutes } from "./identity.ts";
+import { identityRoutes, requireCaller } from "./identity.ts";
 import { CLONE_TIMEOUT_MS } from "./projects.ts";
-import { pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
+import { isGated, pidPath, portPath, publicOrigin, readPort, serverDomain } from "./protocol.ts";
 import { slackHookRoutes } from "./slack.ts";
 import { startScheduler, stopScheduler } from "./trigger.ts";
 import { hostGuard, openInEditor, type ViewerDeps, viewerRoutes } from "./viewer.ts";
@@ -84,13 +85,16 @@ export type RootDeps = ApiDeps &
   Readonly<{
     port: number;
     domain: string;
+    // SERVER_DOMAIN was set when the server started: every route then needs a caller
+    gated: boolean;
     slackFetch?: notifierHooks.Fetch;
     githubFetch?: notifierHooks.Fetch;
   }>;
 
 // The API sits under /api so its routes never shadow a dashboard page: the API's GET /runs/view
 // once also matched the dashboard's GET /runs/:id. The Slack hook is added before the API, whose
-// 404 for an unknown path would otherwise answer first.
+// 404 for an unknown path would otherwise answer first. requireCaller sits here and not in
+// createApi, so the in-memory client a Slack command uses is not asked for a login.
 export const createRoot = (deps: RootDeps) => {
   const api = createApi(deps);
   // A chat command runs through the API's own routes, so it is checked and answered as one
@@ -100,8 +104,9 @@ export const createRoot = (deps: RootDeps) => {
     url: "http://yok.internal",
     send: async (input, init) => self.request(input, init),
   });
-  return new Hono()
+  return new Hono<{ Variables: Vars }>()
     .use("*", hostGuard(deps.port, deps.domain))
+    .use("*", requireCaller(deps))
     .route("/api/hooks/slack", slackHookRoutes({ ...deps, client }))
     .route("/api", api)
     .route(
@@ -212,6 +217,7 @@ export const startServer = async ({
     checkCheckout,
     port: boundPort,
     domain,
+    gated: isGated(home),
     now: () => new Date(),
     openInEditor: (target) => openInEditor({ ...target, env: process.env }),
   });

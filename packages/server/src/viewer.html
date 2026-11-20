@@ -345,7 +345,7 @@ mark.hl.pulse { animation: pulseMark 1.2s ease-out; }
 
 <script type="module">
 import { findQuote, quoteContext } from "/assets/anchor.js";
-import { formatDuration, RUN_STATUS_WORDS } from "/assets/shared.js";
+import { checkSignedIn, fetchSignedIn, formatDuration, RUN_STATUS_WORDS } from "/assets/shared.js";
 
 const runId = location.pathname.split("/")[2] ?? "";
 const $ = (selector) => document.querySelector(selector);
@@ -626,7 +626,7 @@ function foldButton(pre, lines) {
 }
 
 async function openInEditor(path, line) {
-  const res = await fetch(`/runs/${runId}/open`, {
+  const res = await fetchSignedIn(`/runs/${runId}/open`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(line ? { path, line } : { path }),
@@ -674,7 +674,7 @@ async function expandHunk(pre, hunk, dir) {
     ? [Math.max(floor, from - EXPAND_STEP), from - 1]
     : [to + 1, Math.min(ceiling, to + EXPAND_STEP)];
   if (first > last) return;
-  const res = await fetch(`/runs/${runId}/source?path=${encodeURIComponent(pre.dataset.file)}&from=${first}&to=${last}`);
+  const res = await fetchSignedIn(`/runs/${runId}/source?path=${encodeURIComponent(pre.dataset.file)}&from=${first}&to=${last}`);
   if (!res.ok) {
     toast(`Could not read ${pre.dataset.file}`);
     return;
@@ -818,7 +818,7 @@ function flashChanged(root, before) {
 }
 
 async function showFile(path, { keepScroll }) {
-  const res = await fetch(`/runs/${runId}/file?path=${encodeURIComponent(path)}`);
+  const res = await fetchSignedIn(`/runs/${runId}/file?path=${encodeURIComponent(path)}`);
   if (current !== path) return;
   if (!res.ok) {
     $("#docHost").replaceChildren(el("p", "empty", "This file could not be read."));
@@ -967,7 +967,7 @@ function draftThread(c) {
 async function sendReply(c, input) {
   const text = input.value.trim();
   if (!text) return;
-  const res = await fetch(`/runs/${runId}/comments/${c.id}/reply`, {
+  const res = await fetchSignedIn(`/runs/${runId}/comments/${c.id}/reply`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text }),
@@ -1095,7 +1095,7 @@ async function postComments(list) {
     text: d.text,
     ...(d.anchor ? { anchor: d.anchor } : {}),
   }));
-  const res = await fetch(`/runs/${runId}/comments`, {
+  const res = await fetchSignedIn(`/runs/${runId}/comments`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ comments: batch }),
@@ -1112,12 +1112,12 @@ async function sendDrafts() {
 }
 
 async function refreshFiles() {
-  const res = await fetch(`/runs/${runId}/files`).catch(() => null);
+  const res = await fetchSignedIn(`/runs/${runId}/files`).catch(() => null);
   if (res?.ok) await applyFiles(await res.json());
 }
 
 async function refreshComments() {
-  const res = await fetch(`/runs/${runId}/comments`).catch(() => null);
+  const res = await fetchSignedIn(`/runs/${runId}/comments`).catch(() => null);
   if (!res?.ok) return;
   applyComments(await res.json());
 }
@@ -1478,7 +1478,7 @@ async function relaunch(action, answered) {
   $("#resumeBtn").disabled = true;
   $("#retryBtn").disabled = true;
   btn.textContent = action === "retry" ? "Retrying…" : "Resuming…";
-  const res = await fetch(`/api/runs/${action}`, {
+  const res = await fetchSignedIn(`/api/runs/${action}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ run: { id: runId }, ...(answered ? { answered: true } : {}) }),
@@ -1640,6 +1640,7 @@ function attach() {
     if (socket !== ws) return;
     socket = null;
     if (e.code === REFUSED) return;
+    checkSignedIn();
     if (e.code === DETACHED) {
       detached = true;
       showTermState("Detached from the run's session.", true);
@@ -1845,7 +1846,10 @@ function connect() {
   const source = new EventSource(`/runs/${runId}/stream`);
   const setLive = (on) => $("#live").classList.toggle("off", !on);
   source.onopen = () => setLive(true);
-  source.onerror = () => setLive(false);
+  source.onerror = () => {
+    setLive(false);
+    checkSignedIn();
+  };
   source.addEventListener("files", (e) => applyFiles(JSON.parse(e.data)));
   source.addEventListener("file", (e) => onFile(JSON.parse(e.data)));
   source.addEventListener("agent", (e) => applyAgent(JSON.parse(e.data)));
@@ -1856,7 +1860,7 @@ function connect() {
 
 async function load() {
   $("#runId").textContent = runId;
-  const res = await fetch(`/runs/${runId}/files`);
+  const res = await fetchSignedIn(`/runs/${runId}/files`);
   if (!res.ok) {
     $("#docHost").replaceChildren(el("p", "empty", "No run with this id."));
     return;

@@ -15,7 +15,8 @@ import type { WorkflowRun } from "@yok/sdk";
 import { runDirOf } from "@yok/sdk";
 import { VERSION, withStorage } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, seedRun } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, seedRun, seedUser } from "./fake-host.ts";
+import { hashToken } from "./identity.ts";
 import { publicOrigin, readPort, serverDomain, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
@@ -124,6 +125,29 @@ test("SC314 (SC26): a restarted server types the comments an earlier one left be
   expect(await delivered()).toBe(true);
   expect(calls[0]).toContain("1 new comment");
 });
+
+test.each([
+  ["SERVER_DOMAIN=yok.example.com\n", 401],
+  ["SERVER_DOMAIN=https://\n", 200],
+  ["LINEAR_API_KEY=lin\n", 200],
+])(
+  "SC2: a started server whose .env holds %p answers a bare /api/runs with %p, the gate being read at start",
+  async (env, status) => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-gate-")));
+    writeFileSync(join(home, ".env"), env);
+    const { host } = fakeHost(EMPTY_BOX);
+    const server = await startServer({
+      home,
+      runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${readPort(home)}/api/runs`);
+      expect(res.status).toBe(status);
+    } finally {
+      await server.stop();
+    }
+  },
+);
 
 test("SC128: each agent's runtime checks carry its plugin check, run against the binary agentBinary names", () => {
   expect(runtimeChecks("claude").map((check) => check.name)).toContain("claude-plugin");
@@ -238,13 +262,19 @@ test.each([
 ])(
   "SC1008: with .env %p, dashboard links start with %p, else http://localhost:PORT",
   async (env, domainOrigin) => {
-    const { server, port, origin } = await startedServer(env);
+    const { server, home, port, origin } = await startedServer(env);
     const expected = domainOrigin ?? `http://localhost:${port}`;
+    const token = await withStorage(home, async (storage) => {
+      const userId = await seedUser(storage, { name: "Ada", github: { id: 1, login: "ada" } });
+      await storage.users.createToken(userId, "test", hashToken("yok_test"));
+      return "yok_test";
+    });
+    const headers = { authorization: `Bearer ${token}` };
     try {
-      expect(await (await fetch(`${origin}/api/runs/view`)).json()).toEqual({
+      expect(await (await fetch(`${origin}/api/runs/view`, { headers })).json()).toEqual({
         view: `${expected}/`,
       });
-      expect(await (await fetch(`${origin}/api/runs/r-1/view`)).json()).toEqual({
+      expect(await (await fetch(`${origin}/api/runs/r-1/view`, { headers })).json()).toEqual({
         view: `${expected}/runs/r-1`,
       });
     } finally {

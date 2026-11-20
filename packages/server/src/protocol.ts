@@ -40,14 +40,18 @@ export const readHomeEnv = (home: string): Record<string, string | undefined> =>
 
 // The domain a reverse proxy in front of yok answers on; this machine's own address without one.
 // A browser sends its Host lowercase and without a scheme, so the saved value is cleaned to match.
-export const serverDomain = (home: string, port: number): string => {
-  const domain = (readHomeEnv(home).SERVER_DOMAIN ?? "")
+const savedDomain = (home: string): string =>
+  (readHomeEnv(home).SERVER_DOMAIN ?? "")
     .trim()
     .toLowerCase()
     .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
     .replace(/\/+$/, "");
-  return domain || `localhost:${port}`;
-};
+
+export const serverDomain = (home: string, port: number): string =>
+  savedDomain(home) || `localhost:${port}`;
+
+// A server with a SERVER_DOMAIN is shared, and every caller must sign in; one without is local and open.
+export const isGated = (home: string): boolean => savedDomain(home) !== "";
 
 // Plain http only for this machine: any other domain is reached through a proxy doing https.
 export const publicOrigin = (domain: string): string =>
@@ -86,6 +90,7 @@ export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
       "bad-request",
+      "unauthenticated",
       "not-found",
       "conflict",
       "agent-failed",

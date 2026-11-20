@@ -7,7 +7,9 @@ import { memoryStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import {
   dropGitHubToken,
+  hashToken,
   identityRoutes,
+  requireCaller,
   safeNext,
   sessionSecret,
   signValue,
@@ -86,13 +88,14 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
   };
   let clock = NOW;
   const storage = memoryStorage();
-  const app = new Hono().route(
+  const now = () => clock;
+  const app = new Hono().use("*", requireCaller({ home, storage, now, gated: false })).route(
     "/",
     identityRoutes({
       home,
       storage,
       publicOrigin: "http://localhost:4000",
-      now: () => clock,
+      now,
       log: noopLogger,
       githubFetch,
     }),
@@ -425,6 +428,28 @@ describe("Slack link page", () => {
     expect(unlink.headers.get("location")).toBe("/settings");
     expect((await s.storage.users.list())[0]?.[1]?.slack).toBeUndefined();
     expect(await (await s.app.request("/settings", { headers })).text()).toContain("Not linked");
+  });
+
+  test("a CLI token cannot unlink Slack or disconnect GitHub: those routes take a cookie only", async () => {
+    const s = setup();
+    const { done } = await signIn(s);
+    const userId = (await s.storage.users.list())[0]?.[0] ?? "";
+    await s.storage.users.addUserAccount(userId, { provider: "slack", providerId: "U7" });
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const bearer = { authorization: "Bearer yok_abc" };
+
+    for (const path of ["/settings/slack/unlink", "/settings/github/disconnect"]) {
+      const res = await s.app.request(path, { method: "POST", headers: bearer });
+      expect([path, res.status]).toEqual([path, 401]);
+    }
+    expect((await s.storage.users.find(userId))?.slack).toBe("U7");
+    expect((await s.storage.users.find(userId))?.accounts.github?.token).toBe("gho_a");
+    const unlink = await s.app.request("/settings/slack/unlink", {
+      method: "POST",
+      headers: { cookie: cookieOf(done) },
+    });
+    expect(unlink.status).toBe(302);
+    expect((await s.storage.users.find(userId))?.slack).toBeUndefined();
   });
 });
 

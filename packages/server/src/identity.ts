@@ -1,11 +1,12 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { notifierHooks } from "@yok/core";
 import type { ILogger, IStorage, Result } from "@yok/sdk";
-import type { Accounts, GitHubSignIn, UserEntry } from "@yok/sdk/internal";
-import { type Context, Hono } from "hono";
+import type { Accounts, GitHubSignIn, User, UserEntry } from "@yok/sdk/internal";
+import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import * as z from "zod";
+import { errorResponse, type Vars } from "./api.ts";
 import { readHomeEnv, updateHomeEnv } from "./protocol.ts";
 
 const GITHUB = "https://github.com";
@@ -178,13 +179,99 @@ export const dropGitHubToken = async (storage: IStorage, [userId, user]: UserEnt
   await storage.users.addUserAccount(userId, account);
 };
 
-export const sessionUser = async (c: Context, deps: IdentityDeps): Promise<UserEntry | null> => {
+export type Caller = Readonly<{
+  userId: string;
+  user: User;
+  via: "cookie" | "token";
+  // the CLI token that signed the request in; absent for a cookie
+  tokenId?: string;
+}>;
+
+export const hashToken = (token: string): string =>
+  createHash("sha256").update(token).digest("hex");
+
+const BEARER = /^Bearer\s+(\S+)\s*$/i;
+
+// A user whose access was revoked at sign-in is no caller, however valid the cookie or token.
+const activeUser = async (storage: IStorage, userId: string): Promise<User | undefined> => {
+  const user = await storage.users.find(userId);
+  return user?.accessRevokedAt === undefined ? user : undefined;
+};
+
+const callerByToken = async (deps: CallerDeps, token: string): Promise<Caller | undefined> => {
+  const found = await deps.storage.users.findToken(hashToken(token));
+  if (found === undefined) return undefined;
+  const user = await activeUser(deps.storage, found.userId);
+  if (user === undefined) return undefined;
+  await deps.storage.users.touchToken(found.id, deps.now());
+  return { userId: found.userId, user, via: "token", tokenId: found.id };
+};
+
+const callerByCookie = async (c: Context, deps: CallerDeps): Promise<Caller | undefined> => {
   const cookie = getCookie(c, SESSION_COOKIE);
-  if (cookie === undefined) return null;
+  if (cookie === undefined) return undefined;
   const session = verifyValue(await sessionSecret(deps.home), cookie, "session", deps.now());
-  if (session === null) return null;
-  const user = await deps.storage.users.find(session.sub);
-  return user === undefined ? null : [session.sub, user];
+  if (session === null) return undefined;
+  const user = await activeUser(deps.storage, session.sub);
+  return user === undefined ? undefined : { userId: session.sub, user, via: "cookie" };
+};
+
+export type CallerDeps = Readonly<{
+  home: string;
+  storage: IStorage;
+  now: () => Date;
+  // SERVER_DOMAIN was set when the server started
+  gated: boolean;
+}>;
+
+// What a shared server leaves open without a caller. Slack's signature is the gate of its hook;
+// the others are how a person or the CLI gets a credential in the first place.
+const OPEN_PATHS: ReadonlySet<string> = new Set([
+  "/api/health",
+  "/login",
+  "/auth/github",
+  "/auth/github/callback",
+  "/api/hooks/slack",
+]);
+const READ_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
+const wantsPage = (c: Context): boolean =>
+  READ_METHODS.has(c.req.method) && c.req.header("accept")?.includes("text/html") === true;
+
+// A browser navigation goes to sign in; the API and the dashboard's own requests get a 401 they
+// can read, including the terminal's upgrade request, which is answered before any upgrade.
+const refuse = (c: Context, message: string): Response => {
+  if (c.req.path.startsWith("/api/")) return errorResponse(c, 401, "unauthenticated", message);
+  if (!wantsPage(c)) return c.text(`unauthenticated: ${message}`, 401);
+  const url = new URL(c.req.url);
+  return c.redirect(loginRedirect(url.pathname + url.search));
+};
+
+// Works out who is calling on every request, so a handler can show a signed-in view on a local
+// server too. Only a gated server refuses: no caller, or a cookie caller's change with no Origin
+// (hostGuard has already checked an Origin that is sent), is turned away.
+export const requireCaller =
+  (deps: CallerDeps): MiddlewareHandler<{ Variables: Vars }> =>
+  async (c, next) => {
+    const bearer = BEARER.exec(c.req.header("authorization") ?? "")?.[1];
+    const caller =
+      bearer === undefined ? await callerByCookie(c, deps) : await callerByToken(deps, bearer);
+    c.set("caller", caller);
+    if (!deps.gated || OPEN_PATHS.has(c.req.path)) return next();
+    if (caller === undefined) return refuse(c, "sign in with yok login, or send a valid token");
+    const changes = !READ_METHODS.has(c.req.method);
+    if (caller.via === "cookie" && changes && c.req.header("origin") === undefined) {
+      return c.text("forbidden: a request that changes something must send an Origin", 403);
+    }
+    return next();
+  };
+
+// For a route that mints or revokes a credential: a token must not be able to make more of itself.
+export const cookieOnly: MiddlewareHandler<{ Variables: Vars }> = async (c, next) => {
+  if (c.get("caller")?.via === "token") {
+    return refuse(c, "this needs a signed-in browser session, not a token");
+  }
+  return next();
 };
 
 // The dashboard's tokens (runs.html), so these pages read as the same product in light and dark.
@@ -247,6 +334,11 @@ const page = (title: string, body: ReturnType<typeof html>) => html`<!doctype ht
 ${raw(STYLE)}</style></head>
 <body><header class="bar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>yok</a></header>
 <main><section class="card"><h1>${title}</h1>${body}</section></main></body></html>`;
+
+const signedInUser = (c: Context<{ Variables: Vars }>): UserEntry | null => {
+  const caller = c.get("caller");
+  return caller === undefined ? null : [caller.userId, caller.user];
+};
 
 const loginRedirect = (path: string): string => `/login?next=${encodeURIComponent(path)}`;
 
@@ -360,8 +452,13 @@ const settingsPage = ([, user]: UserEntry) =>
 // page therefore names the Slack member and the yok user and links only on a click, a POST the
 // session cookie's SameSite=Lax keeps other sites from sending. The user comes from the session,
 // never the URL: the state names only the Slack member.
-const linkSlackPage = async (c: Context, deps: IdentityDeps, state: string, confirmed: boolean) => {
-  const signedIn = await sessionUser(c, deps);
+const linkSlackPage = async (
+  c: Context<{ Variables: Vars }>,
+  deps: IdentityDeps,
+  state: string,
+  confirmed: boolean,
+) => {
+  const signedIn = signedInUser(c);
   const url = new URL(c.req.url);
   if (signedIn === null) {
     return c.redirect(loginRedirect(`${url.pathname}?state=${encodeURIComponent(state)}`));
@@ -391,12 +488,12 @@ const linkSlackPage = async (c: Context, deps: IdentityDeps, state: string, conf
   );
 };
 
-// Mounted at / by createRoot, behind the host guard and Caddy's password like the dashboard.
+// Mounted at / by createRoot, behind the host guard and requireCaller like the dashboard.
 export const identityRoutes = (deps: IdentityDeps) =>
-  new Hono()
-    .get("/login", async (c) => {
+  new Hono<{ Variables: Vars }>()
+    .get("/login", (c) => {
       const next = safeNext(c.req.query("next"));
-      if ((await sessionUser(c, deps)) !== null) return c.redirect(next);
+      if (signedInUser(c) !== null) return c.redirect(next);
       const start = `/auth/github?next=${encodeURIComponent(next)}`;
       return c.html(
         page(
@@ -425,8 +522,8 @@ export const identityRoutes = (deps: IdentityDeps) =>
       );
     })
     .get("/auth/github/callback", (c) => callback(c, deps))
-    .get("/settings", async (c) => {
-      const signedIn = await sessionUser(c, deps);
+    .get("/settings", (c) => {
+      const signedIn = signedInUser(c);
       return signedIn === null
         ? c.redirect(loginRedirect("/settings"))
         : c.html(settingsPage(signedIn));
@@ -436,20 +533,20 @@ export const identityRoutes = (deps: IdentityDeps) =>
       return c.redirect("/login");
     })
     .get("/link/slack", (c) => linkSlackPage(c, deps, c.req.query("state") ?? "", false))
-    .post("/link/slack", async (c) => {
+    .post("/link/slack", cookieOnly, async (c) => {
       const body = await c.req.parseBody();
       return linkSlackPage(c, deps, typeof body.state === "string" ? body.state : "", true);
     })
-    .post("/settings/slack/unlink", async (c) => {
-      const signedIn = await sessionUser(c, deps);
+    .post("/settings/slack/unlink", cookieOnly, async (c) => {
+      const signedIn = signedInUser(c);
       if (signedIn === null) return c.redirect(loginRedirect("/settings"));
       await deps.storage.users.removeUserAccount(signedIn[0], "slack");
       return c.redirect("/settings");
     })
     // Revoked now, not when the person's runs end: a run holding the token fails its next push,
     // which is what Disconnect asks for.
-    .post("/settings/github/disconnect", async (c) => {
-      const signedIn = await sessionUser(c, deps);
+    .post("/settings/github/disconnect", cookieOnly, async (c) => {
+      const signedIn = signedInUser(c);
       if (signedIn === null) return c.redirect(loginRedirect("/settings"));
       const [, user] = signedIn;
       const app = oauthApp(deps.home);

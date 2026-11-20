@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import {
   accessSync,
   constants,
@@ -13,6 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
@@ -44,6 +45,7 @@ import {
 } from "@yok/sdk";
 import { type EventDraft, memoryStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import * as z from "zod";
 import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
@@ -57,7 +59,8 @@ import {
   seedUser,
   seedRun as storeRun,
 } from "./fake-host.ts";
-import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
+import { hashToken, sessionSecret, signValue } from "./identity.ts";
+import { AddProjectBodySchema, ErrorBodySchema, type ListRunsQuery } from "./protocol.ts";
 import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
@@ -1059,7 +1062,7 @@ describe("createYokClient", () => {
 
 // The one app the server's listener serves, on port 4000 behind DOMAIN, with project demo and a
 // named run r-1 on its checkout; launched counts agent launches.
-const rootApp = async (domain: string) => {
+const rootApp = async (domain: string, gated = false) => {
   let launched = 0;
   const deps = await buildDeps(() => {
     launched += 1;
@@ -1086,6 +1089,7 @@ const rootApp = async (domain: string) => {
     ...deps,
     port: 4000,
     domain,
+    gated,
     now: () => new Date(),
     openInEditor: () => ({ ok: true, value: null }),
   });
@@ -1204,6 +1208,237 @@ describe("createRoot guard", () => {
   });
 });
 
+const DOMAIN = "yok.example.com";
+const SIGNED_IN = { host: DOMAIN, origin: `https://${DOMAIN}` };
+
+// A gated root with Ada signed in two ways: a session cookie, and a CLI token.
+const gatedRoot = async () => {
+  const root = await rootApp(DOMAIN, true);
+  const { storage, home } = root.deps;
+  const userId = await seedUser(storage, { name: "Ada", github: { id: 1, login: "ada" } });
+  const session = signValue(await sessionSecret(home), {
+    sub: userId,
+    purpose: "session",
+    exp: Date.now() + 60_000,
+  });
+  const token = `yok_${randomBytes(32).toString("base64url")}`;
+  await storage.users.createToken(userId, "laptop", hashToken(token));
+  return {
+    ...root,
+    userId,
+    cookie: { cookie: `yok_session=${session}` },
+    bearer: { authorization: `Bearer ${token}` },
+  };
+};
+
+// Routes the gate leaves open: the paths are the spec's list, not read from the code under test.
+const OPEN = ["/api/health", "/login", "/auth/github", "/auth/github/callback", "/api/hooks/slack"];
+
+// A path from a registered route pattern, with a made-up value for each parameter or wildcard.
+const concretePath = (pattern: string): string =>
+  pattern.replace(/:[A-Za-z]+/g, "x").replace(/\*/g, "x");
+
+describe("createRoot caller gate", () => {
+  test("SC1: with the gate on, a bare request to every registered route outside the open list is refused", async () => {
+    const { app } = await gatedRoot();
+    const routes = app.routes;
+    const gated = routes.filter((route) => !OPEN.includes(route.path.replace(/\/$/, "")));
+
+    expect(routes.map((route) => route.path)).toEqual(
+      expect.arrayContaining(["/api/runs", "/api/runs/:id/terminal", "/settings", "/runs/:id"]),
+    );
+    expect(gated.length).toBeGreaterThan(20);
+    for (const route of gated) {
+      const res = await app.request(concretePath(route.path), {
+        method: route.method === "ALL" ? "GET" : route.method,
+        headers: { host: DOMAIN },
+      });
+      expect([route.method, route.path, [302, 401].includes(res.status)]).toEqual([
+        route.method,
+        route.path,
+        true,
+      ]);
+    }
+  });
+
+  test("SC1: the open routes still answer a bare request", async () => {
+    const { app } = await gatedRoot();
+    const get = async (path: string, method = "GET") =>
+      (await app.request(path, { method, headers: { host: DOMAIN } })).status;
+
+    expect(await get("/api/health")).toBe(200);
+    expect(await get("/login")).toBe(200);
+    expect(await get("/auth/github")).toBe(503);
+    expect(await get("/auth/github/callback")).toBe(503);
+    expect(await get("/api/hooks/slack", "POST")).toBe(503);
+  });
+
+  test("SC2: without SERVER_DOMAIN the dashboard, the API and a run start answer a bare request as before", async () => {
+    const { app, deps } = await rootApp("localhost:4000");
+    const headers = { host: "localhost:4000", "content-type": "application/json" };
+
+    for (const path of ["/", "/runs", "/runs/r-1", "/api/projects"]) {
+      const res = await app.request(path, { headers });
+      expect([path, res.status]).toEqual([path, 200]);
+    }
+    const started = await app.request("/api/runs", { method: "POST", headers, body: runBody() });
+    expect(started.status).toBe(201);
+    expect((await deps.storage.runs.listRuns()).length).toBe(2);
+    expect(await (await app.request("/api/me", { headers })).json()).toEqual({ user: null });
+  });
+
+  test("SC3: a valid Bearer token reaches /api/me as its user and stamps the token's last use", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    const [before] = await deps.storage.users.listTokens(userId);
+    expect(before?.lastUsedAt).toBeNull();
+
+    const res = await app.request("/api/me", { headers: { host: DOMAIN, ...bearer } });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      user: { id: userId, name: "Ada", email: "", login: "ada" },
+    });
+    const [after] = await deps.storage.users.listTokens(userId);
+    expect(after?.lastUsedAt).not.toBeNull();
+  });
+
+  test("SC3: a valid session cookie reaches /api/me as its user", async () => {
+    const { app, userId, cookie } = await gatedRoot();
+
+    const res = await app.request("/api/me", { headers: { host: DOMAIN, ...cookie } });
+
+    expect(((await res.json()) as { user: { id: string } }).user.id).toBe(userId);
+  });
+
+  test("SC3: a token nobody issued, a bad cookie and a Bearer header with no token are refused", async () => {
+    const { app } = await gatedRoot();
+    const refused = [
+      { authorization: "Bearer yok_nope" },
+      { authorization: "Bearer " },
+      { cookie: "yok_session=garbage" },
+    ];
+
+    for (const headers of refused) {
+      const res = await app.request("/api/me", { headers: { host: DOMAIN, ...headers } });
+      expect([headers, res.status]).toEqual([headers, 401]);
+    }
+  });
+
+  test("SC4: a user with access revoked is refused by cookie and by token, until access is restored", async () => {
+    const { app, deps, userId, cookie, bearer } = await gatedRoot();
+    const status = async (headers: Record<string, string>) =>
+      (await app.request("/api/me", { headers: { host: DOMAIN, ...headers } })).status;
+    expect([await status(cookie), await status(bearer)]).toEqual([200, 200]);
+
+    await deps.storage.users.setAccessRevokedAt(userId, new Date().toISOString());
+
+    expect([await status(cookie), await status(bearer)]).toEqual([401, 401]);
+    await deps.storage.users.setAccessRevokedAt(userId, null);
+    expect([await status(cookie), await status(bearer)]).toEqual([200, 200]);
+  });
+
+  test("SC5: a cookie caller's POST with no Origin is refused and starts nothing; with the Origin, or by token, it goes through", async () => {
+    const { app, deps, cookie, bearer } = await gatedRoot();
+    const post = (headers: Record<string, string>) =>
+      app.request("/api/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json", host: DOMAIN, ...headers },
+        body: runBody(),
+      });
+
+    expect((await post(cookie)).status).toBe(403);
+    expect((await deps.storage.runs.listRuns()).length).toBe(1);
+    expect((await post({ ...cookie, origin: SIGNED_IN.origin })).status).toBe(201);
+    expect((await post(bearer)).status).toBe(201);
+    const read = await app.request("/api/projects", { headers: { host: DOMAIN, ...cookie } });
+    expect(read.status).toBe(200);
+  });
+
+  test("SC6: a browser navigation to a page with no caller is redirected to /login with the page as next", async () => {
+    const { app } = await gatedRoot();
+    const browser = { host: DOMAIN, accept: "text/html,application/xhtml+xml" };
+
+    for (const [path, next] of [
+      ["/", "%2F"],
+      ["/runs/r-1?tab=terminal", "%2Fruns%2Fr-1%3Ftab%3Dterminal"],
+      ["/settings", "%2Fsettings"],
+    ] as const) {
+      const res = await app.request(path, { headers: browser });
+      expect([path, res.status, res.headers.get("location")]).toEqual([
+        path,
+        302,
+        `/login?next=${next}`,
+      ]);
+    }
+  });
+
+  test("SC6: a dashboard data request with no caller gets 401 text, not a redirect", async () => {
+    const { app } = await gatedRoot();
+
+    for (const path of ["/runs", "/stream", "/runs/r-1/files", "/assets/shared.js"]) {
+      const res = await app.request(path, { headers: { host: DOMAIN, accept: "*/*" } });
+      expect([path, res.status, res.headers.get("content-type")]).toEqual([
+        path,
+        401,
+        expect.stringContaining("text/plain"),
+      ]);
+    }
+  });
+
+  test("SC7: an /api/* request with no caller gets 401 JSON with the code unauthenticated", async () => {
+    const { app } = await gatedRoot();
+
+    const res = await app.request("/api/runs", { headers: { host: DOMAIN } });
+
+    expect(res.status).toBe(401);
+    expect(ErrorBodySchema.parse(await res.json()).error.code).toBe("unauthenticated");
+  });
+
+  // The upgrade request as a browser sends it, over a real listener, since app.request cannot
+  // upgrade. It reports how the server answered: a plain reply (the refusal) or the upgrade.
+  const upgrade = async (app: ReturnType<typeof createRoot>, headers: Record<string, string>) => {
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch, websocket });
+    try {
+      return await new Promise<"upgraded" | number>((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port: server.port,
+          path: "/api/runs/r-1/terminal",
+          headers: {
+            host: DOMAIN,
+            connection: "Upgrade",
+            upgrade: "websocket",
+            "sec-websocket-version": "13",
+            "sec-websocket-key": randomBytes(16).toString("base64"),
+            ...headers,
+          },
+        });
+        req.on("response", (res) => resolve(res.statusCode ?? 0));
+        req.on("upgrade", (_res, socket) => {
+          socket.destroy();
+          resolve("upgraded");
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    } finally {
+      await server.stop(true);
+    }
+  };
+
+  test("SC8: a terminal websocket upgrade with no caller is answered 401 before the upgrade", async () => {
+    const { app } = await gatedRoot();
+
+    expect(await upgrade(app, {})).toBe(401);
+  });
+
+  test("SC8: the same upgrade with a session cookie still upgrades, so the 401 comes from the gate", async () => {
+    const { app, cookie } = await gatedRoot();
+
+    expect(await upgrade(app, { ...cookie, origin: SIGNED_IN.origin })).toBe("upgraded");
+  });
+});
+
 const SLACK_NOW = new Date("2026-10-29T12:00:00.000Z");
 const SLACK_ENV =
   "SLACK_SIGNING_SECRET=s3cret\nSLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n";
@@ -1223,6 +1458,7 @@ const slackRoot = async (
     ...deps,
     port: 4000,
     domain: "localhost:4000",
+    gated: false,
     now: () => SLACK_NOW,
     openInEditor: () => ({ ok: true, value: null }),
     slackFetch: async (url, init) => {

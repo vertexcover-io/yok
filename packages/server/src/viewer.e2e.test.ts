@@ -4,10 +4,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { yokTerminalHost } from "@yok/core";
+import { summarize, yokTerminalHost } from "@yok/core";
 import type { IStorage, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { memoryStorage, openStorage } from "@yok/sdk/internal";
+import { memoryStorage, openStorage, withStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import { type Browser, chromium, type Page } from "playwright";
@@ -21,7 +21,10 @@ import {
   seedState,
   seedUser,
 } from "./fake-host.ts";
+import { sessionSecret, signValue } from "./identity.ts";
 import { forgetFinishedRun } from "./overview.ts";
+import { readPort } from "./protocol.ts";
+import { startServer } from "./server.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
 
@@ -1752,6 +1755,68 @@ describe("resume and retry buttons in a browser", () => {
       ).toBe(0);
     } finally {
       await page.setViewportSize({ width: 1280, height: 800 });
+    }
+  }, 30000);
+});
+
+describe("a shared server's dashboard in a browser", () => {
+  const readyCheckout = async () => ({
+    env: { ok: true as const, value: {} },
+    report: summarize([]),
+  });
+
+  // A started server with SERVER_DOMAIN set, holding run r-1 and the user Ada.
+  const sharedServer = async () => {
+    const home = tempDir();
+    writeFileSync(join(home, ".env"), "SERVER_DOMAIN=yok.example.com\n");
+    const cwd = tempDir();
+    const userId = await withStorage(home, async (store) => {
+      await seedRun(store, {
+        id: "r-1",
+        project: "demo",
+        workflow: "w",
+        workflowPath: join(cwd, "w.yaml"),
+        inputs: {},
+        cwd,
+        sessions: [],
+        name: null,
+        terminal: null,
+        config: null,
+        tiers: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      return seedUser(store, { name: "Ada", github: { id: 1, login: "ada" } });
+    });
+    const { host } = fakeHost(EMPTY_BOX);
+    const server = await startServer({
+      home,
+      runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
+    });
+    const session = signValue(await sessionSecret(home), {
+      sub: userId,
+      purpose: "session",
+      exp: Date.now() + 60_000,
+    });
+    return { server, origin: `http://127.0.0.1:${readPort(home)}`, session };
+  };
+
+  test("SC6: a signed-out browser opening a run's page lands on /login, and a request the page makes after its cookie goes also does", async () => {
+    const { server, origin, session } = await sharedServer();
+    try {
+      await page.goto(`${origin}/runs/r-1`);
+      expect(new URL(page.url()).pathname).toBe("/login");
+      expect(new URL(page.url()).searchParams.get("next")).toBe("/runs/r-1");
+
+      await page.context().addCookies([{ name: "yok_session", value: session, url: origin }]);
+      await page.goto(`${origin}/runs/r-1`);
+      await until("document.querySelector('#runId').textContent === 'r-1'");
+      await page.context().clearCookies();
+      await page.evaluate(
+        'import("/assets/shared.js").then((shared) => shared.fetchSignedIn("/runs/r-1/files"))',
+      );
+      await page.waitForURL(`${origin}/login?next=%2Fruns%2Fr-1`);
+    } finally {
+      await server.stop();
     }
   }, 30000);
 });
