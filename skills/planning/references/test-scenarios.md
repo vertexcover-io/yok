@@ -1,130 +1,134 @@
-# Test Scenarios — what to test, at which level
+# Test Scenarios — every outcome the feature needs, in the fewest tests
 
-One row per requirement in plan.md's `## Test Matrix`: **requirement · level · strategy ·
-phase**, ordered by level — `unit` first, `qa-agent` last — so the pyramid is visible at a
-glance. Each scenario is written out in the phase file that proves it — in
-full, exactly once, never restated elsewhere or replaced by an id-only pointer. A flow
-provable only after every phase lands rows to plan.md's `## Acceptance`; the phase that
-completes the journey authors and runs it. Examples here use a neutral domain (user auth)
-unrelated to the feature being planned.
+The plan lists every outcome that must hold for the feature to ship, gives each one home, and
+packs the outcomes that need a test into as few rows as it can. Work in this order, once the
+phases' steps are written: list the outcomes, compare with a second list, give each outcome a
+home, pack the rows, write the rows, build the matrix, check the set.
 
-## Derive what to test
+## 1. List the outcomes
 
-The finished set is a **basis**: every scenario is a direction no other scenario covers, and
-together they span the behavior. Both halves bind — a row that spans nothing new is dropped
-or folded into the row that already covers it, and a gap left by folding is a missing row,
-not a saved one. The gate on each row: **name the failure only it catches.** Two rows no
-single bug can tell apart are one row.
+An outcome is one fact an actor can observe that must hold for the feature to ship. Write each
+as one line, numbered `On`, with the id of every source that states it. Where a source carries
+no id, number it in plan.md's `## Requirements`.
 
-Start from what the PRD already gives — stated requirements, acceptance criteria, named
-scenarios — and cite their ids. Then add what it implies but does not say:
+**From what the feature must do** — each stated requirement, acceptance criterion and named
+scenario, each `Done when` check of the design, and each constraint and assumption in plan.md
+that changes what an actor observes. Write one outcome for every answer the source has:
 
-- the negative/failure half of every requirement that has one
-- edge cases: empty, absent, duplicate, malformed, boundary value
-- state transitions beyond create (edit, delete) and the round-trip: saved data reads
-  back in its original shape, on the normal read path
-- config- or data-driven behavior: vary the driving data and assert the output follows —
-  never assert a constant
-- every capability an actor exercises across screens or services: one flow scenario per
-  named variant — a variant is never covered by substituting a peer
-- **the enforcement negative** — a gated requirement ("only an admin deletes") needs its
-  rejection asserted at the boundary that can actually reject the write, not only the UI
-  that hides the button. Assert the desired rejection even when today's code would accept
-  it — flag the gap, never invert the assertion. When no in-scope boundary can reject it,
-  record that omission as a one-line decision in the phase file; never fabricate an API
-  test.
-- **regression, when shared code is touched** — every existing behavior flowing through
-  code this plan modifies gets a scenario asserting it is unchanged, one per named
-  variant, labelled `(regression)`. When the source doc names no such requirement, add
-  the requirement and note the gap.
+- **who may** — the result each permitted actor gets
+- **who may not** — the refusal each other actor gets, at the boundary that can refuse it
+- **which inputs** — each value that changes the result, and each edge value the input can take
+  in use: empty, absent, duplicate, malformed, boundary
+- **which variants** — each named variant the feature treats differently, as itself
+- **what is saved** — it reads back in its original shape, on the normal read path
 
-Before writing phase files, pair every source item (requirement, edge case, risk, named
-variant, "shall not change" clause) with the scenario id(s) covering it, then read the
-pairing back the other way — as scratch work, never as an output section. Forward, it
-catches what a linear read misses: the third variant, the enforcement negative, the plain
-create-then-read. Backward, it proves the basis: a scenario pairing to nothing is dropped,
-and scenarios pairing to the same item survive only where each names a failure the others
-miss.
+**From what the steps change** — each diff, read as written. Write one outcome for every answer
+the change has:
 
-**Red flag:** two scenarios sharing a `Given`, or one whose named failure another already
-catches. Both are one scenario.
+- **what crosses** — where the change adds or alters what one piece sends another, the receiver
+  acts on it
+- **what fails** — what the actor meets when a reply is lost, late or refused
+- **who collides** — the result when two actors act at once
+- **what came before** — data saved before this change, and a caller built before it
+- **what should have ended** — access after it is revoked
+- **what stays** — an existing behavior an actor outside this feature observes, in code the
+  change modifies; label it `(regression)`
+- **what deploy needs** — a release order, a migration or a state of production data the
+  feature depends on
 
-## Behavior, not implementation
+**Each `Done when` check also gives its journey:** the outcomes an actor meets carrying the
+feature from their first action to the result the check names. Label them `(journey)`.
 
-A scenario states an **observable outcome** for an **actor** (user, API caller, another
-service) given a starting state and a trigger. It never names a private function, a call
-order, or an internal data shape — so it stays true across refactors.
+**Each frame the plan builds, and each `design/spec.md` rule only eyes can judge,** gives one
+outcome labelled `(design)`.
 
-| Implementation (rewrite it) | Behavior |
+**Write an outcome one home can prove whole.** Split an outcome whose parts need different
+levels into one outcome per part.
+
+## 2. Compare with a second list
+
+Dispatch one sub-agent with the design, plan.md, the phases' steps and step 1 of this reference,
+never your own list. Two outcomes are the same when one bug would break both. Add every outcome
+it lists that yours lacks, and keep every outcome yours has that it lacks.
+
+## 3. Give each outcome one home
+
+| Home | Holds an outcome that |
 |---|---|
-| "`hash(pw)` returns a 60-char string" | "the stored password is not the plaintext; the right password verifies, a wrong one doesn't" |
-| "`buildOptions()` calls `config.filter`" | "a viewer-role editor offers read only — never delete" |
+| a coded test at `unit` | one function or component, constructed alone, makes true or false |
+| a coded test at `integration` | needs the real pieces of one running process together |
+| a coded test at `e2e` | needs pieces that run separately, started as they run in use, or a rendering browser |
+| a QA walk, `qa-agent` | is labelled `(journey)` or `(design)`, or needs the feature's real surroundings; the QA agent (the `qa` stage) drives it after all phases land |
+| `existing: TEST` | a test the repo has, and the plan keeps, already proves by reaching the code the outcome is about |
+| `deploy: CHECK` | is a release order, a migration run or a state of production data; write the check in plan.md's `## Acceptance` |
+| `ask: QUESTION` | needs a product or design decision, or names something no step builds |
 
-The litmus: **if the assertion would change when internals are refactored without changing
-what the actor experiences, rewrite it.** Assert at the outermost stable boundary —
-rendered output, the public method and its persisted effect, the HTTP response. Naming a
-file in the setup is fine; the expectations assert only what an actor observes.
+- **Choose the cheapest level that exercises the outcome for real.** An outcome climbs a level
+  when the level below would have to fake the thing the outcome is about.
+- **Produce a failure where it happens.** An outcome about a lost, failed or refused reply sits
+  at the level that makes the real boundary fail; where no coded test can, it goes to a QA walk.
+- **An outcome a plain function could decide, held in code no test can construct alone,** is a
+  `## Blockers in existing code` entry with a phase step that opens it up, and sits at `unit`.
+- **A test library or helper the level needs and the repo lacks** is added by a phase step.
+- **An outcome the planned steps would fail** is a defect in the steps: correct the step, and ask
+  the user where the correction changes the design.
 
-## Format
+## 4. Pack the rows
 
-Write a phase's scenarios as **one table** under its `## Test Scenarios` heading, one row per
-scenario, ordered by level with `unit` first and `qa-agent` last:
+A row is one starting state and one trigger, at one level.
+
+- **Put every outcome observable in that scene into the row.**
+- **Keep inputs as cases of one row.** A case changes one input value and nothing else.
+- **Open a new row** for a different actor, starting state, trigger or level.
+- **Gather the `e2e` outcomes along one journey into one row,** on the shortest path that
+  crosses them. Extend the existing `e2e` test where one drives that journey; the row's `Given`
+  names it.
+- **Place a row in the phase that makes its last outcome true.**
+
+## 5. Write the rows
+
+Write a phase's scenarios as **one table** under its `## Test Scenarios` heading, ordered by
+level with `unit` first and `qa-agent` last:
 
 | Column | Holds |
 |---|---|
-| `ID` | `SCn`, unique across the whole plan; `tdd` carries it in the test title. Mark a regression `SCn (regression)`. |
-| `Scenario` | the one observable outcome, present tense, with no rationale clause |
-| `Given` | the starting state and the trigger, as one situation |
-| `Expected` | every outcome observable in that situation, each on its own line opened with `•` |
-| `Level` | `unit`, `integration`, `e2e` or `qa-agent`, chosen as the next section says |
-| `Traces` | the requirement, edge-case and risk ids the row proves |
+| `ID` | `SCn`, unique across the whole plan; `tdd` carries it in the test title. Mark a row whose outcomes are all kept behaviors `SCn (regression)`. |
+| `Scenario` | the scene's main outcome, present tense |
+| `Given` | the starting state and the trigger, as one situation; a row with cases lists them |
+| `Expected` | one line per outcome, opened with `•` and the outcome's id; a case line names its case |
+| `Level` | `unit`, `integration`, `e2e` or `qa-agent` |
+| `Traces` | the source ids of the row's outcomes |
+
+**State behavior.** `Expected` holds only what an actor observes, asserted at the outermost
+boundary the row's level reaches, and stays true through any refactor that leaves the actor's
+experience unchanged. A `Given` may name a file.
+
+**Every row reads on its own.** Write each cell in full, so a reader holding only that row can
+set it up, run it and judge it.
+
+**The `Scenario` cell is the line the user reads at the plan gate.** Write the negative half
+into `Expected` where it matters, in bold.
+
+**A `(design)` outcome's line reads `design`** after its id, then the state of the screen, the
+`design/FILE` and its width, or the spec part.
 
 **One cell, one line of markdown.** Break a cell into lines with `<br>`: each `•` outcome in
-`Expected`, and each numbered setup step in `Given` when the setup is genuinely staged. Escape a
-`|` inside a cell as `\|`.
+`Expected`, and each numbered setup step in `Given` when the setup is staged. Escape a `|` inside
+a cell as `\|`.
 
-**The `Scenario` cell is the line the user reads at the plan gate.** It states the outcome alone;
-the `Given` and `Expected` cells supply the why by being concrete. Write the negative half into
-`Expected` where it matters, in bold.
+## 6. Build the matrix
 
-**One `Given` is one scene.** Every outcome observable in it belongs to that row's `Expected`,
-however many facts that is. A second row is earned by a different starting state or a different
-trigger, never by a further fact visible in the same scene. A `Given` joining two independent
-conditions with "and" is either staged setup or two rows.
+Write one row per outcome in plan.md's `## Test Matrix`, grouped by source:
 
-**Trace every row.** A row with an empty `Traces` cell is dropped, or flags a missing requirement.
+| Column | Holds |
+|---|---|
+| `Outcome` | `On`, its label where it has one, then the outcome in one line |
+| `Source` | the ids of the sources that state it |
+| `Home` | exactly one of: the scenario id · `existing: TEST` · `deploy: CHECK` · `ask: QUESTION` |
 
-## Choose the level — pyramid, not ladder
+## 7. Check the set
 
-Four levels:
-
-- `unit` — a function or component constructed and asserted on its own
-- `integration` — real pieces wired together: an API route with its store, a component
-  with its children, a service against a real (local) dependency
-- `e2e` — a browser or full system driving the feature as an actor would
-- `qa-agent` — a property no automated assertion can check: visual correctness, copy tone,
-  "does this feel right" judgments. These rows are not coder-written tests — the QA agent
-  (the `qa` stage) drives the running app after all phases land and films
-  the proof. Use it for what genuinely needs eyes, never as an overflow bucket.
-
-Pick the **lowest level that gives confidence** (heuristic:
-`../../tdd/references/integration-e2e.md`): the finished matrix leans heavily on `unit`
-rows, carries some `integration` rows, and holds few `e2e` rows.
-
-An e2e row is earned only by a fact no lower level can see — computed layout, focus,
-navigation, a cross-service journey. Two checks before accepting any climb:
-
-- **Code shape is never a reason.** If the behavior would test at `unit` in a plain
-  function but the unit cannot be constructed in a test alone, that is a `## Blockers in
-  existing code` entry with a phase step that fixes it — not a silent level climb.
-- **A missing tool is a step, not a reason.** A test library or helper that does not
-  exist yet gets added by a phase. The reverse climb is also wrong: a level that cannot
-  see the property proves nothing — jsdom measures nothing, so sizes, truncation, and
-  overflow stay in a browser however small the unit.
-
-**Red flag:** more than a third of rows at `e2e`. Account for every one — a real-browser
-fact keeps its row; anything else traces to a named Blocker.
-
-The strategy column tells the coder what the scenario leaves open: what is faked, what is
-diffed, what is data-driven. A requirement with no row means the plan is incomplete or the requirement is
-not real — both are findings.
+- **Every source has an outcome.**
+- **Every outcome has one home,** and every `Expected` line opens with the id of an outcome whose
+  home is that row. The planning stage's `done` checks both.
+- **Every `deploy:` outcome has its line in `## Acceptance`.**

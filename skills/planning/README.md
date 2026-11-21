@@ -11,8 +11,8 @@ Standalone, invoke it with `/yok:planning` in Claude Code or `$planning` in Code
 ## What it does
 
 - Reads `design.md` in full and stops if its status is not `approved`. Dispatches sub-agents to locate code and binding ADRs and docs, and reads the design frames ticket-fetcher collected, then reads every file a step will edit.
-- Cuts the phases. Each is a vertical slice that can be tested end to end on its own; phase 1 is the thinnest slice that proves the wiring. Derives the test matrix, one row per requirement.
-- Writes `phases/phase-N.md` first, then `plan.md`. A contradiction between the design and the code goes to the user, and only their answer changes `design.md`.
+- Cuts the phases. Each is a vertical slice that can be tested end to end on its own; phase 1 is the thinnest slice that proves the wiring. 
+- Writes each phase's steps, then lists every outcome the feature needs, has a second sub-agent list them independently, and gives each outcome one home: a scenario, an existing test, a deploy check or a question for the user. Then writes `plan.md`. A contradiction between the design and the code goes to the user, and only their answer changes `design.md`.
 - Reviews its own work with lookup checks, then sends a fresh sub-agent to confirm every diff's context lines exist in the files. Sends each decision to the `adr` skill.
 - Shows the user the phases, the matrix counts and the file links, and asks for approval. A revision is applied and asked again.
 
@@ -29,5 +29,5 @@ Produces the `plan` artifact: `.yok/RUN_NAME/artifacts/plan.md` plus `artifacts/
 - `references/step-card.md`: the parts of an implementation step and how a change is shown as a diff.
 - `references/test-scenarios.md`: how to derive scenarios and pick each one's test level.
 - `references/docs-scout.md`: the brief for the sub-agent that finds binding docs.
-- `scripts/plan.ts`: the `design-coverage` verifier, which rejects a plan that leaves a frame in `design/INDEX.md` unclaimed. Tests beside it.
+- `scripts/plan.ts`: the `design-coverage` verifier, which rejects a plan that leaves a frame in `design/INDEX.md` unclaimed. The `outcome-homes` verifier rejects a plan whose Test Matrix leaves an outcome without one home, holds an unanswered `ask:`, or disagrees with the outcome ids on the scenario rows. Tests beside it.
 - `evals/evals.json`: an eval suite.

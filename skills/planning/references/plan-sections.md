@@ -3,8 +3,7 @@
 Paths: `.yok/RUN/artifacts/plan.md` · `.yok/RUN/artifacts/phases/phase-N.md`.
 
 The planner writes both directly. The user approves them and a coder builds from them, so they
-are the whole record of the plan. Examples below use a neutral domain, user auth, unrelated to
-the feature being planned.
+are the whole record of the plan.
 
 ## Who reads them
 
@@ -27,8 +26,8 @@ the feature being planned.
 
 ## Fixed format — do not vary
 
-Six things are matched by name or by shape. Rename or reshape one, and a downstream skill
-fails without saying why.
+These are matched by name or by shape. Rename or reshape one, and a downstream skill or the
+stage's `done` fails.
 
 | Item | Read by | Rule |
 |---|---|---|
@@ -38,6 +37,8 @@ fails without saying why.
 | `# Phase N: TITLE` and `Depends on:` | the coder | the first two lines of every phase file |
 | scenario ids | tdd | the format in `test-scenarios.md`, unique across the whole plan |
 | the `## Design Frames` heading | implement, qa | exact text |
+| the `## Test Matrix` heading and its `Outcome` and `Home` columns | `done` | exact text |
+| the `ID` and `Expected` columns of a `## Test Scenarios` table | `done` | exact text |
 
 Everything else is prose. The rules below govern it.
 
@@ -67,8 +68,8 @@ Include a section when it has content that meets its trigger. Omit it otherwise.
 section costs nothing. A thin one costs context, and it states "considered, nothing found" —
 a claim you did not mean to make.
 
-The floor is real: a small change can be its overview, approach, phases and their scenarios, and
-nothing else. That is a complete plan.
+The floor is real: a small change can be its overview, approach, phases, their scenarios and the
+test matrix, and nothing else. That is a complete plan.
 
 **Write plan.md in the table's order.** A reviewer reads it top to bottom: what the plan builds
 and how, the phases, what proves them, what was decided, and last the reference material a coder
@@ -83,13 +84,13 @@ looks up.
 | `## Signature index` | a name is defined in one phase and used in another |
 | `## Global constraints` | something binds every phase and is invisible to one built in isolation — fixed values, verbatim copy, platform limits. A value used in one phase belongs in that step. |
 | `## Blockers in existing code` | existing code must be repaired or worked around to build **or test** this |
-| `## Test Matrix` | requirements exist — one row per requirement |
-| `## Acceptance` | something is provable only after every phase lands |
+| `## Test Matrix` | always — one row per outcome, in the format `test-scenarios.md` gives |
+| `## Acceptance` | an outcome's home is `deploy:` — one check a person can run per outcome |
 | `## Assumptions` | the plan took a decision without asking anyone |
 | `## Decisions` | the user answered a question during planning, or the code contradicted `design.md` and the user's answer changed it |
 | `## ADRs` | the docs scout returned ADRs that bind this work, or this stage wrote a new ADR |
 | `## Project Docs` | the docs scout returned docs under `docs/`, outside `docs/adr/`, that bind this work |
-| `## Requirements` | there is no requirements document, so planning established the ids itself |
+| `## Requirements` | a source of outcomes carries no id, so planning numbered it |
 | `## Deferred` | work was deliberately excluded, or the design deferred it |
 | `## Design System` | a project extension produced a component inventory — that extension owns the section's shape |
 | `## Design Frames` | a design exists — always the last section |
@@ -128,9 +129,9 @@ Only what must be repaired or worked around to build this — problems that bloc
 make the new code hard to write, test, or understand. Each one gets a phase.
 
 **A unit no test can construct is a blocker, even when the feature builds fine around it.** The
-symptom shows up in the Test Matrix, not in the steps: rows climb to `e2e` because
-nothing lower can reach the behavior. Name the shape that forces the climb, quote it, and give a
-phase the step that opens it up. `test-scenarios.md`'s red flag says when to go looking.
+symptom shows up in the Test Matrix, not in the steps: an outcome a plain function could decide
+has its home above `unit`. Name the shape that forces the climb, quote it, and give a phase the
+step that opens it up.
 
 Pre-existing problems in a file you happen to be touching are out of scope. A long list dilutes the entries that actually block. If a row's
 resolution would be "leave the code as is", it is not a blocker — delete the row.
@@ -186,7 +187,7 @@ Header: `# Phase N: THE CAPABILITY TITLE`, then a `Depends on:` line.
 |---|---|---|
 | `## Goal` | why this phase exists, what it unlocks, and the `Done when` check it makes pass or the part of one it proves | file lists, steps |
 | `## Implementation` | how, as ordered steps, each written to `step-card.md` | scenario prose, done-criteria |
-| `## Test Scenarios` | the behavior that proves it, as one table with a row per scenario and its level, in the format `test-scenarios.md` gives | implementation detail, cross-phase flows |
+| `## Test Scenarios` | the behavior that proves it, as one table with a row per scenario and its level, in the format `test-scenarios.md` gives | implementation detail |
 | `## Commit` | the message | — |
 
 **What crosses phases lives in plan.md.** The names one phase hands another are listed once, in
@@ -208,4 +209,4 @@ before-and-after pair makes them reconstruct it.
 ### Test-file steps
 
 Not a step. The scenarios define what the tests assert. Where the *strategy* is a real
-decision — what is faked, what is driven by data — it belongs in the matrix's strategy column.
+decision — what is faked, what is driven by data — it belongs in the row's `Given`.
