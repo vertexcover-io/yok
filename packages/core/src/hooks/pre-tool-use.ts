@@ -31,18 +31,15 @@ const DATABASE_FILES = ["yok.db", "yok.db-wal", "yok.db-shm"];
 const BASH_ANTIPATTERNS_TIMEOUT_MS = 10_000;
 
 // The absolute path when PATH is one of the database's files, else undefined.
-export const protectedRecordOf = (path: string, base: PathBase): string | undefined => {
+export const databaseFileOf = (path: string, base: PathBase): string | undefined => {
   const abs = expandPath(path, base);
   if (abs === undefined) return undefined;
   return DATABASE_FILES.some((file) => abs === join(base.yokHome, file)) ? abs : undefined;
 };
 
-const recordMessage = (path: string): string =>
-  `${path} is yok's database, so this call was refused. A run changes only through ` +
-  "`yok orchestrate` commands: move it with `yok orchestrate next --run NAME`, record a node " +
-  "with `yok orchestrate exec|done NODE_RUN_ID --run NAME`, add an event with " +
-  "`yok orchestrate emit TYPE --run NAME --source SKILL`, and link a session with " +
-  "`yok orchestrate link-session --run NAME --agent AGENT --session-id ID`. Reading it is fine.";
+const databaseRefusal = (path: string): string =>
+  `${path} is yok's database, so this call was refused. Change a run only through ` +
+  "`yok orchestrate` (`next`, `exec`, `done`, `emit`, `link-session`). Reading it is fine.";
 
 const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   if (call.kind === "file-write") return [call.path];
@@ -51,7 +48,7 @@ const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
 
 const deniedPath = (call: ToolCall, base: PathBase): string | undefined =>
   callTargets(call, base)
-    .map((target) => protectedRecordOf(target, base))
+    .map((target) => databaseFileOf(target, base))
     .find((found) => found !== undefined);
 
 // Refuses a call that writes, moves or deletes yok's database.
@@ -61,7 +58,7 @@ export const recordGuard: PreToolUseHandler = {
     const base = { cwd: use.cwd, home: homedir(), yokHome: yokHome(deps.env) };
     const path = deniedPath(use.call, base);
     if (path === undefined) return ALLOW;
-    return { kind: "deny", message: recordMessage(path), path };
+    return { kind: "deny", message: databaseRefusal(path), path };
   },
 };
 

@@ -918,7 +918,9 @@ describe("SC26: orchestrate hook --agent codex", () => {
     });
     expect(JSON.parse(denied.stdout).hookSpecificOutput).toMatchObject({
       permissionDecision: "deny",
-      permissionDecisionReason: expect.stringContaining("orchestrate next --run NAME"),
+      permissionDecisionReason: expect.stringContaining(
+        "Change a run only through `yok orchestrate`",
+      ),
     });
 
     const stopped = hook(run, "stop", "continue-workflow", {

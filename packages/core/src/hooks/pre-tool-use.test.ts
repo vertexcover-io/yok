@@ -19,7 +19,7 @@ import {
 import { appendRunEvent, memoryStorage } from "@yok/sdk/internal";
 import {
   bashAntipatterns,
-  protectedRecordOf,
+  databaseFileOf,
   questionGuard,
   questionNotice,
   recordGuard,
@@ -27,9 +27,9 @@ import {
   runPreToolUse,
 } from "./pre-tool-use.ts";
 
-describe("protectedRecordOf", () => {
+describe("databaseFileOf", () => {
   const where = { cwd: "/repo", home: "/home/u", yokHome: "/home/u/.yok" };
-  const recordAt = (path: string) => protectedRecordOf(path, where);
+  const recordAt = (path: string) => databaseFileOf(path, where);
 
   test("SC7 — only yok.db and its -wal and -shm files are protected, however the home is spelled", () => {
     expect(recordAt("/home/u/.yok/yok.db")).toBe("/home/u/.yok/yok.db");
@@ -135,7 +135,7 @@ describe("recordGuard through runPreToolUse", () => {
       expect(verdict).toMatchObject({ kind: "deny", path: paths[index] });
       const message = verdict.kind === "deny" ? verdict.message : "";
       expect(message).toContain(`${paths[index]} is yok's database`);
-      expect(message).toContain("A run changes only through `yok orchestrate` commands");
+      expect(message).toContain("Change a run only through `yok orchestrate`");
     });
     const allowed = [
       use(cwd, write(join(home, "notes.txt"))),
@@ -176,9 +176,8 @@ describe("recordGuard through runPreToolUse", () => {
     const path = join(home, "yok.db");
     expect(verdict).toMatchObject({ kind: "deny", path });
     const message = verdict.kind === "deny" ? verdict.message : "";
-    expect(message).toContain("yok orchestrate next --run NAME");
-    expect(message).toContain("exec|done NODE_RUN_ID --run NAME");
-    expect(message).toContain("orchestrate emit");
+    expect(message).toContain("Change a run only through `yok orchestrate`");
+    expect(message).toContain("(`next`, `exec`, `done`, `emit`, `link-session`)");
     expect(message).not.toContain("bun run");
     expect((await events()).map((event) => event.payload)).toEqual([
       {

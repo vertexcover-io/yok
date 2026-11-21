@@ -216,7 +216,9 @@ describe("claudeAdapter.preToolUse", () => {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: expect.stringContaining("yok orchestrate next --run NAME"),
+          permissionDecisionReason: expect.stringContaining(
+            "Change a run only through `yok orchestrate`",
+          ),
         },
       });
     }

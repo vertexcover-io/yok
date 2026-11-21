@@ -173,7 +173,9 @@ describe("codexAdapter.preToolUse", () => {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: expect.stringContaining("orchestrate next --run NAME"),
+          permissionDecisionReason: expect.stringContaining(
+            "Change a run only through `yok orchestrate`",
+          ),
         },
       });
     }
