@@ -44,6 +44,10 @@
        title       the question it answers
        verdict     SUCCESS | FAILURE | NOT VERIFIED | INVALID
        url         the path it opened on, query kept, host left out
+       phone       {replay, why} on a browser scenario
+                   replay: required | not needed
+                   why: the one line that settled it
+       thirdParty  the service whose own screen the checks are read on
        reason      on a scenario that did not pass
        given[]     plain sentences: the setup the scenario starts from
        steps[]     {when, checks[]} in the order they happen
@@ -54,8 +58,9 @@
                      saw: on a fail, what was seen instead
                      note: one line a reader needs beside the check
                      proofs[]: the ids of the proofs that back this check
-       recordings[] {label, kind, device, browser, video, frames[], note}
+       recordings[] {label, kind, device, browser, size, video, frames[], note}
                    label: the name on the card
+                   size: phone on a phone replay
                    kind: how it was driven
                    device, browser: what it ran on
                    video: the file; its size, shape and length are read from it

@@ -532,6 +532,9 @@ const scenario = (more: Record<string, unknown>) => ({
   ...more,
 });
 
+const take = { browser: "Chrome", video: "a.mp4", frames: [{ src: "a.png", label: "Saved" }] };
+const phoneTake = { ...take, size: "phone", video: "a-phone.mp4" };
+
 const messages = async (given: Record<string, unknown>): Promise<string[]> =>
   (await checkShape([scenario(given), scenario({ n: "02" })])).findings.map(
     ({ message }) => message,
@@ -597,6 +600,22 @@ describe("checkReportShape", () => {
       { recordings: [{ video: "a.mp4" }] },
       "primary journey",
     ],
+    ["a browser recording and no phone decision", { recordings: [take] }, "no phone decision"],
+    [
+      "a phone decision that gives no reason",
+      { recordings: [take], phone: { replay: "not needed", why: " " } },
+      "no phone decision",
+    ],
+    [
+      "a phone replay it owes and did not film",
+      { recordings: [take], phone: { replay: "required", why: "It shows a new screen." } },
+      "owes a phone replay",
+    ],
+    [
+      "a third party's screen it graded without filming it",
+      { thirdParty: "the chat service" },
+      "the chat service",
+    ],
     [
       "a proof whose raw runs long",
       {
@@ -627,6 +646,22 @@ describe("checkReportShape", () => {
     expect(found.length).toBeGreaterThan(0);
     expect(found.every((message) => message.startsWith("scenario 01"))).toBe(true);
     expect(found.join(" ")).toContain(expected);
+  });
+
+  test("a scenario passes with the phone replay it owes, with none where none is owed, and unverified on a third party's screen", async () => {
+    const owed = { replay: "required", why: "It shows a new screen." };
+    const spared = { replay: "not needed", why: "Only a label changed." };
+
+    expect(await messages({ recordings: [take, phoneTake], phone: owed })).toEqual([]);
+    expect(await messages({ recordings: [take], phone: spared })).toEqual([]);
+    expect(
+      await messages({
+        verdict: "NOT VERIFIED",
+        thirdParty: "the chat service",
+        steps: [step({ text: "The message shows its link." })],
+        proofs: [],
+      }),
+    ).toEqual([]);
   });
 
   test("a design check cites proofs like any other, and its failure makes the scenario a FAILURE", async () => {

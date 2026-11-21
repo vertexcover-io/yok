@@ -6,6 +6,7 @@ with a browser open; grading, videos, and the report are in `writing-the-report.
 **Contents:**
 
 - Setup
+- Signing a person in to a third party's screen
 - The rules
 - Catching a self-dismissing element
 - Scout, then film — one take per scenario
@@ -18,19 +19,22 @@ the way — is knowledge the project owns, held in its own skills and `CLAUDE.md
 
 ## Setup
 
-Use the binary directly (`npx` routes through Node instead of the Rust client and pays that cost on every call). On
-Linux, launch with `agent-browser --args "--no-sandbox" open <url>` — without it Chrome dies on `No usable
-sandbox!` and every later command reports a dead session. Export two variables before the first `open`, so every
-command in the run and Step 7's cleanup agree on them:
+Use the binary directly (`npx` routes through Node instead of the Rust client and pays that cost on every call).
+Export three variables before the first `open`, so every command in the run and Step 7's cleanup agree on them:
 
 ```bash
 export AGENT_BROWSER_SESSION=RUN               # the desktop session, named, so Step 7 closes the browser it actually drove
 export AGENT_BROWSER_DEFAULT_TIMEOUT=2000      # fail a doomed wait fast instead of at the 25s default
+export AGENT_BROWSER_ARGS="--no-sandbox"       # on Linux, where Chrome dies on `No usable sandbox!` without it
 ```
 
+**A launch setting is exported, the same on every command of its session**: a command that arrives with other
+launch settings than the running browser's starts a new browser in its place.
+
 **A session keeps the device it opened as for its whole life**, so the run holds one named session per device: the
-desktop session for every desktop scenario and for Steps 3 and 4, and a phone session of its own, opened where
-*Replaying the scenario on a phone* says. Each is an isolated browser with its own sign-in.
+desktop session for every desktop scenario and for Steps 3 and 4, a session per third party's screen, opened as
+the next section says, and a phone session of its own, opened where *Replaying the scenario on a phone* says.
+Each is an isolated browser with its own sign-in.
 
 Without `AGENT_BROWSER_SESSION` every command drives the session named `default`, and a cleanup naming anything else
 reports success while releasing nothing. Raise the timeout where the stack is across a network, since a budget tuned
@@ -43,6 +47,38 @@ the `wait` verbs, viewports, tabs, `record`:
 agent-browser skills get core          # ~475 lines. Look things up here.
 agent-browser skills get core --full   # ~2400 lines (~19k tokens). A lookup surface, not a read.
 ```
+
+## Signing a person in to a third party's screen
+
+**Each third party's screen gets a session of its own, on a profile that outlives the run.** Export the
+session's launch settings once, in one file sourced before every command that drives it, so each command
+reaches the same running browser:
+
+```bash
+export AGENT_BROWSER_SESSION=RUN-NAME
+export AGENT_BROWSER_PROFILE=$HOME/.yok/sign-ins/NAME
+export AGENT_BROWSER_ARGS="--no-sandbox"
+```
+
+**A session takes one command at a time**: send the next once the last has returned.
+
+1. **Look for a saved sign-in, hidden**: `open` the address Step 1 found, then `wait` on a condition only the
+   signed-in screen meets. Where it holds, the session is ready.
+2. **Otherwise `close` it and ask the user**, as Step 2 says.
+3. **On a yes, show the browser once**: add `export AGENT_BROWSER_HEADED=1` to the file and `open` the address
+   again. On a host with no display, run `agent-browser dashboard start` too and give the user the address it
+   prints, where the session is shown and takes their input.
+4. **Wait for the signed-in condition in the foreground, as the one command running**: the `wait` from item 1
+   with `--timeout` set to `sign-in-wait` in milliseconds. The window is the user's until it returns.
+5. **Then hide the browser for the rest of the round**: `close` the session, take `AGENT_BROWSER_HEADED` out of
+   the file, `open` the address again and run item 1's `wait`. Where the hidden browser comes back signed out,
+   put the export back, `open` once more and drive that one window to Step 7.
+6. **When item 4's wait runs out, `close` the session.** Step 2 grades the scenarios that waited on it.
+
+**A scenario with a `thirdParty` runs its whole take in that service's session.** The session holds that
+service's sign-in alone: where the flow crosses to the product's own screens, sign in on the page it lands on.
+Close each tab a step opened once its take is filmed. Act only on what this run posted there, and work out
+anything about the browser itself in a scratch session under another name and profile.
 
 ## The rules
 
@@ -291,8 +327,8 @@ identifiable in that same frame.**
 
 ## Replaying the scenario on a phone
 
-**The replays run last, in the phone's own session.** Once every desktop scenario is filmed, open a second named
-session and make it the phone before the app loads:
+**The replays run last, in the phone's own session, for every scenario whose `phone.replay` is `required`.** Once
+every desktop scenario is filmed, open a second named session and make it the phone before the app loads:
 
 ```bash
 export AGENT_BROWSER_SESSION=RUN-phone         # on every phone command; the desktop session keeps its own name
@@ -321,7 +357,8 @@ The replay grades the scenario's own checks, so the walk answers the same questi
 - **Controls are reached the way the phone presents them** — driven through the menu the layout collapsed them into,
   the way the user gets to them.
 
-**The replay joins its scenario as one more recording**, as the `writing-the-report` reference says. A check
+**The replay joins its scenario as one more recording whose `size` is `phone`**, as the `writing-the-report`
+reference says. A check
 that fails on the phone fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes
 itself: the user on that device, and the surface they touched. **A flow the phone reaches by different steps is
 a scenario of its own**, with the phone take as its one recording.
