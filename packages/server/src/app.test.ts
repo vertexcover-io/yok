@@ -2143,12 +2143,12 @@ describe("Slack commands", () => {
     expect(table?.rows.find((row) => row[0] === "demo2")).toEqual(["demo2", "ready", dir, "slack"]);
   });
 
-  test("SC36: project remove demo2 --purge on a folder yok did not clone keeps it and says so", async () => {
+  test("SC36: project remove demo2 --force on a folder yok did not clone keeps it and says so", async () => {
     const { deps } = await chatDeps();
     const dir = gitRepo();
     await chat(deps, `project add demo2 --path ${dir}`);
 
-    expect(await chat(deps, "project remove demo2 --purge")).toBe(
+    expect(await chat(deps, "project remove demo2 --force")).toBe(
       `Removed *demo2*\nkept ${dir}: yok deletes only the folders it cloned`,
     );
     expect(existsSync(dir)).toBe(true);
@@ -2802,7 +2802,7 @@ describe("/projects", () => {
     expect((await listProjects(app)).map((project) => project.name)).toEqual(["web", "api"]);
   });
 
-  test("SC208, SC617: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
+  test("SC208, SC617: --force deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();
     const cloned = join(deps.home, "projects", "cloned");
     const placed = join(deps.home, "projects", "placed");
@@ -2813,26 +2813,26 @@ describe("/projects", () => {
     await addProjectEntry(deps.storage, "outside", outside);
     await addProjectEntry(deps.storage, "placed", placed);
     const app = createApi(deps);
-    const purge = async (name: string) => {
-      const res = await app.request(`/projects/${name}?purge=true`, {
+    const forceRemove = async (name: string) => {
+      const res = await app.request(`/projects/${name}?force=true`, {
         method: "DELETE",
       });
       return res.json();
     };
 
-    expect(await purge("cloned")).toEqual({
+    expect(await forceRemove("cloned")).toEqual({
       removed: "cloned",
       runs: [],
       purged: true,
       note: null,
     });
-    expect(await purge("outside")).toEqual({
+    expect(await forceRemove("outside")).toEqual({
       removed: "outside",
       runs: [],
       purged: false,
       note: `kept ${outside}: yok deletes only the folders it cloned`,
     });
-    expect(await purge("placed")).toEqual({
+    expect(await forceRemove("placed")).toEqual({
       removed: "placed",
       runs: [],
       purged: false,
@@ -2843,7 +2843,7 @@ describe("/projects", () => {
     expect(existsSync(placed)).toBe(true);
   });
 
-  test("SC208: purge keeps the target of a symlink in the clones folder, even one registered with a git URL", async () => {
+  test("SC208: --force keeps the target of a symlink in the clones folder, even one registered with a git URL", async () => {
     const { deps } = await projectDeps();
     const target = gitRepo();
     const link = join(deps.home, "projects", "link");
@@ -2851,7 +2851,7 @@ describe("/projects", () => {
     symlinkSync(target, link);
     await addProjectEntry(deps.storage, "link", link, "https://example.test/link.git");
 
-    const res = await createApi(deps).request("/projects/link?purge=true", {
+    const res = await createApi(deps).request("/projects/link?force=true", {
       method: "DELETE",
     });
 
@@ -2967,11 +2967,11 @@ describe("/projects", () => {
     expect(await deps.storage.runs.findRun("r-a")).toBeUndefined();
   });
 
-  test("SC614: --purge without --force on cloned with run r-a is 409 has runs, keeping the clone and the run", async () => {
+  test("SC614: remove without --force on cloned with run r-a is 409 has runs, keeping the clone and the run", async () => {
     const { deps } = await projectDeps();
     const cloned = await clonedWithRun(deps.storage, deps.home);
 
-    const res = await removeWith(deps, "/projects/cloned?purge=true");
+    const res = await removeWith(deps, "/projects/cloned");
 
     expect(res.status).toBe(409);
     expect((await errorOf(res)).message).toBe(

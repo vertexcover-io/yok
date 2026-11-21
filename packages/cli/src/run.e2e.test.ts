@@ -1668,12 +1668,12 @@ describe("yok --remote", () => {
       stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
     },
     {
-      args: ["project", "remove", "web", "--purge"],
+      args: ["project", "remove", "web"],
       answers: {
         "DELETE /api/projects/web": () =>
-          Response.json({ removed: "web", runs: [], purged: true, note: null }),
+          Response.json({ removed: "web", runs: [], purged: false, note: null }),
       },
-      request: { request: "DELETE /api/projects/web?purge=true&force=false", body: null },
+      request: { request: "DELETE /api/projects/web?force=false", body: null },
       stdout: /^removed web\n$/,
     },
   ])(
@@ -1702,7 +1702,7 @@ describe("yok --remote", () => {
 
       expect(result.stderr).toBe("");
       expect(routeCalls(server.seen)).toEqual([
-        { request: "DELETE /api/projects/web?purge=false&force=true", body: null },
+        { request: "DELETE /api/projects/web?force=true", body: null },
       ]);
       expect(result.stdout).toBe("removed web and its runs r-1, r-2\n");
     },

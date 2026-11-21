@@ -73,13 +73,9 @@ export const projectCommand = () => {
     .description("Forget a project; --force also deletes its runs and a folder yok cloned")
     .argument("<name>", "project name")
     .option("--force", "delete its finished runs too, and its folder when yok cloned it")
-    .option("--purge", "delete the folder too, when yok cloned it")
     .action(async (name, opts, command) => {
       const client = await resolveClient(isRemote(command));
-      const removed = await client.removeProject(name, {
-        purge: opts.purge === true,
-        force: opts.force === true,
-      });
+      const removed = await client.removeProject(name, { force: opts.force === true });
       if (!removed.ok) return fail(apiErrorText(removed.error));
       const { runs, note } = removed.value;
       const ran = runs.length === 0 ? "" : ` and its runs ${runs.join(", ")}`;

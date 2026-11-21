@@ -200,10 +200,7 @@ const removeProject = async (args: Args, _thread: ChatThread, deps: DispatchDeps
   const [name] = args.positionals;
   if (name === undefined) throw needsUsage();
   const { removed, runs, note } = unwrapApi(
-    await deps.client.removeProject(name, {
-      purge: args.values.purge === true,
-      force: args.values.force === true,
-    }),
+    await deps.client.removeProject(name, { force: args.values.force === true }),
   );
   const head = `Removed *${removed}*${runs.length === 0 ? "" : ` and its runs ${runs.join(", ")}`}`;
   return { text: [head, ...(note === null ? [] : [note])].join("\n") };
@@ -413,8 +410,8 @@ const COMMANDS: readonly ChatCommand[] = [
   },
   {
     words: ["project", "remove"],
-    usage: "project remove NAME [--force] [--purge]",
-    options: { force: { type: "boolean" }, purge: { type: "boolean" } },
+    usage: "project remove NAME [--force]",
+    options: { force: { type: "boolean" } },
     run: removeProject,
   },
   {
