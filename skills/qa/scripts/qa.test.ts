@@ -534,6 +534,7 @@ const scenario = (more: Record<string, unknown>) => ({
 
 const take = { browser: "Chrome", video: "a.mp4", frames: [{ src: "a.png", label: "Saved" }] };
 const phoneTake = { ...take, size: "phone", video: "a-phone.mp4" };
+const spared = { replay: "not needed", why: "Only a label changed." };
 
 const messages = async (given: Record<string, unknown>): Promise<string[]> =>
   (await checkShape([scenario(given), scenario({ n: "02" })])).findings.map(
@@ -617,6 +618,16 @@ describe("checkReportShape", () => {
       "the chat service",
     ],
     [
+      "a third party's screen it graded from a take of the product's own page",
+      { thirdParty: "the chat service", recordings: [take], phone: spared },
+      "the chat service",
+    ],
+    [
+      "a third party's screen it could not open, with a result on its check",
+      { verdict: "NOT VERIFIED", thirdParty: "the chat service", proofs: [] },
+      "carries a result",
+    ],
+    [
       "a proof whose raw runs long",
       {
         proofs: [{ ...proof, raw: Array.from({ length: 16 }, (_, i) => `value ${i}`).join("\n") }],
@@ -650,10 +661,16 @@ describe("checkReportShape", () => {
 
   test("a scenario passes with the phone replay it owes, with none where none is owed, and unverified on a third party's screen", async () => {
     const owed = { replay: "required", why: "It shows a new screen." };
-    const spared = { replay: "not needed", why: "Only a label changed." };
 
     expect(await messages({ recordings: [take, phoneTake], phone: owed })).toEqual([]);
     expect(await messages({ recordings: [take], phone: spared })).toEqual([]);
+    expect(
+      await messages({
+        thirdParty: "the chat service",
+        recordings: [{ ...take, thirdParty: "the chat service" }],
+        phone: spared,
+      }),
+    ).toEqual([]);
     expect(
       await messages({
         verdict: "NOT VERIFIED",

@@ -254,6 +254,10 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
     (recording) => recording["size"] === "phone" && list(recording["frames"]).length > 0,
   );
   const thirdParty = text(scenario["thirdParty"]);
+  const filmedOnThirdParty = recordings.some(
+    (recording) =>
+      text(recording["thirdParty"]) === thirdParty && list(recording["frames"]).length > 0,
+  );
   const raws = proofs.map((proof) => text(proof["raw"]));
   const cited = checks.flatMap((check) => strings(check["proofs"]));
   const failed = checks.filter((check) => check["result"] === "fail");
@@ -290,8 +294,12 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
       "owes a phone replay it does not have: film it on the phone as a recording whose size is phone, or grade it NOT VERIFIED",
     ],
     [
-      driven && thirdParty !== "" && !drivenByHand,
-      `reads the screen of ${thirdParty} with no take of it: film it on that screen, signed in, or grade it NOT VERIFIED`,
+      driven && thirdParty !== "" && !filmedOnThirdParty,
+      `reads the screen of ${thirdParty} with no take of it: film it on that screen, signed in, as a recording whose thirdParty names it, or grade it NOT VERIFIED`,
+    ],
+    [
+      !driven && thirdParty !== "" && stepChecks.some((check) => text(check["result"]) !== ""),
+      `carries a result on a check of ${thirdParty}'s screen it could not open: leave every check of a NOT VERIFIED scenario without a result`,
     ],
     [
       given.length === 0 || given.some((line) => line.trim() === ""),

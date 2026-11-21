@@ -58,9 +58,10 @@
                      saw: on a fail, what was seen instead
                      note: one line a reader needs beside the check
                      proofs[]: the ids of the proofs that back this check
-       recordings[] {label, kind, device, browser, size, video, frames[], note}
+       recordings[] {label, kind, device, browser, size, thirdParty, video, frames[], note}
                    label: the name on the card
                    size: phone on a phone replay
+                   thirdParty: the service whose session filmed it
                    kind: how it was driven
                    device, browser: what it ran on
                    video: the file; its size, shape and length are read from it

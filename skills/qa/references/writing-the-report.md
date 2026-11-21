@@ -137,6 +137,7 @@ generated — each as `{label, href, note}`.
 - **`device`** and **`browser`** — what it ran on, as the session reported them. An emulated device says it is
   emulated.
 - **`size`** — `phone` on a phone replay.
+- **`thirdParty`** — on a take filmed in a third party's session, that service, in the scenario's own words.
 - **`video`** — the file. The report reads its size, shape and length from the file itself.
 - **`frames[]`** — `{src, label}` for each promoted frame of that recording, in order.
 - **`note`** — one line about how this recording was made, where a reader needs it.
@@ -359,7 +360,8 @@ the return.
   `browser`; every replay and every automated test's video sits with the scenario whose behaviour it shows.
 - Every scenario with a browser recording carries its `phone`, and each `required` one that was driven has a
   recording whose `size` is `phone`.
-- Every scenario with a `thirdParty` that was driven has a take filmed on that service's own screen.
+- Every scenario with a `thirdParty` that was driven has a take filmed on that service's own screen, whose
+  `thirdParty` names it; one that is `NOT VERIFIED` leaves every check without a result.
 - The steps a recording shows read as a summary of it: play the video with those steps beside it.
 - Every frame a recording lists is a moment of its video.
 - Every proof has an `id`, a `label`, a `claim`, a `holds` and a `raw` laid out to be read, confirms one thing

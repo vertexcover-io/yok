@@ -334,7 +334,8 @@ walk. This step is the order things happen in.
    fixture you find missing mid-walk is seeded the Step 1 way and the walk driven again.
 2. **Film it.** On a browser walk, return the scenario to its opening state and replay the whole flow as one
    continuous recorded take, driven the way a person would and holding on its opening and final states. A
-   scenario with a `thirdParty` is filmed in that service's session, touching only what this run posted there.
+   scenario with a `thirdParty` is filmed in that service's session, touching only what this run posted there,
+   and the take's `thirdParty` names the service.
    On a device walk, drive the capture loop; Step 5 builds its video from the frames.
 3. **Record the path the scenario opened on** and any path a step moved to, as the `writing-the-report`
    reference shapes a `url`.
