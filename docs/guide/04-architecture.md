@@ -40,7 +40,8 @@ It has two entry points, by design. `@yok/sdk` is a short curated list for peopl
 | `db.ts` | opens `yok.db`: the SQLite version check, the connection settings, the migrations |
 | `schema.ts` | the Drizzle tables |
 | `repositories.ts` | `IStorage` and the repository interfaces, types only |
-| `storage.ts` | the SQLite repositories, `openStorage`; with `db.ts` and `schema.ts`, the only files that touch SQL |
+| `storage.ts` | `openStorage`, which builds `IStorage` from the repositories in `storage/` |
+| `storage/` | one file of SQLite code per repository: `runs.ts`, `users.ts`, `projects.ts`, `comments.ts`, `triggers.ts`, and `common.ts` for what they share; with `db.ts`, `schema.ts` and `storage.ts`, the only files that touch SQL |
 | `comments.ts` | the review comment schema, and the text and events made from comments |
 | `config.ts` | `orchestrate.config.yaml`, tiers, extensions, subscribers |
 | `subscribers.ts` | calls a subscriber, blocking or detached, and records the call |
