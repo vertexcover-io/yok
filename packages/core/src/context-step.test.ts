@@ -229,7 +229,7 @@ const helper = async (
 
 type Stored = Readonly<{ run: RunRef; storage: IStorage }>;
 
-const eventsOf = ({ run, storage }: Stored) => storage.events(run.id).read();
+const eventsOf = ({ run, storage }: Stored) => storage.runs.readEvents(run.id);
 const typesOf = (log: readonly Typed[]) =>
   log.map((entry) => (typeof entry === "string" ? entry : entry[0]));
 const typesIn = async (context: Stored) => (await eventsOf(context)).map((event) => event.type);
@@ -430,13 +430,13 @@ describe("runContextStep: new", () => {
     let broken = false;
     const storage: IStorage = {
       ...context.storage,
-      events: (runId) => ({
-        ...context.storage.events(runId),
-        read: async () => {
+      runs: {
+        ...context.storage.runs,
+        readEvents: async (runId) => {
           if (broken) throw new Error("yok.db unreadable");
-          return context.storage.events(runId).read();
+          return context.storage.runs.readEvents(runId);
         },
-      }),
+      },
     };
     const { provider } = fakeProvider(false);
     const fake = fakeTerminal(() => IDLE);

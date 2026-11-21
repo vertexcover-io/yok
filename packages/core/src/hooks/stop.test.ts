@@ -473,7 +473,7 @@ describe("runStopHook", () => {
     await runStopHook(counted, deps);
     await runStopHook(counted, deps);
     expect(reads).toBe(0);
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({
         decision: "continue",
@@ -494,7 +494,9 @@ describe("runStopHook", () => {
     for (const _ of [1, 2, 3]) kinds.push((await runStopHook(input(undefined), deps)).kind);
 
     expect(kinds).toEqual(["continue", "allow", "allow"]);
-    const stuck = (await deps.storage.events("r-1").read()).filter((e) => e.type === "agent.stuck");
+    const stuck = (await deps.storage.runs.readEvents("r-1")).filter(
+      (e) => e.type === "agent.stuck",
+    );
     expect(stuck.map((event) => [event.source, event.payload])).toEqual([
       ["hooks", { agent: "claude", sessionId: "s1" }],
       ["hooks", { agent: "claude", sessionId: "s1" }],
@@ -511,7 +513,7 @@ describe("runStopHook", () => {
     ];
 
     expect(kinds).toEqual(["allow", "allow"]);
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
@@ -529,7 +531,7 @@ describe("runStopHook", () => {
 
     expect(first).toEqual({ kind: "allow" });
     expect(second).toEqual({ kind: "allow" });
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
@@ -544,7 +546,7 @@ describe("runStopHook", () => {
     const replies = [await runStopHook(waiting, deps), await runStopHook(waiting, deps)];
 
     expect(replies).toEqual([{ kind: "allow" }, { kind: "allow" }]);
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
@@ -592,7 +594,7 @@ describe("runStopHook", () => {
     await runStopHook(input(edited), deps);
     await runStopHook(input(edited), deps);
 
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -610,7 +612,7 @@ describe("runStopHook", () => {
     await runStopHook(input(ran), deps);
     await runStopHook(input([...ran, { kind: "question" }]), deps);
 
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -639,7 +641,7 @@ describe("runStopHook", () => {
     );
     await runStopHook(input([...ran, { kind: "tool", name: "Write" }]), deps);
 
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -667,7 +669,7 @@ describe("runStopHook", () => {
     ];
     await runStopHook(input(asked), deps);
 
-    const events = await deps.storage.events("r-1").read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -679,16 +681,16 @@ describe("runStopHook", () => {
     const { deps } = await setUp(planOpen);
     const storage: IStorage = {
       ...deps.storage,
-      events: (runId) => ({
-        ...deps.storage.events(runId),
-        append: async () => {
+      runs: {
+        ...deps.storage.runs,
+        appendEvent: async () => {
           throw new Error("yok.db is read-only");
         },
-      }),
+      },
     };
 
     expect(await runStopHook(input(undefined), { ...deps, storage })).toEqual({ kind: "allow" });
-    expect(await deps.storage.events("r-1").read()).toEqual([]);
+    expect(await deps.storage.runs.readEvents("r-1")).toEqual([]);
   });
 
   test("a session the run does not own is never blocked and nothing is logged", async () => {
@@ -696,7 +698,7 @@ describe("runStopHook", () => {
     const other = { ...input(undefined), sessionId: "other" };
     expect(await runStopHook(other, deps)).toEqual({ kind: "allow" });
     expect(await runStopHook(input(undefined), { ...deps, env: {} })).toEqual({ kind: "allow" });
-    expect(await deps.storage.events("r-1").read()).toEqual([]);
+    expect(await deps.storage.runs.readEvents("r-1")).toEqual([]);
   });
 });
 
@@ -725,7 +727,7 @@ describe("an open context node", () => {
         { cwd, output: "ignore" },
       ],
     ]);
-    expect((await deps.storage.events("r-1").read()).map((e) => e.payload)).toEqual([
+    expect((await deps.storage.runs.readEvents("r-1")).map((e) => e.payload)).toEqual([
       expect.objectContaining({ decision: "allow", reason: "context-node", nodeRunId: "nr-1" }),
     ]);
   });
@@ -836,7 +838,7 @@ describe("the stop that ends the run's finishing turn", () => {
       await runStopHook(input(undefined, agent), deps);
 
       expect(alive()).toBe(false);
-      const events = await deps.storage.events("r-1").read();
+      const events = await deps.storage.runs.readEvents("r-1");
       expect(events.map((event) => event.type)).toEqual([finish, "hooks.stop.called"]);
     },
   );
@@ -888,7 +890,7 @@ describe("offerLearn", () => {
   const offer = (entries: readonly TranscriptEntry[], deps: Parameters<typeof offerLearn.run>[1]) =>
     offerLearn.run(input(entries), deps);
   const eventTypes = async (storage: IStorage) =>
-    (await storage.events("r-1").read()).map((event) => event.type);
+    (await storage.runs.readEvents("r-1")).map((event) => event.type);
 
   test("before the PR stage completes it never offers, even after a push", async () => {
     const { deps } = await setUp({ pr: nodeRun("pr", "running") });

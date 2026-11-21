@@ -59,7 +59,6 @@ export type {
   AppendInput,
   EventDraft,
   GitHubSignIn,
-  IEventStore,
   ImportedRun,
   ImportedUser,
   IProjectRepository,

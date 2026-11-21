@@ -735,8 +735,10 @@ const contextCommand = () =>
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
       const { run, log, provider, modeLaunch } = helper;
-      const store = storage().events(run.id);
-      const [state, events] = await Promise.all([store.readState(), store.read()]);
+      const [state, events] = await Promise.all([
+        storage().runs.readState(run.id),
+        storage().runs.readEvents(run.id),
+      ]);
       const { current } = foldModelSwitch(events, state?.tiers ?? null);
       await runContextStep({
         run,

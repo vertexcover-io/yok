@@ -348,10 +348,7 @@ const takenNameMessage = async (
   taken: WorkflowRun,
   name: string,
 ): Promise<string> => {
-  const state = await storage
-    .events(taken.id)
-    .readState()
-    .catch(() => null);
+  const state = await storage.runs.readState(taken.id).catch(() => null);
   if (state === null) return `run ${name} already exists`;
   const node = findRunningNode(state.nodeRuns)?.path;
   const at = node === undefined ? "" : `, at ${node}`;
@@ -696,7 +693,7 @@ const walkToNextStep = async (
 ): Promise<Result<StepReply>> => {
   const [state, events] = await Promise.all([
     readRunState(storage, run),
-    storage.events(run.id).read(),
+    storage.runs.readEvents(run.id),
   ]);
   const config = await loadRecordedConfig(state.config, run.cwd);
   if (!config.ok) return config;
@@ -842,7 +839,7 @@ const reopenFailedSteps = async (
   const stuck = findStuckContainer(plan.value.nodes, state.nodeRuns);
   const refusal = findRetryRefusal({ name: run.name, targets, stuck, answered });
   if (refusal !== undefined) return { ok: false, error: refusal };
-  const events = await storage.events(run.id).read();
+  const events = await storage.runs.readEvents(run.id);
   // The run's status changes only on the last event, so every event checks it is still failed:
   // a retry racing another stops at the first event the other already stored.
   const isFailed = (current: State | null): boolean => current?.status === "failed";
@@ -1335,7 +1332,7 @@ const countRejectedDones = async (
   runId: string,
   nodeRunId: string,
 ): Promise<number> => {
-  const events = await storage.events(runId).read();
+  const events = await storage.runs.readEvents(runId);
   const attempt = findAttemptRuns(events, nodeRunId);
   return events.filter((event) => {
     const parsed = RejectedDoneEventSchema.safeParse(event);

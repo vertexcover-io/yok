@@ -444,7 +444,7 @@ const draft = {
 };
 
 const eventsOf = async (storage: IStorage, runId: string, type: string) =>
-  (await storage.events(runId).read()).filter((event) => event.type === type);
+  (await storage.runs.readEvents(runId)).filter((event) => event.type === type);
 
 describe("comment routes", () => {
   test("SC316 (SC25): a posted batch is saved, logged with its places, typed into the session with no comments.json written, and bad bodies are refused", async () => {
@@ -517,7 +517,7 @@ describe("comment routes", () => {
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("interaction");
     expect(await statusesOf(storage)).toEqual([]);
-    expect(await storage.events("r-named").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-named")).toEqual([]);
   });
 
   const offPolicies = { values: { interaction: false }, sources: { interaction: "cli" } } as const;
@@ -548,7 +548,7 @@ describe("comment routes", () => {
 
     expect(refused.status).toBe(409);
     expect(await storage.comments.list("r-off")).toEqual(before);
-    expect(await storage.events("r-off").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-off")).toEqual([]);
   });
 
   const seedWaitingDesign = async () => {
@@ -590,7 +590,7 @@ describe("comment routes", () => {
 
     expect(res.status).toBe(409);
     expect(await statusesOf(storage)).toEqual([]);
-    expect(await storage.events("r-named").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-named")).toEqual([]);
   });
 
   test("SC319 (SC31): a comment typed to the agent gets its reply, and a user follow-up sends the thread again and is logged", async () => {

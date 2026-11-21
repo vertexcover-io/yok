@@ -236,7 +236,7 @@ export const runInBackground = async (
 ): Promise<void> => {
   const runDir = runDirOf(run.cwd, run.name);
   await withLock(runLockPath(runDir, `subscriber-${subscriberName}`), async () => {
-    const events = await storage.events(run.id).read();
+    const events = await storage.runs.readEvents(run.id);
     const target = events.find((stored) => stored.id === eventId);
     const frozen = await syncState(storage, run.id);
     if (target === undefined || frozen === null) return;
@@ -264,9 +264,8 @@ const recordLockFailure = async (
   subscriberName: string,
   error: unknown,
 ): Promise<void> => {
-  const store = storage.events(run.id);
-  const event = (await store.read()).find((stored) => stored.id === eventId);
-  const state = await store.readState();
+  const event = await storage.runs.readEvent(run.id, eventId);
+  const state = await storage.runs.readState(run.id);
   if (event === undefined || state === null) return;
   const subscriber = findBackgroundSubscriber(state, event, subscriberName);
   if (subscriber === undefined) return;

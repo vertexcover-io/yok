@@ -530,7 +530,7 @@ const linkedRun = async () => {
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  return { deps, events: () => storage.events("r-1").read() };
+  return { deps, events: () => storage.runs.readEvents("r-1") };
 };
 
 describe("Claude's question hooks in a run", () => {

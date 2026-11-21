@@ -136,8 +136,7 @@ const planErrorRetry = (
 // the agent continue in its terminal. When it cannot, it records agent.stopped so a person is told.
 export const runAutoResume = async (options: AutoResumeOptions): Promise<void> => {
   const { storage, run, sessionId, eventId, terminal, log } = options;
-  const store = storage.events(run.id);
-  const activity = sessionActivity(await store.read(), sessionId);
+  const activity = sessionActivity(await storage.runs.readEvents(run.id), sessionId);
   const event = activity.find((each) => each.id === eventId);
   // Both kinds of event carry the stop; an API error adds what its hook read of progress.
   const reached = ApiErrorReachedEvent.safeParse(event);
@@ -164,7 +163,7 @@ export const runAutoResume = async (options: AutoResumeOptions): Promise<void> =
     : await planLimitRetry(agent, terminal, payload.message ?? "", start);
   await appendRunEvent(storage, run, { ...retry.waiting, source: "orchestrate" });
   log.info({ sessionId, waiting: retry.waiting }, "auto-resume started");
-  const hasMovedOn = async () => movedOn(await store.read(), sessionId, eventId);
+  const hasMovedOn = async () => movedOn(await storage.runs.readEvents(run.id), sessionId, eventId);
   if (!(await sleepUnlessMovedOn(start.now.getTime() + retry.ms, hasMovedOn)))
     return log.info({ sessionId }, "auto-resume: the session moved on");
   const prompted = await agent.promptWhenReady(terminal, CONTINUE);

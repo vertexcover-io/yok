@@ -89,10 +89,10 @@ export const seedState = (home: string, runId: string, name: string, state: Stat
   withStorage(home, (storage) => storage.runs.initRun(runId, name, state));
 
 export const eventsOf = (home: string, runId = "r-1") =>
-  withStorage(home, (storage) => storage.events(runId).read());
+  withStorage(home, (storage) => storage.runs.readEvents(runId));
 
 export const stateOf = (home: string, runId = "r-1") =>
-  withStorage(home, (storage) => storage.events(runId).readState());
+  withStorage(home, (storage) => storage.runs.readState(runId));
 
 // The run's stored state, for a test that reads one only after init stored it.
 export const stateIn = async (home: string, runId = "r-1"): Promise<State> => {

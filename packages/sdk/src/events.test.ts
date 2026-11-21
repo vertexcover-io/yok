@@ -65,7 +65,7 @@ describe("appendRunEvent", () => {
     expect(event.id).toMatch(UUID);
     expect(Date.parse(event.ts)).toBeGreaterThanOrEqual(before - 1000);
     expect(Date.parse(event.ts)).toBeLessThanOrEqual(Date.now() + 1000);
-    expect(await storage.events(run.id).read()).toEqual([event]);
+    expect(await storage.runs.readEvents(run.id)).toEqual([event]);
   });
 
   test.each([
@@ -102,7 +102,7 @@ describe("emitRunEvent", () => {
     if (!result.ok) throw new Error(result.error);
     expect(result.value).toMatchObject({ seq: 1, runId: "r-1" });
     expect(runDirOf(cwd, "fix-login")).toBe(join(cwd, ".yok", "fix-login"));
-    expect(await storage.events(run.id).read()).toEqual([result.value]);
+    expect(await storage.runs.readEvents(run.id)).toEqual([result.value]);
   });
 
   test("brings the run's stored state up to date, so a workspace event moves state.workspace", async () => {
@@ -115,7 +115,7 @@ describe("emitRunEvent", () => {
     const result = await emitRunEvent(run, created, storage);
 
     if (!result.ok) throw new Error(result.error);
-    const state = await storage.events(run.id).readState();
+    const state = await storage.runs.readState(run.id);
     if (state === null) throw new Error("no state");
     expect(state.lastEventSeq).toBe(1);
     expect(state.workspace.type).toBe("multi");
@@ -1371,7 +1371,7 @@ describe("event refusals", () => {
       const { run, storage } = await storedRun();
       const result = await appendRunEvent(storage, run, { type, source: "test", ...ids, payload });
       expect(result.ok ? "" : result.error).toContain(reason);
-      expect(await storage.events(run.id).read()).toEqual([]);
+      expect(await storage.runs.readEvents(run.id)).toEqual([]);
     },
   );
 });

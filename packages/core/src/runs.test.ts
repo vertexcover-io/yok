@@ -108,7 +108,7 @@ const savedRun = async (
       modelSwitchAgents: SWITCHING,
       ...extra,
     });
-  const events = () => storage.events(run.id).read();
+  const events = () => storage.runs.readEvents(run.id);
   return { cwd, workflowPath, storage, run, init, events };
 };
 
@@ -141,7 +141,7 @@ describe("initializeRun", () => {
       startedAt: events[0]?.ts,
     });
     expect((await storage.runs.findRun(run.id))?.name).toBe("fix-login");
-    expect(await storage.events(run.id).readState()).toEqual(result.value.state);
+    expect(await storage.runs.readState(run.id)).toEqual(result.value.state);
     expect(existsSync(join(dir, "state.json"))).toBe(false);
     expect(existsSync(join(dir, "artifacts"))).toBe(true);
   });
@@ -215,7 +215,7 @@ describe("initializeRun", () => {
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.activeSessions).toEqual([session]);
-    const stored = await storage.events(run.id).readState();
+    const stored = await storage.runs.readState(run.id);
     expect(stored?.activeSessions).toEqual([session]);
   });
 
@@ -294,8 +294,8 @@ describe("initializeRun", () => {
       error: "run feat-x already exists (failed); resume it with `yok resume feat-x`",
     });
     expect((await storage.runs.findRun("r-new"))?.name).toBeNull();
-    expect(await storage.events("r-new").readState()).toBeNull();
-    expect(await storage.events("r-new").read()).toEqual([]);
+    expect(await storage.runs.readState("r-new")).toBeNull();
+    expect(await storage.runs.readEvents("r-new")).toEqual([]);
   });
 
   test("SC20: a run whose repo has an invalid config is refused, leaving no run folder and no name", async () => {
@@ -347,7 +347,7 @@ describe("initializeRun", () => {
       ],
     });
     expect(emitted.ok).toBe(true);
-    const state = await storage.events(run.id).readState();
+    const state = await storage.runs.readState(run.id);
     expect(state?.custom).toEqual({ note: "looks good" });
   });
 
@@ -528,19 +528,19 @@ describe("initializeRun", () => {
     const { cwd, init, storage, run, events } = await savedRun();
     const busy: IStorage = {
       ...storage,
-      events: (runId) => ({
-        ...storage.events(runId),
-        append: async () => {
+      runs: {
+        ...storage.runs,
+        appendEvent: async () => {
           throw new Error("database is locked");
         },
-      }),
+      },
     };
 
     await expect(init("fix-login", run.id, { storage: busy })).rejects.toThrow(
       "database is locked",
     );
     expect((await storage.runs.findRun(run.id))?.name).toBeNull();
-    expect(await storage.events(run.id).readState()).toBeNull();
+    expect(await storage.runs.readState(run.id)).toBeNull();
     expect(existsSync(join(cwd, ".yok", "fix-login"))).toBe(false);
 
     const retried = await init("fix-login");
@@ -712,7 +712,7 @@ describe("the notifier at init", () => {
       status: "failed",
       error: { message: expect.stringContaining("SLACK_BOT_TOKEN") },
     });
-    expect((await storage.events(run.id).readState())?.status).toBe("running");
+    expect((await storage.runs.readState(run.id))?.status).toBe("running");
   });
 });
 
@@ -1018,7 +1018,7 @@ describe("initializeRun with tiers", () => {
 
     if (!result.ok) throw new Error(result.error);
     expect(result.value.state.tiers).toEqual(CLAUDE_TIERS);
-    expect((await ref.storage.events(ref.id).readState())?.tiers).toEqual(CLAUDE_TIERS);
+    expect((await ref.storage.runs.readState(ref.id))?.tiers).toEqual(CLAUDE_TIERS);
   });
 
   test.each<[string, string, StagedRunOptions, string]>([
@@ -1145,7 +1145,7 @@ describe("nextStep with stage tiers", () => {
       ok: true,
       value: { kind: "model", nodeId: "make", model: "sonnet-y" },
     });
-    const events = await ref.storage.events(ref.id).read();
+    const events = await ref.storage.runs.readEvents(ref.id);
     expect(events.at(-1)).toMatchObject({
       type: "orchestrate.next",
       payload: { output: { kind: "model", nodeId: "make", model: "sonnet-y" } },

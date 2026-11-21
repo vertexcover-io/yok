@@ -88,7 +88,7 @@ const initializedRun = async (
   });
 };
 
-const eventsOf = (home: string) => withStorage(home, (storage) => storage.events("r-1").read());
+const eventsOf = (home: string) => withStorage(home, (storage) => storage.runs.readEvents("r-1"));
 
 // A run id or yok home from the shell running the tests must never reach a real registry.
 const workspace = (

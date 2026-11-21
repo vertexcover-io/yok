@@ -65,7 +65,7 @@ describe("deliverComments", () => {
       ["delivered", "string"],
       ["delivered", "string"],
     ]);
-    const delivered = (await storage.events(run.id).read()).filter(
+    const delivered = (await storage.runs.readEvents(run.id)).filter(
       (e) => e.type === "artifact.comment.delivered",
     );
     expect(delivered.map((e) => e.payload)).toEqual([{ ids: ["c1", "c2"] }]);

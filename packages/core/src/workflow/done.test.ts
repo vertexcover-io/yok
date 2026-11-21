@@ -442,7 +442,7 @@ const finish = (
   artifacts: ArtifactRef[] = [],
 ) => finishStep(run.storage, run, nodeRunId, { output, summary: "Did the work." }, artifacts);
 
-const eventsOf = (run: StoredRun) => run.storage.events(run.id).read();
+const eventsOf = (run: StoredRun) => run.storage.runs.readEvents(run.id);
 
 const CHECKED = "  - { id: use, type: agent, stage: stages/checked, input: {} }\n";
 const checked = (verifiers: string) => ({ checked: { verifiers } });

@@ -172,7 +172,7 @@ afterEach(() => {
   mock.restore();
 });
 
-const eventsOf = async (run: StoredRun) => run.storage.events(run.id).read();
+const eventsOf = async (run: StoredRun) => run.storage.runs.readEvents(run.id);
 const payloadOf = async (run: StoredRun, type: string) =>
   (await eventsOf(run)).find((event) => event.type === type)?.payload;
 const payloadsOf = async (run: StoredRun, type: string) =>

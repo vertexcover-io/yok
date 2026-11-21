@@ -618,7 +618,7 @@ describe("viewer in a browser", () => {
         "[...document.querySelectorAll('#threads .card .chip')].some((c) => c.textContent === 'Approved')",
       );
       expect(await evaluate(approveHidden)).toBe(true);
-      const after = await storage.events("r1").readState();
+      const after = await storage.runs.readState("r1");
       expect(after?.nodeRuns.design).not.toHaveProperty("awaitingApproval");
       const typedNow = () => typed.slice(typedBefore);
       for (let i = 0; i < 50 && !typedNow().some((t) => t.includes("approved:")); i++)

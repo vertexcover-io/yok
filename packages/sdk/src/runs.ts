@@ -75,7 +75,7 @@ export const loadStartConfig = (
 // a fallback, since reading another config would hide the mistake.
 export const loadRunConfig = (run: RunRef, storage?: IStorage): Promise<Result<CheckoutConfig>> =>
   useStorage(storage, process.env, async (opened) =>
-    loadRecordedConfig((await opened.events(run.id).readState())?.config, run.cwd),
+    loadRecordedConfig((await opened.runs.readState(run.id))?.config, run.cwd),
   );
 
 // A state written before init recorded its config has none, so its checkout is searched.
@@ -207,10 +207,7 @@ export const closingLine = (
 // A state that does not parse throws; that run is treated as one still going.
 const goneMessage = async (storage: IStorage, run: WorkflowRun): Promise<string> => {
   const name = run.name ?? run.id;
-  const state = await storage
-    .events(run.id)
-    .readState()
-    .catch(() => null);
+  const state = await storage.runs.readState(run.id).catch(() => null);
   if (state !== null && !isRunLive(state.status)) return closingLine(name, state.status);
   return `Run ${name} has no running session. Resume it with: yok resume ${name}`;
 };

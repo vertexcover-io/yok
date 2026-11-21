@@ -16,7 +16,7 @@ import { buildEvent, builtInHandlers, type EmitInput, type RunRef } from "./even
 import { loadFunction, parseYaml, readText } from "./files.ts";
 import { createGit } from "./git.ts";
 import type { SessionRef } from "./registry.ts";
-import type { IEventStore, IStorage } from "./repositories.ts";
+import type { IRunRepository, IStorage } from "./repositories.ts";
 import { useStorage } from "./storage.ts";
 import { triggerSubscribers } from "./subscribers.ts";
 
@@ -51,11 +51,11 @@ export const projectEvents = (projection: Projection): State =>
 
 // The run's stored state; null before init.
 export const readState = (run: RunRef, storage?: IStorage): Promise<State | null> =>
-  useStorage(storage, process.env, (opened) => opened.events(run.id).readState());
+  useStorage(storage, process.env, (opened) => opened.runs.readState(run.id));
 
 // Oldest first.
 export const readRunEvents = (run: RunRef, storage?: IStorage): Promise<readonly Event[]> =>
-  useStorage(storage, process.env, (opened) => opened.events(run.id).read());
+  useStorage(storage, process.env, (opened) => opened.runs.readEvents(run.id));
 
 // First linked first; the last is the session working on the run now.
 export const readRunSessions = (run: RunRef, storage?: IStorage): Promise<readonly SessionRef[]> =>
@@ -203,8 +203,10 @@ const loadRunHandlers = (state: State | null): Promise<Result<ExtensionHandlers>
 // The run's stored state with any stored event it lags folded in, by the built-in handlers and
 // then the run's own; null before init. Writes nothing: every event's write carries its state.
 export const syncState = async (storage: IStorage, runId: string): Promise<State | null> => {
-  const store = storage.events(runId);
-  const [current, events] = await Promise.all([store.readState(), store.read()]);
+  const [current, events] = await Promise.all([
+    storage.runs.readState(runId),
+    storage.runs.readEvents(runId),
+  ]);
   const extensions = await loadRunHandlers(current);
   if (!extensions.ok) throw new Error(extensions.error);
   const latest = fold(current, events, extensions.value);
@@ -223,12 +225,12 @@ const MAX_PAUSE_GROWTH = 5;
 // One try against the run as it reads now. "conflict": another writer stored an event since the
 // read, so nothing was written. fresh: this try stored the event, rather than finding it stored.
 const tryAppend = async (
-  store: IEventStore,
+  runs: IRunRepository,
   runId: string,
   draft: EmitInput & Readonly<{ id: string }>,
   allowed: (state: State | null) => boolean,
 ): Promise<Result<Saved> | "conflict"> => {
-  const [current, events] = await Promise.all([store.readState(), store.read()]);
+  const [current, events] = await Promise.all([runs.readState(runId), runs.readEvents(runId)]);
   const extensions = await loadRunHandlers(current);
   if (!extensions.ok) return extensions;
   const latest = fold(current, events, extensions.value);
@@ -245,7 +247,7 @@ const tryAppend = async (
   if (!next.ok) {
     return { ok: false, error: `event not stored, a handler could not apply it: ${next.error}` };
   }
-  const appended = await store.append({
+  const appended = await runs.appendEvent(runId, {
     event: event.value,
     state: next.value,
     expectedSeq: events.length,
@@ -255,20 +257,20 @@ const tryAppend = async (
 };
 
 const appendWithRetries = async (
-  store: IEventStore,
+  runs: IRunRepository,
   runId: string,
   draft: EmitInput & Readonly<{ id: string }>,
   allowed: (state: State | null) => boolean,
   tries = 1,
 ): Promise<Result<Saved>> => {
-  const tried = await tryAppend(store, runId, draft, allowed);
+  const tried = await tryAppend(runs, runId, draft, allowed);
   if (tried !== "conflict") return tried;
   if (tries === MAX_TRIES) {
     return { ok: false, error: `event not stored: run ${runId} changed during ${MAX_TRIES} tries` };
   }
   // A random pause, longer each try, so writers that lost the same race do not race again in step.
   await sleep(Math.random() * RETRY_PAUSE_MS * Math.min(tries, MAX_PAUSE_GROWTH));
-  return appendWithRetries(store, runId, draft, allowed, tries + 1);
+  return appendWithRetries(runs, runId, draft, allowed, tries + 1);
 };
 
 // Stores an event on the run with the state it leads to, then calls the subscribers that listen
@@ -282,7 +284,7 @@ export const appendRunEventIf = async (
 ): Promise<Result<Readonly<{ event: Event; state: State | null }>>> => {
   // The id is fixed before the first try, so a retry finds the event a lost race stored.
   const draft = { ...input, id: input.id ?? crypto.randomUUID() };
-  const saved = await appendWithRetries(storage.events(run.id), run.id, draft, allowed).catch(
+  const saved = await appendWithRetries(storage.runs, run.id, draft, allowed).catch(
     (error: unknown) => ({ ok: false as const, error: `event not stored: ${errorMessage(error)}` }),
   );
   if (!saved.ok) return saved;

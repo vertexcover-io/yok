@@ -32,7 +32,6 @@ import type {
   AppendInput,
   GitHubSignIn,
   ICommentRepository,
-  IEventStore,
   ImportedRun,
   ImportedUser,
   IProjectRepository,
@@ -368,6 +367,10 @@ const runRepository = (db: Db): IRunRepository => ({
     db.update(tables.runs).set({ terminal }).where(eq(tables.runs.id, runId)).run();
   },
   linkSession: async (runId, session) => linkSessionIn(db, runId, session),
+  readEvents: async (runId) => toEvents(db, runId),
+  readEvent: async (runId, eventId) => toEvents(db, runId, eventId)[0],
+  readState: async (runId) => readStateIn(db, runId),
+  appendEvent: async (runId, input) => appendIn(db, runId, input),
   importRun: async (input) => importRunIn(db, input, now()),
 });
 
@@ -515,26 +518,28 @@ const appendIn = (db: Db, runId: string, { event, state, expectedSeq }: AppendIn
     return { kind: "stored", event };
   }, IMMEDIATE);
 
-const eventStore = (db: Db, runId: string): IEventStore => ({
-  read: async () =>
-    db
-      .select()
-      .from(tables.events)
-      .where(eq(tables.events.runId, runId))
-      .orderBy(asc(tables.events.seq))
-      .all()
-      .map(toEvent),
-  readState: async () => {
-    const row = db
-      .select({ state: tables.runs.state })
-      .from(tables.runs)
-      .where(eq(tables.runs.id, runId))
-      .get();
-    const state = row?.state ?? null;
-    return state === null ? null : StateSchema.parse(state);
-  },
-  append: async (input) => appendIn(db, runId, input),
-});
+const toEvents = (db: Db, runId: string, eventId?: string): readonly Event[] =>
+  db
+    .select()
+    .from(tables.events)
+    .where(
+      eventId === undefined
+        ? eq(tables.events.runId, runId)
+        : and(eq(tables.events.runId, runId), eq(tables.events.id, eventId)),
+    )
+    .orderBy(asc(tables.events.seq))
+    .all()
+    .map(toEvent);
+
+const readStateIn = (db: Db, runId: string): State | null => {
+  const row = db
+    .select({ state: tables.runs.state })
+    .from(tables.runs)
+    .where(eq(tables.runs.id, runId))
+    .get();
+  const state = row?.state ?? null;
+  return state === null ? null : StateSchema.parse(state);
+};
 
 type CommentRow = typeof tables.comments.$inferSelect;
 
@@ -794,7 +799,6 @@ const sqliteStorage = (sqlite: Database): IStorage => {
     projects: projectRepository(db),
     comments: commentRepository(db),
     triggers: triggerRepository(db),
-    events: (runId) => eventStore(db, runId),
     close: async () => sqlite.close(),
   };
 };

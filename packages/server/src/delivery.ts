@@ -29,10 +29,7 @@ const waiting = (reason: string): DeliveryOutcome => ({ kind: "waiting", reason 
 
 // A stored state that does not parse reads as no state, so one bad engine write blanks nothing.
 export const readStateOrNull = (storage: IStorage, runId: string): Promise<State | null> =>
-  storage
-    .events(runId)
-    .readState()
-    .catch(() => null);
+  storage.runs.readState(runId).catch(() => null);
 
 export const isAgentAlive = async (run: WorkflowRun, host: ITerminalHost): Promise<boolean> =>
   run.terminal !== null && (await host.find(run.terminal).isAlive());

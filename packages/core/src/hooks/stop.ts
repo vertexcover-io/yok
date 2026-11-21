@@ -374,12 +374,11 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       deps.log.debug({ sessionId: input.sessionId }, "stop allowed: not a yok run session");
       return ALLOW;
     }
-    const store = deps.storage.events(run.id);
-    const state = await store.readState();
+    const state = await deps.storage.runs.readState(run.id);
     if (state === null) return ALLOW;
     const [{ touchedRun, toolCalls }, events] = await Promise.all([
       readTranscriptFacts(input, state),
-      store.read(),
+      deps.storage.runs.readEvents(run.id),
     ]);
     const seq = state.stopHook?.seq;
     const check = {
@@ -474,10 +473,12 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
   try {
     const run = await findSessionRun(input, deps);
     if (run === undefined) return ALLOW;
-    const store = deps.storage.events(run.id);
-    const state = await store.readState();
+    const state = await deps.storage.runs.readState(run.id);
     if (state?.nodeRuns.pr?.status !== "completed") return ALLOW;
-    const [events, entries] = await Promise.all([store.read(), input.readTranscript()]);
+    const [events, entries] = await Promise.all([
+      deps.storage.runs.readEvents(run.id),
+      input.readTranscript(),
+    ]);
     // The stop that ends the run's finishing turn closes its session, so an offer there would be
     // cut off.
     if (!isRunLive(state.status) && finishedBySession(events, input.sessionId)) {

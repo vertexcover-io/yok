@@ -2352,7 +2352,7 @@ describe("DELETE /runs/:id", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ removed: "r-done" });
     expect(await deps.storage.runs.findRun("r-done")).toBeUndefined();
-    expect(await deps.storage.events("r-done").read()).toEqual([]);
+    expect(await deps.storage.runs.readEvents("r-done")).toEqual([]);
     expect(await deps.storage.comments.list("r-done")).toEqual([]);
     expect(existsSync(runDir)).toBe(false);
     expect(calls).toContain("kill");
@@ -2383,7 +2383,7 @@ describe("DELETE /runs/:id", () => {
       "run demo-run is still going; yok rm removes only a run that has finished or lost its session",
     );
     expect(await deps.storage.runs.findRun("r-live")).toBeDefined();
-    expect(await deps.storage.events("r-live").read()).toHaveLength(1);
+    expect(await deps.storage.runs.readEvents("r-live")).toHaveLength(1);
     expect(existsSync(runDir)).toBe(true);
     expect(calls).not.toContain("kill");
   });
@@ -3094,10 +3094,9 @@ const modelEvent = (
 // Stores DRAFT as the run's next event without folding it into the run's state, as an event
 // stored after the state's last write leaves it.
 const appendEvent = async (storage: IStorage, draft: EventDraft): Promise<Event> => {
-  const store = storage.events(draft.runId);
-  const expectedSeq = (await store.read()).length;
+  const expectedSeq = (await storage.runs.readEvents(draft.runId)).length;
   const event = EventSchema.parse({ ...draft, schemaVersion: 1, seq: expectedSeq + 1 });
-  const appended = await store.append({ event, state: null, expectedSeq });
+  const appended = await storage.runs.appendEvent(draft.runId, { event, state: null, expectedSeq });
   if (appended.kind !== "stored") throw new Error(`event ${draft.id} was not stored`);
   return event;
 };
@@ -3627,7 +3626,7 @@ const retry = (deps: Parameters<typeof createApi>[0], runId: string, answered?: 
   });
 
 const stateOf = async (storage: IStorage, run: WorkflowRun): Promise<State> => {
-  const state = await storage.events(run.id).readState();
+  const state = await storage.runs.readState(run.id);
   if (state === null) throw new Error(`run ${run.id} has no state`);
   return state;
 };

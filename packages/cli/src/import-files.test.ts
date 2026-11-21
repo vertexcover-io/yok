@@ -144,7 +144,7 @@ const rowsIn = async (storage: IStorage) => ({
   users: await storage.users.list(),
   projects: await storage.projects.list(),
   runs: await storage.runs.listRuns(),
-  events: await storage.events("r-1").read(),
+  events: await storage.runs.readEvents("r-1"),
   comments: await storage.comments.list("r-1"),
   triggers: await storage.triggers.list(),
   fires: await storage.triggers.readFires("t-aaaa1111", 20),
@@ -223,8 +223,8 @@ describe("importFiles", () => {
     await importFiles(storage, home);
 
     expect(await storage.runs.findRun("r-1")).toEqual({ ...run, project: "app", cwd: checkout });
-    expect(await storage.events("r-1").read()).toEqual(events);
-    expect(await storage.events("r-1").readState()).toEqual(state);
+    expect(await storage.runs.readEvents("r-1")).toEqual(events);
+    expect(await storage.runs.readState("r-1")).toEqual(state);
     expect(await storage.comments.list("r-1")).toEqual(comments);
   });
 
@@ -261,9 +261,9 @@ describe("importFiles", () => {
 
     await importFiles(storage, home);
 
-    const state = await storage.events("r-1").readState();
+    const state = await storage.runs.readState("r-1");
     expect([state?.lastEventSeq, state?.status]).toEqual([4, "completed"]);
-    expect(await storage.events("r-1").read()).toHaveLength(4);
+    expect(await storage.runs.readEvents("r-1")).toHaveLength(4);
   });
 
   test("SC707: run r-2 whose .yok/old-task folder is gone is left out and named, and registry.json is still marked imported", async () => {
@@ -295,7 +295,7 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect((await storage.runs.findRunsByName("fix")).map((run) => run.id)).toEqual(["r-new"]);
-    expect(await storage.events("r-new").read()).toEqual(events);
+    expect(await storage.runs.readEvents("r-new")).toEqual(events);
     expect(report.skipped).toEqual(["run r-old (fix): a newer run took its name and folder"]);
   });
 
@@ -307,8 +307,8 @@ describe("importFiles", () => {
     await importFiles(storage, home);
 
     expect((await storage.runs.findRun("r-3"))?.name).toBeNull();
-    expect(await storage.events("r-3").readState()).toBeNull();
-    expect(await storage.events("r-3").read()).toEqual([]);
+    expect(await storage.runs.readState("r-3")).toBeNull();
+    expect(await storage.runs.readEvents("r-3")).toEqual([]);
   });
 
   test("SC710: r-4 keeps its starter u_1a2b3c4d from users.json, and r-5 drops u_99999999, whom users.json never held", async () => {
@@ -337,8 +337,8 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect(await storage.runs.findRun("r-1")).toBeDefined();
-    expect(await storage.events("r-1").read()).toEqual(events);
-    expect(await storage.events("r-1").readState()).toEqual(state);
+    expect(await storage.runs.readEvents("r-1")).toEqual(events);
+    expect(await storage.runs.readState("r-1")).toEqual(state);
     expect(await storage.comments.list("r-1")).toEqual([]);
     expect(report.skipped).toHaveLength(1);
     expect(report.skipped[0]).toStartWith(`${dir}/comments.json:`);
@@ -356,7 +356,7 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect(await storage.runs.findRun("r-1")).toBeUndefined();
-    expect(await storage.events("r-1").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-1")).toEqual([]);
     expect(report.skipped).toEqual([`run r-1 (fix-login): ${dir}/state.json is missing`]);
     expect(existsSync(join(dir, "event.jsonl"))).toBe(true);
     expect(existsSync(join(dir, "comments.json"))).toBe(true);

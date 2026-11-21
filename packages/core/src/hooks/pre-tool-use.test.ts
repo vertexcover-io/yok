@@ -77,7 +77,7 @@ const setUp = async (state?: (runDir: string, cwd: string) => State) => {
     if (!claimed.ok) throw new Error(claimed.error);
   }
   const deps = { storage, env: { YOK_RUN_ID: "r-1", YOK_HOME: home }, log: noopLogger };
-  const events = () => storage.events("r-1").read();
+  const events = () => storage.runs.readEvents("r-1");
   return { cwd, home, runDir, deps, events };
 };
 
@@ -334,14 +334,14 @@ describe("on a blocked run", () => {
   };
   test.each([
     ["its state cannot be read", { readState: failing }],
-    ["its events cannot be stored", { append: failing }],
+    ["its events cannot be stored", { appendEvent: failing }],
   ])(
     "recordResumed still allows a Bash call on a blocked run when %s, so a failed record never refuses a call",
     async (_label, broken) => {
       const { cwd, deps, events } = await runBlockedBy("agent.question.asked", question);
       const storage: IStorage = {
         ...deps.storage,
-        events: (runId) => ({ ...deps.storage.events(runId), ...broken }),
+        runs: { ...deps.storage.runs, ...broken },
       };
 
       const verdict = await recordResumed.run(use(cwd, shell("bun test"), { toolName: "Bash" }), {

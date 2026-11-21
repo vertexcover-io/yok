@@ -28,7 +28,7 @@ const setup = async (name: string | null) => {
   await storage.runs.addRun(run);
   if (name !== null) mkdirSync(runDirOf(cwd, name), { recursive: true });
   const deps = { storage, env: { YOK_RUN_ID: "r-1", YOK_HOME: home }, log: noopLogger };
-  return { storage, deps, events: () => storage.events("r-1").read() };
+  return { storage, deps, events: () => storage.runs.readEvents("r-1") };
 };
 
 const input = { agent: "codex", sessionId: "s1", source: "startup" } as const;

@@ -70,7 +70,7 @@ const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" 
   if (!opened.ok) throw new Error(opened.error);
   const runDir = runDirOf(cwd, "feat-x");
   const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  const events = () => storage.events("r-1").read();
+  const events = () => storage.runs.readEvents("r-1");
   return { run, runDir, deps, events };
 };
 
