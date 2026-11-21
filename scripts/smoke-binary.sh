@@ -22,8 +22,6 @@ printf '%s\n' 'import { z } from "zod";' 'export const main = () => { console.lo
 answer=$("$bin" orchestrate script "$tmp/answer.ts")
 [ "$answer" = "42" ] || { echo "the binary did not run a script with its own zod" >&2; exit 1; }
 
-"$bin" sqlite-check || { echo "the binary refused this machine's SQLite" >&2; exit 1; }
-
 # yok ls starts a server in the empty home, and the server opens yok.db with its migration.
 home="$tmp/home"
 trap 'YOK_HOME="$home" "$bin" server stop >/dev/null 2>&1 || true' EXIT

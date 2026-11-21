@@ -1,7 +1,7 @@
 #!/usr/bin/env -S bun --no-env-file
 import { Command } from "@commander-js/extra-typings";
 import { orchestrateCommand } from "@yok/core";
-import { checkSqliteVersion, isCompiled, sqliteVersion, VERSION } from "@yok/sdk/internal";
+import { isCompiled, VERSION } from "@yok/sdk/internal";
 import { agentCommand } from "./agent.ts";
 import { attachCommand } from "./attach.ts";
 import { buildPlanCommand } from "./build-plan.ts";
@@ -36,15 +36,6 @@ const [runtime = "", script = "", ...rest] = process.argv;
 const remote = rest.includes("--remote") ? ["--remote"] : [];
 const argv = [runtime, script, ...remote, ...rest.filter((arg) => arg !== "--remote")];
 
-// For install.sh: a binary this machine's SQLite cannot run is never put in place.
-const sqliteCheckCommand = () =>
-  new Command("sqlite-check")
-    .description("Exit 0 when this machine's SQLite is new enough for yok.db")
-    .action(() => {
-      const checked = checkSqliteVersion(sqliteVersion());
-      if (!checked.ok) fail(checked.error);
-    });
-
 await new Command()
   .name("yok")
   .description("Yok engineering CLI")
@@ -75,7 +66,6 @@ await new Command()
   .addCommand(updateCommand())
   .addCommand(verifyCommand())
   .addCommand(viewCommand())
-  .addCommand(sqliteCheckCommand(), { hidden: true })
   .addCommand(importFilesCommand(), { hidden: true })
   .parseAsync(argv)
   .catch((error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
