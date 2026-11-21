@@ -15,6 +15,7 @@ import {
   type Notifier,
   QuestionAskedEvent,
   type Result,
+  SUBSCRIBER_TIMEOUT_S,
   type State,
   type Subscriber,
   type SubscriberInput,
@@ -36,11 +37,12 @@ export type Notice = Readonly<{
 export interface INotifier {
   // posts into the thread when one is given, or starts one; resolves to the thread's id
   post(notice: Notice, threadId: string | undefined): Promise<string>;
-  // "too-large" when the provider refuses the file for its size; any other refusal throws
-  upload(file: string, threadId: string): Promise<UploadOutcome>;
+  // "too-large" when the provider refuses the file for its size, "too-slow" when the deadline
+  // cancels it; any other refusal throws
+  upload(file: string, threadId: string, deadline?: AbortSignal): Promise<UploadOutcome>;
 }
 
-export type UploadOutcome = "uploaded" | "too-large";
+export type UploadOutcome = "uploaded" | "too-large" | "too-slow";
 
 const makeNotice = (title: string, extra: Partial<Omit<Notice, "title">> = {}): Notice => ({
   title,
@@ -401,7 +403,8 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
     if (typeof res.ts !== "string") throw new Error("slack chat.postMessage returned no ts");
     return res.ts;
   },
-  upload: async (file, threadId) => {
+  upload: async (file, threadId, deadline) => {
+    if (deadline?.aborted) return "too-slow";
     const { size } = await stat(file);
     const name = basename(file);
     const ticket = await requestUploadUrl(config, {
@@ -414,7 +417,13 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
     if (typeof uploadUrl !== "string" || typeof fileId !== "string") {
       throw new Error("slack files.getUploadURLExternal returned no upload url");
     }
-    const put = await config.fetch(uploadUrl, { method: "POST", body: Bun.file(file) });
+    const put = await config
+      .fetch(uploadUrl, { method: "POST", body: Bun.file(file), signal: deadline })
+      .catch((error: unknown) => {
+        if (deadline?.aborted) return "too-slow" as const;
+        throw error;
+      });
+    if (put === "too-slow") return put;
     if (await refusedForSize(put)) return "too-large";
     if (!put.ok) throw new Error(`slack file upload failed: ${put.status}`);
     await callSlack(config, "files.completeUploadExternal", {
@@ -484,6 +493,15 @@ const threadEnv = (state: State): Readonly<Record<string, string>> => {
   };
 };
 
+// The subscriber's own timeout does not cancel its work, so uploads stop short of it, leaving time
+// for the warnings.
+const UPLOAD_DEADLINE_MS = (SUBSCRIBER_TIMEOUT_S.detached - 15) * 1000;
+
+const UPLOAD_WARNINGS = {
+  "too-large": "is too large for Slack",
+  "too-slow": "took too long to send to Slack",
+} as const;
+
 // Posts the event's message into the run's thread. With a viewer origin its files go in as links;
 // without one they are uploaded. The first post opens the thread, recorded as
 // notification.thread.started so later posts reply in it. A failure throws, so the SDK records a
@@ -519,13 +537,13 @@ export const notify = async (
     });
     if (!stored.ok) throw new Error(`thread ${threadId} not recorded: ${stored.error}`);
   }
+  const deadline = AbortSignal.timeout(UPLOAD_DEADLINE_MS);
   for (const file of files) {
-    const outcome = await opened.value.upload(file, threadId);
-    if (outcome === "too-large") {
-      const warning = `⚠️ ${basename(file)} is too large for Slack; open it in the run viewer.`;
-      // The file is still in the run viewer, so a warning the chat refuses is not worth stopping for.
-      await opened.value.post(makeNotice(warning), threadId).catch(() => undefined);
-    }
+    const outcome = await opened.value.upload(file, threadId, deadline);
+    if (outcome === "uploaded") continue;
+    const warning = `⚠️ ${basename(file)} ${UPLOAD_WARNINGS[outcome]}; open it in the run viewer.`;
+    // The file is still in the run viewer, so a warning the chat refuses is not worth stopping for.
+    await opened.value.post(makeNotice(warning), threadId).catch(() => undefined);
   }
   return { threadId };
 };

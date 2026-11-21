@@ -118,11 +118,14 @@ export const sessionEnv = async (
 
 export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
 
+// A missing file reads as empty; any other failure throws, so a public server that cannot read its
+// domain fails instead of acting as one without a domain.
 export const readHomeFile = (path: string): string => {
   try {
     return readFileSync(path, "utf8");
-  } catch {
-    return "";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
   }
 };
 

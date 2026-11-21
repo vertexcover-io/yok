@@ -361,6 +361,13 @@ describe("home .env domain", () => {
     expect(readViewerOrigin(homeWith())).toBeUndefined();
   });
 
+  test("a home .env that cannot be read throws instead of reading as no domain", () => {
+    const home = tempDir();
+    mkdirSync(join(home, ".env"));
+
+    expect(() => readViewerOrigin(home)).toThrow();
+  });
+
   test("a loopback SERVER_DOMAIN gives no viewer origin, since nobody else could open it", () => {
     for (const domain of ["localhost:3000", "127.0.0.1:3000", "[::1]:3000"]) {
       expect(readViewerOrigin(homeWith(`SERVER_DOMAIN=${domain}\n`))).toBeUndefined();

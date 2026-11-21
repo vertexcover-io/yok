@@ -620,6 +620,23 @@ describe("createSlackNotifier", () => {
     ]);
   });
 
+  test("an upload the deadline cuts off is cancelled and turns into too-slow", async () => {
+    const deadline = new AbortController();
+    const fetch = async (url: string, init: RequestInit): Promise<Response> => {
+      if (url.endsWith("getUploadURLExternal"))
+        return Response.json({ ok: true, upload_url: "https://files.test/up", file_id: "F1" });
+      return new Promise((_, reject) =>
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+    };
+    const notifier = createSlackNotifier({ token: "x", channel: "C1", memberId: undefined, fetch });
+
+    const outcome = notifier.upload(await bigFile(), "171.1", deadline.signal);
+    setTimeout(() => deadline.abort(new DOMException("deadline", "TimeoutError")), 5);
+
+    expect(await outcome).toBe("too-slow");
+  });
+
   test("an upload URL answering 400 for another reason still fails the upload", async () => {
     const slack = fakeSlack(
       {
@@ -673,20 +690,23 @@ describe("the notifier's Slack variables", () => {
 });
 
 // An opener whose notifier records what it was asked to do and starts thread 171.1.
-const fakeOpener = (refused: readonly string[] = []) => {
+const fakeOpener = (refused: readonly string[] = [], slow: readonly string[] = []) => {
   const opened: string[] = [];
   const envs: Readonly<Record<string, string | undefined>>[] = [];
   const posts: (string | undefined)[] = [];
   const notices: Notice[] = [];
   const uploads: (readonly [string, string])[] = [];
+  const deadlines: (AbortSignal | undefined)[] = [];
   const notifier: INotifier = {
     post: async (posted, threadId) => {
       posts.push(threadId);
       notices.push(posted);
       return threadId ?? "171.1";
     },
-    upload: async (file, threadId) => {
+    upload: async (file, threadId, deadline) => {
       uploads.push([file, threadId]);
+      deadlines.push(deadline);
+      if (slow.includes(basename(file))) return "too-slow";
       return refused.includes(basename(file)) ? "too-large" : "uploaded";
     },
   };
@@ -695,7 +715,7 @@ const fakeOpener = (refused: readonly string[] = []) => {
     envs.push(env);
     return { ok: true, value: notifier };
   };
-  return { calls: { opened, envs, posts, notices, uploads }, open };
+  return { calls: { opened, envs, posts, notices, uploads, deadlines }, open };
 };
 
 const inThread171: State = { ...state, notification: { provider: "slack", threadId: "171.1" } };
@@ -845,6 +865,19 @@ describe("notify", () => {
       [join(inRun.state.runDir, "artifacts", "big.html"), "171.1"],
       [join(inRun.state.runDir, "artifacts", "page.html"), "171.1"],
     ]);
+  });
+
+  test("a file the upload deadline cut off gets a warning, and every upload shares one deadline", async () => {
+    const { calls, open } = fakeOpener([], ["big.html"]);
+    const inRun = await runFolder("artifacts/big.html", "artifacts/page.html");
+
+    await notify("slack", { event: designDone, ...inRun }, open, fakeRecorder().record, undefined);
+
+    expect(calls.notices[1]?.title).toBe(
+      "⚠️ big.html took too long to send to Slack; open it in the run viewer.",
+    );
+    expect(calls.deadlines[0]).toBeInstanceOf(AbortSignal);
+    expect(calls.deadlines[1]).toBe(calls.deadlines[0]);
   });
 
   test("SC13: a file over 100 MB is offered to Slack instead of being held back", async () => {
