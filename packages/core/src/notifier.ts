@@ -15,8 +15,8 @@ import {
   type Notifier,
   QuestionAskedEvent,
   type Result,
-  SUBSCRIBER_TIMEOUT_S,
   type State,
+  SUBSCRIBER_TIMEOUT_S,
   type Subscriber,
   type SubscriberInput,
   WorkflowBlockedEvent,
@@ -418,7 +418,7 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
       throw new Error("slack files.getUploadURLExternal returned no upload url");
     }
     const put = await config
-      .fetch(uploadUrl, { method: "POST", body: Bun.file(file), signal: deadline })
+      .fetch(uploadUrl, { method: "POST", body: Bun.file(file), signal: deadline ?? null })
       .catch((error: unknown) => {
         if (deadline?.aborted) return "too-slow" as const;
         throw error;
