@@ -9,7 +9,8 @@ A walk is a sequence of real calls against the running service, not a single req
 captured:
 
 1. **Preconditions** — the records the walk needs, built the Step 1 way. Record what you created and its ids; they
-   belong in the scenario's capture so a reader can tell your data from the database's.
+   belong in a proof's `raw`, so a reader can tell your data from the database's, and `given` names them by
+   their kind.
 2. **The trigger** — the real entry point a user or an integration would hit. `curl -w '\n%{http_code}'`, the exact
    command, status and body.
 3. **The read-back** — fetch what should have changed and quote the fields; where the stack's datastore is directly
@@ -47,6 +48,8 @@ write.
 
 ## Evidence in the report
 
-Frames and videos do not exist here, so the exchange is the whole evidence and a headless scenario carries its weight
-in `proofs[]` — one entry per mechanism. How such an entry is written, and everything about grading, coverage, gaps
-and the derived verdict, is unchanged: see `writing-the-report.md`.
+Frames and videos do not exist here, so the exchange is the whole evidence. Each step says, in one plain
+sentence, what was asked of the system and on whose behalf, in the order it was asked. Under it sit the checks
+it brings about: accepted or refused, and what was returned or saved. The request line, the status and the values a check rests on go into the `raw` of the proof that check cites,
+one proof per thing confirmed. How such an entry is written, and everything
+about grading, coverage, gaps and the derived verdict, is in `writing-the-report.md`.

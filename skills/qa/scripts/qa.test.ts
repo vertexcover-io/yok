@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { VerifierInput } from "@yok/sdk";
-import { checkDesignCoverage, QaOutputSchema, VisualMatchSchema } from "./qa.ts";
+import { checkDesignCoverage, checkReportShape, QaOutputSchema, VisualMatchSchema } from "./qa.ts";
 import { parseReportData } from "./report-media.ts";
 
 const bug = {
@@ -120,13 +120,22 @@ const INDEX = `| Screen | Local file | Width | Source | Source of truth for |
 | Home, mobile | \`design/b.png\` | 390 | mockup | layout |
 `;
 
+const clean = { text: "The screen reads as drawn.", result: "pass" };
+// A screen read against its design: a drawn one is shown beside the screen as built.
+const drawn = (baseline: string | null, more: Record<string, unknown> = {}) => ({
+  baseline,
+  ...(baseline === null ? {} : { build: "screenshots/01_a__01_open.png" }),
+  checks: [clean],
+  ...more,
+});
+
 const reportWith = (
   baselines: readonly (string | null)[],
   coverage: readonly { req: string; scenario: string; verdict: string }[] = [],
 ): string => {
   const scenarios = baselines.map((baseline, i) => ({
-    id: `SC${i + 1}`,
-    visualMatch: { baseline, fidelity: baseline === null ? null : 90 },
+    n: `SC${i + 1}`,
+    visualMatch: drawn(baseline),
   }));
   return `<html><body><script type="application/json" id="report-data">${JSON.stringify({ scenarios, coverage })}</script></body></html>`;
 };
@@ -269,43 +278,35 @@ describe("checkDesignCoverage", () => {
     expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
   });
 
-  const finding = {
-    what: "button",
-    baselineShows: "filled",
-    buildShows: "ghost",
-    evidence: "css",
-  };
   const reportOf = (scenarios: readonly unknown[]): string =>
     `<script type="application/json" id="report-data">${JSON.stringify({ scenarios })}</script>`;
 
-  test("a report whose visualMatch fills every field, with a HIGH finding, passes", async () => {
+  test("a report whose visualMatch fills every field, with a check worth a look, passes", async () => {
     const visualMatch = {
       baseline: "../design/a.png",
       build: "screenshots/01_a.design.png",
       width: 1440,
-      fidelity: 92,
-      matched: "Region order reads as drawn.",
-      specRules: [{ rule: "Body text is 14px", held: true, evidence: "font-size: 14px" }],
-      findings: [{ severity: "HIGH", ...finding }],
+      checks: [
+        clean,
+        { text: "Two buttons are small to tap.", result: "warn", note: "Not new.", proofs: ["p1"] },
+      ],
     };
     const scenarios = [
-      { id: "SC1", visualMatch },
-      { id: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png", width: 390 } },
+      { n: "SC1", visualMatch },
+      { n: "SC2", visualMatch: { ...visualMatch, baseline: "../design/b.png", width: 390 } },
     ];
     const dir = artifactsWith({ report: reportOf(scenarios), index: INDEX });
 
     expect(await checkReport(dir)).toEqual({ pass: true, findings: [] });
   });
 
-  test("a PASS or PARTIAL whose scenario carries a BLOCKER visual finding fails, naming the scenario, with or without a design index; a FAIL passes", async () => {
-    const blocker = {
-      baseline: "../design/a.png",
-      fidelity: 75,
-      findings: [{ severity: "BLOCKER", ...finding }],
-    };
+  test("a PASS or PARTIAL whose scenario carries a failed design check fails, naming the scenario, with or without a design index; a FAIL passes", async () => {
+    const broken = drawn("../design/a.png", {
+      checks: [{ text: "The empty state shows.", result: "fail", saw: "The region is blank." }],
+    });
     const scenarios = [
-      { id: "SC1", visualMatch: blocker },
-      { id: "SC2", visualMatch: { baseline: "../design/b.png", fidelity: 100 } },
+      { n: "SC1", visualMatch: broken },
+      { n: "SC2", visualMatch: drawn("../design/b.png") },
     ];
     const indexed = artifactsWith({ report: reportOf(scenarios), index: INDEX });
     const unindexed = artifactsWith({ report: reportOf(scenarios) });
@@ -314,7 +315,7 @@ describe("checkDesignCoverage", () => {
 
     expect(result.pass).toBe(false);
     expect(result.findings.map(({ message }) => message)).toEqual([expect.stringContaining("SC1")]);
-    expect(result.findings[0]?.message).toContain("BLOCKER");
+    expect(result.findings[0]?.message).toContain("FAILURE");
     expect((await checkReport(indexed, { status: "PARTIAL", gaps: [gap] })).pass).toBe(false);
     expect((await checkReport(unindexed)).pass).toBe(false);
     expect(await checkReport(indexed, { status: "FAIL" })).toEqual({ pass: true, findings: [] });
@@ -322,16 +323,8 @@ describe("checkDesignCoverage", () => {
 
   test("a scenario that read design/b.png at a width other than the index's 390 fails, naming the frame and both widths", async () => {
     const at = (width: number) => [
-      { id: "SC1", visualMatch: { baseline: "../design/a.png", fidelity: 100 } },
-      {
-        id: "SC2",
-        visualMatch: {
-          baseline: "../design/b.png",
-          build: "screenshots/02.png",
-          width,
-          fidelity: 100,
-        },
-      },
+      { n: "SC1", visualMatch: drawn("../design/a.png") },
+      { n: "SC2", visualMatch: drawn("../design/b.png", { build: "screenshots/02.png", width }) },
     ];
     const wrong = artifactsWith({ report: reportOf(at(1440)), index: INDEX });
     const right = artifactsWith({ report: reportOf(at(390)), index: INDEX });
@@ -445,11 +438,8 @@ describe("checkDesignCoverage", () => {
   test.each([
     ["no report-data island", "<html><body></body></html>"],
     [
-      "a visualMatch finding graded LOW",
-      reportWith(["../design/a.png"]).replace(
-        '"fidelity":90',
-        '"fidelity":90,"findings":[{"severity":"LOW","what":"button","baselineShows":"primary","buildShows":"secondary","evidence":"getComputedStyle"}]',
-      ),
+      "a visualMatch check graded minor",
+      reportWith(["../design/a.png"]).replace('"result":"pass"', '"result":"minor"'),
     ],
   ])(
     "SC18 (design): a report with %s fails with one finding naming the island, not a crash",
@@ -470,29 +460,32 @@ describe("checkDesignCoverage", () => {
 });
 
 describe("VisualMatchSchema", () => {
-  test("SC22 (design): a visualMatch with a re-shoot at 1440 and a broken spec rule parses, and a spec rule with an empty rule does not", () => {
+  test("SC22 (design): a visualMatch with a re-shoot at 1440 and a failed check parses, and a check with no text does not", () => {
     const visualMatch = {
       baseline: "../design/a.png",
       build: "screenshots/01_a.design.png",
       width: 1440,
-      fidelity: 92,
-      specRules: [{ rule: "Body text is 14px", held: false, evidence: "font-size: 16px" }],
+      checks: [{ text: "Body text is the drawn size.", result: "fail", saw: "It is larger." }],
     };
-    const emptyRule = {
-      ...visualMatch,
-      specRules: [{ rule: "", held: true, evidence: "font-size: 14px" }],
-    };
+    const emptyText = { ...visualMatch, checks: [{ text: "", result: "pass" }] };
 
     expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
-    expect(VisualMatchSchema.safeParse(emptyRule).success).toBe(false);
+    expect(VisualMatchSchema.safeParse(emptyText).success).toBe(false);
   });
 
-  test("a re-shoot names both its file and its width, or neither", () => {
-    const visualMatch = { baseline: "../design/a.png", fidelity: 92 };
+  test("a drawn screen names the screen as built, an undrawn one needs none, and a width needs a build", () => {
+    const undrawn = { baseline: null, checks: [clean] };
 
-    expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
-    expect(VisualMatchSchema.safeParse({ ...visualMatch, width: 1440 }).success).toBe(false);
-    expect(VisualMatchSchema.safeParse({ ...visualMatch, build: "s.png" }).success).toBe(false);
+    expect(VisualMatchSchema.safeParse(undrawn).success).toBe(true);
+    expect(VisualMatchSchema.safeParse(drawn("../design/a.png")).success).toBe(true);
+    expect(VisualMatchSchema.safeParse({ ...undrawn, baseline: "../design/a.png" }).success).toBe(
+      false,
+    );
+    expect(VisualMatchSchema.safeParse({ ...undrawn, width: 1440 }).success).toBe(false);
+  });
+
+  test("a visualMatch says what was looked at: no checks is rejected", () => {
+    expect(VisualMatchSchema.safeParse({ baseline: null, checks: [] }).success).toBe(false);
   });
 
   test("the proof-report template's visualMatch scaffold has exactly the schema's fields", () => {
@@ -506,5 +499,210 @@ describe("VisualMatchSchema", () => {
     expect(Object.keys(scaffold ?? {}).toSorted()).toEqual(
       Object.keys(VisualMatchSchema.shape).toSorted(),
     );
+  });
+});
+
+const shapeReport = (scenarios: unknown[]): string =>
+  `<html><body><script type="application/json" id="report-data">${JSON.stringify({ scenarios })}</script></body></html>`;
+
+const checkShape = (scenarios: unknown[], output: VerifierInput["output"] = { status: "PASS" }) => {
+  const dir = artifactsWith({ report: shapeReport(scenarios) });
+  return checkReportShape({
+    run: "r",
+    nodeRunId: "nr-1",
+    output,
+    artifacts: [{ type: "proof-report", name: "proof-report", path: reportPath(dir) }],
+    args: null,
+    nodeInput: null,
+  });
+};
+
+const proof = { id: "p1", label: "Database", claim: "The row is stored.", holds: true, raw: "row" };
+const passed = { text: "The total updates.", result: "pass", proofs: ["p1"] };
+const failed = { text: "The total updates.", result: "fail", saw: "It stays the same." };
+const step = (...checks: unknown[]) => ({ when: "The user saves the invoice.", checks });
+const scenario = (more: Record<string, unknown>) => ({
+  n: "01",
+  group: "journey",
+  verdict: "SUCCESS",
+  title: "Does saving an invoice update its total?",
+  given: ["An invoice has one line."],
+  steps: [step(passed)],
+  proofs: [proof],
+  ...more,
+});
+
+const take = { browser: "Chrome", video: "a.mp4", frames: [{ src: "a.png", label: "Saved" }] };
+const phoneTake = { ...take, size: "phone", video: "a-phone.mp4" };
+const spared = { replay: "not needed", why: "Only a label changed." };
+
+const messages = async (given: Record<string, unknown>): Promise<string[]> =>
+  (await checkShape([scenario(given), scenario({ n: "02" })])).findings.map(
+    ({ message }) => message,
+  );
+
+describe("checkReportShape", () => {
+  test("a passed scenario, a failed one and one nothing could drive each pass in the shape their verdict owes", async () => {
+    const result = await checkShape([
+      scenario({}),
+      scenario({ n: "02", verdict: "FAILURE", steps: [step(failed)], proofs: [] }),
+      scenario({
+        n: "03",
+        verdict: "NOT VERIFIED",
+        steps: [step({ text: "The total updates." })],
+        proofs: [],
+      }),
+    ]);
+
+    expect(result).toEqual({ pass: true, findings: [] });
+  });
+
+  test("a scenario carried over as four paragraphs is named for its given and its steps", async () => {
+    const result = await checkShape([
+      { n: "04", verdict: "SUCCESS", given: "g", when: "w", output: "o" },
+      scenario({}),
+    ]);
+
+    expect(result.pass).toBe(false);
+    expect(result.findings.every(({ message }) => message.startsWith("scenario 04"))).toBe(true);
+    expect(result.findings.map(({ message }) => message).join(" ")).toContain("steps");
+  });
+
+  test.each([
+    ["no title", { title: "" }, "title"],
+    ["given written as a paragraph", { given: "An invoice has one line." }, "given"],
+    ["a step with no check", { steps: [step()], proofs: [] }, "at least one check"],
+    ["a step with no when", { steps: [{ checks: [passed] }] }, "when"],
+    [
+      "a driven check with no result",
+      { steps: [step({ text: "It saves." })], proofs: [] },
+      "result",
+    ],
+    ["a failed check on a SUCCESS", { steps: [step(failed)], proofs: [] }, "FAILURE"],
+    ["no failed check on a FAILURE", { verdict: "FAILURE" }, "no failed check"],
+    [
+      "a failed check that does not say what was seen",
+      { verdict: "FAILURE", steps: [step({ ...failed, saw: "" })], proofs: [] },
+      "saw",
+    ],
+    ["a check citing a proof the scenario lacks", { proofs: [] }, "p1"],
+    ["a proof no check cites", { proofs: [proof, { ...proof, id: "p2" }] }, "p2"],
+    ["a proof with no id", { proofs: [proof, { ...proof, id: undefined }] }, "id"],
+    ["a proof whose holds is a string", { proofs: [{ ...proof, holds: "true" }] }, "holds"],
+    ["a proof whose holds is omitted", { proofs: [{ ...proof, holds: undefined }] }, "holds"],
+    ["no group", { group: undefined }, "group"],
+    [
+      "a group heading that runs long",
+      { group: "Everything that can go wrong with names" },
+      "5 words",
+    ],
+    [
+      "the journey group on a scenario only a test recorded",
+      { recordings: [{ video: "a.mp4" }] },
+      "primary journey",
+    ],
+    ["a browser recording and no phone decision", { recordings: [take] }, "no phone decision"],
+    [
+      "a phone decision that gives no reason",
+      { recordings: [take], phone: { replay: "not needed", why: " " } },
+      "no phone decision",
+    ],
+    [
+      "a phone replay it owes and did not film",
+      { recordings: [take], phone: { replay: "required", why: "It shows a new screen." } },
+      "owes a phone replay",
+    ],
+    [
+      "a third party's screen it graded without filming it",
+      { thirdParty: "the chat service" },
+      "the chat service",
+    ],
+    [
+      "a third party's screen it graded from a take of the product's own page",
+      { thirdParty: "the chat service", recordings: [take], phone: spared },
+      "the chat service",
+    ],
+    [
+      "a third party's screen it could not open, with a result on its check",
+      { verdict: "NOT VERIFIED", thirdParty: "the chat service", proofs: [] },
+      "carries a result",
+    ],
+    [
+      "a proof whose raw runs long",
+      {
+        proofs: [{ ...proof, raw: Array.from({ length: 16 }, (_, i) => `value ${i}`).join("\n") }],
+      },
+      "15 lines",
+    ],
+    [
+      "a proof whose raw carries the script that read the page",
+      {
+        proofs: [{ ...proof, raw: "(() => document.querySelector('h1').innerText)()\n→ Invoices" }],
+      },
+      "script",
+    ],
+    [
+      "a computed style in a check",
+      { steps: [step({ ...passed, text: "The header is rgb(255, 255, 255)." })] },
+      "plain words",
+    ],
+    [
+      "a request line in a step",
+      { steps: [{ ...step(passed), when: "POST /invoices is sent." }] },
+      "plain words",
+    ],
+  ])("a scenario with %s is named for it", async (_name, given, expected) => {
+    const found = await messages(given);
+
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.every((message) => message.startsWith("scenario 01"))).toBe(true);
+    expect(found.join(" ")).toContain(expected);
+  });
+
+  test("a scenario passes with the phone replay it owes, with none where none is owed, and unverified on a third party's screen", async () => {
+    const owed = { replay: "required", why: "It shows a new screen." };
+
+    expect(await messages({ recordings: [take, phoneTake], phone: owed })).toEqual([]);
+    expect(await messages({ recordings: [take], phone: spared })).toEqual([]);
+    expect(
+      await messages({
+        thirdParty: "the chat service",
+        recordings: [{ ...take, thirdParty: "the chat service" }],
+        phone: spared,
+      }),
+    ).toEqual([]);
+    expect(
+      await messages({
+        verdict: "NOT VERIFIED",
+        thirdParty: "the chat service",
+        steps: [step({ text: "The message shows its link." })],
+        proofs: [],
+      }),
+    ).toEqual([]);
+  });
+
+  test("a design check cites proofs like any other, and its failure makes the scenario a FAILURE", async () => {
+    const design = (result: string) => ({
+      baseline: null,
+      checks: [{ text: "The label fits.", result, saw: "It is cut off.", proofs: ["p1"] }],
+    });
+    const cited = { steps: [step({ ...passed, proofs: [] })] };
+
+    expect(await messages({ ...cited, visualMatch: design("warn") })).toEqual([]);
+    expect((await messages({ ...cited, visualMatch: design("fail") })).join(" ")).toContain(
+      "FAILURE",
+    );
+  });
+
+  test("a report whose scenarios are all in named groups is asked for its primary journeys", async () => {
+    const result = await checkShape([scenario({ group: "Name checks" })]);
+
+    expect(result.findings.map(({ message }) => message).join(" ")).toContain("primary journey");
+  });
+
+  test("a FAIL passes whatever its report holds, so its bugs reach the fix loop", async () => {
+    const result = await checkShape([{ n: "07", verdict: "FAILURE" }], { status: "FAIL" });
+
+    expect(result).toEqual({ pass: true, findings: [] });
   });
 });

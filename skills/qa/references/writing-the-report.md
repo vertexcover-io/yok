@@ -1,348 +1,389 @@
 # Writing the Proof Report
 
-**Read this when:** grading scenarios, assembling videos (Step 5), or writing the report (Step 6). Everything here
-is done once the driver's session is closed; the driving and capture craft is in `driving-the-browser.md` and
+**Read this when:** setting a scenario's bar and writing it up (Steps 2 to 4), completing the videos (Step 5), or
+writing the report (Step 6). The driving and capture craft is in `driving-the-browser.md` and
 `driving-the-device.md`.
 
 **Contents:**
 
+- The reader — Product and QA
+- A scenario — one behaviour, written once
+- Given, steps and checks
+- Proofs — what a check cites
+- Recordings — every video of the scenario
+- The design check
 - Grading — two tracks
-- Building the videos (Step 5)
 - The report format
 - Completion checklist — the report is done when all of these hold
+
+## The reader — Product and QA
+
+**The report is read by Product and QA people who have never seen the code.** They open it to learn what the
+feature does for its user and whether that held. Every sentence the report shows them — a title, a `given` line,
+a step, a check, a `reason`, a proof's `claim` and `found`, a bug's title and body — is written in **plain
+language**:
+
+- **Tell it from the user's side**: who does what, what they get, what stays saved.
+- **Use the product's own words** for its screens, controls and messages, the way the user sees them, and everyday
+  words for everything behind the screen.
+- **Name each thing by its kind**: the kind of record, the kind of user, the kind of value. The ids, names and
+  amounts the round happened to use belong to the proofs. Quote the product's own wording where that wording is
+  the behaviour under test. A proof's `claim` states the one value the proof turns on.
+- **Describe the application only.** How a recording was driven or filmed goes in that recording's `note`.
+- **Send the technical original to a proof's `raw`**: a request, a response, a status code, a field name, an
+  identifier, a command, a computed style, a measurement. The code behind a bug or a gap goes in that entry's own
+  fields.
+- **Keep each line short**: one sentence, two where the second carries a fact the first cannot.
+
+Read each sentence back as that reader: it makes sense on its own, with no developer beside them.
+
+## A scenario — one behaviour, written once
+
+**A scenario is one behaviour the docs describe.** Everything that proves that behaviour belongs to it: the take,
+every replay of it on another device, the automated test that covers it, and every proof. A second device or a
+second way of driving adds a recording to the scenario; a behaviour with its own steps is a scenario of its own.
+
+**`title` is the question the scenario answers**, worded so the checks under it answer yes or no.
+
+**`group` is the heading the report lists the scenario under** — `journey` for a primary journey, else the
+broad heading for the kind of check it is — set when it is planned, as Step 2 says.
+
+**`phone` is the phone replay a browser scenario owes**, set when it is planned: `replay` is `required` or
+`not needed`, and `why` is the one line that settled it.
+
+**`thirdParty` names the service whose own screen the scenario's checks are read on**, in plain words, on the
+scenarios Step 2 gave one.
+
+## Given, steps and checks
+
+A scenario reads top to bottom: where it starts, then each thing the user does with what should be true once
+they have. Its parts are written at two moments, in this order:
+
+1. **Before driving, from the docs: `title`, `given`, and the text of every check.** The checks are the bar the
+   run is graded against, set while the result is still unknown, listed in the order they will be proven.
+2. **After the run that is the evidence: `steps`, and each check's `result`.** Place every check under the step
+   that brings it about, in the order the run reached them.
+
+**`given` is the setup, one fact a line**: who the user is, what data exists and what makes it matter, the
+settings and permissions in force. Each line states something true before the user acts.
+
+**A step is one thing the user does, and it exists because something is checked once it is done.** Write `when`
+as one short sentence in the present tense, naming the control by its label on screen. Actions that lead up to the
+checked moment fold into that step's sentence, so the steps summarise the journey the recording shows. A check
+made on another surface or on a file the product produced — the same screen on another device, a downloaded
+document, a stored record — gets a step of its own, saying what was opened or read.
+
+**A check is one plain sentence saying what should be true**, with:
+
+- **`result`** — `pass` where the run showed exactly that, `fail` where it showed something else. A check that
+  held on one recording and broke on another is a `fail`.
+- **`saw`** — on a `fail`, what was seen instead, in one sentence, naming the recording where it differs between
+  them.
+- **`note`** — one line the reader needs beside the check, where there is one.
+- **`proofs`** — the ids of the proofs that show this check, as *Proofs* below says.
+
+**A walk that stopped short** gives a result to every check it reached and leaves the rest without one. **A
+scenario nothing could drive** carries its `given` and its steps with their checks, none with a result.
+
+**`reason` belongs to a scenario graded `FAILURE`, `NOT VERIFIED` or `INVALID`**, kept to what the verdict turns
+on: which check failed and what that means for the user, with the two facts *Bugs* asks of a `FAILURE`; what
+blocked the walk and what would close it; or why the scenario does not apply.
+
+Anything else the walk observed goes to the field that owns it: a divergence from the design to the design
+check, a mechanism or a whole exchange to a proof, a remark that fits neither to `extra[]`.
+
+## Proofs — what a check cites
+
+A proof is a **second witness**: somewhere other than the recording confirming what a check says — the datastore,
+the product's own API, a third-party service, a log, the page's own measurements, the sink an effect lands in. A
+check earns one for each thing worth a second witness: an effect with no screen, a value that was stored, the way
+an outcome was reached, a measurement the eye cannot take.
+
+**One proof confirms one thing, read from one witness.** Two things confirmed, or two witnesses, are two proofs.
+Every entry has the same parts:
+
+- **`id`** — a short id unique within the scenario, which checks cite.
+- **`label`** — two or three words naming where the proof comes from. It is the pill the reader clicks.
+- **`claim`** — what the witness showed, as one short plain sentence. A proof that failed reads as the failure.
+- **`found`** — why this proof counts, in one or two plain sentences: what it adds to the reader's confidence in
+  the check. A witness that stands in for the real thing is named as a stand-in here.
+- **`holds`** — `true` where the witness shows what the citing check's text says, `false` where it shows
+  otherwise. A proof behind a `warn` that states the finding holds.
+- **`raw`** — the few values that let the reader trust this one proof, **laid out to be read from top to
+  bottom** in at most fifteen lines:
+  1. a `#` line saying in plain words what was measured or asked;
+  2. where the question is short enough to read at a glance — a request line, a rule as its source writes it —
+     that line, under a one-word label where that helps;
+  3. each value the citing checks rest on, one a line, under a plain name, its text kept exactly as it arrived;
+  4. a `→` line with the outcome.
+
+  Keep a value only where one of the citing checks rests on it. Redact secrets as `<redacted>`.
+- **`image`** — where the witness is something seen and a picture adds to the proof, that picture, saved as
+  `screenshots/NN_SLUG.NAME.png`.
+
+**Cite each proof from the checks it shows, and from those only.** A check lists in `proofs` the ids of the
+proofs that are about that check. A check the recording alone shows cites none. Every proof is cited by at least
+one check; a proof nothing cites is dropped, or the check it shows is added.
+
+`artifacts[]` is for files **the product produced** — a webhook body it posted, a file it delivered, a document it
+generated — each as `{label, href, note}`.
+
+## Recordings — every video of the scenario
+
+`recordings[]` lists every video of the scenario in the order they were made. Each entry:
+
+- **`label`** — the name on its card: the device or the way it was driven.
+- **`kind`** — how it was driven: a walkthrough by this skill, or an automated test.
+- **`device`** and **`browser`** — what it ran on, as the session reported them. An emulated device says it is
+  emulated.
+- **`size`** — `phone` on a phone replay.
+- **`thirdParty`** — on a take filmed in a third party's session, that service, in the scenario's own words.
+- **`video`** — the file. The report reads its size, shape and length from the file itself.
+- **`frames[]`** — `{src, label}` for each promoted frame of that recording, in order.
+- **`note`** — one line about how this recording was made, where a reader needs it.
+
+Every video comes from one of three places:
+
+- **Recorded.** A browser recording is its take, filmed by the round that drove it as `driving-the-browser.md`
+  says. Step 5 checks that it plays, compresses it in place, and cuts any stretch where the picture stays still
+  for over three seconds down to two. A take that followed the user across tabs was recorded in numbered parts,
+  which Step 5 joins into the one video.
+- **Recorded by the e2e runner.** An automated test's video is the one Step 2 saved beside the report. Step 5
+  checks and compresses it like a take.
+- **Assembled.** A device recording, and a browser recording whose recorder failed, gets its video built by
+  ffmpeg from its promoted frames in `screenshots/`, grouped by the prefix before the `__`.
+
+`SKILL.md`'s Step 5 carries the command, which reports one line per recording. **A `FAILED` line fails the
+step**: a recording that does not play, a build ffmpeg could not finish, or a **stretched** frame, which the
+script catches itself by comparing each source frame's aspect ratio with the crop window cropdetect found in the
+video it built. The settings and the reasons for them live in the script.
+
+**Keep the frames** — they are the only machine-readable evidence, and a re-grade or second look needs the PNGs.
+A recording whose video cannot be had keeps its frames and leaves `video` unset.
+
+### An automated test's recording
+
+An e2e video joins the scenario whose behaviour its tests cover, as one more recording with no `frames[]`:
+
+- **Mark each check the test asserts** by citing a proof whose `raw` is the runner's own result line for the
+  tests behind that check.
+- **A failed test fails the checks it asserts**, with what the runner reported in `saw`.
+
+Where no driven scenario covers the plan rows a video films, the video is the one recording of the scenario
+Step 2 planned for it: `title` from the rows' `Scenario` cells, `given` from their `Given`, the steps from the
+test's code in the order the video shows them, the checks from their `Expected`, and each `result` from the
+runner's report.
+
+## The design check
+
+Every UI scenario you drove carries a `visualMatch`, which the report shows as its design check: what the screen
+was compared with, the design beside the screen as built, and a list of checks. `visual-verification.md` is the
+pass that produces it.
+
+- **`baseline`** — the reference image's report-relative path, or `null` for a screen nobody drew.
+- **`build`** — the screen as built, shown beside the baseline: the re-shoot at the design's width, else the
+  frame of the take that shows the drawn screen. Every scenario with a baseline names one.
+- **`width`** — the width of a re-shoot.
+- **`checks[]`** — what the pass found, each a check in the shape *Given, steps and checks* gives, written for
+  the same reader:
+  - **`pass`** — the screen does what the design or the question asks. Say in one sentence what lined up, so a
+    reader sees what was looked at.
+  - **`fail`** — the build breaks what the design says. **A failed design check makes the scenario a
+    `FAILURE`**, with a `bugs[]` entry behind it, filmed from its own repro like any other.
+  - **`warn`** — worth a reader's look, and the scenario still passes. Its `note` says why it does not decide
+    the verdict.
+
+  A design check says what the user meets on the screen; the numbers behind it sit in the proof it cites.
+
+**Grade a divergence by what it changes for the user**, as `visual-verification.md` says; a spacing or pixel
+delta against the baseline is no check at all.
+
+**Each `design/spec.md` rule a plan step cites for this screen is covered by a check.** Rules that tell the
+reader one thing share one check, worded as that one thing. The check cites a proof whose `raw` holds, for each
+rule, the rule as the spec writes it and the values read from the page, laid out as *Proofs* says.
 
 ## Grading — two tracks
 
 Grade each scenario on two tracks; they answer different questions and flow to different places.
 
-The **documented check** answers the question you were given: do these frames show the behaviour the docs describe?
-The verdict is `SUCCESS` or `FAILURE`, and it cites concrete evidence — a measured rect, a quoted string, a computed
-style, a network response. Layout claims cite a measurement. This becomes the scenario's `verdict` and `reason`.
+The **documented check** answers the question you were given: does the run show the behaviour the docs describe?
+It is answered one check at a time, each `result` resting on concrete evidence — a measured rect, a quoted
+string, a computed style, a network response. **The scenario's `verdict` follows from its checks**: `SUCCESS`
+where every check passed, `FAILURE` where any failed.
 
 The **open visual review** asks what's wrong regardless of what was asked for: alignment, contrast, clipping,
-overlap, a broken empty state, copy issues. Run it on every scenario, including the ones that passed cleanly. Treat
-`truncate` and `line-clamp` on a primary headline as a bug to justify, not a default to accept. Anything real you
-find here is a bug, and Step 4 owns it. `visual-verification.md` is the one pass that runs it — against the
-design where the plan supplies one, and against the screen's own coherence always. This file renders its result.
-
-## Building the videos (Step 5)
-
-The videos are **assembled, not captured**: ffmpeg builds each one from the promoted frames in `screenshots/`. One
-video per scenario, grouped by the `NN_<slug>` prefix before the `__`, written beside the report. `SKILL.md`'s Step 5
-carries the command that builds them and prints the per-scenario `ok` line.
-
-The script builds every scenario's video and reports one line each. **A `FAILED` line fails the step** — including
-one that names a **stretched** frame, which the script catches itself by comparing each source frame's aspect ratio
-with the crop window cropdetect found in the video it built. The settings and the reasons for them live in the
-script.
-
-**Keep the frames** — they are the only machine-readable evidence, and a re-grade or second look needs the PNGs. If
-a merge fails, name the scenario and move on; its frames still prove it.
+overlap, a broken empty state, copy issues. Run it on every scenario, including the ones that passed cleanly.
+Treat `truncate` and `line-clamp` on a primary headline as a bug to justify. Anything real you find here is a
+bug, and Step 4 owns it. `visual-verification.md` is the one pass that runs it — against the design where the
+plan supplies one, and against the screen's own coherence always.
 
 ## The report format
 
-**The scenarios come from `verification/run-log.jsonl`, last line per scenario, not from what you remember driving.**
-On a feature that has been through a fix round, most scenarios were driven by an earlier round's agent, and that line
-is all there is of them. It carries the finished write-up rather than a summary of it: the line's `scenario` object is
-the `scenarios[]` element itself, so a carried-over scenario is transcribed into the report rather than reconstructed.
-Its `url`, `expected`, `steps`, `reason`, `proofs`, frames and labels are the ones the round that drove it wrote, and
-the `requirements` beside it are what `coverage[]` maps to that scenario. The one field the terminal round fills in is
-`video`, once it has built the videos. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's
-`gap` object the same way. So a carried-over scenario reads no differently from one you drove yourself.
+**The scenarios come from `verification/run-log.jsonl`, last line per scenario, as the ledger holds them, listed
+with the journeys first and then set by set, each set in number order.** On a
+feature that has been through a fix round, most scenarios were driven by an earlier round's agent, and that line
+is all there is of them. The line's `scenario` object is the `scenarios[]` element itself, so a carried-over
+scenario is transcribed into the report, and the `requirements` beside it are what `coverage[]` maps to that
+scenario. A carried-over `NOT VERIFIED` scenario's `gaps[]` entry comes from the line's `gap` object the same
+way.
 
-**The surface row comes from this attempt, not from the ledger.** `fields[]` carries one row naming where the
-run drove, written once for the whole report:
-
-- **A browser walk** writes a `Base URL` row with the host this attempt drove, as Step 1 held it:
-  `{ "label": "Base URL", "value": "http://localhost:3000" }`.
-- **A device walk** writes an `App` row with the app id, the platform, and each device's name and OS version, as
-  Step 1 read them: `{ "label": "App", "value": "com.example.app on ios; iPhone 17 Pro simulator, iOS 26.3;
-  iPad Pro 13-inch (M4) simulator, iOS 26.3" }`. A replay scenario names its device in its title, so a reader
-  knows which of them a frame came from.
-
-Every scenario's `url` is a path, so the reader joins it to this row to reopen the screen. When an earlier
-round drove a different host or device, add that to the row's value in a few words, so a carried-over scenario's
-path is read against the surface it was driven on.
-
-Copy `references/proof-report-template.html` to `verification/proof-report.html` and **fill its JSON island — the
-`<script type="application/json" id="report-data">` block. Change nothing else in the file.** You write data, not
-markup; the template renders it. Its header comment is the field-by-field guide, and it stays in the file you ship.
-
-The report opens on the first scenario; there is no prose preamble. The run's context lives in `drivenOn` and
-`fields[]`, behind the bar's run details, and the derived `verdict` is the badge in the bar.
+**Fill the JSON island of the copy Step 6 made — the `<script type="application/json" id="report-data">`
+block — and leave the rest of the file as it is.** Its header comment is the field-by-field guide.
 
 ```json
 {
-  "title": "GSTR-2B monetary match",
-  "drivenOn": "The reconciliation report at `/app/<business>/reports/gstr2breconciliation`, June 2026.",
-  "fields": [{ "label": "Base URL", "value": "http://localhost:3000" }],
+  "title": "FEATURE",
   "scenarios": [
     {
-      "n": "01",
-      "slug": "01_float_artefact_still_matches",
-      "short": "Float artefact matches",
-      "title": "An invoice whose tax total carries a floating-point artefact still reconciles against the supplier's filed entry",
+      "n": "NN",
+      "slug": "NN_SLUG",
+      "short": "RAIL LABEL",
+      "group": "journey",
+      "title": "THE QUESTION THIS SCENARIO ANSWERS",
       "verdict": "SUCCESS",
-      "url": "/app/6a59f2c1/reports/gstr2breconciliation?period=062026",
-      "expected": "An invoice whose books total is `7127.200000000001` and whose filed entry is `7127.20` reads **Complete Match**, both sides rendering ₹7,127.20.",
-      "reason": "Books stored `7127.200000000001`; both sides render ₹7,127.20 and the pair reads **Complete Match**.",
-      "steps": ["Open the June 2026 reconciliation report",
-                { "text": "Switch to Detailed View",
-                  "url": "/app/6a59f2c1/reports/gstr2breconciliation/detailedview?period=062026" },
-                "Find invoice `INV-4417`, books ₹7,127.200000000001 against filed ₹7,127.20"],
-      "video": "01_float_artefact_still_matches.mp4",
-      "frames": [{ "src": "screenshots/01_float_artefact_still_matches__01_report_open.png",
-                   "label": "June report, detailed view" }]
+      "url": "PATH?QUERY",
+      "phone": { "replay": "required", "why": "THE ONE LINE THAT SETTLED IT" },
+      "given": ["ONE FACT THE SCENARIO STARTS FROM"],
+      "steps": [
+        {
+          "when": "WHAT THE USER DOES",
+          "checks": [{ "text": "WHAT SHOULD BE TRUE", "result": "pass", "proofs": ["PROOF ID"] }]
+        }
+      ],
+      "recordings": [
+        {
+          "label": "NAME ON THE CARD",
+          "kind": "HOW IT WAS DRIVEN",
+          "device": "WHAT IT RAN ON",
+          "browser": "BROWSER",
+          "video": "NN_SLUG.mp4",
+          "frames": [{ "src": "screenshots/NN_SLUG__SS_STEP.png", "label": "WHAT THE FRAME SHOWS" }]
+        }
+      ],
+      "visualMatch": {
+        "baseline": "../design/FILE",
+        "build": "screenshots/NN_SLUG.design.png",
+        "checks": [{ "text": "WHAT THE DESIGN ASKS OF THE SCREEN", "result": "pass", "proofs": ["PROOF ID"] }]
+      },
+      "proofs": [
+        {
+          "id": "PROOF ID",
+          "label": "WHERE IT COMES FROM",
+          "claim": "WHAT THE WITNESS SHOWED",
+          "found": "WHY IT COUNTS",
+          "holds": true,
+          "raw": "THE VALUES THE CHECKS REST ON, LAID OUT TO BE READ",
+          "image": "screenshots/NN_SLUG.NAME.png"
+        }
+      ]
     }
   ]
 }
 ```
 
-**`url` is the path the scenario opened on** — the path with its query string, never the host:
-`/app/6a59f2c1/reports/gstr2breconciliation?period=062026`. The host is one `fields[]` row, `Base URL`, written once
-for the whole run, because it changes with the stack while the path is the thing under test. One path per scenario:
-where a step is what moved the browser, write that step as `{text, url}` and its path renders under it, so a reader
-following the walk sees where each move landed and no path is written twice. **Redact what the query carries** — this
-report is read and shared beyond this run, and a driven URL routinely carries a live credential: an SSO `?code=`, a
-`?token=`, a pre-signed `X-Amz-Signature`, an `?email=`. Keep the parameters that select what was under test
-(`?period=062026`), write the value of any auth or identity parameter as `<redacted>`, and record the path alone for a
-scenario reached through a callback or pre-signed URL. A session token is not what makes a screen reproducible.
-**On a device walk, `url` is the deep link the scenario opened, else the screen path it reached** — the screen
-names from the app's root to the one under test, joined with `/` — redacted the same way.
+**`url` is the path the scenario opened on** — the path with its query string and no host; the host goes in
+the return. One path per scenario. **Redact what the query carries**: keep the parameters that select what was under test, write the
+value of any auth or identity parameter as `<redacted>`, and record the path alone for a scenario reached
+through a callback or a pre-signed URL. **On a device walk, `url` is the deep link the scenario opened, else the
+screen path it reached** — the screen names from the app's root to the one under test, joined with `/` —
+redacted the same way. A headless scenario's `url` is the request path it drove. A path a later step moved to
+sits in the `raw` of a proof that step's checks cite.
 
-**Write `expected` from the docs before you drive it** — one or two sentences naming the outcome and the values it
-turns on. It is the bar the run is graded against, and `reason` is the diff between it and what you saw. A scenario
-whose `expected` could only have been written afterwards has graded itself.
-
-`steps` is the walk you actually drove, one plain sentence each, **each naming the value it sent** — "POST the client
-as `{clientId:"v-crm-1", name:"Verify Acme"}`" rather than "POST the client" — so a dev re-runs the walk from the
-report alone. They summarise the flow rather than mapping onto frames. `reason` is what decided the verdict — the
-rendered string, the measured value, the status code.
-
-Three shapes are fixed, because they are what makes two reports comparable: **`expected` renders above the walk**,
-**`steps` renders numbered in order**, and
-**`video` + `frames[]` render as Visual proof**, the video leading with the screenshots folded behind a toggle.
-Everything else is prose you shape yourself. When something fits none of the sections, put it in `extra[]` —
-`{heading, body, capture}`, all optional, no imposed shape.
-
-### Proofs
-
-The frame proves the **surface**; a `proofs[]` entry proves the **mechanism** underneath it. A scenario earns one
-when it has one of two things a video cannot carry:
-
-- **No surface** — it never renders anywhere. A cache key, a queue write, a webhook body, a row written by a job.
-- **The mechanism behind a surface that did render** — the frame shows the outcome, the block shows it was reached
-  the way it was supposed to be. The intermediate call proving the right branch was taken; the query proving the
-  total was recomputed rather than served stale; the response behind a table that looks correct either way.
-
-Where a frame already carries the surface — the board, the modal count, the toast, the received email — the entry
-carries the mechanism under it. **Where there is no frame, the exchange is the whole evidence, so it goes in whole.**
-
-```json
-"proofs": [
-  {
-    "tag": "cache",
-    "heading": "Cached under a new key",
-    "body": "Both keys carry the v2 segment and no unversioned key was touched. The screen showed the right total either way — this is what proves it was recomputed rather than served from the pre-deploy key.",
-    "capture": "GET /businesses/6a59f2c1/gstr2b-reconciliation/detailedview?period=062026\n→ 200\n{\"redis\":{\"get\":\"serana:gstr2brecon:v2:6a59f2c1:062026\",\n          \"set\":\"serana:gstr2brecon:v2:6a59f2c1:062026\",\"ttl\":604800}}"
-  }
-]
-```
-
-Each entry is three parts: `heading` names what it settles, `capture` is the **verbatim exchange** that decides it,
-and `body` is what that exchange settled.
-
-`capture` goes in **however long it runs** — the block renders collapsed, so length costs a reader nothing until they
-open it — and it keeps the same shape whether it is HTTP, a log, a query (the SQL as run, the rows as returned), or a
-file. Redact secrets as `<redacted>`, and say in `body` when the exchange ran against a stand-in for the real thing.
-
-**Several calls settling one mechanism go in one entry, in the order you drove them**, separated by a blank line —
-the retry after the conflict, the read-back after the write.
-
-`artifacts[]` is for files **the product produced** — a webhook body it posted, a file it delivered, a document it
-generated.
-
-**Read the scenario's video, then its proofs: an entry that told you nothing the video left open should not have
-been written.**
-
-### The visual match
-
-Every UI scenario carries a `visualMatch`. It is how a reader sees, without opening a single image, whether the
-screen was drawn before it was built and whether the build kept to the drawing.
-
-```json
-"visualMatch": {
-  "baseline": "../design/reconciliation-detailed.png",
-  "build": "screenshots/NN_SLUG.design.png",
-  "width": 1440,
-  "fidelity": 75,
-  "matched": "Region order, the filter row's controls, the Complete Match chip and its copy all read as drawn.",
-  "specRules": [
-    { "rule": "<the spec rule as written>", "held": true, "evidence": "<the computed style that shows it>" }
-  ],
-  "findings": [
-    { "severity": "BLOCKER",
-      "what": "The period selector is drawn as the screen's primary control and renders as a tertiary one",
-      "baselineShows": "filled accent button, 16px label",
-      "buildShows": "ghost button, 13px label",
-      "evidence": "getComputedStyle → background-color: rgba(0,0,0,0); font-size: 13px" }
-  ]
-}
-```
-
-- **`baseline`** is the reference image's report-relative path, or `null` for a screen nobody drew. `null` renders
-  as **no design reference** — visibly not a pass, because absence of a check must never read as one.
-- **`build`** and **`width`** are the re-shoot at the width the plan gives the frame. Leave both out when the
-  scenario was already shot at that width. The report renders the baseline beside `build`, or beside the
-  scenario's first frame when there was no re-shoot, so a reader compares them without leaving the page.
-- **`fidelity`** is derived, per `visual-verification.md`: 100, less 25 a BLOCKER and 8 a HIGH, floored at 0.
-  It is `null` wherever `baseline` is. **A scenario whose findings carry a BLOCKER is a `FAILURE`** — the
-  divergence is a bug, filmed from its own repro like any other, and its fidelity is not a second opinion the
-  reader gets to weigh against the verdict.
-- **`matched`** is one sentence on what lined up. A findings list with nothing beside it reads as a broken screen
-  even when nine tenths of it was right.
-- **`specRules[]`** lists every `design/spec.md` rule a plan step cites for this screen, each with `held` set to
-  whether the build kept it and `evidence` holding the computed style or measurement that shows it. Write it only
-  when the run has a `spec.md`.
-- **`findings[]`** carry `severity` of `BLOCKER` or `HIGH` only. **Grade a divergence by what it changes for the
-  user, never by a spacing or pixel delta against the baseline**; where a spacing delta broke something in the
-  build, record that break as a sanity finding on its own terms, with its own measurement.
+When something fits none of the sections, put it in `extra[]` — `{heading, body, capture}`, all optional.
 
 ### Coverage and the derived verdict
 
-`coverage[]` at the top level is the scope ledger: **one entry per requirement id the feature's docs list**, whether
-or not you reached it. It is what makes an incomplete run visible instead of arithmetically green.
+`coverage[]` at the top level is the scope ledger: **one entry per requirement id the feature's docs list**,
+reached or not, each `{req, scenario, verdict}`. The page does not show it: the verdict is read off it, and a
+`NOT VERIFIED` row reaches the reader through its `gaps[]` entry.
 
-```json
-"verdict": "PARTIAL",
-"coverage": [
-  { "req": "R2", "scenario": "01", "verdict": "SUCCESS" },
-  { "req": "R5", "scenario": "07", "verdict": "NOT VERIFIED" },
-  { "req": "R15", "scenario": "12", "verdict": "INVALID" }
-]
-```
+Several ids pointing at one scenario is normal and good. One id proven by more than one scenario stays **one
+row** whose `scenario` names them all, carrying `FAILURE` if any failed and `NOT VERIFIED` if any went unproven.
+Every id in the docs has a row.
 
-Several ids pointing at one scenario is normal and good — a single walk that proves five requirements is a better
-walk. One id proven by more than one walk — a desktop scenario and its phone replay, or a device scenario and its
-replays on the other listed devices — stays **one row** whose `scenario` names them all (`"01, 09"`), carrying
-`FAILURE` if any failed and `NOT VERIFIED` if any went unproven. What is not allowed is an id in the docs with no
-row here.
+**Every rule in `design/spec.md` is a requirement too.** When the run has a spec, read it top to bottom, whether
+or not a plan step points at the part a rule sits in, and give each rule it states its own row, `req` set to
+`SPEC:` followed by the rule in a few words. Its verdict comes from the design check that covers it: `SUCCESS`
+when that check passed, `FAILURE` when it failed. A rule no scenario reached is `NOT VERIFIED` with a `gaps[]`
+entry, and a rule that does not apply to this build is `INVALID` with why. The spec has no fixed format, so read
+rules as the spec writes them: a sentence, a bullet or a table row each count.
 
-**Every rule in `design/spec.md` is a requirement too.** When the run has a spec, read it top to bottom, whether or
-not a plan step points at the part a rule sits in, and give each rule it states its own row, `req` set to
-`SPEC: <the rule in a few words>`. Its verdict comes from the scenario that checked it, through that scenario's
-`visualMatch.specRules`: `SUCCESS` when it held, `FAILURE` when it broke. A rule no scenario reached is
-`NOT VERIFIED` with a `gaps[]` entry, and a rule that does not apply to this build is `INVALID` with why. The
-spec has no fixed format, so read rules as the spec writes them: a sentence, a bullet or a table row each count.
-
-**`verdict` is derived from that table, never chosen:** any scenario `FAILURE` → `FAIL`; else any requirement
-`NOT VERIFIED` → `PARTIAL`; only an all-covered, all-`SUCCESS` run is `PASS`. Compute it after the table is
-complete and write what it says, including when the run you just did feels like a pass.
+**`verdict` is derived from `coverage[]`:** any scenario `FAILURE` → `FAIL`; else any requirement
+`NOT VERIFIED` → `PARTIAL`; an all-covered, all-`SUCCESS` round is `PASS`. Compute it once every id has its row
+and write what it says.
 
 ### Bugs
 
-`bugs[]` at the top level is **bugs in the application** — defects that will bite a user or a developer: a misleading
-message, lost or corrupted data, stale UI state, a 500 reaching the user, a silent no-op, a permission leak, a broken
-recovery path; or, for developers, a documented command that is gone, an artifact contradicting the tree.
+`bugs[]` at the top level is **bugs in the application** — defects that will bite a user or a developer. Each
+entry is `{severity, origin, reachedBy, scenario, title, body}`:
 
-`scenario` is the `n` of the scenario that reproduces it — the Step 4 walk you filmed for this bug. It is what
-carries the reader from the Bugs pane to the expectation, the observed behaviour and the video, so the entry never
-restates them.
+- **`scenario`** is the `n` of the scenario that reproduces it — the Step 4 walk you filmed for this bug. It
+  carries the reader to the failed check, what was seen and the recording, so the entry leaves those to it.
+- **`reachedBy`** is one sentence: the actor who reached it and the surface they used. An entry with no actor to
+  name goes to `extra[]` as a note on what the feature trusts.
+- **`origin`** is `introduced here`, `pre-existing` or `pre-existing, worsened here`, as `git blame` or the diff
+  settled it; `body` says which commit or hunk settled it.
+- **`severity`** is `blocker`, `major` or `minor`, and `body` says why that rung and not the one above.
+- **`body`** is a report a maintainer could act on without asking a question: what it is, and the repro.
 
-**A bug an earlier round fixed gets no entry and no note**: `bugs[]` carries only what is still broken when the report
-is written, so a round-1 bug that round 2 fixed leaves a passing scenario and no trace of itself, because every entry
-is backed by a scenario that reproduces it now.
-
-`reachedBy` and `origin` are the two Step 4 settled before you got here — the actor and surface that produced it,
-and what `git blame` said about where it came from:
-
-```json
-{
-  "severity": "major",
-  "origin": "pre-existing, worsened here",
-  "reachedBy": "A returning customer changed plan on a lead whose proforma was raised the previous day — PATCH /demands/:leadId, ordinary account, nothing hand-written.",
-  "scenario": "09",
-  "title": "…", "body": "…"
-}
-```
-
-`reachedBy` is one sentence: the actor and the surface they used. An entry you cannot write one for is not a bug —
-it goes to `extra[]` as a note on what the feature trusts, or nowhere. Say in `body` which commit or diff hunk settled
-`origin`.
-
-The same two facts belong on any scenario carrying a `FAILURE` verdict, for the same reasons. A scenario has no fields
-of its own for them, so they go in its `reason` — one sentence naming the actor and surface, one naming what `git
-blame` settled.
-
-Each is a bug report a maintainer could act on without asking you a question: what it is, its severity (blocker /
-major / minor) and why that rung and not the one above, and the repro. What should have happened and what did are
-already the scenario's `expected` and `reason`, so the entry names that scenario in `scenario` rather than
-restating them — and the reader reaches its video from there. Most consequential first. Your infrastructure
-adventures, the data you couldn't find, and the workaround that got the stack up go in what you report back to
-whoever dispatched you (Step 6). Found no bugs? Leave `bugs` empty; the sentence from Step 4 naming your best
-attack and why it didn't land goes in `bugsNote`, which renders either way.
+`bugs[]` carries what is still broken as the report is written, most consequential first; a bug a fix round
+closed leaves a passing scenario and no entry. A `FAILURE` scenario states `reachedBy` and `origin` in its
+`reason`, one sentence each. With no bugs, `bugs` is empty.
 
 What this run could not reach goes in `gaps[]` — one entry per `NOT VERIFIED` scenario, every field filled:
-
-```json
-"gaps": [
-  {
-    "scenario": "07",
-    "req": "R5",
-    "mechanism": "`shouldCreateProforma()` at src/hooks/create-proforma-against-lead.js:310 requires the lead to carry both `product` and `pricePlan`; this environment's Premium business has no product with a price plan.",
-    "attempted": ["seeded a lead through the service and drove PATCH /demands/:id",
-                  "set source=PREMIUMN and retried",
-                  "re-ran with DEBUG=* and read the hook's own branch trace"],
-    "wouldClose": "A product with at least one price plan on the Premium business, or a fixture that builds one."
-  }
-]
-```
-
-`mechanism` is the cause Step 4 made you read the blocking path for, written to the standard set there — the
-sentence above passes it. `attempted` is what you actually ran, distinct approaches rather than retries of one.
+`{scenario, req, mechanism, attempted, wouldClose}`. `mechanism` is the cause Step 4 made you read the blocking
+path for: the line, condition, credential or absent datum. `attempted` lists the distinct approaches you ran.
 `wouldClose` is the concrete thing a human or a later run can supply.
+
+Your infrastructure adventures, the data you could not find, and the workaround that got the stack up go in
+the return.
 
 ## Completion checklist — the report is done when all of these hold
 
-- The JSON island parses, and the file opens in a browser showing every scenario — open it and look before you call
-  this done.
-- `coverage[]` has a row for every requirement id the docs list, and `verdict` is what the derivation rule computes
-  from it. Grep the docs for their id pattern and diff that set against the table before you call this done.
-- When the run has `design/spec.md`, `coverage[]` has a `SPEC:` row for every rule it states. Read the spec once more
-  against the table before you call this done.
+- The JSON island parses, and the file opens in a browser showing every scenario — open it and look.
+- `coverage[]` has a row for every requirement id the docs list, and `verdict` is what the derivation rule
+  computes from it. Grep the docs for their id pattern and diff that set against `coverage[]`.
+- When the run has `design/spec.md`, `coverage[]` has a `SPEC:` row for every rule it states.
+- Every scenario has a stable `n`, its `group`, a `title` that is the
+  question it answers, a `given` list, and steps that
+  each carry a `when` and at least one check.
+- Every check of a driven scenario has a `result`, every failed check a `saw`, and each scenario's `verdict`
+  is what its checks give: `SUCCESS` with every check passed, `FAILURE` with any failed.
+- Every scenario graded other than `SUCCESS` has a `reason`. One you could not verify is `NOT VERIFIED` with
+  what would close it; one that turned out not to apply is `INVALID` with why. Each keeps its place in the
+  report.
+- Every sentence the report shows reads to a Product or QA person with no developer beside them: told from the
+  user's side, in the product's own words, naming things by their kind, with each technical original in a
+  proof's `raw`.
+- `title`, `given`, every `when` and every check describe the application and the user alone.
+- Every recording of a scenario is in its `recordings[]` with its `label`, `kind`, `device` and, on a browser,
+  `browser`; every replay and every automated test's video sits with the scenario whose behaviour it shows.
+- Every scenario with a browser recording carries its `phone`, and each `required` one that was driven has a
+  recording whose `size` is `phone`.
+- Every scenario with a `thirdParty` that was driven has a take filmed on that service's own screen, whose
+  `thirdParty` names it; one that is `NOT VERIFIED` leaves every check without a result.
+- The steps a recording shows read as a summary of it: play the video with those steps beside it.
+- Every frame a recording lists is a moment of its video.
+- Every proof has an `id`, a `label`, a `claim`, a `holds` and a `raw` laid out to be read, confirms one thing
+  from one witness, and is cited by the checks it shows and by those only.
+- Every proof's `raw` holds only the values its checks rest on, in fifteen lines or fewer.
+- Every side-effect scenario carries the receipt Step 3 names for its sink, or is `NOT VERIFIED` with that sink
+  named.
+- Every UI scenario you drove carries a `visualMatch` with at least one check; one with a `baseline` names its
+  `build`; every spec rule a step cites is covered by a check with its measurements in a proof; every check
+  rests on a measurement or a computed style; and every failed design check has made its scenario a `FAILURE`
+  with a `bugs[]` entry behind it.
+- Every scenario that drove a page or a request carries its `url` as *The report format* shapes it.
+- Every `url` shows `<redacted>` for the value of an auth or identity parameter, and a path reached through a
+  callback or a pre-signed URL carries no query.
 - Every `NOT VERIFIED` scenario has a `gaps[]` entry whose `mechanism` names a line, condition, credential or
   absent datum, with `attempted` listing distinct approaches and `wouldClose` naming the concrete unblock.
-- Every `bugs[]` entry carries a `reachedBy` naming a real actor and the surface they used, and an `origin` of
-  `introduced here` / `pre-existing` / `pre-existing, worsened here` settled by `git blame` or the diff. Every
-  `FAILURE` scenario carries both in its `reason`.
-- Every `bugs[]` entry names in `scenario` the `n` of the scenario that reproduces it, and that scenario exists with
-  the `expected` and `reason` the entry leans on.
-- Every scenario carries an `expected` taken from the docs, `steps` naming the values it sent, and a `reason` that
-  reads as the diff between the two.
-- `fields[]` carries a `Base URL` row on a browser walk, or an `App` row on a device walk; every scenario that
-  drove a page or a request carries the `url` it opened on, path and query and no host, or on a device the deep
-  link it opened, else its screen path; and every step that moved the browser to another path carries that path.
-- No `url` in the report carries a live credential: an auth or identity parameter's value reads `<redacted>`, and a
-  path reached through a callback or a pre-signed URL records no query at all.
-- Every `capture` shows a request a dev could paste and the complete response it returned, inline — nothing about an
-  exchange is left in a file for the reader to go and open.
-- Every scenario has a stable `n`, a `verdict`, and a `reason`, and every behaviour the docs describe is covered. One
-  you could not verify is a scenario with `NOT VERIFIED` and a reason saying what would close it; one that turned out
-  not to apply is `INVALID` with why. Neither is dropped, and neither is quietly backfilled with an adjacent passing
-  check.
-- Every verdict cites a live observation from this run — a DOM assert, an HTTP status and body, a DB read-back, a
-  measured rect, a captured webhook body. Where that observation is mechanism rather than surface, it is a `proofs[]`
-  entry, written once.
-- Every UI scenario carries a `visualMatch`: a `baseline` path with a derived `fidelity` where a design defines the
-  screen, read at the frame's width, or `baseline: null` where none does. Every spec rule a step cites is in
-  `specRules[]`. No `findings[]` entry rests on a spacing delta alone, every entry cites a measurement or a computed
-  style, and every `BLOCKER` has made its scenario a `FAILURE` with a `bugs[]` entry behind it.
-- Every UI scenario names its `video`, every path is report-relative, and every file named in `artifacts[]` exists
-  beside the report under the same `NN_<slug>` prefix. No frame or file resolves to a broken link.
-- The `report-media` script with `--inline` ran after the last edit to the report and printed `ok` for every file it names.
-- Every side-effect scenario carries the receipt Step 3 names for its sink — mail-viewer frames, the queue read, the
-  captured artifact — or is `NOT VERIFIED` with that sink named.
-- Things this skill genuinely cannot reach (a touch-hold on a browser walk, real-device sensors, visual diffs
-  against last week's build) are scenarios too, marked `NOT VERIFIED`.
-- No internal ids appear anywhere — the plain sequential `n` values are the only identifiers a reader needs. Nothing
-  is said twice.
+- Every `bugs[]` entry carries a `reachedBy` naming a real actor and the surface they used, an `origin` settled
+  by `git blame` or the diff, and the `n` of a scenario that exists and carries the failed check the entry
+  leans on.
+- Every path is report-relative, and every file named in `artifacts[]` exists beside the report under its
+  scenario's prefix.
+- The `report-media` script with `--inline` ran after the last edit to the report and printed `ok` for every
+  file it names.
+- Things this skill genuinely cannot reach are scenarios too, marked `NOT VERIFIED`.
+- The plain sequential `n` values are the only identifiers a reader meets, and each thing is said once.

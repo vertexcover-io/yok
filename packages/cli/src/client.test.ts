@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { checkRemoteFlag, checkServerUrl, isCurrentServer, shouldOpenBrowser } from "./client.ts";
+import {
+  checkRemoteFlag,
+  checkServerUrl,
+  isCurrentServer,
+  runBlocked,
+  shouldOpenBrowser,
+  updateWarning,
+  versionWarning,
+} from "./client.ts";
 
 const base = { noOpen: false, isTTY: true, env: {}, platform: "darwin" as NodeJS.Platform };
 
@@ -31,24 +39,37 @@ describe("isCurrentServer", () => {
   const server = { pid: 1, version: "1.2.3", startedAt: 100 };
 
   test.each([
-    [
-      "keeps a server of this version started at or after replaceBefore",
-      server,
-      100,
-      "1.2.3",
-      true,
-    ],
-    ["replaces a server started before replaceBefore", server, 101, "1.2.3", false],
-    [
-      "replaces a server of another version, so an upgrade by Homebrew or npm takes effect",
-      server,
-      0,
-      "1.2.4",
-      false,
-    ],
-    ["starts a server when none is running", null, 0, "1.2.3", false],
-  ])("%s", (_label, running, replaceBefore, version, expected) => {
-    expect(isCurrentServer(running, replaceBefore, version)).toBe(expected);
+    ["keeps a server started at or after replaceBefore", server, 100, true],
+    ["replaces a server started before replaceBefore", server, 101, false],
+    ["starts a server when none is running", null, 0, false],
+  ])("%s", (_label, running, replaceBefore, expected) => {
+    expect(isCurrentServer(running, replaceBefore)).toBe(expected);
+  });
+});
+
+describe("the restart warnings", () => {
+  const HINT = "If this is a local yok server, run `yok server restart`.";
+
+  test("a server on this CLI's version gets no warning", () => {
+    expect(versionWarning("1.2.3", "1.2.3")).toBeNull();
+  });
+
+  test("a server on another version is named with both versions and the restart command", () => {
+    expect(versionWarning("1.2.3", "1.2.4")).toBe(
+      `warning: this CLI is 1.2.4, the yok server is 1.2.3; restart the server to use 1.2.4.\n${HINT}`,
+    );
+  });
+
+  test("a run is stopped on a server of another version, naming both versions and the restart command", () => {
+    expect(runBlocked("1.2.3", "1.2.4")).toBe(
+      `the yok server is on version 1.2.3 and this CLI is 1.2.4; restart the server before starting a run.\n${HINT}`,
+    );
+  });
+
+  test("after an update the running server is named by pid, with the restart command", () => {
+    expect(updateWarning(42)).toBe(
+      `warning: restart the yok server (pid 42) so it runs the installed version.\n${HINT}`,
+    );
   });
 });
 
@@ -106,6 +127,11 @@ describe("checkRemoteFlag", () => {
       "server stop",
       true,
       "yok server stop works only on the server's machine: run it there, without --remote",
+    ],
+    [
+      "server restart",
+      true,
+      "yok server restart works only on the server's machine: run it there, without --remote",
     ],
     [
       "login",
