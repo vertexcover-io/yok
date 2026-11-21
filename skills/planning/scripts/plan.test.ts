@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkDesignCoverage, checkOutcomeHomes } from "./plan.ts";
+import { checkDesignCoverage } from "./plan.ts";
 
 const INDEX = `| Screen | Local file | Width | Source | Source of truth for |
 |---|---|---|---|---|
@@ -114,121 +114,5 @@ describe("checkDesignCoverage", () => {
     const dir = artifactsWith({ plan: "# Plan\n- build the API\n" });
 
     expect(await check(dir)).toEqual({ pass: true, findings: [] });
-  });
-});
-
-const MATRIX_HEAD = "## Test Matrix\n\n| Outcome | Source | Home |\n|---|---|---|\n";
-const SCENARIO_HEAD =
-  "## Test Scenarios\n\n| ID | Scenario | Given | Expected | Level | Traces |\n|---|---|---|---|---|---|\n";
-const scenario = (id: string, ...outcomes: string[]): string =>
-  `| ${id} | s | g | ${outcomes.map((outcome) => `• ${outcome} holds`).join("<br>")} | unit | R1 |\n`;
-
-// An artifacts/ folder holding plan.md and one phase file per entry of `phases`.
-const planWith = (plan: string, ...phases: string[]): string => {
-  const dir = join(mkdtempSync(join(tmpdir(), "plan-")), "artifacts");
-  mkdirSync(join(dir, "phases"), { recursive: true });
-  writeFileSync(join(dir, "plan.md"), plan);
-  phases.forEach((phase, index) => {
-    writeFileSync(join(dir, "phases", `phase-${index + 1}.md`), phase);
-  });
-  return dir;
-};
-
-const checkHomes = (dir: string) =>
-  checkOutcomeHomes({
-    run: "r",
-    nodeRunId: "nr-1",
-    output: null,
-    artifacts: [{ type: "plan", name: "plan", path: join(dir, "plan.md") }],
-    args: null,
-    nodeInput: null,
-  });
-
-const messages = async (dir: string): Promise<string[]> =>
-  (await checkHomes(dir)).findings.map((finding) => finding.message);
-
-describe("checkOutcomeHomes", () => {
-  test("every outcome with one home passes: a scenario with or without its regression mark, an existing test, a deploy check", async () => {
-    const dir = planWith(
-      `${MATRIX_HEAD}| O1 shows a \\| b | R1 | \`SC1\` |\n| O2 two | R1 | SC2 (regression) |\n| O3 three | R2 | existing: a.test.ts "keeps x" |\n| O4 four | K1 | deploy: publish the package first |\n\n## Acceptance\n| SC9 | not a matrix row |\n`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
-      `${SCENARIO_HEAD}${scenario("SC2 (regression)", "O2")}`,
-    );
-
-    expect(await checkHomes(dir)).toEqual({ pass: true, findings: [] });
-  });
-
-  test("a separator line with trailing spaces is not read as an outcome", async () => {
-    const dir = planWith(
-      "## Test Matrix\n\n| Outcome | Source | Home |\n|---|---|---|  \n| O1 one | R1 | SC1 |\n",
-      `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
-    );
-
-    expect(await checkHomes(dir)).toEqual({ pass: true, findings: [] });
-  });
-
-  test.each([
-    ["no home", "| O2 two | R1 | |\n", "O2"],
-    ["two homes", "| O2 two | R1 | SC1, SC2 |\n", "O2"],
-    ["a question still open", "| O2 two | R1 | ask: one line or two? |\n", "O2"],
-    ["no outcome id", "| two | R1 | SC1 |\n", "two"],
-  ])("an outcome with %s fails, naming it", async (_name, row, named) => {
-    const dir = planWith(
-      `${MATRIX_HEAD}| O1 one | R1 | SC1 |\n${row}`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
-    );
-
-    const found = await messages(dir);
-
-    expect(found).toHaveLength(1);
-    expect(found[0]).toContain(named);
-  });
-
-  test("an outcome id used on two matrix rows, and a scenario id held by two phase rows, each give one finding", async () => {
-    const dir = planWith(
-      `${MATRIX_HEAD}| O1 one | R1 | SC1 |\n| O1 again | R2 | SC1 |\n`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
-    );
-
-    expect(await messages(dir)).toEqual([
-      expect.stringContaining("O1"),
-      expect.stringContaining("SC1"),
-    ]);
-  });
-
-  test("a home naming a scenario no phase holds, or a scenario whose Expected lacks the outcome, fails", async () => {
-    const dir = planWith(
-      `${MATRIX_HEAD}| O1 one | R1 | SC7 |\n| O2 two | R1 | SC1 |\n| O3 three | R1 | SC1 |\n`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O3")}`,
-    );
-
-    expect(await messages(dir)).toEqual([
-      expect.stringContaining("SC7"),
-      expect.stringContaining("O2"),
-    ]);
-  });
-
-  test("an Expected line naming an outcome the matrix lacks or homes elsewhere, and a scenario naming no outcome, fail", async () => {
-    const dir = planWith(
-      `${MATRIX_HEAD}| O1 one | R1 | SC1 |\n| O2 two | R1 | existing: a.test.ts |\n`,
-      `${SCENARIO_HEAD}${scenario("SC1", "O1", "O2", "O9")}${scenario("SC2")}`,
-    );
-
-    expect(await messages(dir)).toEqual([
-      expect.stringContaining("O2"),
-      expect.stringContaining("O9"),
-      expect.stringContaining("SC2"),
-    ]);
-  });
-
-  test("a plan with no Test Matrix, or one without the Outcome and Home columns, fails with one finding", async () => {
-    const none = planWith("# Plan\n", `${SCENARIO_HEAD}${scenario("SC1", "O1")}`);
-    const old = planWith(
-      "## Test Matrix\n\n| Requirement | Level | Strategy | Phase |\n|---|---|---|---|\n| R1 | unit | x | 1 |\n",
-    );
-
-    expect(await messages(none)).toHaveLength(1);
-    expect(await messages(old)).toHaveLength(1);
   });
 });

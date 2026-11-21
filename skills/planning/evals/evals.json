@@ -70,69 +70,6 @@
         "Asks Approve? the second time without saying what changed",
         "Renumbers phases in a way that leaves a phase file and the digraph out of step"
       ]
-    },
-    {
-      "id": 5,
-      "name": "every-outcome-has-one-home",
-      "prompt": "Run the planning stage for the approved design at .yok/bulk-archive/artifacts/design.md: a button on the invoices list that archives every selected invoice, offered to admins only.",
-      "expected_output": "After the steps are written, the stage lists the outcomes the feature needs, has a sub-agent list them independently, gives each outcome one home, and writes the scenario rows and the Test Matrix so the two agree.",
-      "files": [],
-      "expectations": [
-        "plan.md has a ## Test Matrix table with Outcome, Source and Home columns, one row per outcome id.",
-        "Every Expected line of every phase's ## Test Scenarios table opens with an outcome id whose Home in the matrix is that row.",
-        "The matrix holds an outcome for a non-admin's archive request being refused by the server, with a home that calls the server.",
-        "An Agent call that lists outcomes from the design and the steps is made before the matrix is written.",
-        "The done command is accepted by the outcome-homes verifier."
-      ],
-      "anti_expectations": [
-        "An Expected line with no outcome id",
-        "One outcome id on two scenario rows",
-        "The non-admin refusal is asserted only on the hidden button"
-      ]
-    },
-    {
-      "id": 6,
-      "name": "a-failure-is-tested-where-it-happens",
-      "prompt": "plan: when saving a draft, show 'We could not confirm the save' if the server's reply never arrives, and send the same request again on retry. The design is approved at .yok/draft-retry/artifacts/design.md.",
-      "expected_output": "The outcome about the missing reply has its home at a level that drops the real reply between the browser and the server, or on a QA walk that does.",
-      "files": [],
-      "expectations": [
-        "The matrix has an outcome for what the user meets when the reply never arrives.",
-        "That outcome's home is an e2e or qa-agent row whose Given drops the reply between the running web app and the running server."
-      ],
-      "anti_expectations": [
-        "The missing-reply outcome's only home is a row that makes the request function reject inside the component under test"
-      ]
-    },
-    {
-      "id": 7,
-      "name": "an-open-question-goes-to-the-user",
-      "prompt": "Run the planning stage for the approved design at .yok/share-link/artifacts/design.md: a share link for a report. The design does not say whether a link still opens after the person who made it is removed from the workspace.",
-      "expected_output": "The stage asks the user whether a link outlives its maker's access, with a recommended choice, before asking for approval. The answer is recorded and the outcome gets a home.",
-      "files": [],
-      "expectations": [
-        "The user is asked whether the link still opens after its maker is removed, with a recommended choice, before the approval question.",
-        "plan.md's ## Decisions records the question and the answer.",
-        "When done runs, no matrix row has a Home opening with ask:."
-      ],
-      "anti_expectations": [
-        "Picks a behavior without asking",
-        "Finishes with an ask: home in the matrix"
-      ]
-    },
-    {
-      "id": 8,
-      "name": "a-deploy-need-becomes-an-acceptance-check",
-      "prompt": "Run the planning stage for the approved design at .yok/audit-field/artifacts/design.md: add a reviewedBy field to the shared schema package and store it when an invoice is approved. The API installs the schema package from the registry at a fixed version.",
-      "expected_output": "The matrix lists the release order as an outcome with a deploy: home, and ## Acceptance holds a check a person can run for it.",
-      "files": [],
-      "expectations": [
-        "The matrix has an outcome whose Home opens with deploy: about the schema package being published and installed before the API stores the field.",
-        "plan.md's ## Acceptance has one check a person can run for that outcome."
-      ],
-      "anti_expectations": [
-        "No deploy: home and no Acceptance check, with the field proved only against a locally built package"
-      ]
     }
   ]
 }

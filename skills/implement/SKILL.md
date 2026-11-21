@@ -62,8 +62,7 @@ feature:
   as it is written there. A design step's UI mapping names the component behind each element of
   its frame: reuse or extend the component it names, and build new only where it says `new`.
 - `## Test Scenarios`: a table with one row per scenario, its id `SCn` and its `Level`. Write one
-  test per row, at the level the row gives, from its `Given` and `Expected` cells. A row that
-  lists several cases gets one named test case per case, inside that one test. Carry the id in
+  test per row, at the level the row gives, from its `Given` and `Expected` cells. Carry the id in
   the test title (`SC12: …`) so a reviewer can trace tests back to scenarios. Rows at level
   `qa-agent` belong to the qa stage, which proves them.
 - `## Commit`: the commit message.
