@@ -9,7 +9,7 @@ description: >
   working", "can we merge", or any other move toward calling a feature finished.
 summary: Name the verdict word (PASS, PARTIAL, FAIL or BLOCKED) and the round it came on. On PARTIAL, end the summary, on the same line, with the sentence QA could not verify N of M requirements; nothing failed. Write that sentence without quotes or backticks. M is the number of rows in the proof report's `coverage[]` and N the number marked NOT VERIFIED. List none of the gaps. On FAIL, say how many bugs are left.
 mode: inline
-allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, Skill]
+allowed-tools: [AskUserQuestion, Bash, Read, Write, Edit, Grep, Glob, Skill]
 tier: deep
 outputs:
   description: The derived verdict, the report path, and every gap and bug.
@@ -37,7 +37,7 @@ verifiers:
 references:
   driving-the-browser:
     path: references/driving-the-browser.md
-    description: How to drive agent-browser, scout a flow, film it in one recorded take, promote its frames, and replay it on a phone.
+    description: How to drive agent-browser, sign a person in to a third party's screen, scout a flow, film it in one recorded take, promote its frames, and replay it on a phone.
   driving-the-device:
     path: references/driving-the-device.md
     description: How to drive agent-device on an iOS or Android app, assert without eval, batch, and capture and promote frames.
@@ -65,6 +65,11 @@ variables:
       The entry of the config's environments block to verify against, or default for the entry
       the block names as its default.
     default: default
+  sign-in-wait:
+    description: >-
+      The seconds a person has to finish signing in to a third party's screen before its
+      scenarios are graded NOT VERIFIED.
+    default: "180"
 ---
 
 # QA: The Gate
@@ -85,6 +90,9 @@ You are the gate between "tests are green" and "feature is done".
   or Android app on a device — by driving it, or by filming the automated test that already asserts it (Step 2).
 - **A behaviour with no screen is proven headlessly at the same evidentiary bar** (Step 3). A feature with no
   UI is verified entirely in Step 3, at full scope.
+- **A recording films the real screen**: the product's own, served by the stack, or a third party's own, with a
+  person signed in. A check on a screen the round cannot open stays without a result, in a scenario graded
+  `NOT VERIFIED`.
 - **You produce one file**, `verification/proof-report.html`, with the evidence beside it, for Product and QA
   readers who have never seen the code.
 - **One subject, one place** — a scenario, bug or gap is written once and referenced elsewhere, and evidence
@@ -122,7 +130,8 @@ Everything else comes from the run's artifacts, whatever exists:
 
 - **The feature's docs**: `.yok/RUN/artifacts/design.md`, `plan.md` and the phase files `phases/phase-N.md`.
   Scenarios come from what those docs say the feature must do. Every phase file's `## Test Scenarios` row at
-  level `qa-agent` is yours to prove.
+  level `qa-agent` is yours to prove: the row is a journey you drive, and each `design` line in its
+  `Expected` is a design check you read on that screen during the same walk.
 - **The design frames** plan.md's `## Design Frames` names, in `.yok/RUN/artifacts/design/`, each with the
   width it was drawn at. A design frame is the **baseline** for the screen it draws, written `../design/FILE`
   from the report. Compare every design frame the plan builds against at least one scenario, at that width.
@@ -256,7 +265,9 @@ booted.
 **Then answer the two questions no config key expresses**, from the stack skill, before the first walk:
 
 1. **What this stack shares** with parallel runs, and what is isolated.
-2. **Where each out-of-band effect lands** — email, queue, webhook — and how to read that sink.
+2. **Where each out-of-band effect lands** — email, queue, webhook — and how to read that sink. For an effect a
+   person reads on a third party's screen: whether this stack delivers to the real service, and the address that
+   screen opens at.
 
 **Then seed.** Every scenario's fixtures exist, and its session is authenticated, before it is driven. Beyond
 what the environment's `seed` step covers, write fixtures through the product's own API, and go to the
@@ -282,7 +293,7 @@ walk. This step is the order things happen in.
 
 **Before the first walk**
 
-1. **Plan the primary journeys first.** A journey is a unique flow a user starts and carries through to what
+1. **Plan the primary journeys first**, opening with the plan's flow rows. A journey is a unique flow a user starts and carries through to what
    the feature is for, crossing every behaviour it naturally reaches. Aim for four or five a feature. Each is a
    scenario you drive and film, and its `group` is `journey`.
 2. **Then plan every behaviour no journey reaches**, by what already proves it. A behaviour an e2e test this
@@ -296,9 +307,25 @@ walk. This step is the order things happen in.
    keep the `NN_SLUG` the ledger gave it.
 5. **Set every scenario's bar from the docs**: write its `title`, its `given` and the text of every check, as
    the `writing-the-report` reference shapes them, while the result is still unknown.
-6. **Hold one session per device.** On a browser walk the desktop session serves every desktop scenario and
-   Steps 3 and 4, and the phone's own session opens once the desktop scenarios are filmed. On a device walk,
-   resume each device's session from Step 1.
+6. **On a browser walk, decide every scenario's phone replay from the diff**, and write it as the scenario's
+   `phone`. `replay` is `required` where the scenario shows a screen, or a part of one, that this change adds or
+   lays out anew, and `not needed` everywhere else, as on every scenario of an app the project says serves no
+   phones. `why` is the one line that settled it. A scenario outside the re-drive set keeps its `phone`.
+7. **Give every check a person reads on a third party's screen to a scenario that names that service** in
+   plain words as its `thirdParty`. What the product sent the service is a Step 3 scenario of its own, proven
+   from the request.
+8. **Hold one session per device.** On a browser walk the desktop session serves every desktop scenario and
+   Steps 3 and 4, each third party's screen has a session of its own, and the phone's own session opens once the
+   desktop scenarios are filmed. On a device walk, resume each device's session from Step 1.
+9. **Get a person signed in to each third party's screen this stack delivers to**, as the
+   `driving-the-browser` reference says. A sign-in an earlier run saved serves. Otherwise ask the user once,
+   naming the service and the scenarios that wait on it, and on a yes show them the browser, wait
+   `sign-in-wait` seconds for the signed-in screen, and hide the browser again before the first walk. With the
+   run's `interaction` policy off, go straight to item 10.
+10. **Grade `NOT VERIFIED` every scenario whose service has no signed-in session**, and carry on with the rest.
+    Its `reason` and its `gaps[]` entry say which of these stopped it: the stack delivers elsewhere, nobody
+    could be asked, the user declined, or the wait ran out. Whatever such a scenario reaches on the product's
+    own screens is driven as a scenario of its own, opened at the address the product sent.
 
 **Each scenario, in this order**
 
@@ -306,8 +333,10 @@ walk. This step is the order things happen in.
    step's target, condition and assert is known. A device walk works the flow out inside its capture loop. A
    fixture you find missing mid-walk is seeded the Step 1 way and the walk driven again.
 2. **Film it.** On a browser walk, return the scenario to its opening state and replay the whole flow as one
-   continuous recorded take, driven the way a person would and holding on its opening and final states. On a
-   device walk, drive the capture loop; Step 5 builds its video from the frames.
+   continuous recorded take, driven the way a person would and holding on its opening and final states. A
+   scenario with a `thirdParty` is filmed in that service's session, touching only what this run posted there,
+   and the take's `thirdParty` names the service.
+   On a device walk, drive the capture loop; Step 5 builds its video from the frames.
 3. **Record the path the scenario opened on** and any path a step moved to, as the `writing-the-report`
    reference shapes a `url`.
 4. **Confirm every frame.** A frame is evidence once its assert passed and your own eyes confirmed what it
@@ -317,12 +346,13 @@ walk. This step is the order things happen in.
    summarise the take in the order it ran, each check sits under the step that brings it about with its
    `result`, and the take joins `recordings[]` with what it ran on.
 
-**Then replay every flow as one more recording of its scenario**, through steps 1 to 5, under the scenario's
-number with the recording's prefix:
+**Then replay each flow that owes one, as one more recording of its scenario**, through steps 1 to 5, under
+the scenario's number with the recording's prefix:
 
-- **On a browser walk**, on a phone, after every desktop scenario and in the phone's own session. Whether the
-  app serves phones at all is a project fact.
-- **On a device walk**, on each later device the entry lists, in that device's session.
+- **On a browser walk**, every scenario whose `phone.replay` is `required`, a scenario an e2e test films
+  included: on a phone, after every desktop scenario and in the phone's own session, the recording's `size` set
+  to `phone`.
+- **On a device walk**, every flow, on each later device the entry lists, in that device's session.
 
 Update the scenario and append its ledger line: the replay joins `recordings[]`, a check that broke on it
 becomes a `fail` whose `saw` names that device, and a check only that device can show gets its own step. A flow
@@ -352,7 +382,10 @@ whose steps differ on the other device is a scenario of its own, with that one r
   one its reference handed to Step 5;
 - every scenario you drove carries a `visualMatch`, and every design frame the plan builds is some scenario's
   baseline at the plan's width, or is named in the gap of the scenario that could not reach it;
-- every flow has its replays driven to their closing assert;
+- on a browser walk every scenario with a recording carries its `phone`, and each `required` one has its phone
+  replay driven to its closing assert; on a device walk every flow has its replays driven to theirs;
+- every scenario with a `thirdParty` is filmed on that service's own screen, or is `NOT VERIFIED` naming what
+  stopped its sign-in;
 - every e2e video is a recording of the scenario it covers, with that scenario's ledger line appended.
 
 ## Step 3 — API, DB & Side-Effects: Proving What Has No Screen
@@ -492,8 +525,8 @@ script printed `ok` for every file.
 
 **Close every session the round opened**, each by the name it was opened under:
 
-- **a browser walk**: `agent-browser --session NAME close`, once for the desktop session and once for the
-  phone session;
+- **a browser walk**: `agent-browser --session NAME close`, once for the desktop session, once for the phone
+  session and once for each third party's session;
 - **a device walk**: `agent-device close` once per device, with that device's `AGENT_DEVICE_SESSION` exported.
 
 **A deferred round leaves the stack up, the fixtures in place and the staging dir where it is**, and lists

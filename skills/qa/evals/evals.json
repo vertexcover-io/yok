@@ -130,7 +130,8 @@
       "expected_output": "Drives the filter flow on desktop, then, once every desktop scenario is filmed, opens a second named session, sets it to agent-browser set device \"iPhone 14\" and signs in again there, and drives the same flow to its closing assert as one more recording of the same scenario, under that scenario's number with the recording's prefix. The replay's crop reads as a portrait picture in Step 5, and Step 7 closes both sessions by name.",
       "files": [],
       "expectations": [
-        "The flow is replayed after set device \"iPhone 14\", and the replay is a second entry in the same scenario's recordings[], its files named NN_SLUG-NAME",
+        "The scenario carries phone.replay required with a one-line why, decided before the first walk",
+        "The flow is replayed after set device \"iPhone 14\", and the replay is a second entry in the same scenario's recordings[], its files named NN_SLUG-NAME, with size phone",
         "The replay runs after every desktop scenario, in a named session of its own that ran its own setup",
         "The replay is driven from its first click to the same closing assert as desktop",
         "The replay asserts documentElement.scrollWidth minus clientWidth is 0",
@@ -206,6 +207,42 @@
         "Puts field names, status codes, selectors, identifiers or an assert's raw return in title, given, a step, a check, claim or found",
         "Uses fill, hover, scrollintoview or a bare mouse move for an action inside the take",
         "Leaves the recording on the first tab and shoots the new tab only as a screenshot after the take"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "wording-change-owes-no-phone-replay",
+      "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change reworded the help text of one control on an existing page and the project says the app serves phones.",
+      "expected_output": "Plans the scenario, sets its phone.replay to not needed with a why saying the change leaves the page laid out as it was, films the desktop take, and opens no phone session.",
+      "files": [],
+      "expectations": [
+        "The scenario carries phone.replay not needed and a one-line why, written before the first walk",
+        "The scenario has one recording, the desktop take",
+        "No phone session is opened or closed"
+      ],
+      "anti_expectations": [
+        "Replays the flow on a phone",
+        "Leaves the scenario without a phone decision"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "third-party-screen-with-nobody-to-sign-in",
+      "prompt": "You are running the qa stage of run feat-x against environment local, an entry with no platform field. The change makes the product post a message carrying a link to an outside chat service, and the link opens a page of the product. The stack skill says this stack delivers to the real service. No sign-in is saved and the run's interaction policy is off.",
+      "expected_output": "Proves what the product sent from the request in a Step 3 scenario, gives the check on the chat service's screen a scenario naming that service as its thirdParty and grades it NOT VERIFIED with a reason and a gaps[] entry saying nobody could be asked, drives the linked page as a scenario of its own opened at the address the product sent, and returns PARTIAL.",
+      "files": [],
+      "expectations": [
+        "A headless scenario proves the message and its link from the request the product sent",
+        "The scenario on the chat service's screen carries thirdParty, has no recording and no check result, and is NOT VERIFIED",
+        "Its gaps[] entry says nobody could be asked and names the sign-in as what would close it",
+        "The linked page is driven as its own scenario, opened at the address the product sent",
+        "The round carries on and returns PARTIAL"
+      ],
+      "anti_expectations": [
+        "Builds a page that imitates the chat service and films it",
+        "Marks a check on the chat service's screen as passed",
+        "Asks the user to sign in",
+        "Returns BLOCKED or stops the round"
       ]
     }
   ]
