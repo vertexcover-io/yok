@@ -8,7 +8,7 @@ import { agentBinary, uninstallPlugin, type WorkflowAgent, YOK_REPO } from "@yok
 import { execWithTimeout, type Result, spawnInteractive, yokHome } from "@yok/sdk";
 import { isCompiled, VERSION } from "@yok/sdk/internal";
 import * as z from "zod";
-import { fail, restartServer, runningServer, stopServer } from "./client.ts";
+import { fail, runningServer, stopServer, updateWarning } from "./client.ts";
 import {
   agentOption,
   agentsOnPath,
@@ -219,8 +219,7 @@ export const runUpdate = async (
   return { code, binaryReady: true };
 };
 
-// Runs Homebrew or npm, then the plugin install in the upgraded binary. YOK_SELF moves to that
-// binary, so the server restart that follows starts it rather than this process's old one.
+// Runs Homebrew or npm, then the plugin install in the upgraded binary.
 const runManagedUpdate = async (
   update: ManagedUpdate,
   named: readonly WorkflowAgent[] | undefined,
@@ -228,7 +227,6 @@ const runManagedUpdate = async (
   const [command, ...args] = update.upgrade;
   const upgraded = await spawnInteractive(command, args, { cwd: process.cwd() });
   if (upgraded !== 0) return failed(`${update.upgrade.join(" ")} exited with ${upgraded}`);
-  process.env.YOK_SELF = JSON.stringify([update.binary]);
   return { code: await installPluginWith(update.binary, named), binaryReady: true };
 };
 
@@ -254,7 +252,7 @@ export type UpdateRequest = Readonly<{
   target?: ReleaseSource;
 }>;
 
-// The update command without the server restart, which the action runs once the binary is ready.
+// The update command without the restart warning, which the action prints once the binary is ready.
 export const updateYok = async (
   { agent, preRelease, env, target }: UpdateRequest,
   compiled: boolean = isCompiled,
@@ -274,7 +272,7 @@ export const updateYok = async (
 export const updateCommand = () =>
   new Command("update")
     .description(
-      "Install the newest yok release (through Homebrew or npm if they installed it), move the plugin to it, and restart the server",
+      "Install the newest yok release (through Homebrew or npm if they installed it), move the plugin to it, and warn when a running server needs a restart",
     )
     .option("--pre-release", "take the newest release of any kind, not only stable")
     .addOption(agentOption("claude or codex; repeat for both; default: every one found on PATH"))
@@ -286,13 +284,10 @@ export const updateCommand = () =>
       });
       process.exitCode = code;
       if (!binaryReady) return;
-      // The server keeps running the binary it started from until it is restarted. A failed
-      // plugin install does not change that, so the restart happens anyway.
-      try {
-        if (await restartServer()) console.log("restarted the yok server on the installed binary");
-      } catch (error) {
-        fail(error instanceof Error ? error : String(error));
-      }
+      // The server keeps running the binary it started from. Whatever started it restarts it:
+      // a restart from here would take a server away from systemd or the terminal that runs it.
+      const running = await runningServer();
+      if (running !== null) console.error(updateWarning(running.pid));
     });
 
 // Must match the line install.sh appends to the shell's rc file.

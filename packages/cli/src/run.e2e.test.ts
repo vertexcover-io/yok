@@ -16,7 +16,6 @@ import { basename, dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
 import { VERSION } from "@yok/sdk/internal";
 import { readPort } from "@yok/server";
-import { restartServer, yokClient } from "./client.ts";
 
 const TIMEOUT_MS = 40_000;
 // Bun would load the repo's .env into the CLI, and from there the server and tmux, by itself.
@@ -847,30 +846,31 @@ describe("yok run", () => {
   );
 
   test(
-    "restartServer replaces a running server and leaves a stopped one down",
-    async () => {
+    "server restart starts a stopped server, replaces a running one, and leaves the run's tmux session alive",
+    () => {
       const repo = makeRepo();
-      const { env, home } = makeEnv();
-      const self = process.env.YOK_SELF;
-      process.env.YOK_SELF = JSON.stringify(["bun", NO_DOTENV, CLI]);
-      cleanups.push(() => {
-        if (self === undefined) delete process.env.YOK_SELF;
-        else process.env.YOK_SELF = self;
-      });
-      // A client is bound to the port the server had when it was made.
-      const health = () => yokClient(home).health();
+      const { env, home, socket } = makeEnv();
+      const status = () => yok(repo, env, "server", "status").stdout.trim();
 
-      await restartServer(home);
-      expect((await health()).ok).toBe(false);
+      const started = yok(repo, env, "server", "restart");
+      expect(started.code).toBe(0);
+      expect(started.stdout).toMatch(
+        /^restarted the yok server \(pid \d+, version .+\); its tmux sessions keep running\n$/,
+      );
 
       expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
-      const before = await health();
-      await restartServer(home);
-      const after = await health();
+      const before = status();
+      expect(yok(repo, env, "server", "restart").code).toBe(0);
+      const after = status();
 
-      expect(before.ok && after.ok).toBe(true);
-      expect(after.ok && after.value.pid).not.toBe(before.ok && before.value.pid);
+      expect(before).toMatch(/^pid \d+, version /);
+      expect(after).toMatch(/^pid \d+, version /);
+      expect(after).not.toBe(before);
       expect(serverPids(home)).toHaveLength(1);
+      const sessions = spawnSync("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], {
+        encoding: "utf8",
+      });
+      expect(sessions.stdout.trim().length).toBeGreaterThan(0);
 
       stopServer(repo, env);
     },
