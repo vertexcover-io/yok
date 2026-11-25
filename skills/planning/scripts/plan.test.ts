@@ -151,7 +151,7 @@ const messages = async (dir: string): Promise<string[]> =>
 describe("checkOutcomeHomes", () => {
   test("every outcome with one home passes: a scenario with or without its regression mark, an existing test, a deploy check", async () => {
     const dir = planWith(
-      `${MATRIX_HEAD}| O1 shows a \\| b | R1 | unit | \`SC1\` |\n| O2 two | R1 | unit | SC2 (regression) |\n| O3 three | R1 | e2e | SC3 |\n| O4 four | R2 | integration | existing: a.test.ts "keeps x" |\n| O5 five | K1 | deploy | deploy: publish the package first |\n\n## Acceptance\n| SC9 | not a matrix row |\n`,
+      `${MATRIX_HEAD}| O1 shows a \\| b | R1 | unit | \`SC1\` |\n| O2 two | R1 | unit | SC2 (regression) |\n| O3 three | R1 | e2e | SC3 |\n| O4 four | R2 | integration | existing: a.test.ts "keeps x" |\n| O5 five | K1 | deploy | deploy: publish the package first |\n\n## Acceptance\n| SC9 | not a matrix row |\n- O5 the new version is on npm\n`,
       `${SCENARIO_HEAD}${scenario("SC1", "O1")}`,
       `${SCENARIO_HEAD}${scenario("SC2 (regression)", "O2")}${scenarioAt("e2e", "SC3", "O3")}`,
     );
@@ -176,7 +176,7 @@ describe("checkOutcomeHomes", () => {
     ["no type", "| O2 two | R1 | | existing: a.test.ts |\n", "O2"],
     [
       "a deploy check typed as a test level",
-      "| O2 two | R1 | unit | deploy: run the migration |\n",
+      "| O2 two | R1 | unit | deploy: run the migration |\n\n## Acceptance\n- O2 the column exists\n",
       "O2",
     ],
   ])("an outcome with %s fails, naming it", async (_name, row, named) => {
@@ -201,6 +201,45 @@ describe("checkOutcomeHomes", () => {
 
     expect(found).toHaveLength(1);
     expect(found[0]).toContain("O1");
+  });
+
+  test("a deploy outcome with no line in ## Acceptance fails, naming it", async () => {
+    const plan = `${MATRIX_HEAD}| O1 one | R1 | unit | SC1 |\n| O2 two | K1 | deploy | deploy: run the migration |\n`;
+    const phase = `${SCENARIO_HEAD}${scenario("SC1", "O1")}`;
+
+    const missing = await messages(planWith(plan, phase));
+    const elsewhere = await messages(planWith(`${plan}\n## Notes\n- O2 is risky\n`, phase));
+
+    expect(missing).toEqual([expect.stringContaining("O2")]);
+    expect(missing[0]).toContain("## Acceptance");
+    expect(elsewhere).toEqual([expect.stringContaining("## Acceptance")]);
+  });
+
+  test.each([
+    ["a level outside unit, integration, e2e and qa-agent", "smoke", "smoke"],
+    ["no Level", "", "unit"],
+  ])("a scenario row with %s fails, naming it", async (_name, level, type) => {
+    const dir = planWith(
+      `${MATRIX_HEAD}| O1 one | R1 | ${type} | SC1 |\n`,
+      `${SCENARIO_HEAD}${scenarioAt(level, "SC1", "O1")}`,
+    );
+
+    const found = await messages(dir);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain("SC1");
+  });
+
+  test("an Expected line that does not open with its outcome id fails, though another line does", async () => {
+    const dir = planWith(
+      `${MATRIX_HEAD}| O1 one | R1 | unit | SC1 |\n`,
+      `${SCENARIO_HEAD}| SC1 | s | g | • O1 saves<br>• an error shows, as in O1 | unit | R1 |\n`,
+    );
+
+    const found = await messages(dir);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain("SC1");
   });
 
   test("an outcome id used on two matrix rows, and a scenario id held by two phase rows, each give one finding", async () => {

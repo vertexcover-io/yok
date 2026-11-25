@@ -70,6 +70,7 @@ export const schemas = { "qa.output.v1": QaOutputSchema };
 // One line a scenario shows its reader: what should be true, and the proofs that show it.
 const checkFields = {
   text: NonEmptyStringSchema,
+  req: z.array(NonEmptyStringSchema).optional(),
   saw: z.string().optional(),
   note: z.string().optional(),
   proofs: z.array(NonEmptyStringSchema).optional(),
@@ -271,6 +272,10 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   const raws = proofs.map((proof) => text(proof["raw"]));
   const cited = checks.flatMap((check) => strings(check["proofs"]));
   const failed = checks.filter((check) => check["result"] === "fail");
+  // a check left without a result was never reached, so it has nothing to cite
+  const unproven = checks.filter(
+    (check) => text(check["result"]) !== "" && strings(check["proofs"]).length === 0,
+  );
   const unknown = [...new Set(cited.filter((id) => !ids.includes(id)))];
   const uncited = ids.filter((id) => id !== "" && !cited.includes(id));
   const shared = [...new Set(cited.filter((id, i) => cited.indexOf(id) !== i))];
@@ -305,6 +310,10 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
     [
       parts.length > 0 && topSteps.length > 0,
       "has both parts and top-level steps: put every step in the part it belongs to",
+    ],
+    [
+      parts.length > 0 && list(scenario["recordings"]).length > 0,
+      "has both parts and top-level recordings: put every recording in the part it films",
     ],
     [
       parts.some(phoneOnly),
@@ -370,6 +379,10 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
     [
       scenario["verdict"] === "FAILURE" && failed.length === 0,
       "is a FAILURE with no failed check: mark the check that failed and say what was seen",
+    ],
+    [
+      unproven.length > 0,
+      "has a check with a result that cites no proof: cite the frame that shows it or a reading from its source",
     ],
     [
       unknown.length > 0,
@@ -445,24 +458,36 @@ const coverageProblems = (data: unknown): readonly string[] => {
     .looseObject({ coverage: z.unknown(), scenarios: z.unknown() })
     .safeParse(data).data;
   const checks = list(report?.scenarios).flatMap(checksOf);
-  return list(report?.coverage).flatMap((row) => {
-    const req = text(row["req"]);
-    const written = text(row["verdict"]);
-    if (req === "" || written === "INVALID") return [];
-    const proving = checks.filter((check) => strings(check["req"]).includes(req));
-    if (proving.length === 0)
-      return written === "NOT VERIFIED"
+  const rows = list(report?.coverage);
+  const listed = new Set(rows.map((row) => text(row["req"])));
+  // a requirement with no row drops out of the derived verdict, failed checks and all
+  const unlisted = [...new Set(checks.flatMap((check) => strings(check["req"])))]
+    .filter((req) => !listed.has(req))
+    .map(
+      (req) =>
+        `checks carry ${req}, but coverage[] has no ${req} row: give every requirement a check carries its row`,
+    );
+  return [
+    ...unlisted,
+    ...rows.flatMap((row) => {
+      const req = text(row["req"]);
+      const written = text(row["verdict"]);
+      if (req === "" || written === "INVALID") return [];
+      const proving = checks.filter((check) => strings(check["req"]).includes(req));
+      if (proving.length === 0)
+        return written === "NOT VERIFIED"
+          ? []
+          : [
+              `coverage row ${req} names no check: put ${req} in the req of every check that proves it`,
+            ];
+      const derived = rowVerdict(proving);
+      return derived === written
         ? []
         : [
-            `coverage row ${req} names no check: put ${req} in the req of every check that proves it`,
+            `coverage row ${req} is ${written} but the checks carrying ${req} give ${derived}: grade each row by its own checks`,
           ];
-    const derived = rowVerdict(proving);
-    return derived === written
-      ? []
-      : [
-          `coverage row ${req} is ${written} but the checks carrying ${req} give ${derived}: grade each row by its own checks`,
-        ];
-  });
+    }),
+  ];
 };
 
 const verdictProblems = (data: unknown, status: string): readonly string[] => {
