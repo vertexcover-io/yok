@@ -1674,6 +1674,11 @@ code {
     }
   }
 
+  /* renderStory lays a filmed scenario out for one side of 900px, so crossing it redraws */
+  matchMedia('(max-width: 900px)').addEventListener('change', () => {
+    if (typeof current === 'number') drawScenario(S[current], current);
+  });
+
   /* keyboard: j/k or arrows walk the visible list */
   document.addEventListener('keydown', e => {
     if (e.target.matches('input, textarea')) return;

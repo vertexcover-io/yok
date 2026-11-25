@@ -484,6 +484,12 @@ describe("VisualMatchSchema", () => {
     expect(VisualMatchSchema.safeParse({ ...undrawn, width: 1440 }).success).toBe(false);
   });
 
+  test("a design check that names the requirements it proves, as the template writes it, parses", () => {
+    const visualMatch = { baseline: null, checks: [{ ...clean, req: ["SPEC: modal is 420px"] }] };
+
+    expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
+  });
+
   test("a visualMatch says what was looked at: no checks is rejected", () => {
     expect(VisualMatchSchema.safeParse({ baseline: null, checks: [] }).success).toBe(false);
   });
@@ -519,7 +525,12 @@ const checkShape = (scenarios: unknown[], output: VerifierInput["output"] = { st
 
 const proof = { id: "p1", label: "Database", claim: "The row is stored.", holds: true, raw: "row" };
 const passed = { text: "The total updates.", result: "pass", proofs: ["p1"] };
-const failed = { text: "The total updates.", result: "fail", saw: "It stays the same." };
+const failed = {
+  text: "The total updates.",
+  result: "fail",
+  saw: "It stays the same.",
+  proofs: ["p1"],
+};
 const step = (...checks: unknown[]) => ({ when: "The user saves the invoice.", checks });
 const scenario = (more: Record<string, unknown>) => ({
   n: "01",
@@ -545,7 +556,7 @@ describe("checkReportShape", () => {
   test("a passed scenario, a failed one and one nothing could drive each pass in the shape their verdict owes", async () => {
     const result = await checkShape([
       scenario({}),
-      scenario({ n: "02", verdict: "FAILURE", steps: [step(failed)], proofs: [] }),
+      scenario({ n: "02", verdict: "FAILURE", steps: [step(failed)] }),
       scenario({
         n: "03",
         verdict: "NOT VERIFIED",
@@ -599,6 +610,16 @@ describe("checkReportShape", () => {
     ],
     ["a proof with no id", { proofs: [proof, { ...proof, id: undefined }] }, "id"],
     ["a proof whose holds is a string", { proofs: [{ ...proof, holds: "true" }] }, "holds"],
+    [
+      "a passed check citing no proof",
+      { steps: [step({ ...passed, proofs: undefined })], proofs: [] },
+      "cites no proof",
+    ],
+    [
+      "a failed check citing no proof",
+      { verdict: "FAILURE", steps: [step({ ...failed, proofs: [] })], proofs: [] },
+      "cites no proof",
+    ],
     ["a proof whose holds is omitted", { proofs: [{ ...proof, holds: undefined }] }, "holds"],
     ["no group", { group: undefined }, "group"],
     [
@@ -707,6 +728,16 @@ describe("checkReportShape", () => {
       "both",
     ],
     [
+      "parts beside a top-level recording",
+      {
+        steps: undefined,
+        parts: [{ title: "Save", steps: [step(passed)] }],
+        recordings: [take],
+        phone: spared,
+      },
+      "top-level recordings",
+    ],
+    [
       "a phone replay written as a part of its own",
       {
         steps: undefined,
@@ -810,6 +841,34 @@ describe("checkReportShape", () => {
     );
   });
 
+  test("a requirement a check carries with no coverage row is named, so its failure cannot be left out", async () => {
+    const dir = artifactsWith({
+      report: `<html><body><script type="application/json" id="report-data">${JSON.stringify({
+        verdict: "PASS",
+        coverage: [{ req: "R1", scenario: "01", verdict: "SUCCESS" }],
+        scenarios: [
+          scenario({
+            verdict: "FAILURE",
+            steps: [step({ ...passed, req: ["R1"] }, { ...failed, req: ["R2"], proofs: ["p2"] })],
+            proofs: [proof, { ...proof, id: "p2" }],
+          }),
+        ],
+      })}</script></body></html>`,
+    });
+    const result = await checkReportShape({
+      run: "r",
+      nodeRunId: "nr-1",
+      output: { status: "PASS" },
+      artifacts: [{ type: "proof-report", name: "proof-report", path: reportPath(dir) }],
+      args: null,
+      nodeInput: null,
+    });
+
+    expect(result.findings.map(({ message }) => message)).toContain(
+      "checks carry R2, but coverage[] has no R2 row: give every requirement a check carries its row",
+    );
+  });
+
   test("a check citing a frame and a reading of the same fact is named for it", async () => {
     const frame = { id: "p2", label: "Screenshot", claim: "Saved", holds: true, image: "a.png" };
     const found = await messages({
@@ -847,7 +906,10 @@ describe("checkReportShape", () => {
       baseline: null,
       checks: [{ text: "The label fits.", result, saw: "It is cut off.", proofs: ["p1"] }],
     });
-    const cited = { steps: [step({ ...passed, proofs: [] })] };
+    const cited = {
+      steps: [step({ ...passed, proofs: ["p2"] })],
+      proofs: [proof, { ...proof, id: "p2" }],
+    };
 
     expect(await messages({ ...cited, visualMatch: design("warn") })).toEqual([]);
     expect((await messages({ ...cited, visualMatch: design("fail") })).join(" ")).toContain(

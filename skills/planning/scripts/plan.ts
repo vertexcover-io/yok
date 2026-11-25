@@ -50,7 +50,8 @@ const tables = (text: string): Table[] =>
     .map((lines) => ({ header: cells(lines[0] ?? ""), rows: lines.slice(1).map(cells) }));
 
 type Outcome = { id: string; label: string; type: string; home: string };
-type Scenario = { id: string; level: string; outcomes: string[] };
+// `unopened` counts the Expected lines that do not open with an outcome id.
+type Scenario = { id: string; level: string; outcomes: string[]; unopened: number };
 
 const LEVELS = ["unit", "integration", "e2e", "qa-agent"];
 
@@ -80,11 +81,19 @@ const phaseScenarios = async (artifactsDir: string): Promise<Scenario[]> => {
     const expected = header.indexOf("Expected");
     const level = header.indexOf("Level");
     if (id === -1 || expected === -1) return [];
-    return rows.map((row) => ({
-      id: /^SC\d+/.exec(row[id] ?? "")?.[0] ?? "",
-      level: row[level] ?? "",
-      outcomes: (row[expected] ?? "").match(/\bO\d+\b/g) ?? [],
-    }));
+    return rows.map((row) => {
+      const lines = (row[expected] ?? "")
+        .split(/<br\s*\/?>/i)
+        .map((line) => line.trim())
+        .filter((line) => line !== "");
+      const opening = lines.map((line) => /^(?:•\s*)?(O\d+)\b/.exec(line)?.[1]);
+      return {
+        id: /^SC\d+/.exec(row[id] ?? "")?.[0] ?? "",
+        level: row[level] ?? "",
+        outcomes: opening.filter((outcome) => outcome !== undefined),
+        unopened: opening.filter((outcome) => outcome === undefined).length,
+      };
+    });
   });
 };
 
@@ -98,7 +107,8 @@ const hasText = (home: string): boolean => /^(existing|deploy):\s*\S/.test(home)
 const typeProblem = ({ id, type, home }: Outcome, scenarios: Scenario[]): string[] => {
   if (/^SC\d+$/.test(home)) {
     const level = scenarios.find((scenario) => scenario.id === home)?.level;
-    return level === undefined || level === type
+    // a level outside LEVELS is named on its scenario row
+    return level === undefined || !LEVELS.includes(level) || level === type
       ? []
       : [`${id} has the type "${type}", but its home ${home} is at level ${level}`];
   }
@@ -112,6 +122,15 @@ const typeProblem = ({ id, type, home }: Outcome, scenarios: Scenario[]): string
   }
   return [];
 };
+
+// The ids of the outcomes ## Acceptance names: the checks a person runs for each deploy: home.
+const acceptanceIds = (plan: string): Set<string> =>
+  new Set(
+    plan
+      .split(/^## Acceptance\s*$/m)[1]
+      ?.split(/^## /m)[0]
+      ?.match(/\bO\d+\b/g) ?? [],
+  );
 
 const numberProblems = (outcomes: Outcome[]): string[] => {
   const ids = outcomes.map(({ id }) => id);
@@ -129,7 +148,8 @@ export const checkOutcomeHomes = async (input: VerifierInput): Promise<VerifierR
     (artifact): artifact is FileArtifact => artifact.type === "plan" && "path" in artifact,
   );
   if (plan === undefined) return { pass: true, findings: [] };
-  const outcomes = matrixOutcomes(await readFile(plan.path, "utf8").catch(() => ""));
+  const planText = await readFile(plan.path, "utf8").catch(() => "");
+  const outcomes = matrixOutcomes(planText);
   if (outcomes === undefined) {
     return {
       pass: false,
@@ -144,6 +164,7 @@ export const checkOutcomeHomes = async (input: VerifierInput): Promise<VerifierR
   }
   const scenarios = await phaseScenarios(dirname(plan.path));
   const homeOf = new Map(outcomes.map(({ id, home }) => [id, home]));
+  const accepted = acceptanceIds(planText);
   const found = [
     ...outcomes
       .filter(({ id }) => id === "")
@@ -180,6 +201,25 @@ export const checkOutcomeHomes = async (input: VerifierInput): Promise<VerifierR
         ),
     ),
     ...outcomes.filter(({ id }) => id !== "").flatMap((outcome) => typeProblem(outcome, scenarios)),
+    ...outcomes
+      .filter(({ id, home }) => id !== "" && home.startsWith("deploy:") && !accepted.has(id))
+      .map(
+        ({ id }) =>
+          `${id} has a deploy: home, but ## Acceptance has no ${id} check a person can run`,
+      ),
+    ...scenarios
+      .filter(({ level }) => !LEVELS.includes(level))
+      .map(({ id, level }) =>
+        level === ""
+          ? `${id} has no Level: give it one of ${LEVELS.join(", ")}`
+          : `${id} has the level "${level}": use one of ${LEVELS.join(", ")}`,
+      ),
+    ...scenarios
+      .filter(({ unopened }) => unopened > 0)
+      .map(
+        ({ id }) =>
+          `${id} has an Expected line that does not open with its outcome id: open every line with "• On"`,
+      ),
     ...numberProblems(outcomes),
     ...scenarios
       .filter(({ outcomes: named }) => named.length === 0)
