@@ -236,7 +236,10 @@ const TECHNICAL = /`|rgb\(|#[0-9a-f]{6}\b|getComputedStyle|\b(GET|POST|PUT|PATCH
 const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => {
   const driven = ["SUCCESS", "FAILURE"].includes(text(scenario["verdict"]));
   const given = strings(scenario["given"]);
-  const steps = list(scenario["steps"]);
+  // A scenario told in parts keeps each part's steps and takes; read together, they are its own.
+  const parts = list(scenario["parts"]);
+  const topSteps = list(scenario["steps"]);
+  const steps = [...parts.flatMap((part) => list(part["steps"])), ...topSteps];
   const stepChecks = steps.flatMap((step) => list(step["checks"]));
   const designChecks = list(
     z.looseObject({ checks: z.unknown() }).safeParse(scenario["visualMatch"]).data?.checks,
@@ -245,7 +248,14 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   const proofs = list(scenario["proofs"]);
   const ids = proofs.map((proof) => text(proof["id"]));
   const group = text(scenario["group"]);
-  const recordings = list(scenario["recordings"]);
+  const recordings = [
+    ...parts.flatMap((part) => list(part["recordings"])),
+    ...list(scenario["recordings"]),
+  ];
+  const phoneOnly = (part: Record<string, unknown>): boolean => {
+    const takes = list(part["recordings"]);
+    return takes.length > 0 && takes.every((recording) => recording["size"] === "phone");
+  };
   const drivenByHand = recordings.some((recording) => list(recording["frames"]).length > 0);
   const phone = record.safeParse(scenario["phone"]).data ?? {};
   const phoneDecided =
@@ -263,6 +273,17 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   const failed = checks.filter((check) => check["result"] === "fail");
   const unknown = [...new Set(cited.filter((id) => !ids.includes(id)))];
   const uncited = ids.filter((id) => id !== "" && !cited.includes(id));
+  const shared = [...new Set(cited.filter((id, i) => cited.indexOf(id) !== i))];
+  const unsourced = proofs.filter(
+    (proof) => text(proof["raw"]) === "" && text(proof["image"]) === "",
+  );
+  const pictured = new Set(
+    proofs.filter((proof) => text(proof["image"]) !== "").map((proof) => text(proof["id"])),
+  );
+  const doubled = checks.filter((check) => {
+    const own = strings(check["proofs"]);
+    return own.some((id) => pictured.has(id)) && own.some((id) => !pictured.has(id));
+  });
   const shown = [
     text(scenario["title"]),
     group,
@@ -273,6 +294,22 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   ].filter((line) => TECHNICAL.test(line));
   const problems: readonly (readonly [boolean, string])[] = [
     [text(scenario["title"]) === "", "has no title: write the question the scenario answers"],
+    [
+      text(scenario["title"]) !== "" && !text(scenario["title"]).endsWith("?"),
+      "has a title that is not a question: ask whether the user's action gets the exact outcome expected",
+    ],
+    [
+      parts.some((part) => text(part["title"]) === ""),
+      "has a part with no title: name the stretch of the flow each part covers",
+    ],
+    [
+      parts.length > 0 && topSteps.length > 0,
+      "has both parts and top-level steps: put every step in the part it belongs to",
+    ],
+    [
+      parts.some(phoneOnly),
+      "has a phone replay written as a part of its own: add it as a recording of the part it replays, with its checks under that part's steps",
+    ],
     [
       group === "",
       "has no group: set group to journey for a primary journey, else to the heading its group is listed under",
@@ -342,6 +379,18 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
       uncited.length > 0,
       `has proofs no check cites (${uncited.join(", ")}): cite each under the check it backs, or drop it`,
     ],
+    [
+      shared.length > 0,
+      `has proofs cited by more than one check (${shared.join(", ")}): give each check a proof of its own`,
+    ],
+    [
+      unsourced.length > 0,
+      "has a proof with no reading and no picture: give it the raw read from its source or the frame that shows the check, or drop it",
+    ],
+    [
+      doubled.length > 0,
+      "has a check citing both a picture and a reading: the frame that shows a check is its whole proof, so drop the reading",
+    ],
     [ids.includes(""), "has a proof with no id: give every proof an id its checks can cite"],
     [
       proofs.some((proof) => typeof proof["holds"] !== "boolean"),
@@ -366,6 +415,78 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
 // The qa stage's second verifier, for a PASS or PARTIAL. The report page shows whatever it is
 // given, so the contract is held here. A scenario an older round wrote in another shape fails it,
 // and is driven again.
+// The verdict is read off coverage[], never chosen: any FAILURE row fails the feature, else any
+// NOT VERIFIED row leaves it PARTIAL.
+const derivedVerdict = (coverage: readonly Record<string, unknown>[]): string => {
+  const verdicts = coverage.map((row) => text(row["verdict"]));
+  if (verdicts.includes("FAILURE")) return "FAIL";
+  return verdicts.includes("NOT VERIFIED") ? "PARTIAL" : "PASS";
+};
+
+const checksOf = (scenario: Record<string, unknown>): readonly Record<string, unknown>[] => {
+  const steps = [
+    ...list(scenario["parts"]).flatMap((part) => list(part["steps"])),
+    ...list(scenario["steps"]),
+  ];
+  const design = z.looseObject({ checks: z.unknown() }).safeParse(scenario["visualMatch"]).data;
+  return [...steps.flatMap((step) => list(step["checks"])), ...list(design?.checks)];
+};
+
+// A row's verdict comes from the checks that prove its requirement, so one failed check does not
+// fail every requirement that shares its scenario.
+const rowVerdict = (checks: readonly Record<string, unknown>[]): string => {
+  const results = checks.map((check) => text(check["result"]));
+  if (results.includes("fail")) return "FAILURE";
+  return results.every((result) => result === "pass") ? "SUCCESS" : "NOT VERIFIED";
+};
+
+const coverageProblems = (data: unknown): readonly string[] => {
+  const report = z
+    .looseObject({ coverage: z.unknown(), scenarios: z.unknown() })
+    .safeParse(data).data;
+  const checks = list(report?.scenarios).flatMap(checksOf);
+  return list(report?.coverage).flatMap((row) => {
+    const req = text(row["req"]);
+    const written = text(row["verdict"]);
+    if (req === "" || written === "INVALID") return [];
+    const proving = checks.filter((check) => strings(check["req"]).includes(req));
+    if (proving.length === 0)
+      return written === "NOT VERIFIED"
+        ? []
+        : [
+            `coverage row ${req} names no check: put ${req} in the req of every check that proves it`,
+          ];
+    const derived = rowVerdict(proving);
+    return derived === written
+      ? []
+      : [
+          `coverage row ${req} is ${written} but the checks carrying ${req} give ${derived}: grade each row by its own checks`,
+        ];
+  });
+};
+
+const verdictProblems = (data: unknown, status: string): readonly string[] => {
+  const report = z
+    .looseObject({ coverage: z.unknown(), verdict: z.unknown() })
+    .safeParse(data).data;
+  const coverage = list(report?.coverage);
+  if (coverage.length === 0) return [];
+  const derived = derivedVerdict(coverage);
+  const written = text(report?.verdict);
+  return [
+    ...(derived === status
+      ? []
+      : [
+          `the stage returned ${status} but coverage[] derives ${derived}: return the verdict coverage[] gives`,
+        ]),
+    ...(written === "" || written === derived
+      ? []
+      : [
+          `the report's verdict is ${written} but coverage[] derives ${derived}: write the verdict coverage[] gives`,
+        ]),
+  ];
+};
+
 export const checkReportShape = async (input: VerifierInput): Promise<VerifierResult> => {
   const report = input.artifacts.find(
     (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
@@ -380,6 +501,8 @@ export const checkReportShape = async (input: VerifierInput): Promise<VerifierRe
       path: report.path,
     })),
   );
+  for (const message of [...coverageProblems(data), ...verdictProblems(data, shipped.data.status)])
+    findings.push({ message, path: report.path });
   // The reader opens the report to see the happy paths first.
   if (scenarios.length > 0 && !scenarios.some((scenario) => scenario["group"] === "journey"))
     findings.push({

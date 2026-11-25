@@ -11,12 +11,15 @@
      Omit any key you have nothing for and its section disappears.
 
      A scenario renders in this order:
-       title          the question the scenario answers
+       title          a question that names the action and the exact outcome expected
        URL            url
        reason         under the URL, on a scenario that did not pass
        Given          given[]        the setup, one fact a line
-       When → Then    steps[]        each thing the user does, with its checks under it
-       Visual proof   recordings[]   every video of the scenario, with its screenshots
+       When → Then    parts[] or steps[] and recordings[]
+                      each thing the user does with its checks under it, and
+                      beside them the video of the part being read, its
+                      screenshots folded under it; a scenario with no video
+                      lists its recordings under the steps
        Design check   visualMatch    the design beside the screen as built, then checks
        Files          artifacts[]
        free blocks    extra[]
@@ -25,9 +28,10 @@
        title       the feature, as a short phrase
        verdict     PASS | PARTIAL | FAIL, derived from coverage[]
        coverage[]  {req,scenario,verdict} — one row per requirement id the docs
-                   list, reached or not. scenario: the n that proves it, or
-                   "01, 09" when two scenarios do. The page does not show
-                   it; the verdict and the stage's verifier read it.
+                   list, reached or not, graded by the checks whose req[]
+                   carries it. scenario: the n of each scenario holding one,
+                   "01, 09" when two do. The page does not show it; the
+                   verdict and the stage's verifier read it.
        labels{}    rename a section: url, given, steps, media, frames,
                    visualMatch, files, bugs, gaps
        scenarios[] see below
@@ -41,7 +45,8 @@
        group       the rail heading it is listed under: journey for a primary journey,
                    else the heading itself, a few plain words naming the
                    kind of check it is
-       title       the question it answers
+       title       a question naming what the user does and the exact outcome expected,
+                   so a reader knows the pass condition from the title alone
        verdict     SUCCESS | FAILURE | NOT VERIFIED | INVALID
        url         the path it opened on, query kept, host left out
        phone       {replay, why} on a browser scenario
@@ -50,14 +55,18 @@
        thirdParty  the service whose own screen the checks are read on
        reason      on a scenario that did not pass
        given[]     plain sentences: the setup the scenario starts from
+       parts[]     {title, steps[], recordings[]}: the scenario told in parts, each a
+                   stretch that needs the one before it, with its own video. A
+                   scenario with parts carries no top-level steps or recordings.
        steps[]     {when, checks[]} in the order they happen
                    when: what the user does at this step
-                   checks[]: {text, result, saw, note, proofs[]}
+                   checks[]: {text, req[], result, saw, note, proofs[]}
                      text: what should be true once the step is done
+                     req[]: the requirement ids this check proves
                      result: pass | fail; left out where the step was not reached
                      saw: on a fail, what was seen instead
                      note: one line a reader needs beside the check
-                     proofs[]: the ids of the proofs that back this check
+                     proofs[]: the ids of the proofs that back this check alone
        recordings[] {label, kind, device, browser, size, thirdParty, video, frames[], note}
                    label: the name on the card
                    size: phone on a phone replay
@@ -73,13 +82,13 @@
                    width: the width of a re-shoot
                    checks[]: as a step's, and result may also be warn
        proofs[]    {id, label, claim, found, holds, raw, image}
-                   id: what a check cites
+                   id: what the one check it backs cites
                    label: two or three words naming where the proof comes from
                    claim: what it shows, one plain sentence
-                   found: why it counts
+                   found: on a reading, why it counts
                    holds: true, or false where it goes against the check
-                   raw: the values its checks rest on, laid out to be read
-                   image: a picture of what the witness showed
+                   raw: a reading, the values its check rests on, laid out to be read
+                   image: a picture, the frame that shows the check
        artifacts[] {label,href,note} files the product produced
        extra[]     {heading,body,capture}
 
@@ -97,8 +106,7 @@
      ==== -->
 
 <script type="application/json" id="report-media">{}</script>
-<script type="application/json" id="report-data">
-{
+<script type="application/json" id="report-data">{
   "title": "<feature name>",
   "verdict": "<PASS | PARTIAL | FAIL, read off coverage[] and never chosen>",
   "coverage": [
@@ -119,7 +127,7 @@
       "slug": "01_<slug>",
       "short": "<3-4 words>",
       "group": "journey",
-      "title": "<the question this scenario answers>",
+      "title": "<when the user does <action>, do they get <the exact outcome expected>?>",
       "verdict": "SUCCESS",
       "url": "<the path this opened on, with its query — not the host>",
       "given": [
@@ -132,12 +140,17 @@
           "checks": [
             {
               "text": "<what should be true once they have>",
+              "req": ["<requirement id it proves>"],
               "result": "pass",
-              "proofs": ["p1"]
+              "proofs": [
+                "p1"
+              ]
             },
             {
               "text": "<another thing that should be true>",
-              "result": "pass"
+              "req": ["<requirement id it proves>"],
+              "result": "pass",
+              "proofs": ["p2"]
             }
           ]
         }
@@ -164,8 +177,11 @@
         "checks": [
           {
             "text": "<what the design asks of the screen>",
+            "req": ["<the SPEC: rule it proves>"],
             "result": "pass",
-            "proofs": ["p1"]
+            "proofs": [
+              "p1"
+            ]
           }
         ]
       },
@@ -174,10 +190,16 @@
           "id": "p1",
           "label": "<where it comes from>",
           "claim": "<what this shows, one plain sentence>",
+          "holds": true,
+          "image": "<a picture: the frame that shows the check>"
+        },
+        {
+          "id": "p2",
+          "label": "<where it comes from>",
+          "claim": "<what this shows, one plain sentence>",
           "found": "<why it counts>",
           "holds": true,
-          "raw": "<the values this proof's checks rest on, laid out to be read>",
-          "image": "<optional: screenshots/NN_SLUG.NAME.png>"
+          "raw": "<a reading, for a check no frame shows: the values it rests on, laid out to be read>"
         }
       ],
       "artifacts": [
@@ -196,18 +218,146 @@
       ]
     },
     {
+      "n": "03",
+      "slug": "03_<slug>",
+      "short": "<3-4 words>",
+      "group": "journey",
+      "title": "<when the user does <action>, then <the next action>, do they get <the exact outcome expected>?>",
+      "verdict": "SUCCESS",
+      "url": "<the path this opened on>",
+      "given": [
+        "<one fact the scenario starts from>"
+      ],
+      "parts": [
+        {
+          "title": "<the first stretch of the flow>",
+          "steps": [
+            {
+              "when": "<what the user does>",
+              "checks": [
+                {
+                  "text": "<what should be true>",
+                  "req": ["<requirement id it proves>"],
+                  "result": "pass",
+                  "proofs": [
+                    "p1"
+                  ]
+                },
+                {
+                  "text": "<on a phone, what should be true of the same screens>",
+                  "req": ["<requirement id it proves>"],
+                  "result": "pass",
+                  "proofs": [
+                    "p2"
+                  ]
+                }
+              ]
+            }
+          ],
+          "recordings": [
+            {
+              "label": "Desktop",
+              "kind": "<how it was driven>",
+              "device": "<what it ran on>",
+              "browser": "<the browser>",
+              "video": "03_<slug>-<part>.mp4",
+              "frames": [
+                {
+                  "src": "screenshots/03_<slug>-<part>__01_<step>.png",
+                  "label": "<what this frame shows>"
+                }
+              ]
+            },
+            {
+              "label": "Phone",
+              "kind": "<how it was driven>",
+              "device": "<the phone>",
+              "browser": "<the browser>",
+              "size": "phone",
+              "video": "03_<slug>-<part>-phone.mp4",
+              "frames": [
+                {
+                  "src": "screenshots/03_<slug>-<part>-phone__01_<step>.png",
+                  "label": "<what this frame shows>"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "<the next stretch, which needs the one before it>",
+          "steps": [
+            {
+              "when": "<what the user does next>",
+              "checks": [
+                {
+                  "text": "<what should be true>",
+                  "req": ["<requirement id it proves>"],
+                  "result": "pass",
+                  "proofs": [
+                    "p3"
+                  ]
+                }
+              ]
+            }
+          ],
+          "recordings": [
+            {
+              "label": "<the name on the tab>",
+              "kind": "<how it was driven>",
+              "device": "<what it ran on>",
+              "browser": "<the browser>",
+              "video": "03_<slug>-<next part>.mp4",
+              "frames": []
+            }
+          ]
+        }
+      ],
+      "proofs": [
+        {
+          "id": "p1",
+          "label": "<the screen it shows>",
+          "claim": "<what the frame shows>",
+          "holds": true,
+          "image": "screenshots/03_<slug>-<part>__01_<step>.png"
+        },
+        {
+          "id": "p2",
+          "label": "<the screen it shows>",
+          "claim": "<what the frame shows>",
+          "holds": true,
+          "image": "screenshots/03_<slug>-<part>-phone__01_<step>.png"
+        },
+        {
+          "id": "p3",
+          "label": "<where it comes from>",
+          "claim": "<what this shows>",
+          "found": "<why it counts>",
+          "holds": true,
+          "raw": "<the values the check rests on>"
+        }
+      ]
+    },
+    {
       "n": "02",
       "slug": "02_<slug>",
       "short": "<3-4 words>",
       "group": "<a few words naming the kind of check this is>",
-      "title": "<a question this run could not answer>",
+      "title": "<when the user does <action>, do they get <the exact outcome expected>? — one this run could not answer>",
       "verdict": "NOT VERIFIED",
       "reason": "<why it could not be driven, and what would close it>",
-      "given": ["<the setup the scenario needs>"],
+      "given": [
+        "<the setup the scenario needs>"
+      ],
       "steps": [
         {
           "when": "<what the user would do>",
-          "checks": [{ "text": "<what should be true>" }]
+          "checks": [
+            {
+              "text": "<what should be true>",
+              "req": ["<requirement id it proves>"]
+            }
+          ]
         }
       ]
     }
@@ -233,8 +383,7 @@
       "wouldClose": "<the concrete thing a human or a later run can supply>"
     }
   ]
-}
-</script>
+}</script>
 
 <style>
 :root {
@@ -496,7 +645,8 @@ a { color: var(--accent); }
 .proof__found p { margin: 0; }
 
 /* the folded proof row */
-.proof__img { display: block; max-width: min(100%, 720px); max-height: 480px; width: auto; height: auto; margin: 0 0 10px; border: 1px solid var(--line); border-radius: 6px; }
+.proof__img { display: block; width: 100%; max-width: 900px; height: auto; margin: 0 0 10px; border: 1px solid var(--line); border-radius: 6px; cursor: zoom-in; }
+.proof__img--tall { width: 300px; max-width: 100%; }
 .cap {
   font: 11.5px/1.6 var(--mono); background: var(--pre-bg); color: var(--pre-fg);
   border-radius: 3px; padding: 10px 12px; margin: 0;
@@ -700,6 +850,50 @@ code {
 /* design check — the design beside the screen as built, then the checks */
 .dsg__ref { margin: 0 0 8px; font-size: 13px; color: var(--fg-2); max-width: 92ch; }
 .vm__pair { margin-bottom: 12px; }
+/* story — the steps on the left, the video of the part being read on the right */
+.story { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 26px; align-items: start; }
+.story--plain { display: block; }
+.story__parts--multi { padding-bottom: 32vh; }
+.pnav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 10px; background: var(--pane); }
+.pnav__b {
+  font: 600 11.5px/1.4 var(--ui); color: var(--fg-2); background: var(--rail);
+  border: 1px solid var(--line); border-radius: 12px; padding: 3px 10px; cursor: pointer;
+}
+.pnav__b span { font-family: var(--mono); color: var(--fg-3); margin-right: 5px; }
+.pnav__b.is-on { color: var(--accent); border-color: var(--accent); background: var(--accent-w); }
+.part { border-left: 3px solid var(--line); padding: 2px 0 6px 14px; margin-bottom: 26px; transition: opacity .2s, border-color .2s; }
+.story__parts--multi .part { opacity: .5; }
+.story__parts--multi .part.is-on { opacity: 1; border-left-color: var(--accent); }
+.part__h { margin: 0 0 12px; font-size: 14.5px; font-weight: 650; display: flex; gap: 8px; align-items: baseline; }
+.part__k { font: 700 10px/1.5 var(--ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-3); flex: none; }
+.part.is-on .part__k { color: var(--accent); }
+.story__parts--single .part { border-left: 0; padding-left: 0; }
+.stage { position: sticky; top: 10px; }
+.stage__in { border: 1px solid var(--line); border-radius: 6px; background: var(--rail); padding: 12px; animation: stagein .25s ease; }
+@keyframes stagein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.stage__h { margin: 0 0 9px; font-size: 13px; font-weight: 650; display: flex; gap: 8px; align-items: baseline; }
+.stage__h .part__k { color: var(--accent); }
+.stage__tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 9px; }
+.stage__tab { font: 600 11.5px/1.4 var(--ui); background: var(--pane); color: var(--fg-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+.stage__tab.is-on { color: var(--accent); border-color: var(--accent); }
+.stage__v { display: block; width: 100%; max-height: 52vh; background: #000; border-radius: 4px; border: 1px solid var(--line); }
+.stage__v--tall { width: auto; max-width: 100%; height: 48vh; margin-inline: auto; }
+.stage__meta { margin: 7px 0 0; font-size: 12px; color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.stage__meta button { margin-left: auto; }
+.stage__note { margin: 5px 0 0; font-size: 12px; color: var(--fg-2); }
+.stage__drop { margin-top: 10px; background: var(--pane); }
+.stage__shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.stage__shots .fr__c { font-size: 11px; }
+.stage__other { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 4px; font-size: 12.5px; color: var(--fg-2); }
+.stage__other b { color: var(--fg); font-weight: 600; }
+.part__media { display: none; margin-top: 10px; }
+@media (max-width: 900px) {
+  .story { display: block; }
+  .stage { display: none; }
+  .part__media { display: block; }
+  .story__parts--multi { padding-bottom: 0; }
+  .story__parts--multi .part { opacity: 1; }
+}
 </style>
 </head>
 <body>
@@ -969,6 +1163,29 @@ code {
     unset: { cls: 'is-none', text: '–' },
   };
 
+  /* A screen's content usually ends well above the frame's bottom edge. Cut the
+     empty rows below it, so the picture opens large enough to read. */
+  function trimBelow(url, done) {
+    const im = new Image();
+    im.onload = () => {
+      const w = im.naturalWidth, h = im.naturalHeight, tall = h > w;
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d'); x.drawImage(im, 0, 0);
+      const px = x.getImageData(0, 0, w, h).data;
+      const bg = (h - 1) * w * 4;
+      const busy = y => { for (let i = y * w * 4; i < (y + 1) * w * 4; i += 8) {
+        if ([0, 1, 2].some(k => Math.abs(px[i + k] - px[bg + k]) > 18)) return true; } return false; };
+      let y = h - 1; while (y > 0 && !busy(y)) y--;
+      const keep = Math.min(h, y + Math.round((tall ? 0.03 : 0.06) * h));
+      if (keep >= h * 0.95) return done(url, tall);
+      const o = document.createElement('canvas'); o.width = w; o.height = keep;
+      o.getContext('2d').drawImage(c, 0, 0);
+      done(o.toDataURL('image/png'), tall);
+    };
+    im.onerror = () => done(url, false);
+    im.src = url;
+  }
+
   /* One proof, opened under the check that cites it: its mark and claim, why it
      counts, its picture when it has one, and the original. */
   function proofBox(pr) {
@@ -980,7 +1197,9 @@ code {
     box.appendChild(h);
     if (pr.found) { const f = el('div', 'proof__found'); paras(f, pr.found); box.appendChild(f); }
     if (pr.image && res(pr.image)) {
-      const img = el('img', 'proof__img'); img.src = res(pr.image); img.alt = pr.claim || ''; box.appendChild(img);
+      const img = el('img', 'proof__img'); img.alt = pr.claim || ''; box.appendChild(img);
+      trimBelow(res(pr.image), (url, tall) => { img.src = url; if (tall) img.classList.add('proof__img--tall'); });
+      img.addEventListener('click', () => openModal({ kind: 'image', gallery: [{ src: pr.image, cap: pr.claim || '' }], index: 0 }));
     } else if (pr.image) {
       box.appendChild(el('p', 'empty', 'This picture is not inside the report: ' + pr.image));
     }
@@ -1031,11 +1250,11 @@ code {
 
   /* When → Then — s.steps[]: {when, checks[]}. Read top to bottom: each thing the
      user does, and under it what should be true at that moment. */
-  function renderSteps(sec, s) {
+  function renderSteps(sec, s, from = 0) {
     const host = el('div', 'stp');
     s.steps.forEach((st, i) => {
       const row = el('div', 'stp__row');
-      row.appendChild(el('span', 'stp__n', String(i + 1)));
+      row.appendChild(el('span', 'stp__n', String(from + i + 1)));
       const w = el('p', 'stp__when'); w.innerHTML = rich(st.when || ''); row.appendChild(w);
       row.appendChild(el('span', 'stp__line'));
       const body = el('div', 'stp__body');
@@ -1164,6 +1383,158 @@ code {
     });
   }
 
+  /* Parts — s.parts[]: {title, steps[], recordings[]}. A scenario without parts is one
+     untitled part holding its steps and recordings. */
+  const partsOf = s => (s.parts && s.parts.length) ? s.parts
+    : [{ title: '', steps: s.steps || [], recordings: s.recordings || [] }];
+  const filmed = s => partsOf(s).some(p => (p.recordings || []).some(r => r.video && res(r.video)));
+  let storyOff = null;
+
+  /* The media of one part: its videos, played in place, with their screenshots
+     under them, and any recording that has no video as a line of text. */
+  function partMedia(s, part, i, total) {
+    const box = el('div', 'stage__in');
+    const h = el('p', 'stage__h');
+    if (total > 1) h.appendChild(el('span', 'part__k', 'Part ' + (i + 1) + ' of ' + total));
+    h.appendChild(el('span', null, total > 1 ? part.title : 'Video'));
+    box.appendChild(h);
+    const recs = part.recordings || [];
+    const vids = recs.filter(r => r.video), others = recs.filter(r => !r.video);
+    if (!vids.length && !others.length) box.appendChild(el('p', 'empty', 'Nothing was filmed for this part.'));
+    const host = el('div');
+    const show = r => {
+      host.querySelectorAll('video').forEach(v => v.pause());
+      host.textContent = '';
+      const frames = frameList(r);
+      const v = document.createElement('video');
+      v.className = 'stage__v' + (r.size === 'phone' ? ' stage__v--tall' : '');
+      v.controls = true; v.playsInline = true; v.preload = 'metadata'; v.muted = true;
+      if (frames[0] && res(frames[0].src)) v.poster = res(frames[0].src);
+      if (res(r.video)) v.src = res(r.video);
+      host.appendChild(v);
+      const meta = el('div', 'stage__meta');
+      [r.label, r.device, r.thirdParty && 'filmed on ' + r.thirdParty].filter(Boolean)
+        .forEach(t => meta.appendChild(el('span', null, t)));
+      const len = el('span', null, '');
+      meta.appendChild(len);
+      v.addEventListener('loadedmetadata', () => { len.textContent = lengthOf(v.duration); });
+      const big = el('button', 'mo__btn', 'Open large'); big.type = 'button';
+      big.addEventListener('click', () => { v.pause(); openModal({ title: (r.label || 'Video') + ' · ' + (s.short || s.n), kind: 'video', src: r.video }); });
+      meta.appendChild(big);
+      host.appendChild(meta);
+      if (r.note) host.appendChild(el('p', 'stage__note', r.note));
+      if (frames.length) {
+        const d = el('details', 'shots stage__drop');
+        const sum = el('summary');
+        sum.appendChild(document.createTextNode(L.frames));
+        sum.appendChild(el('span', 'shots__n', String(frames.length)));
+        d.appendChild(sum);
+        const strip = el('div', 'stage__shots');
+        frames.forEach((f, j) => {
+          const t = tile({ src: f.src, cap: f.cap, n: String(j + 1).padStart(2, '0') });
+          t.addEventListener('click', () => openModal({ kind: 'image', gallery: frames, index: j }));
+          strip.appendChild(t);
+        });
+        const body = el('div', 'shots__b'); body.appendChild(strip); d.appendChild(body);
+        host.appendChild(d);
+      }
+    };
+    if (vids.length > 1) {
+      const tabs = el('div', 'stage__tabs');
+      vids.forEach((r, j) => {
+        const b = el('button', 'stage__tab' + (j ? '' : ' is-on'), r.label || 'Video ' + (j + 1)); b.type = 'button';
+        b.addEventListener('click', () => { tabs.querySelectorAll('.stage__tab').forEach(x => x.classList.remove('is-on')); b.classList.add('is-on'); show(r); });
+        tabs.appendChild(b);
+      });
+      box.appendChild(tabs);
+    }
+    box.appendChild(host);
+    if (vids.length) show(vids[0]);
+    others.forEach(r => {
+      const o = el('div', 'stage__other');
+      o.appendChild(el('b', null, r.label || 'Recording'));
+      o.appendChild(document.createTextNode(' · ' + [r.device, r.note].filter(Boolean).join(' · ')));
+      box.appendChild(o);
+    });
+    return box;
+  }
+
+  /* When → Then, told part by part. A filmed scenario reads in two columns: the
+     steps on the left, and on the right the video of the part being read, which
+     changes as the reader scrolls from one part to the next. */
+  function renderStory(sec, s) {
+    const parts = partsOf(s), total = parts.length;
+    const wide = filmed(s) && !matchMedia('(max-width: 900px)').matches;
+    const grid = el('div', 'story' + (filmed(s) ? '' : ' story--plain'));
+    const left = el('div', 'story__parts ' + (total > 1 ? 'story__parts--multi' : 'story__parts--single'));
+    grid.appendChild(left);
+    let nav = null;
+    if (total > 1) {
+      nav = el('div', 'pnav');
+      parts.forEach((p, i) => {
+        const b = el('button', 'pnav__b'); b.type = 'button';
+        b.appendChild(el('span', null, String(i + 1)));
+        b.appendChild(document.createTextNode(p.title));
+        b.addEventListener('click', () => {
+          const pane = document.querySelector('.pane');
+          pane.scrollTo({ top: pane.scrollTop + boxes[i].getBoundingClientRect().top - pane.getBoundingClientRect().top - 50, behavior: 'smooth' });
+        });
+        nav.appendChild(b);
+      });
+      left.appendChild(nav);
+    }
+    let n = 0;
+    const boxes = parts.map((p, i) => {
+      const box = el('section', 'part');
+      if (total > 1) {
+        const h = el('h3', 'part__h');
+        h.appendChild(el('span', 'part__k', 'Part ' + (i + 1)));
+        h.appendChild(el('span', null, p.title));
+        box.appendChild(h);
+      }
+      renderSteps(box, { ...s, steps: p.steps }, n);
+      n += p.steps.length;
+      if (filmed(s) && !wide) { const m = el('div', 'part__media'); m.appendChild(partMedia(s, p, i, total)); box.appendChild(m); }
+      left.appendChild(box);
+      return box;
+    });
+    sec.appendChild(grid);
+    if (!filmed(s)) {
+      const recs = parts.flatMap(p => p.recordings || []);
+      if (recs.length) {
+        const m = el('div', 'sec');
+        m.appendChild(el('p', 'sec__h', L.media));
+        renderRecordings(m, { ...s, recordings: recs });
+        sec.appendChild(m);
+      }
+      return;
+    }
+    if (!wide) return;
+    const stage = el('aside', 'stage');
+    grid.appendChild(stage);
+    let on = -1;
+    const activate = i => {
+      if (i === on) return;
+      on = i;
+      stage.querySelectorAll('video').forEach(v => v.pause());
+      stage.textContent = '';
+      stage.appendChild(partMedia(s, parts[i], i, total));
+      boxes.forEach((b, j) => b.classList.toggle('is-on', j === i));
+      if (nav) nav.querySelectorAll('.pnav__b').forEach((b, j) => b.classList.toggle('is-on', j === i));
+    };
+    activate(0);
+    if (total < 2) return;
+    const pane = document.querySelector('.pane');
+    const onScroll = () => {
+      const line = pane.getBoundingClientRect().top + pane.clientHeight * 0.38;
+      let i = 0;
+      boxes.forEach((b, j) => { if (b.getBoundingClientRect().top <= line) i = j; });
+      activate(i);
+    };
+    pane.addEventListener('scroll', onScroll, { passive: true });
+    storyOff = () => pane.removeEventListener('scroll', onScroll);
+  }
+
   /* The sections of a scenario, in render order.
      [ key, guard, renderer ] — key is also the heading looked up in L.
      To add your own: write render(sec, s) that appends to sec, add an entry here,
@@ -1172,8 +1543,7 @@ code {
     ['url',    s => pathText(s.url),                              renderPaths],
     ['reason', s => s.reason,                                     renderReason],
     ['given',  s => filled(s.given),                              renderGiven],
-    ['steps',  s => filled(s.steps),                              renderSteps],
-    ['media',  s => filled(s.recordings),                         renderRecordings],
+    ['steps',  s => partsOf(s).some(p => filled(p.steps)),       renderStory],
     ['visualMatch', s => s.visualMatch && (s.visualMatch.checks || []).length > 0,
                                                                   renderVisualMatch],
     ['files',  s => s.artifacts && s.artifacts.length,            renderFiles],
@@ -1182,6 +1552,7 @@ code {
 
   function drawScenario(s, i) {
     const k = kinds[i];
+    if (storyOff) { storyOff(); storyOff = null; }
     pane.textContent = '';
 
     const head = el('div', 'head' + (k === 'fail' || k === 'hold' ? ' head--' + k : ''));
@@ -1278,6 +1649,7 @@ code {
   }
 
   function select(id) {
+    if (storyOff) { storyOff(); storyOff = null; }
     current = id;
     rows.forEach((b, i) => b.classList.toggle('is-on', i === id));
     aux.forEach(([k, b]) => b.classList.toggle('is-on', k === id));

@@ -1,7 +1,8 @@
 # Driving the Browser
 
-**Read this when:** driving UI scenarios (Step 2), or re-driving a bug's repro (Step 4). Everything here is done
-with a browser open; grading, videos, and the report are in `writing-the-report.md`.
+**Read this when:** driving UI scenarios (Step 2), drawing a CLI test's terminal frames (Step 4), or
+re-driving a bug's repro (Step 5). Everything here is done with a browser open; grading, videos, and the report
+are in `writing-the-report.md`.
 
 **Contents:**
 
@@ -9,9 +10,10 @@ with a browser open; grading, videos, and the report are in `writing-the-report.
 - Signing a person in to a third party's screen
 - The rules
 - Catching a self-dismissing element
-- Scout, then film — one take per scenario
+- Scout, then film — one take per flow
 - The frame that proves it
 - Replaying the scenario on a phone
+- Terminal frames — a CLI test's recording
 
 What depends on the app — how login works, which surfaces lie about their own state, whether a dev overlay is in
 the way — is knowledge the project owns, held in its own skills and `CLAUDE.md`. Look for it before your first
@@ -20,10 +22,10 @@ the way — is knowledge the project owns, held in its own skills and `CLAUDE.md
 ## Setup
 
 Use the binary directly (`npx` routes through Node instead of the Rust client and pays that cost on every call).
-Export three variables before the first `open`, so every command in the run and Step 7's cleanup agree on them:
+Export three variables before the first `open`, so every command in the run and Step 8's cleanup agree on them:
 
 ```bash
-export AGENT_BROWSER_SESSION=RUN               # the desktop session, named, so Step 7 closes the browser it actually drove
+export AGENT_BROWSER_SESSION=RUN               # the desktop session, named, so Step 8 closes the browser it actually drove
 export AGENT_BROWSER_DEFAULT_TIMEOUT=2000      # fail a doomed wait fast instead of at the 25s default
 export AGENT_BROWSER_ARGS="--no-sandbox"       # on Linux, where Chrome dies on `No usable sandbox!` without it
 ```
@@ -32,7 +34,7 @@ export AGENT_BROWSER_ARGS="--no-sandbox"       # on Linux, where Chrome dies on 
 launch settings than the running browser's starts a new browser in its place.
 
 **A session keeps the device it opened as for its whole life**, so the run holds one named session per device: the
-desktop session for every desktop scenario and for Steps 3 and 4, a session per third party's screen, opened as
+desktop session for every desktop scenario and for Steps 3 and 5, a session per third party's screen, opened as
 the next section says, and a phone session of its own, opened where *Replaying the scenario on a phone* says.
 Each is an isolated browser with its own sign-in.
 
@@ -56,7 +58,7 @@ reaches the same running browser:
 
 ```bash
 export AGENT_BROWSER_SESSION=RUN-NAME
-export AGENT_BROWSER_PROFILE=$HOME/.yok/sign-ins/NAME
+export AGENT_BROWSER_PROFILE="$HOME/.yok/sign-ins/NAME"
 export AGENT_BROWSER_ARGS="--no-sandbox"
 ```
 
@@ -64,20 +66,21 @@ export AGENT_BROWSER_ARGS="--no-sandbox"
 
 1. **Look for a saved sign-in, hidden**: `open` the address Step 1 found, then `wait` on a condition only the
    signed-in screen meets. Where it holds, the session is ready.
-2. **Otherwise `close` it and ask the user**, as Step 2 says.
-3. **On a yes, show the browser once**: add `export AGENT_BROWSER_HEADED=1` to the file and `open` the address
-   again. On a host with no display, run `agent-browser dashboard start` too and give the user the address it
-   prints, where the session is shown and takes their input.
-4. **Wait for the signed-in condition in the foreground, as the one command running**: the `wait` from item 1
+2. **Otherwise `close` it.** Where the user said yes to signing in at Step 1's access check, show the browser
+   once: add `export AGENT_BROWSER_HEADED=1` to the file and `open` the address again. On a host with no
+   display, run `agent-browser dashboard start` too and give the user the address it prints, where the session
+   is shown and takes their input.
+3. **Wait for the signed-in condition in the foreground, as the one command running**: the `wait` from item 1
    with `--timeout` set to `sign-in-wait` in milliseconds. The window is the user's until it returns.
-5. **Then hide the browser for the rest of the round**: `close` the session, take `AGENT_BROWSER_HEADED` out of
+4. **Then hide the browser for the rest of the round**: `close` the session, take `AGENT_BROWSER_HEADED` out of
    the file, `open` the address again and run item 1's `wait`. Where the hidden browser comes back signed out,
-   put the export back, `open` once more and drive that one window to Step 7.
-6. **When item 4's wait runs out, `close` the session.** Step 2 grades the scenarios that waited on it.
+   put the export back, `open` once more and drive that one window to Step 8.
+5. **When item 3's wait runs out, `close` the session.** Step 2 grades the scenarios that waited on it.
 
-**A scenario with a `thirdParty` runs its whole take in that service's session.** The session holds that
-service's sign-in alone: where the flow crosses to the product's own screens, sign in on the page it lands on.
-Close each tab a step opened once its take is filmed. Act only on what this run posted there, and work out
+**Each stretch of a take runs in the session of the screen it shows.** A third party's screen is driven in that
+service's session, and a step the user takes on the product's own screens runs in the session signed in there;
+the take moves between sessions as *The recording follows the user* says. Close each tab a step opened once its
+take is filmed. Act only on what this run posted there, and work out
 anything about the browser itself in a scratch session under another name and profile.
 
 ## The rules
@@ -144,10 +147,10 @@ The order inside the eval is load-bearing: **observe → arm the timeout → cli
 after the click is the race you came here to close. When it resolves `{appeared: false}`, record the element
 `NOT VERIFIED` with the `ms` lifetime you measured.
 
-## Scout, then film — one take per scenario
+## Scout, then film — one take per flow
 
-**The video is a recording of the scenario from its first step to its last, and of nothing else.** So each
-scenario is driven twice: a scout that works the flow out with the recorder off, then one take that replays the
+**The video is a recording of one flow — a part, or a scenario with no parts — from its first step to the final
+state the user sees, and of nothing else.** So each flow is driven twice: a scout that works the flow out with the recorder off, then one take that replays the
 whole flow as a single command with the recorder on. The take is the evidence. Its asserts decide each check's
 result, its screenshots are the frames, its recording is the video and its actions are the report's steps, so all
 four come from one run.
@@ -231,16 +234,25 @@ starts before anything moves.
 5. **Pause about a second**, so a person watching can read the screen before it changes. The pause paces the
    video; the wait in entry 2 is what makes the step reliable.
 
-**The closing hold.** The last step's pause runs about a second and a half, so the video rests on the final state
-— the outcome the scenario's last checks describe — long enough to read.
+**The closing hold.** The take ends on the final state — the outcome the flow's last checks describe, shown where
+the user reads it — and the last step's pause runs about a second and a half, so the video rests on it long
+enough to read.
 
-**The recording follows the user.** The recorder films one tab, and the browser makes a tab the step opened the
-active one. A take whose scout found such a step is recorded in numbered parts: it starts as
-`NN_SLUG.part1.mp4`, and the entry right after each step that changes the tab is `record restart` with the next
-part's path and `--cursor`, so filming carries on in the tab the user is now looking at. A step that returns to an
-earlier tab switches to it with `tab ID` first. Step 5 joins the parts, in order, into `NN_SLUG.mp4`.
-In the phone session a tab the app opens starts as a desktop tab: `set device` on it and `reload` before the
-`record restart`.
+**The recording follows the user.** The recorder films one tab of one session, so a take that moves is recorded
+in numbered files under the recording's own prefix, `PREFIX.file1.mp4` onwards, which Step 6 joins in order into
+`PREFIX.mp4`. PREFIX is `NN_SLUG`, or `NN_SLUG-PART` for a part of a scenario told in parts:
+
+- **To another tab**: the entry right after the step that changes the tab is `record restart` with the next
+  file's path and `--cursor`. A step that returns to an earlier tab switches to it with `tab ID` first. In the
+  phone session a tab the app opens starts as a desktop tab: `set device` on it and `reload` before the
+  `record restart`.
+- **To another session**: `record stop` in the session the user leaves, then `record start` the next file in
+  the session of the screen they move to, and carry on with the next step's batch there.
+- **Through a wait for background work**: `record stop` once the start of the work is on screen, `wait` on the
+  condition that shows the result has arrived, then `record start` the next file named
+  `PREFIX.fileK.wait-SECONDS.mp4`, SECONDS being how long the wait took. Step 6 puts a card saying the
+  recording paused in front of it. Film the result where the user meets it first, then on every screen the
+  flow's checks read it from.
 
 `--bail` ends the batch at the first step that fails, so nothing after it is filmed on the wrong screen. `record
 stop` is a command of its own, run after the batch whatever the batch returned, because it is what closes the file.
@@ -256,14 +268,13 @@ something other than the scenario.
   learn which state the behaviour depends on, then grade the scenario on what you found.
 - **A recorder that fails three takes running** — the feature behaving, the recording not — hands the scenario to
   the stitched path: run the same batch with the recorder off, promote its frames as below, and leave the scenario
-  without an `.mp4`. Step 5 builds its video from those frames.
+  without an `.mp4`. Step 6 builds its video from those frames.
 
 ### 5. Confirm the frames and promote them
 
 **Open every staged PNG and confirm it shows what you think** — the round-trip you never skip. Once the take
 counted and your eyes confirmed a frame, **promote it**: `mv` it into `verification/screenshots/` under its
-`NN_<slug>__SS_<step>.png` name, and keep the assert's deciding value (the returned `{n: …}`, the measured rect,
-the quoted string) for the check it settles and the proof that check cites.
+`NN_<slug>__SS_<step>.png` name, and keep the assert's deciding value for the check it settles.
 
 **Every promoted frame is a moment of the take**, so each frame the report shows is also in the scenario's video.
 What was gathered outside the take has its own home: a file the product produced goes in `artifacts[]`, the
@@ -294,8 +305,8 @@ the frame readable at video size.
   something is checked, naming each control by its label on screen. Pointer placement, scrolling into view,
   waits and pauses are the take's own mechanics and stay in the batch.
 - **Place each check under the step that brings it about and give it its `result`** from the assert that
-  settles it. The values the assert returned that the check rests on go in the `raw` of the proof the check cites,
-  where a reviewer gains from seeing them.
+  settles it, and its proofs as the `writing-the-report` reference's *Proofs* says: the promoted frame that shows
+  it, or a reading of the assert's values where no frame shows it.
 - **Add the take to `recordings[]`** with the device and browser the session reported.
 
 Written this way, the video and the report describe one run. A scenario the stitched path filmed is written from
@@ -341,8 +352,8 @@ phone from here to its close, so every replay runs in it and every desktop comma
 session. The phone session starts signed out and empty: run the setup batch in it from the first `open`, the way
 the desktop session began.
 
-**Film the whole scenario again on the phone, as a take of its own.** Run the six steps above under the
-scenario's number with the phone recording's prefix: the same steps and the same asserts as the desktop take,
+**Film each flow again on the phone, as a take of its own.** Run the six steps above under the flow's prefix
+with `-phone` after it: the same steps and the same asserts as the desktop take,
 scouted again wherever the phone presents a control differently or puts a target off screen. A phone breaks on
 the way to the final screen rather than on it, so the take runs from the first click. The recording keeps the
 phone's own portrait shape.
@@ -352,13 +363,30 @@ The replay grades the scenario's own checks, so the walk answers the same questi
 - **The closing assert returns the value it returned on desktop** — the outcome, not a similar-looking screen.
   This is what the scenario's checks already claim, now claimed at phone width.
 - **Nothing scrolls sideways** — `(()=>({over: document.documentElement.scrollWidth -
-  document.documentElement.clientWidth}))()` returns `0`. It is a check of its own on the scenario; anything
-  above zero fails it with its measurement already attached.
+  document.documentElement.clientWidth}))()` returns `0`. It is a check of its own on the scenario: at `0` the
+  phone frame is its proof; above zero it fails, and that measurement is its proof.
 - **Controls are reached the way the phone presents them** — driven through the menu the layout collapsed them into,
   the way the user gets to them.
 
-**The replay joins its scenario as one more recording whose `size` is `phone`**, as the `writing-the-report`
-reference says. A check
+**The replay joins the part whose screens it replays as one more recording, labelled `Phone`, whose `size` is
+`phone`**, and its checks sit under that part's steps, as the `writing-the-report` reference says. A replay that
+crosses the screens of several parts is filmed as one take per part. A check
 that fails on the phone fails the scenario, with a `bugs[]` entry like any other whose `reachedBy` writes
 itself: the user on that device, and the surface they touched. **A flow the phone reaches by different steps is
 a scenario of its own**, with the phone take as its one recording.
+
+## Terminal frames — a CLI test's recording
+
+**A CLI test's recording is drawn from its transcript**, the file Step 4's run wrote for it under
+`E2E_TERMINAL_DIR`, one line per command it ran. Draw it in the desktop session, opened as *Setup* says where
+no walk opened it:
+
+1. **Write one terminal page in staging** that shows the transcript as a terminal does: a dark background, a
+   monospace font, each command on a prompt line with its output beneath it, its text escaped so it shows as
+   written. The page shows the commands up to the one its address names, the newest at the bottom.
+2. **Shoot one frame per command**, in the order the test ran them: open the page at that command and
+   screenshot it to staging, at one viewport for every frame.
+3. **Confirm and promote each frame** as *Confirm the frames and promote them* says, its step naming the
+   command it shows.
+
+Step 6 builds the recording's video from its promoted frames.
