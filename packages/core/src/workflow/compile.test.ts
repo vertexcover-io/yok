@@ -1345,7 +1345,10 @@ describe("the shipped task workflow", () => {
     const planning = plan.nodes.find((node) => node.id === "planning");
     expect(planning).toMatchObject({
       stage: {
-        verifiers: [{ id: "design-coverage", kind: "function" }],
+        verifiers: [
+          { id: "design-coverage", kind: "function" },
+          { id: "outcome-homes", kind: "function" },
+        ],
         consumes: expect.arrayContaining([{ artifact: "design-refs", optional: true }]),
       },
     });
