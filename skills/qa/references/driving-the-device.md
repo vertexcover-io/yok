@@ -1,6 +1,6 @@
 # Driving the Device
 
-**Read this when:** driving UI scenarios on a device (Step 2) or re-driving a bug's repro there (Step 4), for an
+**Read this when:** driving UI scenarios on a device (Step 2) or re-driving a bug's repro there (Step 5), for an
 environment entry whose `platform` is `ios` or `android`. Everything here is done with the app open on a simulator,
 emulator or phone through the `agent-device` CLI; grading, videos and the report are in `writing-the-report.md`.
 The browser twin of this file is `driving-the-browser.md`, and the two never apply to the same scenario.
@@ -14,7 +14,7 @@ The browser twin of this file is `driving-the-browser.md`, and the two never app
 - The capture loop — act, assert, capture to staging, promote
 - Fresh state
 - Replaying on another device
-- The two attacks Step 4 owes
+- The two attacks Step 5 owes
 
 What depends on the app — how sign-in works, which screens lie about their own state, which permission prompt
 appears first — is knowledge the project owns, held in its own skills and `CLAUDE.md`. Look for it before your first
@@ -23,7 +23,7 @@ appears first — is knowledge the project owns, held in its own skills and `CLA
 ## Setup
 
 **Keep `AGENT_DEVICE_SESSION` exported**, with the value Step 1 set for the device you are driving, for every
-command here and for Step 7's close. A session is bound to one device, so switching device means exporting that
+command here and for Step 8's close. A session is bound to one device, so switching device means exporting that
 device's session name; every command then lands on it.
 
 **Step 1 opened the app** on each device under that device's session name, as the `stack-up` reference says,
@@ -112,7 +112,8 @@ For every action, in this order:
 
 **Once the walk reaches its closing assert, write the scenario from it**: the steps summarise the actions behind
 the promoted frames in the order they ran, each check sits under the step that brings it about with its `result`,
-in the reader's plain language, and the values an assert returned that a check rests on go in the `raw` of the proof it cites.
+in the reader's plain language, and its proofs as the `writing-the-report` reference's *Proofs* says: the promoted
+frame that shows it, or a reading of the assert's values where no frame shows it.
 Add the walk to `recordings[]` with the device's name and OS version.
 
 You need both checks. The assert answers whether the state took hold — a press that silently no-ops looks identical
@@ -153,7 +154,7 @@ that fails on it fails the scenario, with a `bugs[]` entry like any other whose 
 user on that device, and the surface they touched. A project that ships both platforms declares two entries,
 and each is its own run.
 
-## The two attacks Step 4 owes
+## The two attacks Step 5 owes
 
 Run both on the first device, on each screen the change landed on, with the state the scenario built still on it:
 

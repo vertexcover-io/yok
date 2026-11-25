@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
-// Leaves every verification scenario with one video. A take recorded as numbered parts,
-// NN_<slug>.partK.mp4, because it followed the user from one tab to another, is first joined in
-// order into NN_<slug>.mp4. A scenario whose take was recorded already
+// Leaves every verification scenario with one video. A take recorded in numbered files,
+// NN_<slug>.fileK.mp4, because it followed the user from one tab or session to another, is first
+// joined in order into NN_<slug>.mp4; a file named NN_<slug>.fileK.wait-<seconds>.mp4 was recorded
+// after the recorder was stopped through a wait, and is preceded by a card saying so. A scenario
+// whose take was recorded already
 // has its NN_<slug>.mp4 beside the report, with or without frames: that file is shown to play,
 // then compressed in place where that makes it smaller, since the report carries every video
 // inline. Every other
@@ -17,8 +19,8 @@
 // Usage: report-media.ts [--inline] VERIFICATION_DIR
 // Building prints one line per scenario — "ok NN_<slug>.mp4 recorded" for a kept recording, with
 // "— trimmed <seconds>s of still picture" where a stretch with no change on screen was cut down,
-// "— compressed <bytes>B to <bytes>B" where it was made smaller or "— joined <n> parts" where it
-// was recorded in parts,
+// "— compressed <bytes>B to <bytes>B" where it was made smaller or "— joined <n> files" where it
+// was recorded in numbered files,
 // "ok NN_<slug>.mp4 crop=<window>" for a built one, or "FAILED NN_<slug> — <reason>" — and
 // writes each built NN_<slug>.mp4 beside the report.
 // Inlining prints one line per file — "ok <path> <bytes>B", or "FAILED <path> — <reason>" — then
@@ -118,16 +120,21 @@ const isDirectory = (path: string): boolean => {
 
 const namesIn = (dir: string): readonly string[] => (isDirectory(dir) ? readdirSync(dir) : []);
 
+/** A take recorded in numbered files: its prefix, then .fileK, then .wait-SECONDS after a wait. */
+const NUMBERED_FILE = /^(\d\d_[^.]+)\.file\d+(?:\.wait-\d+)?\.mp4$/;
+
 /**
  * The scenario prefixes of a verification directory: those behind its promoted
- * `screenshots/NN_<slug>__SS_<step>.png` frames, and those of each `NN_<slug>.mp4` beside the
- * report, which is all a scenario filmed without frames leaves.
+ * `screenshots/NN_<slug>__SS_<step>.png` frames, and those of each `NN_<slug>.mp4` or numbered
+ * file beside the report, which is all a scenario filmed without frames leaves.
  */
 export function scenarioPrefixes(dir: string): readonly string[] {
   const framed = namesIn(join(dir, "screenshots"))
     .filter((name) => name.endsWith(".png") && name.includes("__"))
     .map((name) => name.slice(0, name.indexOf("__")));
-  const filmed = namesIn(dir).flatMap((name) => /^(\d\d_[^.]+)\.mp4$/.exec(name)?.[1] ?? []);
+  const filmed = namesIn(dir).flatMap(
+    (name) => /^(\d\d_[^.]+)\.mp4$/.exec(name)?.[1] ?? NUMBERED_FILE.exec(name)?.[1] ?? [],
+  );
   return [...new Set([...framed, ...filmed])].toSorted();
 }
 
@@ -365,9 +372,9 @@ function compressRecording(dir: string, video: string): string | null {
   return `compressed ${before}B to ${after}B`;
 }
 
-const recordedParts = (dir: string, prefix: string): readonly string[] =>
+const recordedFiles = (dir: string, prefix: string): readonly string[] =>
   readdirSync(dir)
-    .filter((name) => new RegExp(`^${prefix}\\.part\\d+\\.mp4$`).test(name))
+    .filter((name) => NUMBERED_FILE.exec(name)?.[1] === prefix)
     .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
 const videoSize = (dir: string, video: string): FrameSize | null => {
@@ -379,18 +386,74 @@ const videoSize = (dir: string, video: string): FrameSize | null => {
   return size === null ? null : { width: Number(size[1]), height: Number(size[2]) };
 };
 
+/** The seconds a file named NN_<slug>.fileK.wait-<seconds>.mp4 was recorded after, else null. */
+export const waitBefore = (file: string): number | null => {
+  const seconds = /\.wait-(\d+)\.mp4$/.exec(file);
+  return seconds === null ? null : Number(seconds[1]);
+};
+
+const CARD_SECONDS = 2.5;
+
+export const waitWords = (seconds: number): string =>
+  seconds < 90 ? `${seconds} seconds` : `${Math.round(seconds / 60)} minutes`;
+
+const cardFont = (): string | null => {
+  const found = spawnSync("fc-match", ["-f", "%{file}", "sans"], { encoding: "utf8" });
+  const file = (found.stdout ?? "").trim();
+  return found.status === 0 && file !== "" && existsSync(file) ? file : null;
+};
+
 /**
- * Joins a take's parts, in order, into the scenario's one video, then removes the parts.
- * Every part is fitted inside the first part's size, so a pop-up window keeps its shape.
+ * The card shown in place of a wait the recorder was stopped through: a still frame at the
+ * video's size, saying how long the recording paused, written where a font is found.
  */
-function joinParts(dir: string, prefix: string, parts: readonly string[]): string | null {
-  const unplayable = parts.find((part) => !plays(dir, part));
+function cardFilter(dir: string, n: number, seconds: number, font: string | null): string {
+  if (font === null) return "";
+  const lines = [
+    `Recording paused for ${waitWords(seconds)} while the product worked`,
+    "Filming resumes when the result arrives",
+  ];
+  const names = lines.map((line, k) => {
+    const name = `.card-${n}-${k}.txt`;
+    writeFileSync(join(dir, name), line);
+    return name;
+  });
+  const draw = (name: string, size: number, color: string, y: string) =>
+    `drawtext=fontfile=${font}:textfile=${name}:fontcolor=${color}:fontsize=${size}:x=(w-text_w)/2:y=${y}`;
+  return `${draw(names[0] ?? "", 30, "white", "h/2-40")},${draw(names[1] ?? "", 22, "0xA9B4C2", "h/2+16")},`;
+}
+
+/**
+ * Joins a take's numbered files, in order, into the scenario's one video, then removes them.
+ * Every file is fitted inside the first file's size, so a pop-up window keeps its shape. A file
+ * recorded after a wait is preceded by a card saying the recording paused, so the viewer sees
+ * the gap the recorder skipped.
+ */
+function joinFiles(dir: string, prefix: string, files: readonly string[]): string | null {
+  const unplayable = files.find((file) => !plays(dir, file));
   if (unplayable !== undefined) return `${unplayable} does not play`;
-  const size = videoSize(dir, parts[0] ?? "");
-  if (size === null) return `${parts[0]} reports no picture size`;
+  const size = videoSize(dir, files[0] ?? "");
+  if (size === null) return `${files[0]} reports no picture size`;
   const fit = `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30`;
-  const fitted = parts.map((_, n) => `[${n}:v]${fit}[v${n}]`).join(";");
-  const labels = parts.map((_, n) => `[v${n}]`).join("");
+  const font = cardFont();
+  const card = `color=c=0x16202B:s=${size.width}x${size.height}:r=30`;
+  const inputs = files.flatMap((file) => {
+    const seconds = waitBefore(file);
+    return seconds === null
+      ? [{ args: ["-i", file], seconds }]
+      : [
+          { args: ["-f", "lavfi", "-t", String(CARD_SECONDS), "-i", card], seconds },
+          { args: ["-i", file], seconds: null },
+        ];
+  });
+  const fitted = inputs
+    .map(({ seconds }, n) =>
+      seconds === null
+        ? `[${n}:v]${fit}[v${n}]`
+        : `[${n}:v]${cardFilter(dir, n, seconds, font)}${fit}[v${n}]`,
+    )
+    .join(";");
+  const labels = inputs.map((_, n) => `[v${n}]`).join("");
   const working = workingName(prefix, "join");
   const joined = spawnSync(
     "ffmpeg",
@@ -399,9 +462,9 @@ function joinParts(dir: string, prefix: string, parts: readonly string[]): strin
       "-v",
       "error",
       "-y",
-      ...parts.flatMap((part) => ["-i", part]),
+      ...inputs.flatMap(({ args }) => args),
       "-filter_complex",
-      `${fitted};${labels}concat=n=${parts.length}:v=1:a=0[out]`,
+      `${fitted};${labels}concat=n=${inputs.length}:v=1:a=0[out]`,
       "-map",
       "[out]",
       ...COMPRESSED_ENCODING,
@@ -409,12 +472,14 @@ function joinParts(dir: string, prefix: string, parts: readonly string[]): strin
     ],
     { cwd: dir, encoding: "utf8" },
   );
+  for (const name of readdirSync(dir).filter((file) => file.startsWith(".card-")))
+    rmSync(join(dir, name), { force: true });
   if (joined.status !== 0 || !plays(dir, working)) {
     rmSync(join(dir, working), { force: true });
-    return `ffmpeg: ${(joined.stderr ?? "").trim().split("\n").at(-1) || "could not join the parts"}`;
+    return `ffmpeg: ${(joined.stderr ?? "").trim().split("\n").at(-1) || "could not join the numbered files"}`;
   }
   renameSync(join(dir, working), join(dir, `${prefix}.mp4`));
-  for (const part of parts) rmSync(join(dir, part));
+  for (const file of files) rmSync(join(dir, file));
   return null;
 }
 
@@ -490,12 +555,13 @@ function rebuildFromFrames(dir: string, prefix: string): ScenarioResult {
 export function buildScenarios(dir: string): readonly ScenarioResult[] {
   return scenarioPrefixes(dir).map((prefix) => {
     const video = `${prefix}.mp4`;
-    const parts = recordedParts(dir, prefix);
-    if (parts.length > 0) {
-      const failure = joinParts(dir, prefix, parts);
+    const files = recordedFiles(dir, prefix);
+    if (files.length > 0) {
+      const failure = joinFiles(dir, prefix, files);
       if (failure !== null) return { prefix, crop: null, failure, note: null };
       const trimmed = trimStills(dir, video);
-      const joined = `joined ${parts.length} parts`;
+      const waits = files.filter((file) => waitBefore(file) !== null).length;
+      const joined = `joined ${files.length} files${waits === 0 ? "" : `, ${waits} wait${waits === 1 ? "" : "s"}`}`;
       return {
         prefix,
         crop: null,
@@ -551,7 +617,12 @@ export function mediaPaths(data: Record<string, unknown>): readonly string[] {
   const named = listOf(data["scenarios"])
     .filter(isRecord)
     .flatMap((scenario) => [
-      ...listOf(scenario["recordings"])
+      ...[
+        ...listOf(scenario["parts"])
+          .filter(isRecord)
+          .flatMap((part) => listOf(part["recordings"])),
+        ...listOf(scenario["recordings"]),
+      ]
         .filter(isRecord)
         .flatMap((recording) => [
           recording["video"],

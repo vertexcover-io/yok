@@ -136,17 +136,23 @@ file**; each runner names its destination differently:
 Where the project wraps its runner (an `e2e` script, a custom entry point), pass the same env var
 or flag through it. The file on disk is what the gate reads, not the console output.
 
-## Recording video of a run
+## Recording a run for the proof report
 
-The `qa` stage turns the runner's video recording on for one run, with the project's committed files left as
-they are:
+The `qa` stage runs the plan's e2e tests once more to record them, with the project's committed files left as
+they are. Each test records by what it drives:
 
-| Runner | Turning video on for one run | Where each video is |
+| The test drives | Turning recording on for one run | Where each recording is |
 |---|---|---|
-| Playwright | a scratch config beside the project's own that spreads it and sets `use.video` to `'on'`, passed with `--config` and deleted after the run | one per test, at the `path` of the `video` entry in that test's `attachments` in the JSON report |
-| Cypress | `cypress run --config video=true` | one per spec file, in the `videosFolder` |
+| A browser, through Playwright | a scratch config beside the project's own that spreads it and sets `use.video` to `'on'`, passed with `--config` and deleted after the run | one video per test, at the `path` of the `video` entry in that test's `attachments` in the JSON report |
+| A browser, through Cypress | `cypress run --config video=true` | one video per spec file, in the `videosFolder` |
+| A CLI | `E2E_TERMINAL_DIR` set to a folder | one transcript per test, `E2E_TERMINAL_DIR/SCn.jsonl`, named by the scenario id in the test's title |
 
-Another runner follows its own documentation for the same two facts.
+Another browser runner follows its own documentation for the same two facts.
+
+**Write the transcript in the shared helper that runs the CLI's commands**, so every CLI test records with no
+code of its own. With `E2E_TERMINAL_DIR` set, the helper appends one JSON line per command, in the order they
+ran: `command`, the command line as a person types it; `output`, what the terminal showed, standard output and
+error together; and `exit`, its exit code. With it unset, the helper writes nothing.
 
 ## Checklist before calling an e2e suite "done"
 
@@ -156,3 +162,4 @@ Another runner follows its own documentation for the same two facts.
 - [ ] Each spec passes **both** alone and inside the full suite (proves isolation)
 - [ ] Where the suite drives a consumer, the producer's build was synced into it and the sync was verified
 - [ ] Runner emits `phase-<N>-e2e.json` via its own JSON reporter
+- [ ] Where the suite drives a CLI, its shared helper writes the transcript when `E2E_TERMINAL_DIR` is set
