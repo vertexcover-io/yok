@@ -1,0 +1,80 @@
+[
+  {
+    "id": 101,
+    "user": {
+      "login": "xhawk-ai[bot]"
+    },
+    "path": "src/publish.ts",
+    "original_line": 12,
+    "line": 12,
+    "original_commit_id": "aaa111",
+    "commit_id": "ccc333",
+    "in_reply_to_id": null,
+    "body": "### A partial publish cannot be re-run <picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://xhawk.ai/review/v2/severity/high-dark.svg\"><img alt=\"High\" src=\"https://xhawk.ai/review/v2/severity/high.svg\" align=\"absmiddle\"></picture> <picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://xhawk.ai/review/v2/category/correctness-dark.svg\"><img alt=\"Correctness\" src=\"https://xhawk.ai/review/v2/category/correctness.svg\" align=\"absmiddle\"></picture>\n\nIf package 2 fails after package 1 published, a rerun stops on package 1 because npm refuses an existing version.\n\n**Suggested fix:** skip versions already on npm."
+  },
+  {
+    "id": 102,
+    "user": {
+      "login": "kgritesh"
+    },
+    "path": "src/publish.ts",
+    "original_line": 12,
+    "line": 12,
+    "original_commit_id": "aaa111",
+    "commit_id": "ccc333",
+    "in_reply_to_id": 101,
+    "body": "Fixed in bbb222: each package is checked with npm view first."
+  },
+  {
+    "id": 103,
+    "user": {
+      "login": "xhawk-ai[bot]"
+    },
+    "path": "src/publish.ts",
+    "original_line": 3,
+    "line": 3,
+    "original_commit_id": "aaa111",
+    "commit_id": "ccc333",
+    "in_reply_to_id": null,
+    "body": "### Loop variable name hides what it iterates <picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://xhawk.ai/review/v2/severity/low-dark.svg\"><img alt=\"Low\" src=\"https://xhawk.ai/review/v2/severity/low.svg\" align=\"absmiddle\"></picture> <picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://xhawk.ai/review/v2/category/readability-dark.svg\"><img alt=\"Readability\" src=\"https://xhawk.ai/review/v2/category/readability.svg\" align=\"absmiddle\"></picture>\n\n`dir` is a package folder; `pkg` would read better."
+  },
+  {
+    "id": 104,
+    "user": {
+      "login": "8090-software-factory[bot]"
+    },
+    "path": "src/publish.ts",
+    "original_line": 1,
+    "line": 1,
+    "original_commit_id": "aaa111",
+    "commit_id": "ccc333",
+    "in_reply_to_id": null,
+    "body": "**⚠️ Drift Bot (Widgets)** — Blueprint: [Release process](https://factory.example/blueprints/1)\n\nThe publish loop implements a release order that no blueprint documents.\n\n<!-- sofa-driftbot -->"
+  },
+  {
+    "id": 105,
+    "user": {
+      "login": "kgritesh"
+    },
+    "path": "src/uninstall.ts",
+    "original_line": 20,
+    "line": 20,
+    "original_commit_id": "bbb222",
+    "commit_id": "ccc333",
+    "in_reply_to_id": null,
+    "body": "With `WIDGETS_HOME` unset this resolves to `/` and the `rm -rf` below removes the whole disk. Where does `home` come from?"
+  },
+  {
+    "id": 106,
+    "user": {
+      "login": "amankumarsingh77"
+    },
+    "path": "README.md",
+    "original_line": 4,
+    "line": 4,
+    "original_commit_id": "bbb222",
+    "commit_id": "ccc333",
+    "in_reply_to_id": null,
+    "body": "LGTM, nice write-up."
+  }
+]

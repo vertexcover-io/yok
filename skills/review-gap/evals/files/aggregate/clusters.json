@@ -1,0 +1,10 @@
+{
+  "two-places": {
+    "title": "Same fact decided in two places",
+    "findingIds": ["acme/widgets#7:701", "acme/widgets#8:801"]
+  },
+  "catch-all": {
+    "title": "Catch-all before an irreversible step",
+    "findingIds": ["acme/widgets#9:901"]
+  }
+}

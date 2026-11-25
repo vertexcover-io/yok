@@ -1,0 +1,58 @@
+{
+  "repo": "acme/widgets",
+  "number": 9,
+  "title": "fix: copy before delete",
+  "prBody": "",
+  "state": "closed",
+  "mergedAt": "2026-10-01T00:00:00Z",
+  "baseRef": "main",
+  "baseSha": "base000",
+  "headSha": "head9",
+  "diffLines": 40,
+  "findings": [
+    {
+      "id": "acme/widgets#9:901",
+      "commentId": 901,
+      "reviewer": "xhawk-ai[bot]",
+      "severity": "high",
+      "category": "correctness",
+      "title": "copyFile().then(() => true, () => false) swallows every error, then the source is deleted",
+      "path": "src/move.ts",
+      "line": 5,
+      "commitSha": "sha9",
+      "body": "copyFile().then(() => true, () => false) swallows every error, then the source is deleted",
+      "replies": [],
+      "humanReply": ""
+    },
+    {
+      "id": "acme/widgets#9:902",
+      "commentId": 902,
+      "reviewer": "xhawk-ai[bot]",
+      "severity": "medium",
+      "category": "correctness",
+      "title": "Search text has no length limit",
+      "path": "src/search.ts",
+      "line": 3,
+      "commitSha": "sha9",
+      "body": "x",
+      "replies": [],
+      "humanReply": ""
+    }
+  ],
+  "dropped": [
+    {
+      "commentId": 903,
+      "reviewer": "xhawk-ai[bot]",
+      "reason": "style",
+      "excerpt": "Rename dir to pkg"
+    }
+  ],
+  "reviews": [],
+  "issueComments": [],
+  "commits": [
+    {
+      "sha": "sha9",
+      "message": "change"
+    }
+  ]
+}

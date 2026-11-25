@@ -1,0 +1,17 @@
+{
+  "repo": "acme/widgets",
+  "number": 7,
+  "sha": "sha7",
+  "results": [
+    {
+      "id": "acme/widgets#7:701",
+      "persona": "spec",
+      "result": "miss",
+      "evidence": "spec checked the CLI default only",
+      "cause": "prompt-gap",
+      "citation": "nothing asks where else the target is decided",
+      "proposal": "For each value the change decides, ask where else that fact is decided and whether the two agree.",
+      "proposalFile": "skills/code-review/references/persona-spec.md"
+    }
+  ]
+}
