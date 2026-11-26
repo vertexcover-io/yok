@@ -1017,14 +1017,22 @@ describe("resultPageState", () => {
     });
   });
 
-  test("SC8017: a failed, cancelled or gone apply run with no error written is run-failed, but waiting when a stale error is there", () => {
+  test("SC8017: a failed or cancelled apply run with no error written is run-failed, but waiting when a stale error is there", () => {
     expect(
-      (["failed", "cancelled", "gone"] as const).map((status) =>
+      (["failed", "cancelled"] as const).map((status) =>
         resultPageState(result({}), click("accepted"), run(status)),
       ),
-    ).toEqual(Array(3).fill({ kind: "run-failed", runId: "r-9" }));
+    ).toEqual(Array(2).fill({ kind: "run-failed", runId: "r-9" }));
     const stale = result({ error: "tests failed", at: "2026-11-20T09:00:00.000Z" });
     expect(resultPageState(stale, click("accepted"), run("failed"))).toEqual({ kind: "waiting" });
+  });
+
+  test("an apply run whose agent is gone reads stopped after an accept or an undo, not run-failed, so its run can be resumed or cancelled", () => {
+    expect(
+      (["accepted", "undone"] as const).map((type) =>
+        resultPageState(result({}), click(type), run("gone")),
+      ),
+    ).toEqual(Array(2).fill({ kind: "stopped", runId: "r-9" }));
   });
 
   test("SC8018: a rejected result carries the person's feedback, or null feedback when they gave none", () => {

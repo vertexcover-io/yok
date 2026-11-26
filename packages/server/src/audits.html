@@ -572,6 +572,7 @@ const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(run
 const STATE_LINE = {
   waiting: () => ["waiting for yok to apply it"],
   applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
+  stopped: (state) => ["apply run stopped: ", runLink(state.runId, "open it to resume or cancel")],
   "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
   applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
   failed: (state) => [`couldn't apply: ${state.reason}`],
@@ -646,7 +647,7 @@ const copyButton = (prompt) => {
 const actionsFor = (result, state) => {
   if (state.kind === "needs-work") return result.fix?.prompt === undefined ? [] : [copyButton(result.fix.prompt)];
   if (state.kind === "open") return [actionButton(result, "Accept", { type: "accepted" }, "btn pri"), rejectButton(result)];
-  if (state.kind === "auto-fixed" || state.kind === "applying") return [];
+  if (["auto-fixed", "applying", "stopped"].includes(state.kind)) return [];
   return [actionButton(result, "Undo", { type: "undone" })];
 };
 const decisionNode = (result) => {

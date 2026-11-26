@@ -88,13 +88,13 @@ export type AuditApplyRun = Readonly<{ id: string; status: RunStatus }>;
 
 export type ResultPageState =
   | Readonly<{ kind: "auto-fixed" | "needs-work" | "open" | "waiting" }>
-  | Readonly<{ kind: "applying" | "run-failed"; runId: string }>
+  | Readonly<{ kind: "applying" | "stopped" | "run-failed"; runId: string }>
   | Readonly<{ kind: "applied"; commit: string; pr: string | null }>
   | Readonly<{ kind: "failed"; reason: string }>
   | Readonly<{ kind: "rejected"; feedback: string | null }>;
 
 const ACTIVE_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["starting", "running", "blocked"]);
-const FAILED_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["failed", "cancelled", "gone"]);
+const FAILED_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["failed", "cancelled"]);
 
 // An error written before the person's newest click belongs to an earlier try, not this one.
 const freshError = (fix: AuditResult["fix"], decision: AuditResultEvent): string | null => {
@@ -112,6 +112,8 @@ export const resultPageState = (
   if (applyRun !== null && ACTIVE_RUN.has(applyRun.status)) {
     return { kind: "applying", runId: applyRun.id };
   }
+  // A run whose agent died stays open until someone resumes or cancels it from its run page.
+  if (applyRun?.status === "gone") return { kind: "stopped", runId: applyRun.id };
   if (decision === null) return { kind: "open" };
   if (decision.type === "rejected") {
     return {
