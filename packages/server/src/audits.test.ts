@@ -47,9 +47,10 @@ type SeedRun = Readonly<{
   inputs?: JsonObject;
   terminal?: string;
   state?: Partial<State>;
+  unnamed?: boolean;
 }>;
 
-// Stores run ID in PROJECT, named by init with a state, as a started run is.
+// Stores run ID in PROJECT, named by init with a state as a started run is, unless UNNAMED.
 const addRun = async (storage: IStorage, id: string, seed: SeedRun = {}): Promise<void> => {
   const project = seed.project ?? "web";
   await storage.runs.addRun({
@@ -65,6 +66,7 @@ const addRun = async (storage: IStorage, id: string, seed: SeedRun = {}): Promis
     tiers: null,
     createdAt: AT,
   });
+  if (seed.unnamed === true) return;
   const state = { ...seedState(`/abs/${project}/.yok/${id}`, {}), runId: id, ...seed.state };
   const named = await storage.runs.initRun(id, `run-${id}`, state);
   if (!named.ok) throw new Error(named.error);
@@ -393,6 +395,28 @@ describe("POST /audits/results/:resultId/events", () => {
     if (status === 409) expect((await response.json()).error.code).toBe("conflict");
   });
 
+  test("SC7311: Accept answers 409 while the apply run is a minute old and not yet named", async () => {
+    const { storage, resultId } = await oneResult();
+    await addRun(storage, "r-apply", {
+      workflow: "test-audit-apply",
+      terminal: "t-apply",
+      unnamed: true,
+    });
+    await storage.audits.addEvent({
+      resultId,
+      who: "yok",
+      type: "apply_started",
+      payload: {},
+      startedRunId: "r-apply",
+    });
+    const minuteLater = () => new Date(new Date(AT).getTime() + 60_000);
+    const app = createApi({ ...buildDeps(storage, true), now: minuteLater });
+
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(response.status).toBe(409);
+  });
+
   test("Accept answers 409 while the apply run's agent is dead and its state says running", async () => {
     const { app, resultId } = await applying("running", false);
 
@@ -566,12 +590,16 @@ describe("the tick's audit apply runs", () => {
     "SC7316: a tick while the apply run is going starts nothing, and the next click waits for it to end",
     async () => {
       const { storage, launches, deps, a, b, runId } = await appliedOnce();
-      await setState(storage, runId, "running");
       await addRun(storage, "r-audit-2");
       const later = await addAudit(storage, { runId: "r-audit-2", day: 15, slugs: ["c"] });
       const c = `${later.id}:web:duplicates:c`;
       await clickAs(storage, c, "accepted");
 
+      // the apply run is not named yet: orchestrate init has not run
+      await tick(deps());
+      expect(launches).toHaveLength(1);
+
+      await setState(storage, runId, "running");
       await tick(deps());
       expect(launches).toHaveLength(1);
       expect(await storage.audits.pendingWork("web")).toHaveLength(1);
