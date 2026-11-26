@@ -1,6 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as z from "zod";
-import { measureCoverage, parseChangedLines, parseLcov, RunTestsRepoSchema } from "./coverage.ts";
+import {
+  main,
+  measureCoverage,
+  parseChangedLines,
+  parseLcov,
+  RunTestsRepoSchema,
+} from "./coverage.ts";
 
 const lcov = (files: Readonly<Record<string, readonly number[]>>): string =>
   Object.entries(files)
@@ -64,5 +74,56 @@ describe("RunTestsRepoSchema", () => {
     expect(parsed.success ? "" : z.prettifyError(parsed.error)).toContain(
       "every null value has its reason in notMeasured",
     );
+  });
+});
+
+// Runs git in REPO with both commit dates set to AT, and returns its trimmed stdout.
+const gitAt = (repo: string, at: string, args: readonly string[]): string => {
+  const ran = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at },
+  });
+  if (ran.status !== 0) throw new Error(ran.stderr);
+  return ran.stdout.trim();
+};
+
+const commitFile = (repo: string, at: string, file: string): string => {
+  writeFileSync(join(repo, file), "x\n");
+  gitAt(repo, at, ["add", file]);
+  gitAt(repo, at, ["commit", "-m", file]);
+  return gitAt(repo, at, ["rev-parse", "HEAD"]);
+};
+
+describe("main", () => {
+  test("a side-branch commit dated just before the period but merged in it is not the base: the base is main's last commit before the period", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "coverage-"));
+    gitAt(repo, "2026-11-01T00:00:00Z", ["init", "-q", "-b", "main"]);
+    commitFile(repo, "2026-11-01T00:00:00Z", "start.ts");
+    gitAt(repo, "2026-11-01T00:00:00Z", ["branch", "side"]);
+    const mainBefore = commitFile(repo, "2026-11-02T00:00:00Z", "m.ts");
+    gitAt(repo, "2026-11-02T00:00:00Z", ["checkout", "-q", "side"]);
+    commitFile(repo, "2026-11-02T23:00:00Z", "s.ts");
+    gitAt(repo, "2026-11-04T00:00:00Z", ["checkout", "-q", "main"]);
+    gitAt(repo, "2026-11-04T00:00:00Z", ["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    const lcovPath = join(repo, "lcov.info");
+    writeFileSync(lcovPath, lcov({ "m.ts": [1], "s.ts": [0] }));
+
+    const written: string[] = [];
+    const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await main([lcovPath, "--repo", repo, "--since", "2026-11-03T00:00:00Z"]);
+    } finally {
+      write.mockRestore();
+    }
+    expect(JSON.parse(written.join(""))).toEqual({
+      base: mainBefore,
+      coverage: 50,
+      coverageChanged: 0,
+      changedLines: 1,
+    });
   });
 });

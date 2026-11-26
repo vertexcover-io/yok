@@ -140,7 +140,19 @@ export const main = async (argv: readonly string[]): Promise<void> => {
     process.exitCode = 2;
     return;
   }
-  const before = git(values.repo, ["rev-list", "-1", `--before=${values.since}`, "HEAD"]);
+  // --first-parent: a merged branch's commits dated before the period are still the period's work.
+  const before = git(values.repo, [
+    "rev-list",
+    "-1",
+    "--first-parent",
+    `--before=${values.since}`,
+    "HEAD",
+  ]);
+  if (before.status !== 0) {
+    process.stderr.write(before.stderr);
+    process.exitCode = 1;
+    return;
+  }
   const base = before.stdout.trim() || EMPTY_TREE;
   const diff = git(values.repo, ["diff", "-U0", base, "HEAD"]);
   if (diff.status !== 0) {

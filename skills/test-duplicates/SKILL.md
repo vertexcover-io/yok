@@ -29,7 +29,8 @@ with `--error` for it.
 ## Steps
 
 1. **List the tests added in the period.** BASE is
-   `git rev-list -1 --before=PERIOD_START HEAD`, or git's empty tree when that prints nothing.
+   `git rev-list -1 --first-parent --before=PERIOD_START HEAD`, or git's empty tree when that
+   prints nothing; `--first-parent` keeps a merged branch's older commits inside the period.
    Read `git diff BASE HEAD` over the test files and list every test case it adds, with its file,
    line and name. Their number is `testsAdded`.
 2. **Review them against the suite.** Read `yok orchestrate skill ref test-audit.slice-prompt`
