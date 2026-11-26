@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -116,6 +117,24 @@ describe("yok pack", () => {
     expect(pack("fix-login").code).toBe(0);
     expect(unzip("-t", zipPath)).toContain("No errors detected");
     expect(unzip("-Z", "-T", zipPath, "fix-login/state.json")).toContain("19800101.000000");
+  }, 30_000);
+
+  test("leaves out what a symlinked folder points at, inside or outside the run folder", async () => {
+    const { pack, cwd } = await setup();
+    const outside = mkdtempSync(join(tmpdir(), "yok-pack-outside-"));
+    cleanups.push(() => rmSync(outside, { recursive: true, force: true }));
+    writeFileSync(join(outside, "id_ed25519"), "secret");
+    const artifacts = join(cwd, ".yok", "fix-login", "artifacts");
+    symlinkSync(outside, join(artifacts, "ssh"));
+    symlinkSync("..", join(artifacts, "loop"));
+    const zipPath = join(cwd, ".yok", "fix-login.zip");
+
+    expect(pack("fix-login")).toEqual({ code: 0, stdout: zipPath, stderr: "" });
+    expect(unzip("-Z1", zipPath).trim().split("\n").sort()).toEqual([
+      "fix-login/artifacts/design/notes.md",
+      "fix-login/artifacts/empty.txt",
+      "fix-login/state.json",
+    ]);
   }, 30_000);
 
   test("an unknown run name exits 1 naming the run, and writes no zip", async () => {

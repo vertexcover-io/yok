@@ -99,10 +99,22 @@ const unlessGone = <T>(read: Promise<T>): Promise<T | undefined> =>
     throw error;
   });
 
+// The regular files under dir. A symlink is never followed, so nothing outside dir is packed.
+const listFiles = async (dir: string): Promise<readonly string[]> => {
+  const entries = (await unlessGone(readdir(dir, { withFileTypes: true }))) ?? [];
+  const nested = await Promise.all(
+    entries.map((entry) => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return listFiles(path);
+      return entry.isFile() ? [path] : [];
+    }),
+  );
+  return nested.flat();
+};
+
 // Every file under the run's folder, named NAME/PATH so the zip unpacks into one folder.
 const readRunFiles = async (runDir: string, name: string): Promise<readonly ZipFile[]> => {
-  const found = await readdir(runDir, { recursive: true, withFileTypes: true });
-  const paths = found.filter((entry) => entry.isFile()).map((e) => join(e.parentPath, e.name));
+  const paths = await listFiles(runDir);
   const files = await Promise.all(
     paths.map(async (path) =>
       unlessGone(
