@@ -146,6 +146,56 @@ describe("recordGuard through runPreToolUse", () => {
     }
   });
 
+  test("deleting or moving the folder that holds the database, a wildcard that matches it, or find deleting it is refused; the same commands on other files are allowed", async () => {
+    const { cwd, home, deps } = await setUp();
+    const refused = [
+      `rm -rf ${home}`,
+      `rm -rf ${home}/`,
+      `rm -rf ${join(home, "..")}`,
+      `mv ${home} ${home}.bak`,
+      `find ${home} -name 'yok.db*' -delete`,
+      `find ${home} -exec rm {} +`,
+      `rm ${home}/yok.d*`,
+      `rm ${home}/*.db`,
+      `rm -rf ${home.slice(0, -2)}*`,
+      `rsync -a --delete /tmp/empty/ ${home}/`,
+    ];
+    const allowed = [
+      `rm -rf ${home}/old-logs`,
+      `find ${home} -name '*.log' -delete`,
+      `find ${home} -name 'yok.db*'`,
+      `rm ${home}/*.log`,
+      `cp notes.txt ${home}/`,
+      `mv ${home}/a.txt ${home}/b.txt`,
+      `rsync -a /tmp/empty/ ${home}/`,
+    ];
+
+    const verdictOf = (command: string) =>
+      runPreToolUse(use(cwd, shell(command), { toolName: "Bash" }), recordGuard, deps);
+
+    for (const command of refused) {
+      const verdict = await verdictOf(command);
+      expect({ command, kind: verdict.kind }).toEqual({ command, kind: "deny" });
+      const message = verdict.kind === "deny" ? verdict.message : "";
+      expect(message).toContain("yok's database");
+      expect(message).toContain("Change a run only through `yok orchestrate`");
+    }
+    const wildcard = await verdictOf(`rm ${home}/*.db`);
+    expect(wildcard.kind === "deny" ? wildcard.message : "").toStartWith(
+      `${home}/*.db matches yok's database`,
+    );
+    const folder = await verdictOf(`rm -rf ${home}`);
+    expect(folder.kind === "deny" ? folder.message : "").toStartWith(
+      `${home} holds yok's database`,
+    );
+    for (const command of allowed) {
+      expect({ command, verdict: await verdictOf(command) }).toEqual({
+        command,
+        verdict: { kind: "allow" },
+      });
+    }
+  });
+
   test("a SQL client is not judged by its SQL: reads and writes through sqlite3, python or bun -e are allowed", async () => {
     const { cwd, home, deps } = await setUp();
     const commands = [
