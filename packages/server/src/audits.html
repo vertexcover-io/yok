@@ -52,6 +52,7 @@ a { color: var(--accent); }
 .pick { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--bg); font-size: 13px; }
 .sub { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--muted); }
 .range { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.drawer-range { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
 .btn { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 3px 10px; font-size: 13px; }
 .btn:hover { border-color: var(--muted); }
 .btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
@@ -430,6 +431,19 @@ const relatedSection = (problemType) => {
   ]);
 };
 
+// The drawer covers the header's range, so it carries its own, set through the same setRange.
+const rangeSelect = (label, selected, pick) => {
+  const select = el("select", { className: "pick" });
+  fillSelect(select, rangeOptions(), selected);
+  select.addEventListener("change", () => guarded(() => pick(select.value)));
+  return el("label", {}, [`${label} `, select]);
+};
+const drawerRange = () => el("p", { className: "sect drawer-range" }, [
+  "Over time",
+  rangeSelect("from", view.from, (id) => setRange(id, view.to)),
+  rangeSelect("to", view.to, (id) => setRange(view.from, id)),
+]);
+
 const tileDrawer = (key) => {
   const tile = TILES[key];
   const drawer = DRAWERS[key];
@@ -438,6 +452,7 @@ const tileDrawer = (key) => {
     el("h2", { id: "drawer-title", textContent: tile.name }),
     el("p", { className: "dim", textContent: tile.caption }),
     ...(key === "coverage" ? [changedLine()] : []),
+    drawerRange(),
     ...drawer.charts.map(chartNode),
     el("section", { className: "sect" }, [
       el("div", { className: "label", textContent: "How it is measured" }),
@@ -691,18 +706,18 @@ const scheduleRefresh = () => {
 const fillSelect = (select, options, selected) => {
   select.replaceChildren(...options.map(([value, label]) => el("option", { value, textContent: label, selected: value === selected })));
 };
+const rangeOptions = () => oldestFirst().map((run) => [run.id, day(run.periodEnd)]);
 const runLabel = (run) => `${day(run.periodEnd)}${run.status === "complete" ? "" : ` (${run.status})`}`;
 
 const renderHeader = () => {
   const repos = Object.keys(view.detail.run.commits).sort();
-  const range = oldestFirst().map((run) => [run.id, day(run.periodEnd)]);
   fillSelect($("project"), view.projects.map((name) => [name, name]), view.project);
   fillSelect($("run"), view.runs.map((run) => [run.id, runLabel(run)]), view.runId);
   fillSelect($("repo"), repos.map((repo) => [repo, repo]), view.repo);
   $("repo").hidden = repos.length < 2;
   $("ran").textContent = ranText(view.detail);
-  fillSelect($("from"), range, view.from);
-  fillSelect($("to"), range, view.to);
+  fillSelect($("from"), rangeOptions(), view.from);
+  fillSelect($("to"), rangeOptions(), view.to);
 };
 
 const render = () => {
