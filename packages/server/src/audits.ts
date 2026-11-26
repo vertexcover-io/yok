@@ -211,6 +211,9 @@ const readFix = async (resultId: string, storage: IStorage) => {
 const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promise<void> => {
   const started = await deps.storage.audits.run(result.id);
   if (started === undefined || isOutcomeWritten(result.fix, started)) return;
+  // a click since the run started owes the next run its work; an error now would hide it
+  const clicked = await deps.storage.audits.decision(result.id);
+  if (clicked !== undefined && clicked.ts > started.ts) return;
   // startedRunId turns null when the run is removed
   const runId = started.startedRunId;
   const run = runId === null ? undefined : await deps.storage.runs.findRun(runId);

@@ -767,6 +767,25 @@ describe("the tick's audit apply runs", () => {
   );
 
   test(
+    "an Undo then Accept made after the apply run started is not marked failed when the run ends, and the next run applies it",
+    async () => {
+      const { storage, launches, deps, a, runId } = await appliedOnce();
+      // event times are milliseconds, and a click in the start's millisecond counts as before it
+      await Bun.sleep(2);
+      await clickAs(storage, a, "undone");
+      await clickAs(storage, a, "accepted");
+      await setState(storage, runId, "failed");
+
+      await tick(deps());
+
+      expect((await fixOf(storage, a))?.error).toBeUndefined();
+      expect(launches).toHaveLength(2);
+      expect(launches[1]?.prompt).toContain(`{"id":"${a}","action":"apply"}`);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "SC7322: a result whose apply run was removed is marked failed",
     async () => {
       const { storage, deps, a, runId } = await appliedOnce();
