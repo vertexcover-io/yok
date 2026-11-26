@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import type { Result } from "../contracts.ts";
 import type { GitHubSignIn, ImportedUser, IUserRepository, UserAccount } from "../repositories.ts";
 import * as tables from "../schema.ts";
 import { type Accounts, type UserEntry, UserSchema } from "../users.ts";
@@ -127,14 +128,29 @@ const importedAccountRows = (
   ];
 };
 
-const importUserIn = (db: Db, id: string, user: ImportedUser, at: string): void =>
-  db.transaction((tx) => {
+// An account another user already holds is refused, so the old file keeps it for the person.
+const importUserIn = (db: Db, id: string, user: ImportedUser, at: string): Result<void> =>
+  db.transaction((tx): Result<void> => {
+    const accounts = importedAccountRows(id, user, at);
+    const clash = accounts
+      .map((account) => ({
+        account,
+        owner: accountOwner(tx, account.provider, account.providerId),
+      }))
+      .find(({ owner }) => owner !== undefined && owner !== id);
+    if (clash !== undefined) {
+      const { provider, providerId } = clash.account;
+      return {
+        ok: false,
+        error: `its ${provider} account ${providerId} belongs to user ${clash.owner}`,
+      };
+    }
     tx.insert(users)
       .values({ id, name: user.name, email: user.email, createdAt: at, updatedAt: at })
       .onConflictDoNothing()
       .run();
-    const accounts = importedAccountRows(id, user, at);
     if (accounts.length > 0) tx.insert(userAccounts).values(accounts).onConflictDoNothing().run();
+    return { ok: true, value: undefined };
   }, IMMEDIATE);
 
 export const userRepository = (db: Db): IUserRepository => ({

@@ -32,7 +32,7 @@ export interface IUserRepository {
   addUserAccount(userId: string, account: UserAccount): Promise<void>;
   removeUserAccount(userId: string, provider: string): Promise<void>;
   // Only for `yok import-files`: stores the user under its old id. Deleted with that command.
-  importUser(id: string, user: ImportedUser): Promise<void>;
+  importUser(id: string, user: ImportedUser): Promise<Result<void>>;
 }
 
 // A user as users.json held it, for `yok import-files`.

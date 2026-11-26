@@ -82,12 +82,33 @@ const TriggersFileSchema = z.strictObject({
 
 const KINDS = ["users", "projects", "runs", "events", "comments", "triggers", "fires"] as const;
 type Kind = (typeof KINDS)[number];
-type Step = Readonly<{ counts: Partial<Record<Kind, number>>; skipped: readonly string[] }>;
-export type ImportReport = Readonly<{ summary: string; skipped: readonly string[] }>;
+// skipped: left out by rule, for good. failed: not stored, so its file is kept for another try.
+type Step = Readonly<{
+  counts: Partial<Record<Kind, number>>;
+  skipped: readonly string[];
+  failed: readonly string[];
+}>;
+export type ImportReport = Readonly<{
+  summary: string;
+  skipped: readonly string[];
+  failed: readonly string[];
+}>;
+// done: imported and renamed, or not there. A file not done holds back the files whose records
+// point at its rows, so they never land without them.
+type FileImport = Readonly<{ steps: readonly Step[]; done: boolean }>;
 
-const NOTHING: Step = { counts: {}, skipped: [] };
-const counted = (counts: Step["counts"]): Step => ({ counts, skipped: [] });
-const skip = (why: string): Step => ({ counts: {}, skipped: [why] });
+const FILES = {
+  users: "users.json",
+  projects: "projects.yaml",
+  runs: "registry.json",
+  triggers: "triggers.json",
+  fires: "trigger-fires.jsonl",
+} as const;
+
+const NOTHING: Step = { counts: {}, skipped: [], failed: [] };
+const counted = (counts: Step["counts"]): Step => ({ ...NOTHING, counts });
+const skip = (why: string): Step => ({ ...NOTHING, skipped: [why] });
+const fail = (why: string): Step => ({ ...NOTHING, failed: [why] });
 
 const reasonOf = (error: unknown): string => {
   if (error instanceof z.ZodError) return z.prettifyError(error);
@@ -115,7 +136,7 @@ const markImported = async (paths: readonly string[]): Promise<void> => {
 };
 
 // One at a time: each step's rows may point at rows an earlier step stored. A record that throws
-// is reported and the rest go on, so the file is still marked imported.
+// fails and the rest go on.
 const importEach = async <T>(
   items: readonly T[],
   label: (item: T) => string,
@@ -124,24 +145,41 @@ const importEach = async <T>(
   const results: Step[] = [];
   for (const item of items) {
     results.push(
-      await each(item).catch((error: unknown) => skip(`${label(item)}: ${reasonOf(error)}`)),
+      await each(item).catch((error: unknown) => fail(`${label(item)}: ${reasonOf(error)}`)),
     );
   }
   return results;
 };
 
-// An unreadable file is left under its own name, so a second run tries it again.
+const hasFailed = (steps: readonly Step[]): boolean => steps.some((step) => step.failed.length > 0);
+
+// A file that cannot be read, or holds a record that failed, keeps its name and content, so a
+// second run tries it again. scrub rewrites the file just before it is renamed.
 const importFile = async <T>(
   path: string,
   parse: (text: string) => T,
   store: (value: T) => Promise<readonly Step[]>,
-): Promise<readonly Step[]> => {
+  scrub?: (value: T) => string,
+): Promise<FileImport> => {
   const read = await readOld(path, parse);
-  if (!read.ok) return [skip(read.error)];
-  if (read.value === null) return [];
+  if (!read.ok) return { steps: [fail(read.error)], done: false };
+  if (read.value === null) return { steps: [], done: true };
   const steps = await store(read.value);
+  if (hasFailed(steps)) return { steps, done: false };
+  if (scrub !== undefined) await writeFile(path, scrub(read.value));
   await markImported([path]);
-  return steps;
+  return { steps, done: true };
+};
+
+// The file at path left alone while a file it needs is not done; undefined when none is pending.
+const heldBack = (
+  path: string,
+  needs: Readonly<Record<string, FileImport>>,
+): FileImport | undefined => {
+  const pending = Object.keys(needs).filter((name) => needs[name]?.done === false);
+  if (pending.length === 0) return undefined;
+  if (!existsSync(path)) return { steps: [], done: true };
+  return { steps: [fail(`${path}: waits for ${pending.join(" and ")} to import`)], done: false };
 };
 
 const importedUser = ({ name, email, accounts, slack }: OldUser): ImportedUser => ({
@@ -159,26 +197,29 @@ const withoutToken = (user: OldUser): OldUser => {
 };
 
 // Disconnect clears only yok.db's token, so the backup must not keep a copy of it.
-const importUsers = (storage: IStorage, home: string): Promise<readonly Step[]> => {
-  const path = join(home, "users.json");
-  return importFile(
-    path,
+const importUsers = (storage: IStorage, home: string): Promise<FileImport> =>
+  importFile(
+    join(home, FILES.users),
     (text) => Object.entries(UsersFileSchema.parse(JSON.parse(text))),
-    async (users) => {
-      const steps = await importEach(
+    (users) =>
+      importEach(
         users,
         ([id]) => `user ${id}`,
         async ([id, user]) => {
-          await storage.users.importUser(id, importedUser(user));
-          return counted({ users: 1 });
+          if ((await storage.users.find(id)) !== undefined) {
+            return skip(`user ${id}: user ${id} is already stored`);
+          }
+          const stored = await storage.users.importUser(id, importedUser(user));
+          return stored.ok ? counted({ users: 1 }) : fail(`user ${id}: ${stored.error}`);
         },
-      );
-      const scrubbed = Object.fromEntries(users.map(([id, user]) => [id, withoutToken(user)]));
-      await writeFile(path, JSON.stringify(scrubbed, null, 2));
-      return steps;
-    },
+      ),
+    (users) =>
+      JSON.stringify(
+        Object.fromEntries(users.map(([id, user]) => [id, withoutToken(user)])),
+        null,
+        2,
+      ),
   );
-};
 
 const parseProjects = (text: string): z.infer<typeof ProjectsFileSchema> => {
   const yaml = parseYaml(text, "projects.yaml");
@@ -186,18 +227,30 @@ const parseProjects = (text: string): z.infer<typeof ProjectsFileSchema> => {
   return ProjectsFileSchema.parse(yaml.value ?? {});
 };
 
-const importProjects = (storage: IStorage, home: string): Promise<readonly Step[]> =>
+type OldProject = z.infer<typeof ProjectsFileSchema>[string];
+
+const importProject = async (
+  storage: IStorage,
+  name: string,
+  project: OldProject,
+): Promise<Step> => {
+  const stored = await storage.projects.find(name);
+  if (stored?.path === project.path) {
+    return skip(`project ${name}: project ${name} is already stored`);
+  }
+  const added = await storage.projects.add(name, project);
+  return added.ok ? counted({ projects: 1 }) : fail(`project ${name}: ${added.error}`);
+};
+
+const importProjects = (storage: IStorage, home: string): Promise<FileImport> =>
   importFile(
-    join(home, "projects.yaml"),
+    join(home, FILES.projects),
     (text) => Object.entries(parseProjects(text)),
     (projects) =>
       importEach(
         projects,
         ([name]) => `project ${name}`,
-        async ([name, project]) => {
-          const added = await storage.projects.add(name, project);
-          return added.ok ? counted({ projects: 1 }) : skip(`project ${name}: ${added.error}`);
-        },
+        ([name, project]) => importProject(storage, name, project),
       ),
   );
 
@@ -206,7 +259,6 @@ type RunFolder = Readonly<{
   events: readonly Event[];
   comments: readonly Comment[];
   read: readonly string[];
-  skipped: readonly string[];
 }>;
 
 const parseEvents = (text: string): readonly Event[] => {
@@ -230,14 +282,12 @@ const foldOnto = (seed: State, events: readonly Event[], path: string): Result<S
   }
 };
 
-const readComments = async (
-  dir: string,
-): Promise<Pick<RunFolder, "comments" | "read" | "skipped">> => {
+const readComments = async (dir: string): Promise<Result<Pick<RunFolder, "comments" | "read">>> => {
   const path = join(dir, "comments.json");
   const read = await readOld(path, (text) => CommentsFileSchema.parse(JSON.parse(text)).comments);
-  if (!read.ok) return { comments: [], read: [], skipped: [read.error] };
-  if (read.value === null) return { comments: [], read: [], skipped: [] };
-  return { comments: read.value, read: [path], skipped: [] };
+  if (!read.ok) return read;
+  if (read.value === null) return { ok: true, value: { comments: [], read: [] } };
+  return { ok: true, value: { comments: read.value, read: [path] } };
 };
 
 const readRunFolder = async (dir: string): Promise<Result<RunFolder>> => {
@@ -252,8 +302,12 @@ const readRunFolder = async (dir: string): Promise<Result<RunFolder>> => {
   const state = foldOnto(seed.value, events, eventsPath);
   if (!state.ok) return state;
   const comments = await readComments(dir);
-  const read = [statePath, ...(log.value === null ? [] : [eventsPath]), ...comments.read];
-  return { ok: true, value: { ...comments, state: state.value, events, read } };
+  if (!comments.ok) return comments;
+  const read = [statePath, ...(log.value === null ? [] : [eventsPath]), ...comments.value.read];
+  return {
+    ok: true,
+    value: { comments: comments.value.comments, state: state.value, events, read },
+  };
 };
 
 const labelOf = (run: OldRun): string => `run ${run.id} (${run.name ?? "unnamed"})`;
@@ -278,13 +332,13 @@ const importNamedRun = async (storage: IStorage, run: OldRun, name: string): Pro
   const dir = runDirOf(run.cwd, name);
   if (!existsSync(dir)) return skip(`${labelOf(run)}: its folder ${dir} is gone`);
   const folder = await readRunFolder(dir);
-  if (!folder.ok) return skip(`${labelOf(run)}: ${folder.error}`);
-  const { state, events, comments, read, skipped } = folder.value;
+  if (!folder.ok) return fail(`${labelOf(run)}: ${folder.error}`);
+  const { state, events, comments, read } = folder.value;
   const stored = await storage.runs.importRun({ run: await draftOf(storage, run), state, events });
-  if (!stored.ok) return skip(`${labelOf(run)}: ${stored.error}`);
+  if (!stored.ok) return fail(`${labelOf(run)}: ${stored.error}`);
   await storage.comments.importComments(run.id, comments);
   await markImported(read);
-  return { counts: { runs: 1, events: events.length, comments: comments.length }, skipped };
+  return counted({ runs: 1, events: events.length, comments: comments.length });
 };
 
 const importRun = async (
@@ -293,15 +347,19 @@ const importRun = async (
   runs: readonly OldRun[],
 ): Promise<Step> => {
   if (isSuperseded(run, runs)) return skip(`${labelOf(run)}: a newer run took its name and folder`);
+  // Before its folder is read: a stored run's files were already renamed.
+  if ((await storage.runs.findRun(run.id)) !== undefined) {
+    return skip(`${labelOf(run)}: run ${run.id} is already stored`);
+  }
   if (run.name !== null) return importNamedRun(storage, run, run.name);
   const draft = await draftOf(storage, run);
   const stored = await storage.runs.importRun({ run: draft, state: null, events: [] });
-  return stored.ok ? counted({ runs: 1 }) : skip(`${labelOf(run)}: ${stored.error}`);
+  return stored.ok ? counted({ runs: 1 }) : fail(`${labelOf(run)}: ${stored.error}`);
 };
 
-const importRuns = (storage: IStorage, home: string): Promise<readonly Step[]> =>
+const importRuns = (storage: IStorage, home: string): Promise<FileImport> =>
   importFile(
-    join(home, "registry.json"),
+    join(home, FILES.runs),
     (text) => Object.values(RegistryFileSchema.parse(JSON.parse(text)).runs),
     (runs) => importEach(runs, labelOf, (run) => importRun(storage, run, runs)),
   );
@@ -314,16 +372,21 @@ const adopt = async (storage: IStorage, stored: Trigger | LegacyTrigger): Promis
   return { ...schedule, project, workflow: workflowPath };
 };
 
-const importTriggers = (storage: IStorage, home: string): Promise<readonly Step[]> =>
+// importTrigger refuses only a trigger already stored.
+const importTriggers = (storage: IStorage, home: string): Promise<FileImport> =>
   importFile(
-    join(home, "triggers.json"),
+    join(home, FILES.triggers),
     (text) => Object.values(TriggersFileSchema.parse(JSON.parse(text)).triggers),
     (triggers) =>
       importEach(
         triggers,
         (stored) => `trigger ${stored.id}`,
         async (stored) => {
-          const imported = await storage.triggers.importTrigger(await adopt(storage, stored));
+          const trigger = await adopt(storage, stored);
+          if ((await storage.projects.find(trigger.project)) === undefined) {
+            return fail(`trigger ${trigger.id}: its project ${trigger.project} is not stored`);
+          }
+          const imported = await storage.triggers.importTrigger(trigger);
           return imported.ok
             ? counted({ triggers: 1 })
             : skip(`trigger ${stored.id}: ${imported.error}`);
@@ -359,8 +422,8 @@ const importFire = async (storage: IStorage, fire: Fire, known: Known): Promise<
   return counted({ fires: 1 });
 };
 
-const importFires = (storage: IStorage, home: string): Promise<readonly Step[]> => {
-  const path = join(home, "trigger-fires.jsonl");
+const importFires = (storage: IStorage, home: string): Promise<FileImport> => {
+  const path = join(home, FILES.fires);
   return importFile(
     path,
     (text) => text.split("\n").filter((line) => line !== ""),
@@ -392,20 +455,32 @@ const total = (steps: readonly Step[], kind: Kind): number =>
 
 const reportOf = (steps: readonly Step[]): ImportReport => {
   const skipped = steps.flatMap((step) => step.skipped);
+  const failed = steps.flatMap((step) => step.failed);
   const counts = KINDS.map((kind) => `${kind}=${total(steps, kind)}`).join(" ");
-  return { summary: `imported ${counts} skipped=${skipped.length}`, skipped };
+  return {
+    summary: `imported ${counts} skipped=${skipped.length} failed=${failed.length}`,
+    skipped,
+    failed,
+  };
 };
 
 // In this order because runs point at users and projects, and fires at triggers and runs.
 export const importFiles = async (storage: IStorage, home: string): Promise<ImportReport> => {
   const users = await importUsers(storage, home);
   const projects = await importProjects(storage, home);
-  const runs = await importRuns(storage, home);
-  const triggers = await importTriggers(storage, home);
-  const fires = await importFires(storage, home);
-  return reportOf([...users, ...projects, ...runs, ...triggers, ...fires]);
+  const runs =
+    heldBack(join(home, FILES.runs), { [FILES.users]: users, [FILES.projects]: projects }) ??
+    (await importRuns(storage, home));
+  const triggers =
+    heldBack(join(home, FILES.triggers), { [FILES.projects]: projects }) ??
+    (await importTriggers(storage, home));
+  const fires =
+    heldBack(join(home, FILES.fires), { [FILES.triggers]: triggers, [FILES.runs]: runs }) ??
+    (await importFires(storage, home));
+  return reportOf([users, projects, runs, triggers, fires].flatMap((file) => file.steps));
 };
 
+// Exits 1 when a record failed, so a script running the import sees it did not finish.
 export const importFilesCommand = () =>
   new Command("import-files")
     .description("Copy the records an older yok kept in files into yok.db, once")
@@ -413,9 +488,11 @@ export const importFilesCommand = () =>
       const home = yokHome();
       const storage = openStorage(home);
       try {
-        const { summary, skipped } = await importFiles(storage, home);
+        const { summary, skipped, failed } = await importFiles(storage, home);
         for (const why of skipped) console.error(`skipped ${why}`);
+        for (const why of failed) console.error(`failed ${why}`);
         console.log(summary);
+        if (failed.length > 0) process.exitCode = 1;
       } finally {
         await storage.close();
       }
