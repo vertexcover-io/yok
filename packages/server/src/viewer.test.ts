@@ -12,7 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IStorage, ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger, StateSchema } from "@yok/sdk";
-import { type AuditMetric, memoryStorage, TEST_AUDIT_METRICS, VERSION } from "@yok/sdk/internal";
+import {
+  type AuditFix,
+  type AuditMetric,
+  type AuditResult,
+  type AuditResultEvent,
+  memoryStorage,
+  TEST_AUDIT_METRICS,
+  VERSION,
+} from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import {
   claudeOver,
@@ -24,6 +32,7 @@ import {
   seedUser,
 } from "./fake-host.ts";
 import {
+  type AuditApplyRun,
   type AuditMetricsPoint,
   formatChange,
   formatMetric,
@@ -31,6 +40,7 @@ import {
   metricChange,
   metricSeries,
   prLabel,
+  resultPageState,
 } from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -930,6 +940,110 @@ describe("audit page rules", () => {
     ["https://example.com/v2", "https://example.com/v2"],
   ])("SC8010: prLabel reads %p as %p", (pr, label) => {
     expect(prLabel(pr)).toBe(label);
+  });
+});
+
+describe("resultPageState", () => {
+  const result = (
+    fix: Partial<AuditFix> | null = null,
+    state: AuditResult["state"] = "needs_approval",
+  ) => ({
+    state,
+    fix: fix === null ? null : { summary: "Remove the copy", ...fix },
+  });
+  const click = (
+    type: "accepted" | "rejected" | "undone",
+    ts = "2026-11-20T10:00:00.000Z",
+    payload: { feedback: string } | Record<string, never> = {},
+  ): AuditResultEvent => ({
+    id: crypto.randomUUID(),
+    ts,
+    resultId: "a1:yok:duplicates:x",
+    type,
+    who: "local",
+    startedRunId: null,
+    payload,
+  });
+  const run = (status: AuditApplyRun["status"]): AuditApplyRun => ({ id: "r-9", status });
+
+  test("SC8012: with no decision, a needs-approval result is open, an auto-fixed one auto-fixed and a needs-work one needs-work", () => {
+    expect(
+      (["needs_approval", "auto_fixed", "needs_work"] as const).map(
+        (state) => resultPageState(result(null, state), null, null).kind,
+      ),
+    ).toEqual(["open", "auto-fixed", "needs-work"]);
+  });
+
+  test("SC8013: an accepted result with no commit, no error and no apply run yet is waiting", () => {
+    expect(resultPageState(result({}), click("accepted"), null)).toEqual({ kind: "waiting" });
+  });
+
+  test("SC8014: a starting, running or blocked apply run is applying after an accept or an undo, never open", () => {
+    const states = (["starting", "running", "blocked"] as const).flatMap((status) =>
+      (["accepted", "undone"] as const).map((type) =>
+        resultPageState(result({}), click(type), run(status)),
+      ),
+    );
+    expect(states).toEqual(Array(6).fill({ kind: "applying", runId: "r-9" }));
+  });
+
+  test("SC8015: an accepted result with a commit is applied with its PR, or with pr null when it has none", () => {
+    const pr = "https://github.com/acme/yok/pull/7";
+    expect(
+      resultPageState(result({ commit: "abc1234", pr }), click("accepted"), run("completed")),
+    ).toEqual({
+      kind: "applied",
+      commit: "abc1234",
+      pr,
+    });
+    expect(
+      resultPageState(result({ commit: "abc1234" }), click("accepted"), run("completed")),
+    ).toEqual({
+      kind: "applied",
+      commit: "abc1234",
+      pr: null,
+    });
+  });
+
+  test("SC8016: an error written after the newest click fails the result; one written before it leaves the result waiting", () => {
+    const decision = click("accepted", "2026-11-20T10:00:00.000Z");
+    const failed = (at: string) => result({ error: "tests failed", at });
+    expect(resultPageState(failed("2026-11-20T10:05:00.000Z"), decision, null)).toEqual({
+      kind: "failed",
+      reason: "tests failed",
+    });
+    expect(resultPageState(failed("2026-11-20T09:00:00.000Z"), decision, null)).toEqual({
+      kind: "waiting",
+    });
+  });
+
+  test("SC8017: a failed, cancelled or gone apply run with no error written is run-failed, but waiting when a stale error is there", () => {
+    expect(
+      (["failed", "cancelled", "gone"] as const).map((status) =>
+        resultPageState(result({}), click("accepted"), run(status)),
+      ),
+    ).toEqual(Array(3).fill({ kind: "run-failed", runId: "r-9" }));
+    const stale = result({ error: "tests failed", at: "2026-11-20T09:00:00.000Z" });
+    expect(resultPageState(stale, click("accepted"), run("failed"))).toEqual({ kind: "waiting" });
+  });
+
+  test("SC8018: a rejected result carries the person's feedback, or null feedback when they gave none", () => {
+    const withFeedback = click("rejected", undefined, { feedback: "keeps the fixture" });
+    expect(resultPageState(result({}), withFeedback, null)).toEqual({
+      kind: "rejected",
+      feedback: "keeps the fixture",
+    });
+    expect(resultPageState(result({}), click("rejected"), null)).toEqual({
+      kind: "rejected",
+      feedback: null,
+    });
+  });
+
+  test("SC8019: an undo waits for the revert of an applied commit, and reopens a result that was never applied", () => {
+    expect(resultPageState(result({ commit: "abc1234" }), click("undone"), null)).toEqual({
+      kind: "waiting",
+    });
+    expect(resultPageState(result({}), click("undone"), null)).toEqual({ kind: "open" });
   });
 });
 

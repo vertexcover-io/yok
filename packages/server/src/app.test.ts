@@ -1111,6 +1111,116 @@ const send = (
       : {}),
   });
 
+describe("audits page", () => {
+  test("SC8020: an audit published through storage reads back through the routes, and an Accept is saved as the person's event without starting a run", async () => {
+    const { app, deps, launched } = await rootApp("yok.example.com");
+    const headers = { host: "yok.example.com", origin: "https://yok.example.com" };
+    const auditRun = WorkflowRunSchema.parse({
+      id: "r-audit",
+      project: "demo",
+      workflow: "test-audit",
+      workflowPath: "/abs/demo/test-audit.yaml",
+      inputs: { coverageLimit: 75 },
+      cwd: "/abs/demo",
+      sessions: [],
+      name: "audit",
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt: "2026-11-23T02:00:00.000Z",
+    });
+    await storeRun(deps.storage, auditRun, {
+      ...seedState("/abs/demo/.yok/audit", {}),
+      runId: "r-audit",
+      runName: "audit",
+      status: "completed",
+      startedAt: "2026-11-23T02:00:00.000Z",
+      completedAt: "2026-11-23T02:11:00.000Z",
+    });
+    const started = await deps.storage.audits.start({
+      runId: "r-audit",
+      project: "demo",
+      audit: "test",
+      periodStart: "2026-11-16T00:00:00.000Z",
+      periodEnd: "2026-11-23T00:00:00.000Z",
+      commits: { yok: "8c38b2c1d2" },
+    });
+    if (!started.ok) throw new Error(started.error);
+    const id = started.value.id;
+    const resultId = `${id}:yok:duplicates:copy-of-login`;
+    await deps.storage.audits.finish(id, {
+      status: "complete",
+      metrics: [
+        {
+          repo: "yok",
+          metric: "coverage",
+          scope: "",
+          status: "measured",
+          reason: null,
+          value: 78,
+          how: {},
+        },
+      ],
+      results: [
+        {
+          id: resultId,
+          repo: "yok",
+          problemType: "duplicates",
+          state: "needs_approval",
+          title: "Remove the copy of the login test",
+          proof: { summary: "Two tests check the same login", where: "login.test.ts" },
+          fix: { summary: "Delete the copy", diff: "-test()" },
+        },
+      ],
+    });
+    const json = async (path: string) => {
+      const res = await send(app, "GET", path, headers);
+      expect([path, res.status]).toEqual([path, 200]);
+      return res.json();
+    };
+
+    expect((await send(app, "GET", "/audits", headers)).headers.get("content-type")).toContain(
+      "text/html",
+    );
+    expect(await json("/api/audits/projects?audit=test")).toEqual({ projects: ["demo"] });
+    const { runs } = await json("/api/audits?project=demo&audit=test&limit=52");
+    expect(runs.map((run: { id: string; commits: object }) => [run.id, run.commits])).toEqual([
+      [id, { yok: "8c38b2c1d2" }],
+    ]);
+    const { points } = await json(
+      "/api/audits/metrics?project=demo&audit=test&repo=yok&from=2026-11-16T00:00:00.000Z&to=2026-11-23T00:00:00.000Z",
+    );
+    expect(
+      points.map((point: { metrics: { value: number }[] }) => point.metrics.map((m) => m.value)),
+    ).toEqual([[78]]);
+    const detail = await json(`/api/audits/${encodeURIComponent(id)}`);
+    expect([detail.run.startedAt, detail.run.endedAt]).toEqual([
+      "2026-11-23T02:00:00.000Z",
+      "2026-11-23T02:11:00.000Z",
+    ]);
+    expect(detail.limits.coverage).toEqual({ unit: "percent", better: "higher", limit: 75 });
+    expect(
+      detail.results.map((r: { decision: unknown; applyRun: unknown }) => [r.decision, r.applyRun]),
+    ).toEqual([[null, null]]);
+
+    const accepted = await app.request(
+      `/api/audits/results/${encodeURIComponent(resultId)}/events`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ type: "accepted" }),
+      },
+    );
+    expect(accepted.status).toBe(201);
+    const { event } = await accepted.json();
+    expect([event.type, event.who, event.startedRunId]).toEqual(["accepted", "local", null]);
+    expect(await deps.storage.audits.decision(resultId)).toEqual(event);
+    const after = await json(`/api/audits/${encodeURIComponent(id)}`);
+    expect(after.results[0].decision.type).toBe("accepted");
+    expect(launched()).toBe(0);
+  });
+});
+
 describe("createRoot guard", () => {
   test("SC1004: with SERVER_DOMAIN set, its Host and https Origin reach the API and the dashboard", async () => {
     const { app, deps } = await rootApp("yok.example.com");

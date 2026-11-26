@@ -111,6 +111,11 @@ pre.block { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: 
 pre.block .add { color: var(--ok); }
 pre.block .del { color: var(--del); }
 blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.decide { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; font-size: 12.5px; }
+.decide .state { color: var(--muted); }
+.reject { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.reject textarea { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 6px 8px; font-size: 13px; }
+.notice { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
 @media (max-width: 800px) {
   .board { grid-template-columns: 1fr; }
 }
@@ -141,6 +146,7 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <main>
   <p class="empty" id="status" role="status">Loading audits…</p>
   <div id="areas"></div>
+  <p class="notice" id="notice" role="alert" hidden></p>
   <section id="board"></section>
 </main>
 <div class="scrim" id="scrim" hidden></div>
@@ -151,11 +157,12 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <footer class="foot">yok v{{VERSION}}</footer>
 
 <script type="module">
-import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel } from "/assets/shared.js";
+import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel, resultPageState } from "/assets/shared.js";
 
 // A year of weekly audits, for the run picker and the trend range.
 const LIST_LIMIT = 52;
 const LAST_N = 4;
+const POLL_MS = 5000;
 
 // metric: the stored metric a tile reads. later: greyed until yok measures it. unmeasured: listed, never measured yet.
 const TILES = {
@@ -175,7 +182,7 @@ const AREAS = [
   { name: "Efficiency", question: "The suite itself", tiles: ["speed", "flakiness", "redundancy"] },
 ];
 
-const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null, open: null };
+const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null, open: null, timer: null };
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -216,10 +223,12 @@ const metricOf = (metric, scope = "") =>
 const seriesOf = (metric, scope = "") => metricSeries(view.points, view.repo, metric, scope);
 const shownIndex = () => view.points.findIndex((point) => point.auditRunId === view.runId);
 
+// startedAt is null once the audit's yok run is removed; the audit run's own createdAt stands in.
 const ranText = ({ run }) => {
-  const minutes = (end) => Math.max(1, Math.round((Date.parse(end) - Date.parse(run.startedAt)) / 60000));
+  const started = run.startedAt ?? run.createdAt;
+  const minutes = (end) => Math.max(1, Math.round((Date.parse(end) - Date.parse(started)) / 60000));
   const took = run.endedAt === null ? "still running" : `took ${minutes(run.endedAt)} min`;
-  return `Ran ${clock(run.startedAt)} · ${took} · ${view.repo} @ ${run.commits[view.repo].slice(0, 7)}`;
+  return `Ran ${clock(started)} · ${took} · ${view.repo} @ ${run.commits[view.repo].slice(0, 7)}`;
 };
 
 const sparkline = (values) => {
@@ -291,7 +300,7 @@ const renderAreas = () => {
 };
 
 const COLORS = ["var(--accent)", "var(--info)", "var(--warn)"];
-const CHART = { width: 600, height: 180, left: 56, right: 12, top: 10, bottom: 24 };
+const CHART = { width: 600, height: 180, left: 56, right: 28, top: 10, bottom: 24 };
 const plotY = (value, lo, hi) => CHART.top + (1 - (value - lo) / (hi - lo || 1)) * (CHART.height - CHART.top - CHART.bottom);
 // At most about 8 dates under a chart, always the newest, so a year of runs stays readable.
 const shownLabel = (index, count) => index === count - 1 || index % Math.ceil(count / 8) === 0;
@@ -340,9 +349,13 @@ const lineChart = ({ title, unit, labels, series, limit }) => {
   return chartBox(title, series, [...axes(lo, hi, unit, labels, x), ...limitLine, ...lines]);
 };
 
+// Bars count tests, so the top rounds up to a multiple of 4 and the 4 grid steps stay whole numbers.
 const barChart = ({ title, unit, labels, series }) => {
+  if (series.every((s) => s.values.every((value) => value === null))) {
+    return el("p", { className: "dim", textContent: `${title}: no measurements in this range.` });
+  }
   const totals = labels.map((_, index) => series.reduce((sum, s) => sum + (s.values[index] ?? 0), 0));
-  const hi = Math.max(1, ...totals);
+  const hi = Math.ceil(Math.max(1, ...totals) / 4) * 4;
   const slot = (CHART.width - CHART.left - CHART.right) / labels.length;
   const x = (index) => CHART.left + (index + 0.5) * slot;
   const bars = labels.flatMap((label, index) => series.map((s, k) => {
@@ -487,6 +500,7 @@ const openButton = (text, onclick) => el("button", { type: "button", className: 
 const resultCard = (result) => el("div", { className: "card" }, [
   openButton(result.title, () => openDrawer({ kind: "result", id: result.id })),
   span("meta", resultMeta(result)),
+  decisionNode(result),
 ]);
 const groupCard = ([problemType, results]) => el("div", { className: "card" }, [
   openButton(fixedTitle(problemType, results.length), () => openDrawer({ kind: "group", problemType })),
@@ -541,6 +555,7 @@ const fixSection = (fix) => labelled("The fix", [
 const resultDrawer = (result) => [
   el("h2", { id: "drawer-title", textContent: result.title }),
   el("p", { className: "dim", textContent: `${STATE_WORDS[result.state]} · ${resultMeta(result)}` }),
+  decisionNode(result),
   labelled("What happened", [el("p", { textContent: result.proof.summary ?? "" })]),
   ...(result.proof.blocks ?? []).map((block) => labelled(block.title, [blockBody(block)])),
   ...(result.fix === null ? [] : [fixSection(result.fix)]),
@@ -550,6 +565,111 @@ const groupDrawer = (problemType, results) => [
   el("h2", { id: "drawer-title", textContent: fixedTitle(problemType, results.length) }),
   el("ul", { className: "list" }, results.map((result) => el("li", {}, [resultCard(result)]))),
 ];
+
+const pageState = (result) => resultPageState(result, result.decision, result.applyRun);
+const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(runId)}`, textContent: text });
+// The words for each state that has some; "open", "auto-fixed" and "needs-work" show buttons only.
+const STATE_LINE = {
+  waiting: () => ["waiting for yok to apply it"],
+  applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
+  "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
+  applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
+  failed: (state) => [`couldn't apply: ${state.reason}`],
+  rejected: (state) => [state.feedback === null ? "rejected" : `rejected: ${state.feedback}`],
+};
+
+const showNotice = (children) => {
+  $("notice").replaceChildren(...children);
+  $("notice").hidden = children.length === 0;
+};
+const signInLink = () => el("a", { href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`, textContent: "Sign in" });
+
+// The reason a click was refused, as nodes for the notice; null when it was saved.
+const postEvent = async (result, body) => {
+  const res = await fetch(`/api/audits/results/${encodeURIComponent(result.id)}/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return null;
+  if (res.status === 401) return [signInLink(), " to accept, reject or undo a fix."];
+  const reply = await res.json().catch(() => null);
+  return [reply?.error?.message ?? `The server answered ${res.status}.`];
+};
+
+const decide = async (result, body, button) => {
+  button.disabled = true;
+  const refused = await postEvent(result, body);
+  showNotice(refused ?? []);
+  if (refused !== null) {
+    button.disabled = false;
+    return;
+  }
+  await refresh();
+};
+
+const actionButton = (result, text, body, className = "btn") => {
+  const button = el("button", { type: "button", className, textContent: text });
+  button.addEventListener("click", () => guarded(() => decide(result, body, button)));
+  return button;
+};
+const rejectForm = (result) => {
+  const feedback = el("textarea", { rows: 2, placeholder: "Why not? (optional)" });
+  feedback.setAttribute("aria-label", "Why reject this fix");
+  const send = el("button", { type: "submit", className: "btn", textContent: "Reject" });
+  const form = el("form", { className: "reject" }, [feedback, el("div", {}, [send])]);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = feedback.value.trim();
+    guarded(() => decide(result, text === "" ? { type: "rejected" } : { type: "rejected", feedback: text }, send));
+  });
+  return form;
+};
+const rejectButton = (result) => {
+  const button = el("button", { type: "button", className: "btn", textContent: "Reject" });
+  button.addEventListener("click", () => {
+    const form = rejectForm(result);
+    button.replaceWith(form);
+    form.querySelector("textarea").focus();
+  });
+  return button;
+};
+const copyButton = (prompt) => {
+  const button = el("button", { type: "button", className: "btn", textContent: "Copy prompt" });
+  button.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(prompt);
+    button.textContent = "Copied";
+  });
+  return button;
+};
+
+const actionsFor = (result, state) => {
+  if (state.kind === "needs-work") return result.fix?.prompt === undefined ? [] : [copyButton(result.fix.prompt)];
+  if (state.kind === "open") return [actionButton(result, "Accept", { type: "accepted" }, "btn pri"), rejectButton(result)];
+  if (state.kind === "auto-fixed" || state.kind === "applying") return [];
+  return [actionButton(result, "Undo", { type: "undone" })];
+};
+const decisionNode = (result) => {
+  const state = pageState(result);
+  const line = STATE_LINE[state.kind];
+  return el("div", { className: "decide" }, [
+    ...(line === undefined ? [] : [el("span", { className: "state" }, line(state))]),
+    ...actionsFor(result, state),
+  ]);
+};
+
+const refresh = async () => {
+  await loadDetail();
+  render();
+};
+// Keeps re-reading while yok has work in hand, so "waiting" turns into "applying" and then "applied" without a reload.
+// It skips a beat while a reject box is open, since a re-render would wipe what the person is typing.
+const scheduleRefresh = () => {
+  clearTimeout(view.timer);
+  const busy = view.detail.results.some((r) => ["waiting", "applying"].includes(pageState(r).kind));
+  const tick = () => (document.querySelector("form.reject") === null ? guarded(refresh) : scheduleRefresh());
+  view.timer = busy ? setTimeout(tick, POLL_MS) : null;
+};
 
 const fillSelect = (select, options, selected) => {
   select.replaceChildren(...options.map(([value, label]) => el("option", { value, textContent: label, selected: value === selected })));
@@ -575,13 +695,14 @@ const render = () => {
   renderAreas();
   renderBoard();
   renderDrawer();
+  scheduleRefresh();
 };
 
 const loadPoints = async () => {
   const runs = oldestFirst();
   const from = runs.find((run) => run.id === view.from);
   const to = runs.find((run) => run.id === view.to);
-  view.points = await getJson(`/api/audits/metrics?${query({ project: view.project, audit: "test", repo: view.repo, from: from.periodStart, to: to.periodEnd })}`);
+  view.points = (await getJson(`/api/audits/metrics?${query({ project: view.project, audit: "test", repo: view.repo, from: from.periodStart, to: to.periodEnd })}`)).points;
 };
 
 // A repo the run did not audit, from the URL or the last run shown, falls back to the run's first repo.
@@ -600,7 +721,7 @@ const showRun = async (runId) => {
 
 const showProject = async (project, askedRun) => {
   view.project = project;
-  view.runs = await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`);
+  view.runs = (await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`)).runs;
   const runs = oldestFirst();
   view.from = runs[0].id;
   view.to = runs[runs.length - 1].id;
@@ -617,7 +738,7 @@ const setRange = async (fromId, toId) => {
 };
 
 const start = async () => {
-  view.projects = await getJson("/api/audits/projects?audit=test");
+  view.projects = (await getJson("/api/audits/projects?audit=test")).projects;
   if (view.projects.length === 0) {
     showStatus("No test audit has run yet. A project's first test-audit run shows here.");
     return;

@@ -1,4 +1,4 @@
-import type { AuditMetric, MetricInfo } from "@yok/sdk/internal";
+import type { AuditMetric, AuditResult, AuditResultEvent, MetricInfo } from "@yok/sdk/internal";
 import type { RunStatus } from "./overview.ts";
 
 export const RUN_STATUS_WORDS: Readonly<Record<RunStatus, string>> = {
@@ -81,4 +81,54 @@ export const meetsLimit = (info: MetricInfo, value: number): boolean | null => {
 export const prLabel = (pr: string): string => {
   const number = /\/pull\/(\d+)\/?$/.exec(pr)?.[1] ?? /^#?(\d+)$/.exec(pr)?.[1];
   return number === undefined ? pr : `PR #${number}`;
+};
+
+// The apply or revert run yok started for a result, as the detail route gives it.
+export type AuditApplyRun = Readonly<{ id: string; status: RunStatus }>;
+
+export type ResultPageState =
+  | Readonly<{ kind: "auto-fixed" | "needs-work" | "open" | "waiting" }>
+  | Readonly<{ kind: "applying" | "run-failed"; runId: string }>
+  | Readonly<{ kind: "applied"; commit: string; pr: string | null }>
+  | Readonly<{ kind: "failed"; reason: string }>
+  | Readonly<{ kind: "rejected"; feedback: string | null }>;
+
+const ACTIVE_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["starting", "running", "blocked"]);
+const FAILED_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["failed", "cancelled", "gone"]);
+
+// An error written before the person's newest click belongs to an earlier try, not this one.
+const freshError = (fix: AuditResult["fix"], decision: AuditResultEvent): string | null => {
+  if (fix?.error === undefined) return null;
+  return fix.at === undefined || fix.at >= decision.ts ? fix.error : null;
+};
+
+export const resultPageState = (
+  result: Pick<AuditResult, "state" | "fix">,
+  decision: AuditResultEvent | null,
+  applyRun: AuditApplyRun | null,
+): ResultPageState => {
+  if (result.state === "auto_fixed") return { kind: "auto-fixed" };
+  if (result.state === "needs_work") return { kind: "needs-work" };
+  if (applyRun !== null && ACTIVE_RUN.has(applyRun.status)) {
+    return { kind: "applying", runId: applyRun.id };
+  }
+  if (decision === null) return { kind: "open" };
+  if (decision.type === "rejected") {
+    return {
+      kind: "rejected",
+      feedback: "feedback" in decision.payload ? decision.payload.feedback : null,
+    };
+  }
+  const fix = result.fix;
+  const error = freshError(fix, decision);
+  if (error !== null) return { kind: "failed", reason: error };
+  if (decision.type === "undone" && fix?.commit === undefined) return { kind: "open" };
+  if (decision.type === "accepted" && fix?.commit !== undefined) {
+    return { kind: "applied", commit: fix.commit, pr: fix.pr ?? null };
+  }
+  // A stale error means an earlier run failed and PR 3's tick already reported it; this click waits for a new run.
+  if (applyRun !== null && FAILED_RUN.has(applyRun.status) && fix?.error === undefined) {
+    return { kind: "run-failed", runId: applyRun.id };
+  }
+  return { kind: "waiting" };
 };
