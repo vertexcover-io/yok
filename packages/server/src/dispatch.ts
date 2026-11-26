@@ -118,7 +118,11 @@ const slackUser = (thread: ChatThread, deps: DispatchDeps): Promise<UserEntry | 
 // with no yok user can only be here on a server that is not gated; its run has no owner.
 const runOwner = async (thread: ChatThread, deps: DispatchDeps): Promise<Owner> => {
   const linked = await slackUser(thread, deps);
-  if (linked === undefined) return { note: null };
+  if (linked === undefined) {
+    return {
+      note: "this Slack account is not linked to a yok user, so the run cannot push or open a pull request; type `@yok login` to link it",
+    };
+  }
   const [id, user] = linked;
   const token = user.accounts.github?.token;
   if (token !== undefined && (await tokenAlive(deps, token))) return { user: id, note: null };

@@ -2032,7 +2032,7 @@ describe("Slack run owner", () => {
     expect(reply).not.toContain("not connected");
   });
 
-  test("SC125 (SC29): @yok run from unlinked U8 on a server that is not gated starts as a Slack run with no user and no GitHub token, and says nothing about linking", async () => {
+  test("SC125 (SC29): @yok run from unlinked U8 on a server that is not gated starts as a Slack run with no user and no GitHub token, and tells the member to type @yok login", async () => {
     const { deps, launches, from } = await ownedRunSetup(CONNECTED);
 
     const reply = await from("U8");
@@ -2042,7 +2042,8 @@ describe("Slack run owner", () => {
     expect(run?.user).toBeUndefined();
     expect(launches[0]?.env?.GH_TOKEN).toBe("");
     expect(launches[0]?.env?.GH_CONFIG_DIR).toBe(join(deps.home, "gh-owned"));
-    expect(reply).not.toContain("@yok login");
+    expect(reply).toContain("not linked to a yok user, so the run cannot push");
+    expect(reply).toContain("@yok login");
   });
 
   test("SC125 (SC30): a token GitHub answers 401 for is dropped, the account kept, and the run starts as Ritesh with no token and the settings link", async () => {
@@ -2078,7 +2079,7 @@ describe("Slack run owner", () => {
     const [run] = await deps.storage.runs.listRuns();
     expect(run?.source).toBe("slack");
     expect(run?.user).toBeUndefined();
-    expect(reply).not.toContain("@yok login");
+    expect(reply).toContain("`@yok login`");
   });
 
   test("SC125 (SC31): when GitHub cannot be reached the token is kept and the run launches with it", async () => {
