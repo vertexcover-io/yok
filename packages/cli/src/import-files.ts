@@ -27,6 +27,7 @@ import {
   type IStorage,
   type LegacyTrigger,
   LegacyTriggerSchema,
+  loadRunHandlers,
   openStorage,
   projectEvents,
   type RunDraft,
@@ -273,10 +274,23 @@ const parseEvents = (text: string): readonly Event[] => {
 
 // state.json is the fold of the log up to its lastEventSeq, from a first state init built out
 // of the run's config and its git HEAD at the time, which no event records. So it is the fold's
-// starting point, and only events past it are applied; the run's own handlers are not loaded.
-const foldOnto = (seed: State, events: readonly Event[], path: string): Result<State> => {
+// starting point, and only events past it are applied, by the run's own handlers too: once the
+// state passes an event's seq, nothing applies that event again.
+const foldOnto = async (
+  seed: State,
+  events: readonly Event[],
+  path: string,
+): Promise<Result<State>> => {
+  const extensions = await loadRunHandlers(seed);
+  if (!extensions.ok) return { ok: false, error: `${path}: ${extensions.error}` };
   try {
-    return { ok: true, value: projectEvents({ state: seed, events, handlers: builtInHandlers }) };
+    const state = projectEvents({
+      state: seed,
+      events,
+      handlers: builtInHandlers,
+      extensions: extensions.value,
+    });
+    return { ok: true, value: state };
   } catch (error) {
     return { ok: false, error: `${path}: ${reasonOf(error)}` };
   }
@@ -299,7 +313,7 @@ const readRunFolder = async (dir: string): Promise<Result<RunFolder>> => {
   const log = await readOld(eventsPath, parseEvents);
   if (!log.ok) return log;
   const events = log.value ?? [];
-  const state = foldOnto(seed.value, events, eventsPath);
+  const state = await foldOnto(seed.value, events, eventsPath);
   if (!state.ok) return state;
   const comments = await readComments(dir);
   if (!comments.ok) return comments;
@@ -341,6 +355,20 @@ const importNamedRun = async (storage: IStorage, run: OldRun, name: string): Pro
   return counted({ runs: 1, events: events.length, comments: comments.length });
 };
 
+// A run an earlier import stored, which may have stopped before its comments: they are taken now,
+// and whatever of its folder is still unrenamed is retired.
+const finishStoredRun = async (storage: IStorage, run: OldRun): Promise<Step> => {
+  const stored = skip(`${labelOf(run)}: run ${run.id} is already stored`);
+  if (run.name === null) return stored;
+  const dir = runDirOf(run.cwd, run.name);
+  const comments = await readComments(dir);
+  if (!comments.ok) return fail(`${labelOf(run)}: ${comments.error}`);
+  await storage.comments.importComments(run.id, comments.value.comments);
+  const left = ["state.json", "event.jsonl"].map((file) => join(dir, file)).filter(existsSync);
+  await markImported([...left, ...comments.value.read]);
+  return stored;
+};
+
 const importRun = async (
   storage: IStorage,
   run: OldRun,
@@ -348,9 +376,7 @@ const importRun = async (
 ): Promise<Step> => {
   if (isSuperseded(run, runs)) return skip(`${labelOf(run)}: a newer run took its name and folder`);
   // Before its folder is read: a stored run's files were already renamed.
-  if ((await storage.runs.findRun(run.id)) !== undefined) {
-    return skip(`${labelOf(run)}: run ${run.id} is already stored`);
-  }
+  if ((await storage.runs.findRun(run.id)) !== undefined) return finishStoredRun(storage, run);
   if (run.name !== null) return importNamedRun(storage, run, run.name);
   const draft = await draftOf(storage, run);
   const stored = await storage.runs.importRun({ run: draft, state: null, events: [] });
@@ -394,10 +420,11 @@ const importTriggers = (storage: IStorage, home: string): Promise<FileImport> =>
       ),
   );
 
+// fires grows as the file is read, so a line written twice is stored once.
 type Known = Readonly<{
   triggers: ReadonlySet<string>;
   runs: ReadonlySet<string>;
-  fires: ReadonlySet<string>;
+  fires: Set<string>;
 }>;
 
 const fireKey = ({ triggerId, slot, at }: Fire): string => `${triggerId} ${slot} ${at}`;
@@ -419,6 +446,7 @@ const importFire = async (storage: IStorage, fire: Fire, known: Known): Promise<
   }
   const { runId, ...rest } = fire;
   await storage.triggers.appendFire(runId !== undefined && known.runs.has(runId) ? fire : rest);
+  known.fires.add(fireKey(fire));
   return counted({ fires: 1 });
 };
 

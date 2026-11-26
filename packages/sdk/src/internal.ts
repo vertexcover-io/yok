@@ -82,6 +82,7 @@ export {
   createState,
   type EventHandlers,
   type ExtensionHandlers,
+  loadRunHandlers,
   projectEvents,
   readGit,
   syncState,

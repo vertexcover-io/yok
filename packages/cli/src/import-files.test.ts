@@ -597,4 +597,96 @@ describe("importFiles", () => {
     expect(report.skipped).toEqual(["project app: project app is already stored"]);
     expect(existsSync(join(home, "projects.yaml"))).toBe(false);
   });
+  test("events stored after state.json are folded with the run's own handlers too, and a handler module that is gone fails the run and keeps its files", async () => {
+    const home = tempDir("yok-import-home-");
+    const checkout = checkoutAt("yok-import-app-");
+    const module = join(tempDir("yok-import-handlers-"), "pings.ts");
+    writeFileSync(
+      module,
+      "export const onPing = (state) => ({ ...state, custom: { ...state.custom, pings: (state.custom?.pings ?? 0) + 1 } });\n",
+    );
+    const run = oldRun("r-1", "fix-login", checkout);
+    writeRegistry(home, [run]);
+    const events = [1, 2, 3].map((seq) => oldEvent("r-1", seq));
+    const eventHandlers = { "custom.demo.ping": [{ module, handler: "onPing" }] };
+    await writeRunFolder({ run, events, stateSeq: 1, eventHandlers });
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(report.failed).toEqual([]);
+    const state = await storage.runs.readState("r-1");
+    expect([state?.lastEventSeq, state?.custom]).toEqual([3, { pings: 2 }]);
+
+    const gone = tempDir("yok-import-home-");
+    const other = oldRun("r-2", "gone-handler", checkout);
+    writeRegistry(gone, [other]);
+    const missing = {
+      "custom.demo.ping": [{ module: join(gone, "nowhere.ts"), handler: "onPing" }],
+    };
+    await writeRunFolder({
+      run: other,
+      events: [1, 2].map((seq) => oldEvent("r-2", seq)),
+      stateSeq: 1,
+      eventHandlers: missing,
+    });
+
+    const refused = await importFiles(memoryStorage(), gone);
+
+    expect(refused.failed).toHaveLength(1);
+    expect(refused.failed[0]).toStartWith("run r-2 (gone-handler): ");
+    expect(refused.failed[0]).toContain("nowhere.ts");
+    expect(existsSync(join(gone, "registry.json"))).toBe(true);
+    expect(filesIn(runDirOf(checkout, "gone-handler"))).toContain("state.json");
+  });
+
+  test("comments that fail to store after their run did are stored by the next import, which skips the run and then renames its files", async () => {
+    const { home, dir, comments } = await fixLoginHome();
+    const real = memoryStorage();
+    let refuse = true;
+    const storage: IStorage = {
+      ...real,
+      comments: {
+        ...real.comments,
+        importComments: async (runId, imported) => {
+          if (refuse) throw new Error("database is locked");
+          return real.comments.importComments(runId, imported);
+        },
+      },
+    };
+
+    const first = await importFiles(storage, home);
+
+    expect(first.failed).toEqual(["run r-1 (fix-login): database is locked"]);
+    expect(await real.runs.findRun("r-1")).toBeDefined();
+    expect(filesIn(dir)).toContain("comments.json");
+
+    refuse = false;
+    const again = await importFiles(storage, home);
+
+    expect(again.failed).toEqual([]);
+    expect(await real.comments.list("r-1")).toEqual(comments);
+    expect(filesIn(dir)).toEqual([
+      "comments.json.imported",
+      "event.jsonl.imported",
+      "state.json.imported",
+      "workflow.yaml",
+    ]);
+    expect(existsSync(join(home, "registry.json.imported"))).toBe(true);
+  });
+
+  test("a fire written twice in one trigger-fires.jsonl is stored once, and the second line is reported as already stored", async () => {
+    const { home } = await triggersHome();
+    const once = fire("t-aaaa1111", "2026-02-01T03:30:00.000Z", { runId: "r-1" });
+    const line = JSON.stringify(once);
+    writeFileSync(join(home, "trigger-fires.jsonl"), `${line}\n${line}\n`);
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(await storage.triggers.readFires("t-aaaa1111", 20)).toEqual([once]);
+    expect(report.skipped).toEqual([
+      "fire of t-aaaa1111 for 2026-02-01T03:30:00.000Z is already stored",
+    ]);
+  });
 });

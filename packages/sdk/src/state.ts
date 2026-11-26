@@ -195,7 +195,7 @@ const fold = (
   }
 };
 
-const loadRunHandlers = (state: State | null): Promise<Result<ExtensionHandlers>> =>
+export const loadRunHandlers = (state: State | null): Promise<Result<ExtensionHandlers>> =>
   state === null
     ? Promise.resolve({ ok: true, value: {} })
     : loadEventHandlers(state.eventHandlers);

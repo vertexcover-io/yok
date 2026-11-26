@@ -144,6 +144,7 @@ type RunFolderInput = Readonly<{
   // the seq state.json was last written at; the events after it were stored but never folded
   stateSeq?: number;
   comments?: readonly Comment[];
+  eventHandlers?: State["eventHandlers"];
 }>;
 
 // A run folder as init and the event store left it: state.json is the first state folded up to
@@ -153,6 +154,7 @@ export const writeRunFolder = async ({
   events,
   stateSeq = events.length,
   comments,
+  eventHandlers = {},
 }: RunFolderInput): Promise<State> => {
   const dir = runDirOf(run.cwd, run.name ?? "");
   mkdirSync(dir, { recursive: true });
@@ -161,7 +163,7 @@ export const writeRunFolder = async ({
     runId: run.id,
     runDir: dir,
     version: "1.0.0",
-    eventHandlers: {},
+    eventHandlers,
   });
   const state = projectEvents({
     state: first,
