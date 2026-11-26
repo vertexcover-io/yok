@@ -110,30 +110,45 @@ def seconds_per_pass(cases: list[Case]) -> dict[Key, float]:
     return {key: totals[key] / copies[key] for key in totals}
 
 
-def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
+@dataclass(frozen=True)
+class Layer:
+    always: list[Key]
+    flaky: list[Key]
+    # seconds per pass of each test, and of each file slowest first
+    tests: dict[Key, float]
+    files: list[tuple[str, float]]
+    total: float
+    warning: str | None
+
+
+def measure_layer(runs: list[list[Case]]) -> Layer:
     cases = [case for run in runs for case in run]
     always, flaky = classify(cases)
     tests = seconds_per_pass(cases)
     files: dict[str, float] = defaultdict(float)
     for (file, _), seconds in tests.items():
         files[file] += seconds
-    total = sum(files.values()) or 1.0
     slow_files = sorted(files.items(), key=lambda item: -item[1])
+    return Layer(always, flaky, tests, slow_files, sum(files.values()), mismatch_warning(runs))
+
+
+def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
+    layer = measure_layer(runs)
+    total = layer.total or 1.0
     shown_files = [
-        item for rank, item in enumerate(slow_files) if rank < top or item[1] / total >= SLOW_FILE_SHARE
+        item for rank, item in enumerate(layer.files) if rank < top or item[1] / total >= SLOW_FILE_SHARE
     ]
-    warning = mismatch_warning(runs)
     lines = [
-        f"# Layer {name}: {len(runs)} run(s), {len(tests)} tests, {total:.1f}s of test time per pass",
+        f"# Layer {name}: {len(runs)} run(s), {len(layer.tests)} tests, {total:.1f}s of test time per pass",
         "Results per run (compare run 1 with the count the runner printed): "
         + ", ".join(str(len(run)) for run in runs),
-        *([warning] if warning else []),
+        *([layer.warning] if layer.warning else []),
         "",
-        f"## Failing every time ({len(always)})",
-        *[f"- {file} :: {test}" for file, test in always],
+        f"## Failing every time ({len(layer.always)})",
+        *[f"- {file} :: {test}" for file, test in layer.always],
         "",
-        f"## Flaky: some copies failed, some passed ({len(flaky)})",
-        *[f"- {file} :: {test}" for file, test in flaky],
+        f"## Flaky: some copies failed, some passed ({len(layer.flaky)})",
+        *[f"- {file} :: {test}" for file, test in layer.flaky],
         "",
         f"## Slowest files (seconds per pass, share of the layer; every file at {SLOW_FILE_SHARE:.0%} or more is listed)",
         *[f"- {seconds:.2f}s  {seconds / total:.0%}  {file}" for file, seconds in shown_files],
@@ -141,7 +156,7 @@ def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
         "## Slowest tests",
         *[
             f"- {seconds:.2f}s  {file} :: {test}"
-            for (file, test), seconds in sorted(tests.items(), key=lambda item: -item[1])[:top]
+            for (file, test), seconds in sorted(layer.tests.items(), key=lambda item: -item[1])[:top]
         ],
     ]
     return "\n".join(lines)
@@ -163,31 +178,26 @@ def run_outcome(run: list[Case], key: Key) -> str:
 
 
 def summarize_layer(runs: list[list[Case]]) -> dict[str, object]:
-    cases = [case for run in runs for case in run]
-    always, flaky = classify(cases)
-    tests = seconds_per_pass(cases)
-    files: dict[str, float] = defaultdict(float)
-    for (file, _), seconds in tests.items():
-        files[file] += seconds
-    total = sum(files.values())
-    slow_files = sorted(files.items(), key=lambda item: -item[1])
+    layer = measure_layer(runs)
+    total = layer.total or 1.0
     return {
         "runs": len(runs),
-        "tests": len(tests),
-        "seconds": round(total, 3),
-        "failing": [{"file": file, "name": name} for file, name in always],
+        "tests": len(layer.tests),
+        "seconds": round(layer.total, 3),
+        "failing": [{"file": file, "name": name} for file, name in layer.always],
         "flaky": [
             {"file": file, "name": name, "runs": [run_outcome(run, (file, name)) for run in runs]}
-            for file, name in flaky
+            for file, name in layer.flaky
         ],
         # Only files over the share: the top-N rule of the text report would flag a fast suite.
         "slow": [
-            {"file": file, "seconds": round(seconds, 3), "share": round(seconds / (total or 1.0), 4)}
-            for file, seconds in slow_files
-            if seconds / (total or 1.0) >= SLOW_FILE_SHARE
+            {"file": file, "seconds": round(seconds, 3), "share": round(seconds / total, 4)}
+            for file, seconds in layer.files
+            if seconds / total >= SLOW_FILE_SHARE
         ],
-        "warning": mismatch_warning(runs),
+        "warning": layer.warning,
     }
+
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
