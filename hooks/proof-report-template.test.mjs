@@ -98,7 +98,7 @@ test("a check gets the pass mark only when its result is pass", () => {
 test("the scaffold demonstrates every documented field of a step, a check, a recording and a proof", () => {
   const s = island().scenarios[0];
   assert.deepEqual(Object.keys(s.steps[0]), ["when", "checks"]);
-  assert.deepEqual(Object.keys(s.steps[0].checks[0]), ["text", "result", "proofs"]);
+  assert.deepEqual(Object.keys(s.steps[0].checks[0]), ["text", "req", "result", "proofs"]);
   assert.deepEqual(Object.keys(s.recordings[0]), [
     "label",
     "kind",
@@ -108,14 +108,15 @@ test("the scaffold demonstrates every documented field of a step, a check, a rec
     "frames",
   ]);
   assert.deepEqual(Object.keys(s.visualMatch), ["baseline", "build", "width", "checks"]);
-  assert.deepEqual(Object.keys(s.proofs[0]), [
-    "id",
-    "label",
+  // a proof is a picture or a reading, never both, so the fields are spread over its proofs
+  assert.deepEqual([...new Set(s.proofs.flatMap((p) => Object.keys(p)))].sort(), [
     "claim",
     "found",
     "holds",
-    "raw",
+    "id",
     "image",
+    "label",
+    "raw",
   ]);
   assert.match(TEMPLATE, /s\.steps\.forEach/);
   assert.match(TEMPLATE, /s\.recordings\.forEach/);
@@ -125,8 +126,10 @@ test("the scaffold demonstrates every documented field of a step, a check, a rec
 // The rail lists the primary journeys first, then each group the scenarios name.
 test("the scaffold shows a primary journey and a named group, and the rail reads both", () => {
   const groups = island().scenarios.map((s) => s.group);
+  const named = groups.slice(groups.lastIndexOf("journey") + 1);
   assert.equal(groups[0], "journey");
-  assert.ok(groups.slice(1).every((g) => typeof g === "string" && g !== "" && g !== "journey"));
+  assert.ok(named.length > 0);
+  assert.ok(named.every((g) => typeof g === "string" && g !== "" && g !== "journey"));
   assert.match(TEMPLATE, /s\.group === 'journey' \? JOURNEYS : s\.group/);
 });
 

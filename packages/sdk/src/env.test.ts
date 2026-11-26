@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "./config.ts";
-import { loadEnv, readProjectEnv, sessionEnv } from "./env.ts";
+import { loadEnv, readProjectEnv, readServerDomain, readViewerOrigin, sessionEnv } from "./env.ts";
 import type { IStorage } from "./repositories.ts";
 import { memoryStorage } from "./storage.ts";
 
@@ -329,5 +329,50 @@ describe("sessionEnv for an owned run", () => {
 
     expect(before.GH_TOKEN).toBe("");
     expect(after.GH_TOKEN).toBe("gho_new");
+  });
+});
+
+describe("home .env domain", () => {
+  const homeWith = (env?: string): string => {
+    const home = tempDir();
+    if (env !== undefined) writeFileSync(join(home, ".env"), env);
+    return home;
+  };
+
+  test("SC1: SERVER_DOMAIN is read from the home .env, cleaned, or absent", () => {
+    process.env.SERVER_DOMAIN = "decoy.example.com";
+    try {
+      expect(readServerDomain(homeWith("SERVER_DOMAIN=HTTPS://Yok.Example.com:8443/\n"))).toBe(
+        "yok.example.com:8443",
+      );
+      expect(readServerDomain(homeWith("SERVER_DOMAIN=yok.example.com//\n"))).toBe(
+        "yok.example.com",
+      );
+      expect(readServerDomain(homeWith("SERVER_DOMAIN=\n"))).toBeUndefined();
+      expect(readServerDomain(homeWith("OTHER=1\n"))).toBeUndefined();
+      expect(readServerDomain(homeWith())).toBeUndefined();
+    } finally {
+      delete process.env.SERVER_DOMAIN;
+    }
+  });
+
+  test("SC2: the viewer origin is https on a domain and absent without one", () => {
+    expect(readViewerOrigin(homeWith("SERVER_DOMAIN=yok.example.com\n"))).toBe(
+      "https://yok.example.com",
+    );
+    expect(readViewerOrigin(homeWith())).toBeUndefined();
+  });
+
+  test("a home .env that cannot be read throws instead of reading as no domain", () => {
+    const home = tempDir();
+    mkdirSync(join(home, ".env"));
+
+    expect(() => readViewerOrigin(home)).toThrow();
+  });
+
+  test("a loopback SERVER_DOMAIN gives no viewer origin, since nobody else could open it", () => {
+    for (const domain of ["localhost:3000", "127.0.0.1:3000", "[::1]:3000"]) {
+      expect(readViewerOrigin(homeWith(`SERVER_DOMAIN=${domain}\n`))).toBeUndefined();
+    }
   });
 });

@@ -522,6 +522,36 @@ describe("viewer in a browser", () => {
     );
   }, 30000);
 
+  test("a file whose name holds # opens from its link, keeps its address through a section jump and a reload, and opens on a hash change", async () => {
+    mkdirSync(join(runDir, "artifacts", "notes"));
+    writeFileSync(join(runDir, "artifacts", "notes", "round #2.md"), OUTLINE);
+    writeFileSync(join(runDir, "artifacts", "release notes.md"), "# Release\n");
+    const shown = (path: string): string =>
+      `document.querySelector('#docPath').textContent === ${JSON.stringify(path)}`;
+    try {
+      await page.goto(`${url}#artifacts/notes/round%20%232.md`);
+      await until(shown("artifacts/notes/round #2.md"));
+      expect(await evaluate("location.hash")).toBe("#artifacts/notes/round%20%232.md");
+
+      await until("document.querySelectorAll('#outline button').length > 0");
+      await page.setViewportSize({ width: 1000, height: 800 });
+      await page.click("#outline li:nth-child(4) button");
+      await untilBelowHead("Three");
+      expect(await evaluate("location.hash")).toBe("#artifacts/notes/round%20%232.md#three");
+      await page.reload();
+      await until(shown("artifacts/notes/round #2.md"));
+      await untilBelowHead("Three");
+
+      await page.goto(`${url}#artifacts/release%20notes.md`);
+      await until(shown("artifacts/release notes.md"));
+      await evaluate("location.hash = '#artifacts/notes/round%20%232.md'");
+      await until(shown("artifacts/notes/round #2.md"));
+    } finally {
+      rmSync(join(runDir, "artifacts", "notes"), { recursive: true, force: true });
+      rmSync(join(runDir, "artifacts", "release notes.md"), { force: true });
+    }
+  }, 30000);
+
   test("a code block copies its code, and one over 40 lines opens folded until asked", async () => {
     await page.goto(`${url}#artifacts/code.md`);
     await until("!!document.querySelector('#docRoot pre .copy-btn')");

@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { basename, relative, sep } from "node:path";
 import {
   AgentInputUnreachableEvent,
   AgentStoppedEvent,
@@ -16,10 +16,12 @@ import {
   QuestionAskedEvent,
   type Result,
   type State,
+  SUBSCRIBER_TIMEOUT_S,
   type Subscriber,
   type SubscriberInput,
   WorkflowBlockedEvent,
 } from "@yok/sdk";
+import { readViewerOrigin } from "@yok/sdk/internal";
 import * as z from "zod";
 import { realPathsInArtifacts } from "./workflow/done.ts";
 
@@ -28,15 +30,19 @@ export type Notice = Readonly<{
   body: string;
   // Mention the person; set for moments they must act on.
   mention: boolean;
-  // artifact files, relative to the run folder, to upload into the thread
+  // artifact files, relative to the run folder, to link to or upload into the thread
   files: readonly string[];
 }>;
 
 export interface INotifier {
   // posts into the thread when one is given, or starts one; resolves to the thread's id
   post(notice: Notice, threadId: string | undefined): Promise<string>;
-  upload(file: string, threadId: string): Promise<void>;
+  // "too-large" when the provider refuses the file for its size, "too-slow" when the deadline
+  // cancels it; any other refusal throws
+  upload(file: string, threadId: string, deadline?: AbortSignal): Promise<UploadOutcome>;
 }
+
+export type UploadOutcome = "uploaded" | "too-large" | "too-slow";
 
 const makeNotice = (title: string, extra: Partial<Omit<Notice, "title">> = {}): Notice => ({
   title,
@@ -326,6 +332,14 @@ const GITHUB_TOKEN = /\b(?:gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20
 
 export const redactTokens = (text: string): string => text.replace(GITHUB_TOKEN, "[redacted]");
 
+export class SlackApiError extends Error {
+  readonly code: string;
+  constructor(method: string, code: string) {
+    super(`slack ${method} failed: ${code}`);
+    this.code = code;
+  }
+}
+
 export const callSlack = async (
   config: SlackConfig,
   method: string,
@@ -344,13 +358,38 @@ export const callSlack = async (
   });
   const reply = SlackReplySchema.safeParse(await res.json()).data;
   if (reply?.ok !== true) {
-    throw new Error(`slack ${method} failed: ${reply?.error ?? String(res.status)}`);
+    throw new SlackApiError(method, reply?.error ?? String(res.status));
   }
   return reply;
 };
 
 const toThreadParams = (threadId: string | undefined): Readonly<Record<string, string>> =>
   threadId === undefined ? {} : { thread_ts: threadId };
+
+// Slack's codes for a file over the workspace's or Slack's own size limit.
+const SIZE_REFUSALS: ReadonlySet<string> = new Set([
+  "file_upload_size_restricted",
+  "file_too_large",
+]);
+
+const requestUploadUrl = async (
+  config: SlackConfig,
+  form: Readonly<Record<string, string>>,
+): Promise<Readonly<Record<string, unknown>> | "too-large"> => {
+  try {
+    return await callSlack(config, "files.getUploadURLExternal", form);
+  } catch (error) {
+    if (error instanceof SlackApiError && SIZE_REFUSALS.has(error.code)) return "too-large";
+    throw error;
+  }
+};
+
+// Slack's upload address answers 400 "invalid length" to a file over its 1 GB limit, though it
+// hands out the address for any size; a proxy in front of it answers 413.
+const refusedForSize = async (put: Response): Promise<boolean> => {
+  if (put.status === 413) return true;
+  return put.status === 400 && (await put.text()).includes("invalid length");
+};
 
 export const createSlackNotifier = (config: SlackConfig): INotifier => ({
   post: async (notice, threadId) => {
@@ -364,25 +403,35 @@ export const createSlackNotifier = (config: SlackConfig): INotifier => ({
     if (typeof res.ts !== "string") throw new Error("slack chat.postMessage returned no ts");
     return res.ts;
   },
-  upload: async (file, threadId) => {
-    const bytes = await readFile(file);
+  upload: async (file, threadId, deadline) => {
+    if (deadline?.aborted) return "too-slow";
+    const { size } = await stat(file);
     const name = basename(file);
-    const ticket = await callSlack(config, "files.getUploadURLExternal", {
+    const ticket = await requestUploadUrl(config, {
       filename: name,
-      length: String(bytes.byteLength),
+      length: String(size),
     });
+    if (ticket === "too-large") return "too-large";
     const uploadUrl = ticket.upload_url;
     const fileId = ticket.file_id;
     if (typeof uploadUrl !== "string" || typeof fileId !== "string") {
       throw new Error("slack files.getUploadURLExternal returned no upload url");
     }
-    const put = await config.fetch(uploadUrl, { method: "POST", body: bytes });
+    const put = await config
+      .fetch(uploadUrl, { method: "POST", body: Bun.file(file), signal: deadline ?? null })
+      .catch((error: unknown) => {
+        if (deadline?.aborted) return "too-slow" as const;
+        throw error;
+      });
+    if (put === "too-slow") return put;
+    if (await refusedForSize(put)) return "too-large";
     if (!put.ok) throw new Error(`slack file upload failed: ${put.status}`);
     await callSlack(config, "files.completeUploadExternal", {
       files: JSON.stringify([{ id: fileId, title: name }]),
       channel_id: config.channel,
       ...toThreadParams(threadId),
     });
+    return "uploaded";
   },
 });
 
@@ -411,28 +460,27 @@ export type OpenNotifier = typeof openNotifier;
 // it loads in a compiled binary, where this file has no path on disk.
 export const NOTIFIER_MODULE = "yok:notifier";
 
-// A file larger than this is named in the message instead of uploaded. A plan page embeds every
-// frame, so it runs to several MB.
-export const UPLOAD_LIMIT_BYTES = 100_000_000;
-
-const splitBySize = async (
-  files: readonly string[],
-): Promise<Readonly<{ small: readonly string[]; large: readonly string[] }>> => {
-  const sized = await Promise.all(
-    files.map(async (file) => ({ file, size: (await stat(file)).size })),
-  );
-  return {
-    small: sized.filter(({ size }) => size <= UPLOAD_LIMIT_BYTES).map(({ file }) => file),
-    large: sized.filter(({ size }) => size > UPLOAD_LIMIT_BYTES).map(({ file }) => file),
-  };
+const appendLines = (notice: Notice, lines: readonly string[]): Notice => {
+  if (lines.length === 0) return notice;
+  return { ...notice, body: [notice.body, ...lines].filter((line) => line !== "").join("\n") };
 };
 
-const withLargeFiles = (notice: Notice, large: readonly string[]): Notice => {
-  if (large.length === 0) return notice;
-  const lines = large.map(
-    (file) => `${basename(file)} is too big to attach; open it in the run viewer.`,
-  );
-  return { ...notice, body: [notice.body, ...lines].filter((line) => line !== "").join("\n") };
+// Each part is encoded on its own, so a # in a file's name becomes %23 and cannot end the path.
+const encodePath = (file: string): string => file.split("/").map(encodeURIComponent).join("/");
+
+// One line per file that opens the run viewer on it; the viewer reads the file's path, relative to
+// the run folder, from the part after #.
+const formatViewerLinks = (
+  origin: string,
+  runId: string,
+  files: readonly string[],
+): readonly string[] =>
+  files.map((file) => `${basename(file)} \u00b7 ${origin}/runs/${runId}#${encodePath(file)}`);
+
+// The viewer reads a file's path relative to the run folder, with / separators.
+const relativeToRun = async (runDir: string, files: readonly string[]): Promise<string[]> => {
+  const root = await realpath(runDir);
+  return files.map((file) => relative(root, file).split(sep).join("/"));
 };
 
 // A run started from a chat thread posts to that thread's channel and tags whoever typed the
@@ -445,22 +493,39 @@ const threadEnv = (state: State): Readonly<Record<string, string>> => {
   };
 };
 
-// Posts the event's message into the run's thread and uploads its files. The first post opens the
-// thread, recorded as notification.thread.started so later posts reply in it. A failure throws,
-// so the SDK records a failed call.
+// The subscriber's own timeout does not cancel its work, so uploads stop short of it, leaving time
+// for the warnings.
+const UPLOAD_DEADLINE_MS = (SUBSCRIBER_TIMEOUT_S.detached - 15) * 1000;
+
+const UPLOAD_WARNINGS = {
+  "too-large": "is too large for Slack",
+  "too-slow": "took too long to send to Slack",
+} as const;
+
+// Posts the event's message into the run's thread. With a viewer origin its files go in as links;
+// without one they are uploaded. The first post opens the thread, recorded as
+// notification.thread.started so later posts reply in it. A failure throws, so the SDK records a
+// failed call.
 export const notify = async (
   type: Notifier["type"],
   { event, state, run }: SubscriberInput,
   open: OpenNotifier,
   record: typeof emitRunEvent,
+  viewerOrigin: string | undefined,
 ): Promise<{ threadId: string } | undefined> => {
   const described = describeEvent(event, state);
   if (described === undefined) return undefined;
   const opened = open(type, { ...process.env, ...threadEnv(state) });
   if (!opened.ok) throw new Error(opened.error);
-  const files = await realPathsInArtifacts(state.runDir, described.files);
-  const { small, large } = await splitBySize(files);
-  const notice = withLargeFiles(described, large);
+  const checked = await realPathsInArtifacts(state.runDir, described.files);
+  const linked = viewerOrigin !== undefined;
+  const files = linked ? [] : checked;
+  const notice = linked
+    ? appendLines(
+        described,
+        formatViewerLinks(viewerOrigin, state.runId, await relativeToRun(state.runDir, checked)),
+      )
+    : described;
   const known = state.notification?.threadId;
   const thread = typeof known === "string" ? known : undefined;
   const threadId = await opened.value.post(notice, thread);
@@ -472,9 +537,17 @@ export const notify = async (
     });
     if (!stored.ok) throw new Error(`thread ${threadId} not recorded: ${stored.error}`);
   }
-  for (const file of small) await opened.value.upload(file, threadId);
+  const deadline = AbortSignal.timeout(UPLOAD_DEADLINE_MS);
+  for (const file of files) {
+    const outcome = await opened.value.upload(file, threadId, deadline);
+    if (outcome === "uploaded") continue;
+    const warning = `⚠️ ${basename(file)} ${UPLOAD_WARNINGS[outcome]}; open it in the run viewer.`;
+    // The file is still in the run viewer, so a warning the chat refuses is not worth stopping for.
+    await opened.value.post(makeNotice(warning), threadId).catch(() => undefined);
+  }
   return { threadId };
 };
 
 // The subscriber init freezes for `notifier: { type: slack }`.
-export const slack: Subscriber = (input) => notify("slack", input, openNotifier, emitRunEvent);
+export const slack: Subscriber = (input) =>
+  notify("slack", input, openNotifier, emitRunEvent, readViewerOrigin());

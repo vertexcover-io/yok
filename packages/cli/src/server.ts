@@ -2,7 +2,15 @@ import { Command, InvalidArgumentError } from "@commander-js/extra-typings";
 import { yokHome } from "@yok/sdk";
 import { VERSION } from "@yok/sdk/internal";
 import { startServer } from "@yok/server";
-import { commandLog, connect, fail, isRemote, runningServer, stopServer } from "./client.ts";
+import {
+  commandLog,
+  connect,
+  fail,
+  isRemote,
+  restartServer,
+  runningServer,
+  stopServer,
+} from "./client.ts";
 
 const parsePort = (text: string): number => {
   const port = Number(text);
@@ -41,6 +49,17 @@ export const serverCommand = () => {
       const running = await runningServer(home);
       if (running === null) return fail("not running");
       await stopServer(running.pid).catch(fail);
+    });
+
+  server
+    .command("restart")
+    .description("Stop the yok server if it is running, then start it in the background")
+    .action(async () => {
+      const running = await restartServer().catch(fail);
+      if (running === undefined) return;
+      console.log(
+        `restarted the yok server (pid ${running.pid}, version ${running.version}); its tmux sessions keep running`,
+      );
     });
 
   server

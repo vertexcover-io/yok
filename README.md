@@ -111,9 +111,9 @@ yok update --agent claude     # move the plugin for claude only (repeat --agent 
 yok update --pre-release      # release candidates too
 ```
 
-On a curl install, `yok update` swaps the binary in place, and the new binary's plugin install writes the `yok-remote` shortcut beside it, so an update from any version leaves the same files a fresh install does. On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move and server restart. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself; the next `yok` command that needs the server replaces the one still running the old version.
+On a curl install, `yok update` swaps the binary in place, and the new binary's plugin install writes the `yok-remote` shortcut beside it, so an update from any version leaves the same files a fresh install does. On a Homebrew or npm install, `yok update` runs `brew upgrade yok` or `npm install -g @vertexcover/yok@latest` (`@next` with `--pre-release`; Homebrew has stable releases only) and then does the same plugin move. After a plain `brew upgrade` or `npm i -g`, run `yok plugin install` yourself.
 
-`yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server is restarted on the new binary; its tmux sessions keep running.
+`yok update` reads `GH_TOKEN`, else `GITHUB_TOKEN`, else the token `gh auth token` prints. A running server keeps running the old version, and `yok update` never restarts it: it prints a warning asking you to. If yok started the server for you, run `yok server restart`; if something else runs it, such as systemd, restart it there. Until then every command that needs the server prints `warning: this CLI is B, the yok server is A` and carries on, except `yok run`, `yok resume` and `yok retry`: they stop and ask for the restart, because a server of another version refuses the run at its plugin check. A restart leaves the tmux sessions running.
 
 The binary and the plugin always ship at the same version, and `yok doctor` and `yok run` stop when they differ. `yok plugin install` puts the plugin back at the binary's version. Agent sessions that are already open keep the old skills until `/reload-plugins` or a restart.
 
@@ -318,8 +318,8 @@ yok run task --prompt "…" --config /tmp/yok-local.yaml
 | `yok ls` | List runs, newest 20 first, across every project. `--limit N`, `--all`, `--project NAME`, `--status S1,S2`, `--json`; works with `--remote` |
 | `yok verify WORKFLOW` | Compile a workflow and print the first error |
 | `yok doctor` | Check the tools, repository and config a run needs. `--json`, `--workflow NAME_OR_PATH` |
-| `yok server start \| status \| stop` | Manage the local server. Stopping it leaves tmux sessions running |
-| `yok update` | Install the newest release, move the plugin to it for every agent on PATH, restart the server. `--agent NAME` (repeatable) limits it, `--pre-release` |
+| `yok server start \| status \| stop \| restart` | Manage the local server. `start` runs it in the foreground; `restart` stops it if it is running and starts it in the background. Stopping it leaves tmux sessions running |
+| `yok update` | Install the newest release, move the plugin to it for every agent on PATH, and warn when a running server needs a restart. `--agent NAME` (repeatable) limits it, `--pre-release` |
 | `yok plugin install` | Reinstall the plugin at the binary's version for every agent on PATH. `--agent NAME` (repeatable) limits it |
 | `yok uninstall` | Remove yok from this machine. `--plugin`, `--no-plugin` |
 | `yok types` | Write the SDK's type files to `.yok/types/` for your editor |

@@ -220,7 +220,7 @@ yok-remote server status
 
 `login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
 
-Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
+Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`. `yok update` never restarts a server itself: on the server it prints `warning: restart the yok server (pid N) so it runs the installed version`, and the service restart is yours to run.
 
 A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. While its agent runs, answer it from the run's page: the Terminal tab attaches to the run's tmux session in the browser, as `yok attach` does on the server.
 
@@ -271,6 +271,7 @@ Comment `/yok fix the review comments` on a pull request. The comment can be in 
 ```bash
 yok-dev server status           # is the server up, pid, version
 yok-dev server stop             # stop it; tmux sessions keep running
+yok-dev server restart          # stop it if running, start it in the background
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project rm NAME         # forget one; --force deletes its runs and a folder yok cloned

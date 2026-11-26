@@ -21,6 +21,7 @@ protocols: []
 scopes: []
 verifiers:
   - { id: design-coverage, module: scripts/plan.ts, functionName: checkDesignCoverage }
+  - { id: outcome-homes, module: scripts/plan.ts, functionName: checkOutcomeHomes }
 references:
   plan-format:
     path: references/plan-sections.md
@@ -30,7 +31,7 @@ references:
     description: The parts of an implementation step, and how a change is shown as a diff.
   test-scenarios:
     path: references/test-scenarios.md
-    description: How to derive the scenarios, write them, and choose each one's test level.
+    description: How to list every outcome the feature needs, give each one home, and write the scenarios that prove them.
   docs-scout:
     path: references/docs-scout.md
     description: The brief for the sub-agent that finds the ADRs and docs binding the task.
@@ -114,17 +115,15 @@ first phase that needs it. Typical: 2-4 phases small, 4-6 large.
 - **One mechanism, one phase.** Cases one piece of code handles as data share a phase.
 - A risk the design marks unverified becomes phase 1's first step: a spike that proves it.
 
-Then derive the tests from the `test-scenarios` reference and build the Test Matrix.
-
 **Done when:** every phase has a capability title and names the check it makes pass, or the
-part of one it proves, every requirement has a matrix row, and every scenario has one home and
-names a failure no other scenario catches.
+part of one it proves.
 
 ## Step 3 — Write the plan
 
-Write each `phases/phase-N.md` first, then `plan.md` in the section order the `plan-format`
-reference gives, and every step to the `step-card` reference. The test: **a coder who has the
-task but not the codebase can follow every step without opening a file.**
+Write in this order: every phase's steps, to the `step-card` reference; then the scenarios,
+following the `test-scenarios` reference from its first step to its last; then `plan.md`, in the
+section order the `plan-format` reference gives. The test: **a coder who has the task but not
+the codebase can follow every step without opening a file.**
 
 These rules bind every step:
 
@@ -154,7 +153,15 @@ These rules bind every step:
   spec's own words. The rule text stays in spec.md. A rule about a screen, viewport or state no
   frame draws is pointed to from the step that builds that surface.
 
-**Done when:** every phase file and `plan.md` exist, and every file a step edits was opened.
+These rules bind the scenarios:
+
+- **Take every `ask:` outcome to the user** before step 5, with what the plan does today and the
+  choice you recommend. On the answer, give the outcome its home, or drop it when the answer
+  removes it, and record the answer in plan.md's `## Decisions`.
+- **Write every `deploy:` outcome into `## Acceptance`** as a check a person can run.
+
+**Done when:** every phase file and `plan.md` exist, every file a step edits was opened, every
+outcome has a home, and no `ask:` home is left.
 
 ## Step 4 — Review it, then record the ADRs
 
@@ -162,10 +169,10 @@ These rules bind every step:
 
 - **Inputs.** Every decision in `design.md` appears in a step · every correction in
   `## Decisions` is applied in `design.md` · every point of its `Approach` is built by a phase · every `Done
-  when` check is proved by a phase's scenarios · every row in `## ADRs` points to an
+  when` check is the source of an outcome · every row in `## ADRs` points to an
   active ADR · every path in `## Project Docs` exists.
-- **Phasing.** No two phases change the same file unless ordered · every phase is provable by
-  its own scenarios the moment it lands · a phase that uses what another builds depends on it.
+- **Phasing.** No two phases change the same file unless ordered · every phase holds a coded scenario
+  that proves it the moment it lands · a phase that uses what another builds depends on it.
 - **Steps.** Every summary opens with the outcome and its reason, glosses each name it uses, and
   leaves the diff's mechanics and the planner's notes out · every step that changes code has a
   diff, with or without a frame or spec · every entry in plan.md's `## Signature index` is built
@@ -173,10 +180,11 @@ These rules bind every step:
   it shows, with a UI mapping row for every element it shows · a step's Design and Spec lines are
   list items, one per line · no step tells the coder to discover
   something · every title opens with an imperative verb.
-- **Coverage.** Every requirement has a matrix row · every scenario appears once across the
-  phase files · `e2e` rows stay under a third of the matrix, or each extra one traces to a
-  real-browser fact or a named Blocker · every frame in `design/INDEX.md` is built or recorded
-  as not built, with its width on the step.
+- **Coverage.** Every source has an outcome in the matrix · every outcome has one home, and
+  every `Expected` line opens with the id of an outcome whose home is that row · every scenario
+  row reads on its own · every `deploy:` outcome has its line in `## Acceptance` · every frame in
+  `design/INDEX.md` is built or recorded as not built, with its width on the step · every built
+  frame has a `design` line in the row that reaches its screen.
 
 **Fresh-eyes review.** Dispatch one sub-agent with the paths to the plan files, never this
 conversation. It opens every address the steps give and checks that each diff's context and
@@ -196,7 +204,8 @@ the `adr` skill.
 In the reply:
 
 1. The phases, one line each: number, capability title, what it depends on, what it unlocks.
-2. The test matrix as counts per level.
+2. The outcomes: how many in all, and how many a scenario, an existing test and a deploy check
+   each hold. Then the scenario counts per level, and each deploy check on its own line.
 3. Every entry in `## Decisions`, ADR written, deferred item and repo added to the workspace, one
    line each.
 4. The paths to `plan.html`, `plan.md` and each phase file as `file://` links.
@@ -241,3 +250,4 @@ empty output.
 | "This unit is untestable, so the test is e2e" | That is a finding about the code. Name it a Blocker and give a phase the step that opens it up. |
 | "The existing code has no tests, so this is how it is" | The plan says what the code becomes. Never copy a constraint you are allowed to remove. |
 | "Most rows are e2e because the feature is user-facing" | User-facing describes the requirement, never the level. |
+| "Checking it again at the next level is safer" | An outcome has one home. It climbs a level when the level below would have to fake what it is about. |

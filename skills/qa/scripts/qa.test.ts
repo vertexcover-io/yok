@@ -484,6 +484,12 @@ describe("VisualMatchSchema", () => {
     expect(VisualMatchSchema.safeParse({ ...undrawn, width: 1440 }).success).toBe(false);
   });
 
+  test("a design check that names the requirements it proves, as the template writes it, parses", () => {
+    const visualMatch = { baseline: null, checks: [{ ...clean, req: ["SPEC: modal is 420px"] }] };
+
+    expect(VisualMatchSchema.safeParse(visualMatch).success).toBe(true);
+  });
+
   test("a visualMatch says what was looked at: no checks is rejected", () => {
     expect(VisualMatchSchema.safeParse({ baseline: null, checks: [] }).success).toBe(false);
   });
@@ -519,7 +525,12 @@ const checkShape = (scenarios: unknown[], output: VerifierInput["output"] = { st
 
 const proof = { id: "p1", label: "Database", claim: "The row is stored.", holds: true, raw: "row" };
 const passed = { text: "The total updates.", result: "pass", proofs: ["p1"] };
-const failed = { text: "The total updates.", result: "fail", saw: "It stays the same." };
+const failed = {
+  text: "The total updates.",
+  result: "fail",
+  saw: "It stays the same.",
+  proofs: ["p1"],
+};
 const step = (...checks: unknown[]) => ({ when: "The user saves the invoice.", checks });
 const scenario = (more: Record<string, unknown>) => ({
   n: "01",
@@ -532,6 +543,10 @@ const scenario = (more: Record<string, unknown>) => ({
   ...more,
 });
 
+const take = { browser: "Chrome", video: "a.mp4", frames: [{ src: "a.png", label: "Saved" }] };
+const phoneTake = { ...take, size: "phone", video: "a-phone.mp4" };
+const spared = { replay: "not needed", why: "Only a label changed." };
+
 const messages = async (given: Record<string, unknown>): Promise<string[]> =>
   (await checkShape([scenario(given), scenario({ n: "02" })])).findings.map(
     ({ message }) => message,
@@ -541,7 +556,7 @@ describe("checkReportShape", () => {
   test("a passed scenario, a failed one and one nothing could drive each pass in the shape their verdict owes", async () => {
     const result = await checkShape([
       scenario({}),
-      scenario({ n: "02", verdict: "FAILURE", steps: [step(failed)], proofs: [] }),
+      scenario({ n: "02", verdict: "FAILURE", steps: [step(failed)] }),
       scenario({
         n: "03",
         verdict: "NOT VERIFIED",
@@ -583,8 +598,28 @@ describe("checkReportShape", () => {
     ],
     ["a check citing a proof the scenario lacks", { proofs: [] }, "p1"],
     ["a proof no check cites", { proofs: [proof, { ...proof, id: "p2" }] }, "p2"],
+    [
+      "a proof two checks cite",
+      { steps: [step(passed), { ...step(passed), when: "The user reopens the invoice." }] },
+      "more than one check",
+    ],
+    [
+      "a proof with neither a reading nor a picture",
+      { proofs: [{ ...proof, raw: undefined }] },
+      "no reading and no picture",
+    ],
     ["a proof with no id", { proofs: [proof, { ...proof, id: undefined }] }, "id"],
     ["a proof whose holds is a string", { proofs: [{ ...proof, holds: "true" }] }, "holds"],
+    [
+      "a passed check citing no proof",
+      { steps: [step({ ...passed, proofs: undefined })], proofs: [] },
+      "cites no proof",
+    ],
+    [
+      "a failed check citing no proof",
+      { verdict: "FAILURE", steps: [step({ ...failed, proofs: [] })], proofs: [] },
+      "cites no proof",
+    ],
     ["a proof whose holds is omitted", { proofs: [{ ...proof, holds: undefined }] }, "holds"],
     ["no group", { group: undefined }, "group"],
     [
@@ -596,6 +631,32 @@ describe("checkReportShape", () => {
       "the journey group on a scenario only a test recorded",
       { recordings: [{ video: "a.mp4" }] },
       "primary journey",
+    ],
+    ["a browser recording and no phone decision", { recordings: [take] }, "no phone decision"],
+    [
+      "a phone decision that gives no reason",
+      { recordings: [take], phone: { replay: "not needed", why: " " } },
+      "no phone decision",
+    ],
+    [
+      "a phone replay it owes and did not film",
+      { recordings: [take], phone: { replay: "required", why: "It shows a new screen." } },
+      "owes a phone replay",
+    ],
+    [
+      "a third party's screen it graded without filming it",
+      { thirdParty: "the chat service" },
+      "the chat service",
+    ],
+    [
+      "a third party's screen it graded from a take of the product's own page",
+      { thirdParty: "the chat service", recordings: [take], phone: spared },
+      "the chat service",
+    ],
+    [
+      "a third party's screen it could not open, with a result on its check",
+      { verdict: "NOT VERIFIED", thirdParty: "the chat service", proofs: [] },
+      "carries a result",
     ],
     [
       "a proof whose raw runs long",
@@ -629,12 +690,226 @@ describe("checkReportShape", () => {
     expect(found.join(" ")).toContain(expected);
   });
 
+  test("a scenario told in parts, each with its own steps and take, passes", async () => {
+    const parts = [
+      { title: "Sign in", steps: [step(passed)], recordings: [take, phoneTake] },
+      {
+        title: "Link the account",
+        steps: [step({ ...passed, proofs: ["p2"] })],
+        recordings: [{ ...take, video: "b.mp4" }],
+      },
+    ];
+    const owed = { replay: "required", why: "It shows a new screen." };
+
+    expect(
+      await messages({
+        steps: undefined,
+        parts,
+        phone: owed,
+        proofs: [proof, { ...proof, id: "p2" }],
+      }),
+    ).toEqual([]);
+  });
+
+  test.each([
+    [
+      "a title that is not a question",
+      { title: "Saving an invoice updates its total." },
+      "question",
+    ],
+    [
+      "a part with no title",
+      { steps: undefined, parts: [{ title: "", steps: [step(passed)] }] },
+      "part",
+    ],
+    [
+      "parts beside top-level steps",
+      { parts: [{ title: "Save", steps: [step({ ...passed, proofs: [] })] }] },
+      "both",
+    ],
+    [
+      "parts beside a top-level recording",
+      {
+        steps: undefined,
+        parts: [{ title: "Save", steps: [step(passed)] }],
+        recordings: [take],
+        phone: spared,
+      },
+      "top-level recordings",
+    ],
+    [
+      "a phone replay written as a part of its own",
+      {
+        steps: undefined,
+        phone: { replay: "required", why: "It shows a new screen." },
+        parts: [
+          { title: "Save", steps: [step(passed)], recordings: [take] },
+          {
+            title: "On a phone",
+            steps: [step({ ...passed, proofs: [] })],
+            recordings: [phoneTake],
+          },
+        ],
+      },
+      "phone",
+    ],
+  ])("a scenario with %s is named for it", async (_name, given, expected) => {
+    const found = await messages(given);
+
+    expect(found.join(" ")).toContain(expected);
+  });
+
+  test("a proof that is a frame of the take, with no reading, passes", async () => {
+    const frame = { id: "p1", label: "Screenshot", claim: "Saved", holds: true, image: "a.png" };
+
+    expect(await messages({ proofs: [frame] })).toEqual([]);
+  });
+
+  test("a verdict that is not the one coverage[] derives is named for it", async () => {
+    const dir = artifactsWith({
+      report: `<html><body><script type="application/json" id="report-data">${JSON.stringify({
+        verdict: "PASS",
+        coverage: [
+          { req: "R1", scenario: "01", verdict: "SUCCESS" },
+          { req: "R2", scenario: "02", verdict: "NOT VERIFIED" },
+        ],
+        scenarios: [scenario({})],
+      })}</script></body></html>`,
+    });
+    const result = await checkReportShape({
+      run: "r",
+      nodeRunId: "nr-1",
+      output: { status: "PASS" },
+      artifacts: [{ type: "proof-report", name: "proof-report", path: reportPath(dir) }],
+      args: null,
+      nodeInput: null,
+    });
+    const found = result.findings.map(({ message }) => message).join(" ");
+
+    expect(found).toContain("the stage returned PASS but coverage[] derives PARTIAL");
+    expect(found).toContain("the report's verdict is PASS but coverage[] derives PARTIAL");
+  });
+
+  test("a coverage row is graded by the checks that carry its id, not by its scenario's verdict", async () => {
+    const report = (rows: readonly { req: string; scenario: string; verdict: string }[]) =>
+      `<html><body><script type="application/json" id="report-data">${JSON.stringify({
+        verdict: "FAIL",
+        coverage: rows,
+        scenarios: [
+          scenario({
+            verdict: "FAILURE",
+            steps: [step({ ...passed, req: ["R1"] }, { ...failed, req: ["R2"] })],
+          }),
+          scenario({ n: "02", steps: [step({ ...passed, req: ["R3"] })] }),
+        ],
+      })}</script></body></html>`;
+    const shapeOf = async (rows: readonly { req: string; scenario: string; verdict: string }[]) =>
+      (
+        await checkReportShape({
+          run: "r",
+          nodeRunId: "nr-1",
+          output: { status: "PASS" },
+          artifacts: [
+            {
+              type: "proof-report",
+              name: "proof-report",
+              path: reportPath(artifactsWith({ report: report(rows) })),
+            },
+          ],
+          args: null,
+          nodeInput: null,
+        })
+      ).findings.map(({ message }) => message);
+
+    const graded = await shapeOf([
+      { req: "R1", scenario: "01", verdict: "SUCCESS" },
+      { req: "R2", scenario: "01", verdict: "FAILURE" },
+      { req: "R3", scenario: "02", verdict: "SUCCESS" },
+    ]);
+    const byScenario = await shapeOf([
+      { req: "R1", scenario: "01", verdict: "FAILURE" },
+      { req: "R2", scenario: "01", verdict: "FAILURE" },
+      { req: "R4", scenario: "02", verdict: "SUCCESS" },
+    ]);
+
+    expect(graded.filter((message) => message.startsWith("coverage"))).toEqual([]);
+    expect(byScenario).toContain(
+      "coverage row R1 is FAILURE but the checks carrying R1 give SUCCESS: grade each row by its own checks",
+    );
+    expect(byScenario).toContain(
+      "coverage row R4 names no check: put R4 in the req of every check that proves it",
+    );
+  });
+
+  test("a requirement a check carries with no coverage row is named, so its failure cannot be left out", async () => {
+    const dir = artifactsWith({
+      report: `<html><body><script type="application/json" id="report-data">${JSON.stringify({
+        verdict: "PASS",
+        coverage: [{ req: "R1", scenario: "01", verdict: "SUCCESS" }],
+        scenarios: [
+          scenario({
+            verdict: "FAILURE",
+            steps: [step({ ...passed, req: ["R1"] }, { ...failed, req: ["R2"], proofs: ["p2"] })],
+            proofs: [proof, { ...proof, id: "p2" }],
+          }),
+        ],
+      })}</script></body></html>`,
+    });
+    const result = await checkReportShape({
+      run: "r",
+      nodeRunId: "nr-1",
+      output: { status: "PASS" },
+      artifacts: [{ type: "proof-report", name: "proof-report", path: reportPath(dir) }],
+      args: null,
+      nodeInput: null,
+    });
+
+    expect(result.findings.map(({ message }) => message)).toContain(
+      "checks carry R2, but coverage[] has no R2 row: give every requirement a check carries its row",
+    );
+  });
+
+  test("a check citing a frame and a reading of the same fact is named for it", async () => {
+    const frame = { id: "p2", label: "Screenshot", claim: "Saved", holds: true, image: "a.png" };
+    const found = await messages({
+      steps: [step({ ...passed, proofs: ["p1", "p2"] })],
+      proofs: [proof, frame],
+    });
+
+    expect(found.join(" ")).toContain("both a picture and a reading");
+  });
+
+  test("a scenario passes with the phone replay it owes, with none where none is owed, and unverified on a third party's screen", async () => {
+    const owed = { replay: "required", why: "It shows a new screen." };
+
+    expect(await messages({ recordings: [take, phoneTake], phone: owed })).toEqual([]);
+    expect(await messages({ recordings: [take], phone: spared })).toEqual([]);
+    expect(
+      await messages({
+        thirdParty: "the chat service",
+        recordings: [{ ...take, thirdParty: "the chat service" }],
+        phone: spared,
+      }),
+    ).toEqual([]);
+    expect(
+      await messages({
+        verdict: "NOT VERIFIED",
+        thirdParty: "the chat service",
+        steps: [step({ text: "The message shows its link." })],
+        proofs: [],
+      }),
+    ).toEqual([]);
+  });
+
   test("a design check cites proofs like any other, and its failure makes the scenario a FAILURE", async () => {
     const design = (result: string) => ({
       baseline: null,
       checks: [{ text: "The label fits.", result, saw: "It is cut off.", proofs: ["p1"] }],
     });
-    const cited = { steps: [step({ ...passed, proofs: [] })] };
+    const cited = {
+      steps: [step({ ...passed, proofs: ["p2"] })],
+      proofs: [proof, { ...proof, id: "p2" }],
+    };
 
     expect(await messages({ ...cited, visualMatch: design("warn") })).toEqual([]);
     expect((await messages({ ...cited, visualMatch: design("fail") })).join(" ")).toContain(
