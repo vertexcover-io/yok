@@ -302,10 +302,14 @@ const pendingAction = (
   return undefined;
 };
 
-// The type lists are AUDIT_CLICK_TYPES and the run start each click asks for. Every rowid names
-// the events table: a bare one is ambiguous in the joined query.
-const isNewestClick = sql`${tables.auditResultEvents}.rowid = (SELECT max(newest.rowid) FROM ${tables.auditResultEvents} AS newest WHERE newest.result_id = ${tables.auditResultEvents.resultId} AND newest.type IN ('accepted', 'rejected', 'undone'))`;
-const runStartedSinceClick = sql<number>`EXISTS (SELECT 1 FROM ${tables.auditResultEvents} AS started WHERE started.result_id = ${tables.auditResultEvents.resultId} AND started.rowid > ${tables.auditResultEvents}.rowid AND started.type = CASE ${tables.auditResultEvents.type} WHEN 'accepted' THEN 'apply_started' ELSE 'revert_started' END)`;
+// Every rowid names the events table: a bare one is ambiguous in the joined query.
+const clickTypes = sql.join(
+  AUDIT_CLICK_TYPES.map((type) => sql`${type}`),
+  sql`, `,
+);
+const [applyStarted, revertStarted] = AUDIT_RUN_START_TYPES;
+const isNewestClick = sql`${tables.auditResultEvents}.rowid = (SELECT max(newest.rowid) FROM ${tables.auditResultEvents} AS newest WHERE newest.result_id = ${tables.auditResultEvents.resultId} AND newest.type IN (${clickTypes}))`;
+const runStartedSinceClick = sql<number>`EXISTS (SELECT 1 FROM ${tables.auditResultEvents} AS started WHERE started.result_id = ${tables.auditResultEvents.resultId} AND started.rowid > ${tables.auditResultEvents}.rowid AND started.type = CASE ${tables.auditResultEvents.type} WHEN 'accepted' THEN ${applyStarted} ELSE ${revertStarted} END)`;
 
 const pendingWorkIn = (db: Db, project: string): readonly AuditPendingWork[] =>
   db
