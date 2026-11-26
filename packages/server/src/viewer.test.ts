@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IStorage, ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger, StateSchema } from "@yok/sdk";
-import { memoryStorage, VERSION } from "@yok/sdk/internal";
+import { type AuditMetric, memoryStorage, TEST_AUDIT_METRICS, VERSION } from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import {
   claudeOver,
@@ -23,6 +23,14 @@ import {
   seedState,
   seedUser,
 } from "./fake-host.ts";
+import {
+  type AuditMetricsPoint,
+  formatChange,
+  formatMetric,
+  meetsLimit,
+  metricChange,
+  metricSeries,
+} from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
 
@@ -190,6 +198,19 @@ describe("viewer routes", () => {
     const page = await (await get("/")).text();
     expect(page).toMatch(
       /<header class="bar">[\s\S]*<a class="nav" href="\/settings">Settings<\/a>[\s\S]*<\/header>/,
+    );
+  });
+
+  test("SC8006: /audits serves the Audits page with the running version, and the runs page's bar links to it", async () => {
+    const { get } = await setup();
+    const res = await get("/audits");
+    expect(res.status).toBe(200);
+    const page = await res.text();
+    expect(page).toContain("<title>yok audits</title>");
+    expect(page).toContain(`yok v${VERSION}`);
+    const runs = await (await get("/")).text();
+    expect(runs).toMatch(
+      /<header class="bar">[\s\S]*<a class="nav" href="\/audits">Audits<\/a>[\s\S]*<\/header>/,
     );
   });
 
@@ -808,7 +829,7 @@ describe("shared page script", () => {
     const res = await get("/assets/shared.js");
     expect(res.headers.get("content-type")).toContain("text/javascript");
     const shared = (await import(
-      `data:text/javascript;base64,${btoa(await res.text())}`
+      `data:text/javascript;base64,${Buffer.from(await res.text()).toString("base64")}`
     )) as typeof import("./page-shared.ts");
     expect([shared.RUN_STATUS_WORDS.blocked, shared.RUN_STATUS_WORDS.gone]).toEqual([
       "needs you",
@@ -819,6 +840,85 @@ describe("shared page script", () => {
       "2m 05s",
       "1h 3m",
     ]);
+  });
+
+  test("SC8007: the served shared script formats an audit metric and imports no @yok/sdk package", async () => {
+    const { get } = await setup();
+    const text = await (await get("/assets/shared.js")).text();
+    expect(text).not.toContain("@yok/sdk");
+    const shared = (await import(
+      `data:text/javascript;base64,${Buffer.from(text).toString("base64")}`
+    )) as typeof import("./page-shared.ts");
+    expect(shared.formatMetric("percent", 80)).toBe("80%");
+  });
+});
+
+describe("audit page rules", () => {
+  test("SC8001: formatMetric shows percent 81.46 as 81.5%, 222 seconds as 3m 42s and count 1268 as 1,268", () => {
+    expect([
+      formatMetric("percent", 81.46),
+      formatMetric("seconds", 222),
+      formatMetric("count", 1268),
+    ]).toEqual(["81.5%", "3m 42s", "1,268"]);
+  });
+
+  test("SC8002: formatChange shows +2 percent as +2 pts, -35 seconds as −35s and -3 count as −3", () => {
+    expect([
+      formatChange("percent", 2),
+      formatChange("seconds", -35),
+      formatChange("count", -3),
+    ]).toEqual(["+2 pts", "−35s", "−3"]);
+  });
+
+  test("SC8003: metricChange calls a rise better when higher is better, worse when lower is, same at no change, and null with no value before", () => {
+    const series = [70, 72, null, 72];
+    expect(metricChange("higher", series, 1)).toEqual({ delta: 2, verdict: "better" });
+    expect(metricChange("lower", series, 1)).toEqual({ delta: 2, verdict: "worse" });
+    expect(metricChange("higher", [72, 72], 1)).toEqual({ delta: 0, verdict: "same" });
+    expect([0, 3, -1].map((index) => metricChange("higher", series, index))).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  test("SC8004: meetsLimit holds coverage at or above 80 and test time at or below 240, and has no answer for a metric with no limit", () => {
+    const { coverage, testTime, testCount } = TEST_AUDIT_METRICS;
+    expect([meetsLimit(coverage, 80), meetsLimit(coverage, 79.9)]).toEqual([true, false]);
+    expect([meetsLimit(testTime, 240), meetsLimit(testTime, 241)]).toEqual([true, false]);
+    expect(meetsLimit(testCount, 10)).toBeNull();
+  });
+
+  test("SC8005: metricSeries reads one repo's metric at one scope in each run, null where a run has none, never another repo's value", () => {
+    const measured = (
+      repo: string,
+      metric: AuditMetric["metric"],
+      scope: string,
+      value: number,
+    ) => ({
+      repo,
+      metric,
+      scope,
+      status: "measured" as const,
+      reason: null,
+      value,
+      how: {},
+    });
+    const points: readonly AuditMetricsPoint[] = [
+      {
+        auditRunId: "a1",
+        periodEnd: "2026-11-01T00:00:00.000Z",
+        metrics: [measured("yok", "coverage", "", 70), measured("web", "coverage", "", 90)],
+      },
+      { auditRunId: "a2", periodEnd: "2026-11-08T00:00:00.000Z", metrics: [] },
+      {
+        auditRunId: "a3",
+        periodEnd: "2026-11-15T00:00:00.000Z",
+        metrics: [measured("yok", "coverage", "", 75), measured("yok", "testCount", "unit", 10)],
+      },
+    ];
+    expect(metricSeries(points, "yok", "coverage", "")).toEqual([70, null, 75]);
+    expect(metricSeries(points, "yok", "testCount", "unit")).toEqual([null, null, 10]);
   });
 });
 

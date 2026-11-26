@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yok audits</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Tokens match runs.html so the audits page reads as the same product. */
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --panel-2: #edf1ef; --line: #d9e0dc;
+  --fg: #18211d; --muted: #5a6862; --accent: #1d6b62; --accent-fg: #ffffff; --accent-soft: #d9eeea;
+  --del: #b2362d; --del-soft: #fbe2df;
+  --ok: #2d7a32; --ok-soft: #e0f1e1; --info: #2b5ca4; --info-soft: #e0eaf8; --warn: #915f00; --warn-soft: #faeed3;
+  --ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+    --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+    --del: #f07f75; --del-soft: #3b1d1a;
+    --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+  --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+  --del: #f07f75; --del-soft: #3b1d1a;
+  --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--ui); }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+.top { position: sticky; top: 0; z-index: 2; }
+.bar { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: .01em; }
+.brand-mark { width: 18px; height: 18px; border-radius: 4px; background: var(--accent); position: relative; }
+.brand-mark::after { content: ""; position: absolute; inset: 5px 4px; border-top: 2px solid var(--accent-fg); border-bottom: 2px solid var(--accent-fg); }
+.nav { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.nav:hover { color: var(--fg); }
+.bar .right { margin-left: auto; display: flex; gap: 16px; }
+.pick { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--bg); font-size: 13px; }
+.sub { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--muted); }
+.range { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.btn { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 3px 10px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.foot { padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-align: right; }
+
+main { flex: 1; width: 100%; max-width: 1120px; margin: 0 auto; padding: 16px 16px 48px; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0; }
+.empty { color: var(--muted); padding: 32px 0; text-align: center; }
+.dim { color: var(--muted); }
+
+.area { margin-bottom: 24px; }
+.area h2 { font-size: 15px; margin: 0; }
+.area .q { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.tile { display: flex; flex-direction: column; gap: 4px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px; }
+.tile.later { background: transparent; border-style: dashed; color: var(--muted); }
+.tile .name { font-size: 13px; font-weight: 600; }
+.tile .big { font-family: var(--mono); font-size: 24px; font-weight: 500; }
+.tile .cap { font-size: 12px; color: var(--muted); }
+.tile .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.chip { display: inline-block; border-radius: 999px; padding: 0 8px; font-size: 11.5px; font-weight: 500; background: var(--panel-2); color: var(--muted); }
+.chip[data-tone="ok"] { background: var(--ok-soft); color: var(--ok); }
+.chip[data-tone="del"] { background: var(--del-soft); color: var(--del); }
+.change[data-verdict="better"] { color: var(--ok); }
+.change[data-verdict="worse"] { color: var(--del); }
+.change[data-verdict="same"] { color: var(--muted); }
+.spark { width: 100%; height: 28px; }
+svg text { fill: var(--muted); font: 11px var(--ui); }
+
+@media (max-width: 640px) {
+  .bar .right, .range { margin-left: 0; }
+}
+</style>
+
+<div class="top">
+<header class="bar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>yok audits</div>
+  <select class="pick" id="project" aria-label="Project"></select>
+  <select class="pick" id="repo" aria-label="Repo" hidden></select>
+  <select class="pick" id="run" aria-label="Audit run"></select>
+  <span class="right"><a class="nav" href="/">Runs</a><a class="nav" href="/settings">Settings</a></span>
+</header>
+<div class="sub">
+  <span id="ran"></span>
+  <span class="range">Trend
+    <label>from <select class="pick" id="from"></select></label>
+    <label>to <select class="pick" id="to"></select></label>
+    <button class="btn" type="button" id="all-runs">All runs</button>
+    <button class="btn" type="button" id="last-4">Last 4</button>
+  </span>
+</div>
+</div>
+<main>
+  <p class="empty" id="status" role="status">Loading audits…</p>
+  <div id="areas"></div>
+</main>
+<footer class="foot">yok v{{VERSION}}</footer>
+
+<script type="module">
+import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries } from "/assets/shared.js";
+
+// A year of weekly audits, for the run picker and the trend range.
+const LIST_LIMIT = 52;
+const LAST_N = 4;
+
+// metric: the stored metric a tile reads. later: greyed until yok measures it. unmeasured: listed, never measured yet.
+const TILES = {
+  coverage: { name: "Coverage", metric: "coverage", caption: "of all code runs in a test" },
+  health: { name: "Health", unmeasured: true },
+  bugsMissed: { name: "Bugs missed by tests", later: true },
+  fakeTests: { name: "Fake tests", later: true },
+  plantedBugs: { name: "Planted bugs caught", later: true },
+  plannedCases: { name: "Planned cases not tested", later: true },
+  e2eCoverage: { name: "E2E coverage", later: true },
+  speed: { name: "Speed", metric: "testTime", caption: "the whole suite, run alone" },
+  flakiness: { name: "Flakiness", metric: "flakyTests", caption: "tests that failed at least once in 3 runs" },
+  redundancy: { name: "Redundancy", metric: "duplicates", caption: "duplicate tests found" },
+};
+const AREAS = [
+  { name: "Effectiveness", question: "Can the tests catch what goes wrong?", tiles: ["coverage", "health", "bugsMissed", "fakeTests", "plantedBugs", "plannedCases", "e2eCoverage"] },
+  { name: "Efficiency", question: "The suite itself", tiles: ["speed", "flakiness", "redundancy"] },
+];
+
+const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null };
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+};
+const span = (className, text) => el("span", { className, textContent: text ?? "" });
+const chip = (text, tone) => {
+  const node = span("chip", text);
+  node.dataset.tone = tone;
+  return node;
+};
+const svg = (tag, attrs, children = []) => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  node.append(...children);
+  return node;
+};
+
+const getJson = async (path) => {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`);
+  return res.json();
+};
+const query = (fields) => new URLSearchParams(Object.entries(fields).filter(([, value]) => value !== null)).toString();
+const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+const showStatus = (text) => {
+  $("status").textContent = text ?? "";
+  $("status").hidden = text === null;
+};
+const guarded = (work) => work().catch((error) => showStatus(`Could not load the audit: ${error.message}`));
+
+// The list route answers newest first; the trend range reads oldest to newest.
+const oldestFirst = () => [...view.runs].reverse();
+const metricOf = (metric, scope = "") =>
+  view.detail.metrics.find((m) => m.repo === view.repo && m.metric === metric && m.scope === scope);
+const seriesOf = (metric, scope = "") => metricSeries(view.points, view.repo, metric, scope);
+const shownIndex = () => view.points.findIndex((point) => point.auditRunId === view.runId);
+
+const ranText = ({ run }) => {
+  const minutes = (end) => Math.max(1, Math.round((Date.parse(end) - Date.parse(run.startedAt)) / 60000));
+  const took = run.endedAt === null ? "still running" : `took ${minutes(run.endedAt)} min`;
+  return `Ran ${clock(run.startedAt)} · ${took} · ${view.repo} @ ${run.commits[view.repo].slice(0, 7)}`;
+};
+
+const sparkline = (values) => {
+  const known = values.flatMap((value, index) => (value === null ? [] : [[index, value]]));
+  const box = { class: "spark", viewBox: "0 0 100 28", preserveAspectRatio: "none", "aria-hidden": "true" };
+  if (known.length < 2) return svg("svg", box);
+  const lo = Math.min(...known.map(([, value]) => value));
+  const hi = Math.max(...known.map(([, value]) => value));
+  const x = (index) => (index / (values.length - 1)) * 100;
+  const y = (value) => (hi === lo ? 14 : 26 - ((value - lo) / (hi - lo)) * 24);
+  const points = known.map(([index, value]) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
+  return svg("svg", box, [
+    svg("polyline", { points, fill: "none", style: "stroke: var(--accent); stroke-width: 1.5", "vector-effect": "non-scaling-stroke" }),
+  ]);
+};
+
+const limitChip = (info, value) => {
+  const ok = meetsLimit(info, value);
+  if (ok === null) return null;
+  const sign = info.better === "higher" ? "≥" : "≤";
+  return chip(`limit ${sign} ${formatMetric(info.unit, info.limit)}`, ok ? "ok" : "del");
+};
+
+const changeText = (info, series) => {
+  const change = metricChange(info.better, series, shownIndex());
+  if (change === null) return span("change dim", "no earlier run in range");
+  const text = change.verdict === "same" ? "no change" : `${formatChange(info.unit, change.delta)} ${change.verdict}`;
+  const node = span("change", text);
+  node.dataset.verdict = change.verdict;
+  return node;
+};
+
+const tileCaption = (tile) => {
+  const share = metricOf("duplicatesPct");
+  if (tile.metric !== "duplicates" || share?.status !== "measured") return tile.caption;
+  return `${tile.caption} · ${formatMetric("percent", share.value)} of all tests`;
+};
+
+const tileBody = (tile) => {
+  const stored = metricOf(tile.metric);
+  if (stored === undefined || stored.status === "not_measured") {
+    return [span("name", tile.name), span("big dim", "not measured"), span("cap", stored?.reason ?? "this audit did not measure it")];
+  }
+  const info = view.detail.limits[tile.metric];
+  const series = seriesOf(tile.metric);
+  return [
+    span("name", tile.name),
+    span("big", formatMetric(info.unit, stored.value)),
+    span("cap", tileCaption(tile)),
+    el("span", { className: "line" }, [changeText(info, series), limitChip(info, stored.value)].filter((node) => node !== null)),
+    sparkline(series),
+  ];
+};
+
+const laterTile = (tile, words) => el("div", { className: "tile later" }, [span("name", tile.name), span("cap", words)]);
+const tileNode = (key) => {
+  const tile = TILES[key];
+  if (tile.later) return laterTile(tile, "coming later");
+  if (tile.unmeasured) return laterTile(tile, "not measured yet");
+  return el("div", { className: "tile" }, tileBody(tile));
+};
+
+const renderAreas = () => {
+  $("areas").replaceChildren(...AREAS.map((area) => el("section", { className: "area" }, [
+    el("h2", { textContent: area.name }),
+    el("p", { className: "q", textContent: area.question }),
+    el("div", { className: "tiles" }, area.tiles.map(tileNode)),
+  ])));
+};
+
+const fillSelect = (select, options, selected) => {
+  select.replaceChildren(...options.map(([value, label]) => el("option", { value, textContent: label, selected: value === selected })));
+};
+const runLabel = (run) => `${day(run.periodEnd)}${run.status === "complete" ? "" : ` (${run.status})`}`;
+
+const renderHeader = () => {
+  const repos = Object.keys(view.detail.run.commits).sort();
+  const range = oldestFirst().map((run) => [run.id, day(run.periodEnd)]);
+  fillSelect($("project"), view.projects.map((name) => [name, name]), view.project);
+  fillSelect($("run"), view.runs.map((run) => [run.id, runLabel(run)]), view.runId);
+  fillSelect($("repo"), repos.map((repo) => [repo, repo]), view.repo);
+  $("repo").hidden = repos.length < 2;
+  $("ran").textContent = ranText(view.detail);
+  fillSelect($("from"), range, view.from);
+  fillSelect($("to"), range, view.to);
+};
+
+const render = () => {
+  history.replaceState(null, "", `/audits?${query({ project: view.project, run: view.runId, repo: view.repo })}`);
+  showStatus(null);
+  renderHeader();
+  renderAreas();
+};
+
+const loadPoints = async () => {
+  const runs = oldestFirst();
+  const from = runs.find((run) => run.id === view.from);
+  const to = runs.find((run) => run.id === view.to);
+  view.points = await getJson(`/api/audits/metrics?${query({ project: view.project, audit: "test", repo: view.repo, from: from.periodStart, to: to.periodEnd })}`);
+};
+
+// A repo the run did not audit, from the URL or the last run shown, falls back to the run's first repo.
+const loadDetail = async () => {
+  view.detail = await getJson(`/api/audits/${encodeURIComponent(view.runId)}`);
+  const repos = Object.keys(view.detail.run.commits).sort();
+  if (!repos.includes(view.repo)) view.repo = repos[0];
+};
+
+const showRun = async (runId) => {
+  view.runId = runId;
+  await loadDetail();
+  await loadPoints();
+  render();
+};
+
+const showProject = async (project, askedRun) => {
+  view.project = project;
+  view.runs = await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`);
+  const runs = oldestFirst();
+  view.from = runs[0].id;
+  view.to = runs[runs.length - 1].id;
+  await showRun(view.runs.some((run) => run.id === askedRun) ? askedRun : view.runs[0].id);
+};
+
+const setRange = async (fromId, toId) => {
+  const ids = oldestFirst().map((run) => run.id);
+  const inOrder = ids.indexOf(fromId) <= ids.indexOf(toId);
+  view.from = inOrder ? fromId : toId;
+  view.to = inOrder ? toId : fromId;
+  await loadPoints();
+  render();
+};
+
+const start = async () => {
+  view.projects = await getJson("/api/audits/projects?audit=test");
+  if (view.projects.length === 0) {
+    showStatus("No test audit has run yet. A project's first test-audit run shows here.");
+    return;
+  }
+  const params = new URLSearchParams(location.search);
+  const asked = params.get("project");
+  view.repo = params.get("repo");
+  await showProject(view.projects.includes(asked) ? asked : view.projects[0], params.get("run"));
+};
+
+$("project").addEventListener("change", (event) => guarded(() => showProject(event.target.value, null)));
+$("run").addEventListener("change", (event) => guarded(() => showRun(event.target.value)));
+$("repo").addEventListener("change", (event) => guarded(async () => {
+  view.repo = event.target.value;
+  await loadPoints();
+  render();
+}));
+$("from").addEventListener("change", (event) => guarded(() => setRange(event.target.value, view.to)));
+$("to").addEventListener("change", (event) => guarded(() => setRange(view.from, event.target.value)));
+$("all-runs").addEventListener("click", () => {
+  const ids = oldestFirst().map((run) => run.id);
+  guarded(() => setRange(ids[0], ids[ids.length - 1]));
+});
+$("last-4").addEventListener("click", () => {
+  const ids = oldestFirst().map((run) => run.id);
+  guarded(() => setRange(ids[Math.max(0, ids.length - LAST_N)], ids[ids.length - 1]));
+});
+guarded(start);
+</script>
+</html>
