@@ -103,7 +103,10 @@ export const AuditFixPatchSchema = z.union([
       pr: NonEmptyStringSchema.optional(),
       error: NonEmptyStringSchema.optional(),
     })
-    .refine((patch) => Object.keys(patch).length > 0, "a fix patch sets commit, pr or error"),
+    .refine(
+      (patch) => Object.values(patch).some((value) => value !== undefined),
+      "a fix patch sets commit, pr or error",
+    ),
 ]);
 export type AuditFixPatch = z.infer<typeof AuditFixPatchSchema>;
 

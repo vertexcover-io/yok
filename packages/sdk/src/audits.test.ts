@@ -585,6 +585,25 @@ describe("storage.audits fixes", () => {
     });
   });
 
+  test("a patch key set to undefined keeps the stored value, and a patch of only undefined keys is refused", async () => {
+    const { storage, run, one } = await finished();
+    await storage.audits.setFix(one.id, { commit: "abc123" });
+
+    await storage.audits.setFix(one.id, { error: "revert failed", commit: undefined });
+    const kept = {
+      ...instruction,
+      commit: "abc123",
+      error: "revert failed",
+      at: expect.any(String),
+    };
+    expect(await fixOf(storage, run.id, one.id)).toEqual(kept);
+
+    await expect(
+      storage.audits.setFix(one.id, { commit: undefined, pr: undefined, error: undefined }),
+    ).rejects.toThrow("a fix patch sets commit, pr or error");
+    expect(await fixOf(storage, run.id, one.id)).toEqual(kept);
+  });
+
   test("SC7221: clearing removes everything the apply run wrote", async () => {
     const withPrompt = { ...instruction, prompt: "merge them" };
     const { storage, run, one } = await finished(withPrompt);

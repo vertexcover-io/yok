@@ -256,7 +256,13 @@ const patchFix = (fix: AuditFix, patch: AuditFixPatch, at: string): AuditFix => 
   const { commit, pr, error, at: _at, ...instruction } = fix;
   if ("clear" in patch) return instruction;
   const applied = patch.commit !== undefined || patch.pr !== undefined;
-  return { ...instruction, commit, pr, error: applied ? undefined : error, ...patch, at };
+  return {
+    ...instruction,
+    commit: patch.commit ?? commit,
+    pr: patch.pr ?? pr,
+    error: patch.error ?? (applied ? undefined : error),
+    at,
+  };
 };
 
 const setFixIn = (
