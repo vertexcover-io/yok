@@ -1,9 +1,15 @@
 // The engine's side of the sdk: core, server and cli import these. Extension code uses
 // @yok/sdk; a skill script never imports this file.
 export {
+  AUDIT_CLICK_TYPES,
+  AUDIT_RUN_START_TYPES,
+  type AuditFix,
+  type AuditFixPatch,
+  AuditFixPatchSchema,
   type AuditMetric,
   AuditMetricSchema,
   type AuditName,
+  type AuditPendingWork,
   type AuditRecord,
   type AuditReport,
   AuditReportSchema,
@@ -19,6 +25,7 @@ export {
   type AuditStart,
   AuditStartSchema,
   type MetricInfo,
+  TEST_AUDIT_METRIC_NAMES,
   TEST_AUDIT_METRICS,
   TEST_AUDIT_PROBLEM_TYPES,
   type TestAuditMetric,

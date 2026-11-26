@@ -1,18 +1,21 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
-  type AUDIT_CLICK_TYPES,
-  type AUDIT_RUN_START_TYPES,
+  AUDIT_CLICK_TYPES,
+  AUDIT_RUN_START_TYPES,
   type AuditFixPatch,
+  AuditFixPatchSchema,
   type AuditMetric,
   type AuditReport,
   type AuditResult,
   type AuditResultEventDraft,
   type AuditRun,
   type AuditStart,
+  TEST_AUDIT_METRIC_NAMES,
   TEST_AUDIT_METRICS,
   TEST_AUDIT_PROBLEM_TYPES,
 } from "./audits.ts";
 import type { State } from "./contracts.ts";
+import * as internal from "./internal.ts";
 import type { IStorage } from "./repositories.ts";
 import { memoryStorage } from "./storage.ts";
 
@@ -123,6 +126,15 @@ const startOk = async (storage: IStorage, start: AuditStart): Promise<AuditRun> 
 };
 
 describe("test-audit names", () => {
+  test("the server's sdk entry exports the event types, the fix patch schema and the metric names", () => {
+    expect(internal).toMatchObject({
+      AUDIT_CLICK_TYPES: AUDIT_CLICK_TYPES,
+      AUDIT_RUN_START_TYPES: AUDIT_RUN_START_TYPES,
+      AuditFixPatchSchema: AuditFixPatchSchema,
+      TEST_AUDIT_METRIC_NAMES: TEST_AUDIT_METRIC_NAMES,
+    });
+  });
+
   test("SC7208: every known test-audit metric names a direction and a limit within its unit", () => {
     expect(Object.keys(TEST_AUDIT_METRICS)).toEqual([
       "coverage",
