@@ -154,7 +154,16 @@ export const main = async (argv: readonly string[]): Promise<void> => {
     return;
   }
   const base = before.stdout.trim() || EMPTY_TREE;
-  const diff = git(values.repo, ["diff", "-U0", base, "HEAD"]);
+  // The user's color and path-quoting settings would hide the "+++ b/FILE" lines from the parser.
+  const diff = git(values.repo, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--no-color",
+    "-U0",
+    base,
+    "HEAD",
+  ]);
   if (diff.status !== 0) {
     process.stderr.write(diff.stderr);
     process.exitCode = 1;

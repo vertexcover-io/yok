@@ -95,6 +95,21 @@ const commitFile = (repo: string, at: string, file: string): string => {
   return gitAt(repo, at, ["rev-parse", "HEAD"]);
 };
 
+// What main prints to stdout for ARGV, parsed.
+const printedBy = async (argv: readonly string[]): Promise<unknown> => {
+  const written: string[] = [];
+  const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    written.push(String(chunk));
+    return true;
+  });
+  try {
+    await main(argv);
+  } finally {
+    write.mockRestore();
+  }
+  return JSON.parse(written.join(""));
+};
+
 describe("main", () => {
   test("a side-branch commit dated just before the period but merged in it is not the base: the base is main's last commit before the period", async () => {
     const repo = mkdtempSync(join(tmpdir(), "coverage-"));
@@ -109,21 +124,25 @@ describe("main", () => {
     const lcovPath = join(repo, "lcov.info");
     writeFileSync(lcovPath, lcov({ "m.ts": [1], "s.ts": [0] }));
 
-    const written: string[] = [];
-    const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      written.push(String(chunk));
-      return true;
-    });
-    try {
-      await main([lcovPath, "--repo", repo, "--since", "2026-11-03T00:00:00Z"]);
-    } finally {
-      write.mockRestore();
-    }
-    expect(JSON.parse(written.join(""))).toEqual({
+    expect(await printedBy([lcovPath, "--repo", repo, "--since", "2026-11-03T00:00:00Z"])).toEqual({
       base: mainBefore,
       coverage: 50,
       coverageChanged: 0,
       changedLines: 1,
     });
+  });
+
+  test("with color.ui=always, a changed file named é.ts still counts its changed line", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "coverage-"));
+    gitAt(repo, "2026-11-01T00:00:00Z", ["init", "-q", "-b", "main"]);
+    gitAt(repo, "2026-11-01T00:00:00Z", ["config", "color.ui", "always"]);
+    commitFile(repo, "2026-11-01T00:00:00Z", "start.ts");
+    commitFile(repo, "2026-11-04T00:00:00Z", "é.ts");
+    const lcovPath = join(repo, "lcov.info");
+    writeFileSync(lcovPath, lcov({ "é.ts": [1] }));
+
+    expect(
+      await printedBy([lcovPath, "--repo", repo, "--since", "2026-11-03T00:00:00Z"]),
+    ).toMatchObject({ coverageChanged: 100, changedLines: 1 });
   });
 });
