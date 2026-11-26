@@ -249,19 +249,24 @@ export const listAuditWork = (
     const auditIds = new Set(work.results.map((item) => item.id.split(":")[0] ?? item.id));
     const audits = await readAudits(storage, [...auditIds]);
     const results = audits.flatMap((record) => record.results);
-    const fixes = work.results.map((item) => {
+    const items = work.results.map((item) => {
       const result = results.find((candidate) => candidate.id === item.id);
       if (result === undefined) throw new Error(`no audit result ${item.id}`);
-      return toFixItem(result, item.action);
+      return { item, result };
     });
-    // The newest audit's open PR collects the run's commits, whichever audit each result came
-    // from: its auto-fix PR may be merged while a later apply run's PR is still open.
+    const fixes = items.map(({ item, result }) => toFixItem(result, item.action));
+    // A revert's commit is only on its own PR's branch until that PR merges, so its PR comes
+    // first. Then the newest audit's open PR collects the run's commits, whichever audit each
+    // result came from: its auto-fix PR may be merged while a later apply run's PR is open.
+    const revertPrs = items.flatMap(({ item, result }) =>
+      item.action === "revert" && result.fix?.pr !== undefined ? [result.fix.pr] : [],
+    );
     const newest = [...audits].sort((a, b) => b.run.periodEnd.localeCompare(a.run.periodEnd))[0];
     const prs = (newest?.results ?? [])
       .flatMap(({ fix }) => (fix?.pr === undefined ? [] : [{ pr: fix.pr, at: fix.at ?? "" }]))
       .sort((a, b) => b.at.localeCompare(a.at))
       .map(({ pr }) => pr);
-    const open = [...new Set(prs)]
+    const open = [...new Set([...revertPrs, ...prs])]
       .map((pr) => ({ pr, upstream: readOpenBranch(gh, pr) }))
       .find(({ upstream }) => upstream !== null);
     const repos = [...new Set(fixes.map((fix) => fix.repo))].sort();

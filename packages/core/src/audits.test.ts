@@ -352,6 +352,31 @@ describe("listAuditWork", () => {
     });
   });
 
+  test("a revert of an older audit's auto-fix runs on that audit's open PR, the only branch holding its commit", async () => {
+    await withSeededStorage(async (storage) => {
+      const older = await publish(storage, "r-2", "2026-11-14T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:duplicates:d1`, { diff: "-d", commit: "C", pr: "https://x/old" }),
+      ]);
+      const newer = await publish(storage, "r-3", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:f1`, { diff: "-f", pr: "https://x/new" }),
+      ]);
+      const work = await listAuditWork(
+        storage,
+        {
+          results: [
+            { id: `${newer}:yok:flaky:f1`, action: "apply" },
+            { id: `${older}:yok:duplicates:d1`, action: "revert" },
+          ],
+        },
+        ghByUrl({ "https://x/old": "OPEN", "https://x/new": "OPEN" }),
+      );
+      expect(work).toMatchObject({
+        ok: true,
+        value: { pr: "https://x/old", upstream: "old", onPr: true },
+      });
+    });
+  });
+
   test("SC34: work under an unknown audit names the audit run, and a revert with no commit names the result", async () => {
     await withSeededStorage(async (storage) => {
       const unknown = await listAuditWork(
