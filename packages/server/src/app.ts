@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
+import { auditRoutes } from "./audits.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
 import { doctorRoutes, runRoutes } from "./run.ts";
 import { terminalRoutes } from "./terminal.ts";
@@ -56,6 +57,7 @@ export const createApi = (deps: ApiDeps) =>
     .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))
     .route("/triggers", triggerRoutes(deps))
-    .route("/doctor", doctorRoutes(deps));
+    .route("/doctor", doctorRoutes(deps))
+    .route("/audits", auditRoutes(deps));
 
 export type ApiType = ReturnType<typeof createApi>;
