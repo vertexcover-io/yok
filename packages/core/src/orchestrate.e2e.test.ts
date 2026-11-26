@@ -1267,3 +1267,54 @@ describe("orchestrate workflows", () => {
     });
   });
 });
+
+describe("orchestrate audit", () => {
+  test("SC9: audit start, finish, fix and close act on the run named by YOK_RUN_ID and print JSON", async () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    await initializedRun(home, repo, "audit");
+    const env = { YOK_RUN_ID: "r-1" };
+    const audit = (args: readonly string[], input = "") =>
+      orchestrate(repo, home, ["audit", ...args], env, input);
+    const workspace = JSON.stringify({
+      workspace: { repos: [{ name: "yok", worktreeDir: repo }] },
+    });
+
+    const start = audit(["start"], workspace);
+    expect(start.code).toBe(0);
+    const opened = JSON.parse(start.stdout);
+    expect(opened).toMatchObject({ runId: "r-1", status: "running" });
+
+    const resultId = `${opened.id}:yok:flaky:a-test`;
+    const report = {
+      status: "complete",
+      metrics: [],
+      results: [
+        {
+          id: resultId,
+          repo: "yok",
+          problemType: "flaky",
+          state: "needs_approval",
+          title: "a test fails at random",
+          proof: {},
+          fix: { summary: "wait for the reply" },
+        },
+      ],
+    };
+    const finish = audit(["finish"], JSON.stringify(report));
+    expect(finish.code).toBe(0);
+    expect(JSON.parse(finish.stdout)).toMatchObject({ id: opened.id, status: "complete" });
+
+    const fix = audit(["fix", resultId], JSON.stringify({ commit: "abc" }));
+    expect(fix.code).toBe(0);
+    expect(JSON.parse(fix.stdout).fix.commit).toBe("abc");
+
+    const close = audit(["close"], "{}");
+    expect(close.code).toBe(0);
+    expect(JSON.parse(close.stdout)).toMatchObject({ id: opened.id, status: "complete" });
+
+    const bad = audit(["start"], "not json");
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain("stdin is not valid JSON");
+  });
+});

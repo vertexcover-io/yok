@@ -45,6 +45,7 @@ import {
 } from "@yok/sdk/internal";
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
 import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
+import { closeAudit, finishAudit, setAuditFix, startAudit } from "./audits.ts";
 import { runAutoResume } from "./auto-resume.ts";
 import { runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
@@ -875,6 +876,61 @@ const commentsCommand = () => {
   return comments;
 };
 
+const readStdinJson = async (): Promise<Result<JsonValue>> =>
+  parseJsonFlag(await Bun.stdin.text(), "stdin");
+
+const auditCommand = () => {
+  const audit = new Command("audit").description(
+    "Write the run's test audit to yok.db: open it, publish it, close it, record an applied fix",
+  );
+  audit
+    .command("start")
+    .description("Open the run's audit; stdin is { workspace }, create-workspace's output")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      const input = await readStdinJson();
+      if (!input.ok) return fail(input.error);
+      printResult(await startAudit(storage(), createGit(), run.value, input.value, new Date()));
+    });
+  audit
+    .command("finish")
+    .description("Publish the run's audit; stdin is the report { status, metrics, results }")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      const input = await readStdinJson();
+      if (!input.ok) return fail(input.error);
+      printResult(await finishAudit(storage(), run.value, input.value));
+    });
+  audit
+    .command("close")
+    .description("Mark the run's audit failed if it is still running; print it, or null")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      printResult(await closeAudit(storage(), run.value));
+    });
+  audit
+    .command("fix")
+    .description(
+      "Write what an apply run did to one result; stdin is { commit, pr, error } or { clear: true }",
+    )
+    .argument("<resultId>", "the audit result's id")
+    .action(async (resultId) => {
+      const input = await readStdinJson();
+      if (!input.ok) return fail(input.error);
+      printResult(await setAuditFix(storage(), resultId, input.value));
+    });
+  return audit;
+};
+
 const getCommand = () =>
   new Command("get")
     .description(
@@ -1019,6 +1075,7 @@ export const orchestrateCommand = () =>
     .addCommand(modelCommand())
     .addCommand(autoResumeCommand())
     .addCommand(commentsCommand())
+    .addCommand(auditCommand())
     .addCommand(getCommand())
     .addCommand(sessionsCommand())
     .addCommand(eventsCommand())
