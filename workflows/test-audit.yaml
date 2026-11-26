@@ -28,10 +28,14 @@ inputs:
   duplicatesPctLimit:
     type: number
     default: 2
+# gh: the auto-fix opens its PR with it, and a missing gh found then would fail the week's audit.
 doctor:
   - check: binary
     key: python3
     fix: Install Python 3
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
 nodes:
   - id: create-workspace
     type: agent

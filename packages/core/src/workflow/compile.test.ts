@@ -1431,6 +1431,16 @@ describe("the shipped test-audit workflow", () => {
     });
   });
 
+  test("checks for python3 and gh before it starts, since its auto-fix opens a PR with gh", async () => {
+    const plan = await compileWorkflow(TEST_AUDIT);
+    expect(plan.doctor).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ check: "binary", key: "python3" }),
+        expect.objectContaining({ check: "binary", key: "gh" }),
+      ]),
+    );
+  });
+
   test("SC23: each limit input defaults to its metric's limit in TEST_AUDIT_METRICS", async () => {
     const plan = await compileWorkflow(TEST_AUDIT);
 
