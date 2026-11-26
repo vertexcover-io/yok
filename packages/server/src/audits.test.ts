@@ -47,9 +47,10 @@ type SeedRun = Readonly<{
   inputs?: JsonObject;
   terminal?: string;
   state?: Partial<State>;
+  unnamed?: boolean;
 }>;
 
-// Stores run ID in PROJECT, named by init with a state, as a started run is.
+// Stores run ID in PROJECT, named by init with a state as a started run is, unless UNNAMED.
 const addRun = async (storage: IStorage, id: string, seed: SeedRun = {}): Promise<void> => {
   const project = seed.project ?? "web";
   await storage.runs.addRun({
@@ -65,6 +66,7 @@ const addRun = async (storage: IStorage, id: string, seed: SeedRun = {}): Promis
     tiers: null,
     createdAt: AT,
   });
+  if (seed.unnamed === true) return;
   const state = { ...seedState(`/abs/${project}/.yok/${id}`, {}), runId: id, ...seed.state };
   const named = await storage.runs.initRun(id, `run-${id}`, state);
   if (!named.ok) throw new Error(named.error);
@@ -202,7 +204,7 @@ describe("GET /audits", () => {
       completedAt: "2026-11-08T09:30:00.000Z",
     };
     await addRun(storage, "r-audit", { inputs: { coverageLimit: 70 }, state: times });
-    await addRun(storage, "r-apply", { workflow: "test-audit-apply" });
+    await addRun(storage, "r-apply", { workflow: "test-audit-apply", terminal: "t-apply" });
     const audit = await addAudit(storage, {
       runId: "r-audit",
       slugs: ["a", "b"],
@@ -223,7 +225,7 @@ describe("GET /audits", () => {
       payload: {},
       startedRunId: "r-apply",
     });
-    const app = createApi(buildDeps(storage));
+    const app = createApi(buildDeps(storage, true));
 
     const { status, body } = await getJson(app, `/audits/${audit.id}`);
 
@@ -308,8 +310,9 @@ const click = (
     body: JSON.stringify(body),
   });
 
-// Result A's newest apply_started names run r-apply, with an open agent session and STATUS.
-const applying = async (status: State["status"]) => {
+// Result A's newest apply_started names run r-apply, with STATUS and an agent session that is
+// open when ALIVE.
+const applying = async (status: State["status"], alive = true) => {
   const env = await oneResult();
   await addRun(env.storage, "r-apply", {
     workflow: "test-audit-apply",
@@ -323,7 +326,7 @@ const applying = async (status: State["status"]) => {
     payload: {},
     startedRunId: "r-apply",
   });
-  return { ...env, app: createApi(buildDeps(env.storage, true)) };
+  return { ...env, app: createApi(buildDeps(env.storage, alive)) };
 };
 
 describe("POST /audits/results/:resultId/events", () => {
@@ -390,6 +393,49 @@ describe("POST /audits/results/:resultId/events", () => {
 
     expect(response.status).toBe(status);
     if (status === 409) expect((await response.json()).error.code).toBe("conflict");
+  });
+
+  test("SC7311: Accept answers 409 while the apply run is a minute old and not yet named", async () => {
+    const { storage, resultId } = await oneResult();
+    await addRun(storage, "r-apply", {
+      workflow: "test-audit-apply",
+      terminal: "t-apply",
+      unnamed: true,
+    });
+    await storage.audits.addEvent({
+      resultId,
+      who: "yok",
+      type: "apply_started",
+      payload: {},
+      startedRunId: "r-apply",
+    });
+    const minuteLater = () => new Date(new Date(AT).getTime() + 60_000);
+    const app = createApi({ ...buildDeps(storage, true), now: minuteLater });
+
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(response.status).toBe(409);
+  });
+
+  test("Accept answers 409 while the apply run's agent is dead and its state says running", async () => {
+    const { app, resultId } = await applying("running", false);
+
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(response.status).toBe(409);
+  });
+
+  test("an apply run whose agent is dead while its state says running reads as gone, and Accept still answers 409", async () => {
+    const { app, audit, resultId } = await applying("running", false);
+
+    const { body } = await getJson(app, `/audits/${audit.id}`);
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(body.results[0]).toMatchObject({
+      id: resultId,
+      applyRun: { id: "r-apply", status: "gone" },
+    });
+    expect(response.status).toBe(409);
   });
 
   test("SC7312: Accept is taken once the result's apply run has ended", async () => {
@@ -557,12 +603,16 @@ describe("the tick's audit apply runs", () => {
     "SC7316: a tick while the apply run is going starts nothing, and the next click waits for it to end",
     async () => {
       const { storage, launches, deps, a, b, runId } = await appliedOnce();
-      await setState(storage, runId, "running");
       await addRun(storage, "r-audit-2");
       const later = await addAudit(storage, { runId: "r-audit-2", day: 15, slugs: ["c"] });
       const c = `${later.id}:web:duplicates:c`;
       await clickAs(storage, c, "accepted");
 
+      // the apply run is not named yet: orchestrate init has not run
+      await tick(deps());
+      expect(launches).toHaveLength(1);
+
+      await setState(storage, runId, "running");
       await tick(deps());
       expect(launches).toHaveLength(1);
       expect(await storage.audits.pendingWork("web")).toHaveLength(1);
@@ -662,16 +712,75 @@ describe("the tick's audit apply runs", () => {
   );
 
   test(
-    "SC7321: an apply run whose agent died while its state says running is left alone",
+    "outcomes the apply run writes after the sweep read the audit, before it read the run, are left alone",
+    async () => {
+      const { storage, deps, a, b, runId } = await appliedOnce();
+      await setState(storage, runId, "completed");
+      // the run writes its outcomes while the sweep is between its audit read and its first run read
+      let written = false;
+      const findRun = async (id: string) => {
+        if (!written) {
+          written = true;
+          await storage.audits.setFix(a, { commit: "c1" });
+          await storage.audits.setFix(b, { clear: true });
+        }
+        return storage.runs.findRun(id);
+      };
+
+      await tick({ ...deps(), storage: { ...storage, runs: { ...storage.runs, findRun } } });
+
+      expect(await fixOf(storage, a)).toMatchObject({ commit: "c1" });
+      expect((await fixOf(storage, a))?.error).toBeUndefined();
+      expect((await fixOf(storage, b))?.error).toBeUndefined();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7321: an apply run whose agent died while its state says running is left alone, and no second one starts",
     async () => {
       const { storage, launches, deps, a, b, runId } = await appliedOnce();
       await setState(storage, runId, "running");
+      await clickAs(storage, a, "accepted");
 
       await tick(deps(false));
 
       expect((await fixOf(storage, a))?.error).toBeUndefined();
       expect((await fixOf(storage, b))?.error).toBeUndefined();
       expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "an apply run whose agent died before orchestrate init named it marks its results failed",
+    async () => {
+      const { storage, launches, deps, a, b, runId } = await appliedOnce();
+
+      await tick(deps(false));
+
+      expect((await fixOf(storage, a))?.error).toBe(`apply run ${runId} failed`);
+      expect((await fixOf(storage, b))?.error).toBe(`apply run ${runId} failed`);
+      expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "an Undo then Accept made after the apply run started is not marked failed when the run ends, and the next run applies it",
+    async () => {
+      const { storage, launches, deps, a, runId } = await appliedOnce();
+      // event times are milliseconds, and a click in the start's millisecond counts as before it
+      await Bun.sleep(2);
+      await clickAs(storage, a, "undone");
+      await clickAs(storage, a, "accepted");
+      await setState(storage, runId, "failed");
+
+      await tick(deps());
+
+      expect((await fixOf(storage, a))?.error).toBeUndefined();
+      expect(launches).toHaveLength(2);
+      expect(launches[1]?.prompt).toContain(`{"id":"${a}","action":"apply"}`);
     },
     TIMEOUT_MS,
   );

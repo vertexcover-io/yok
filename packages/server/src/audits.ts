@@ -2,13 +2,14 @@ import type { ILogger, IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
 import {
   type AuditPendingWork,
   type AuditResult,
+  type AuditResultEvent,
   isRunLive,
   TEST_AUDIT_METRIC_NAMES,
   TEST_AUDIT_METRICS,
 } from "@yok/sdk/internal";
 import { type Context, Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
-import { isRunGoing, readStateOrNull } from "./delivery.ts";
+import { isAgentAlive, isRunGoing, readStateOrNull } from "./delivery.ts";
 import { oauthApp, sessionUser } from "./identity.ts";
 import {
   type AuditEventBody,
@@ -36,11 +37,15 @@ export const findApplyRun = async (
   return storage.runs.findRun(started.startedRunId);
 };
 
-const describeApplyRun = async (resultId: string, storage: IStorage) => {
-  const run = await findApplyRun(resultId, storage);
+// "gone", as the runs page says, when the agent died while the state says running: the page can
+// tell the person the run stopped, though it still holds its results until resumed or cancelled.
+const describeApplyRun = async (resultId: string, deps: AuditRouteDeps) => {
+  const run = await findApplyRun(resultId, deps.storage);
   if (run === undefined) return null;
-  const state = await readStateOrNull(storage, run.id);
-  return { id: run.id, status: state?.status ?? "starting" };
+  const state = await readStateOrNull(deps.storage, run.id);
+  if (state === null) return { id: run.id, status: "starting" };
+  const gone = isRunLive(state.status) && !(await isAgentAlive(run, deps.host));
+  return { id: run.id, status: gone ? "gone" : state.status };
 };
 
 // A project sets its own limit with a workflow input named after the metric, such as coverageLimit.
@@ -53,7 +58,8 @@ const mergeLimits = (inputs: JsonObject) =>
     }),
   );
 
-const readAudit = async (auditRunId: string, storage: IStorage) => {
+const readAudit = async (auditRunId: string, deps: AuditRouteDeps) => {
+  const { storage } = deps;
   const record = await storage.audits.read(auditRunId);
   if (record === undefined) return undefined;
   const run = await storage.runs.findRun(record.run.runId);
@@ -62,7 +68,7 @@ const readAudit = async (auditRunId: string, storage: IStorage) => {
     record.results.map(async (result) => ({
       ...result,
       decision: (await storage.audits.decision(result.id)) ?? null,
-      applyRun: await describeApplyRun(result.id, storage),
+      applyRun: await describeApplyRun(result.id, deps),
     })),
   );
   return {
@@ -75,6 +81,14 @@ const readAudit = async (auditRunId: string, storage: IStorage) => {
     metrics: record.metrics,
     results,
   };
+};
+
+// A named run whose agent died while its state says running still holds its results, so a resume
+// can finish it; an unnamed one is going only while isRunGoing says so.
+const isApplyRunGoing = async (run: WorkflowRun, deps: AuditRouteDeps): Promise<boolean> => {
+  const state = await readStateOrNull(deps.storage, run.id);
+  if (state !== null) return isRunLive(state.status);
+  return isRunGoing(run, run.createdAt, deps);
 };
 
 // The signed-in person's GitHub login, else their yok user id. "local" on a server with no
@@ -103,7 +117,7 @@ const recordClick = async (
     return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
   }
   const applyRun = type === "rejected" ? undefined : await findApplyRun(resultId, deps.storage);
-  if (applyRun !== undefined && (await isRunGoing(applyRun, applyRun.createdAt, deps))) {
+  if (applyRun !== undefined && (await isApplyRunGoing(applyRun, deps))) {
     return errorResponse(
       c,
       409,
@@ -125,7 +139,7 @@ const isApplyRunGoingIn = async (project: string, deps: AuditTickDeps): Promise<
   const runs = (await deps.storage.runs.listRuns()).filter(
     (run) => run.project === project && run.workflow === APPLY_WORKFLOW,
   );
-  const going = await Promise.all(runs.map((run) => isRunGoing(run, run.createdAt, deps)));
+  const going = await Promise.all(runs.map((run) => isApplyRunGoing(run, deps)));
   return going.includes(true);
 };
 
@@ -182,19 +196,31 @@ export const startAuditApplyRuns = async (deps: AuditTickDeps): Promise<void> =>
   }
 };
 
-const failIfAbandoned = async (result: AuditResult, storage: IStorage): Promise<void> => {
-  const started = await storage.audits.run(result.id);
-  if (result.fix === null || started === undefined) return;
-  // fix.at stamps setFix's last write; a finished revert clears it along with the commit
-  const written =
-    (result.fix.at ?? "") >= started.ts ||
-    (started.type === "revert_started" && result.fix.commit === undefined);
-  if (written) return;
+// fix.at stamps setFix's last write; a finished revert clears it along with the commit
+const isOutcomeWritten = (fix: AuditResult["fix"], started: AuditResultEvent): boolean =>
+  fix === null ||
+  (fix.at ?? "") >= started.ts ||
+  (started.type === "revert_started" && fix.commit === undefined);
+
+const readFix = async (resultId: string, storage: IStorage) => {
+  const [auditRunId = ""] = resultId.split(":");
+  const record = await storage.audits.read(auditRunId);
+  return record?.results.find((entry) => entry.id === resultId)?.fix ?? null;
+};
+
+const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promise<void> => {
+  const started = await deps.storage.audits.run(result.id);
+  if (started === undefined || isOutcomeWritten(result.fix, started)) return;
+  // a click since the run started owes the next run its work; an error now would hide it
+  const clicked = await deps.storage.audits.decision(result.id);
+  if (clicked !== undefined && clicked.ts > started.ts) return;
   // startedRunId turns null when the run is removed
   const runId = started.startedRunId;
-  const state = runId === null ? null : await readStateOrNull(storage, runId);
-  if (runId !== null && (state === null || isRunLive(state.status))) return;
-  await storage.audits.setFix(result.id, {
+  const run = runId === null ? undefined : await deps.storage.runs.findRun(runId);
+  if (run !== undefined && (await isApplyRunGoing(run, deps))) return;
+  // the run may have written its outcomes since the audit was read, just before it ended
+  if (isOutcomeWritten(await readFix(result.id, deps.storage), started)) return;
+  await deps.storage.audits.setFix(result.id, {
     error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
   });
 };
@@ -205,7 +231,7 @@ export const failAbandonedApplies = async (deps: AuditTickDeps): Promise<void> =
   for (const project of Object.keys(await deps.storage.projects.list())) {
     for (const auditRun of await deps.storage.audits.list(project, "test")) {
       const record = await deps.storage.audits.read(auditRun.id);
-      for (const result of record?.results ?? []) await failIfAbandoned(result, deps.storage);
+      for (const result of record?.results ?? []) await failIfAbandoned(result, deps);
     }
   }
 };
@@ -248,7 +274,7 @@ export const auditRoutes = (deps: AuditRouteDeps) =>
     })
     .get("/:auditRunId", async (c) => {
       const auditRunId = c.req.param("auditRunId");
-      const audit = await readAudit(auditRunId, deps.storage);
+      const audit = await readAudit(auditRunId, deps);
       if (audit === undefined) {
         return errorResponse(c, 404, "not-found", `no audit run with id ${auditRunId}`);
       }
