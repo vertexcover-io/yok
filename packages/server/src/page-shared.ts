@@ -87,7 +87,8 @@ export const prLabel = (pr: string): string => {
 export type AuditApplyRun = Readonly<{ id: string; status: RunStatus }>;
 
 export type ResultPageState =
-  | Readonly<{ kind: "auto-fixed" | "needs-work" | "open" | "waiting" }>
+  | Readonly<{ kind: "auto-fixed" | "needs-work" | "open" }>
+  | Readonly<{ kind: "waiting"; action: "apply" | "revert" }>
   | Readonly<{ kind: "applying" | "stopped" | "run-failed"; runId: string }>
   | Readonly<{ kind: "applied"; commit: string; pr: string | null }>
   | Readonly<{ kind: "failed"; reason: string }>
@@ -132,5 +133,5 @@ export const resultPageState = (
   if (applyRun !== null && FAILED_RUN.has(applyRun.status) && fix?.error === undefined) {
     return { kind: "run-failed", runId: applyRun.id };
   }
-  return { kind: "waiting" };
+  return { kind: "waiting", action: decision.type === "undone" ? "revert" : "apply" };
 };

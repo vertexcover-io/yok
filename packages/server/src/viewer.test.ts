@@ -975,7 +975,10 @@ describe("resultPageState", () => {
   });
 
   test("SC8013: an accepted result with no commit, no error and no apply run yet is waiting", () => {
-    expect(resultPageState(result({}), click("accepted"), null)).toEqual({ kind: "waiting" });
+    expect(resultPageState(result({}), click("accepted"), null)).toEqual({
+      kind: "waiting",
+      action: "apply",
+    });
   });
 
   test("SC8014: a starting, running or blocked apply run is applying after an accept or an undo, never open", () => {
@@ -1014,6 +1017,7 @@ describe("resultPageState", () => {
     });
     expect(resultPageState(failed("2026-11-20T09:00:00.000Z"), decision, null)).toEqual({
       kind: "waiting",
+      action: "apply",
     });
   });
 
@@ -1024,7 +1028,10 @@ describe("resultPageState", () => {
       ),
     ).toEqual(Array(2).fill({ kind: "run-failed", runId: "r-9" }));
     const stale = result({ error: "tests failed", at: "2026-11-20T09:00:00.000Z" });
-    expect(resultPageState(stale, click("accepted"), run("failed"))).toEqual({ kind: "waiting" });
+    expect(resultPageState(stale, click("accepted"), run("failed"))).toEqual({
+      kind: "waiting",
+      action: "apply",
+    });
   });
 
   test("an apply run whose agent is gone reads stopped after an accept or an undo, not run-failed, so its run can be resumed or cancelled", () => {
@@ -1050,6 +1057,7 @@ describe("resultPageState", () => {
   test("SC8019: an undo waits for the revert of an applied commit, and reopens a result that was never applied", () => {
     expect(resultPageState(result({ commit: "abc1234" }), click("undone"), null)).toEqual({
       kind: "waiting",
+      action: "revert",
     });
     expect(resultPageState(result({}), click("undone"), null)).toEqual({ kind: "open" });
   });

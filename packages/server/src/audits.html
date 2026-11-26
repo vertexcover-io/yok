@@ -569,7 +569,7 @@ const pageState = (result) => resultPageState(result, result.decision, result.ap
 const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(runId)}`, textContent: text });
 // The words for each state that has some; "open", "auto-fixed" and "needs-work" show buttons only.
 const STATE_LINE = {
-  waiting: () => ["waiting for yok to apply it"],
+  waiting: (state) => [`waiting for yok to ${state.action} it`],
   applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
   stopped: (state) => ["apply run stopped: ", runLink(state.runId, "open it to resume or cancel")],
   "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
