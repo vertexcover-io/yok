@@ -10,6 +10,7 @@ import { doctorCommand } from "./doctor.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { loginCommand } from "./login.ts";
 import { lsCommand } from "./ls.ts";
+import { packCommand } from "./pack.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
 import { resumeCommand, retryCommand, runCommand } from "./run.ts";
@@ -51,6 +52,7 @@ await new Command()
   .addCommand(loginCommand())
   .addCommand(lsCommand())
   .addCommand(orchestrateCommand())
+  .addCommand(packCommand())
   .addCommand(pluginCommand())
   .addCommand(projectCommand())
   .addCommand(runCommand())
