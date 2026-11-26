@@ -308,8 +308,9 @@ const click = (
     body: JSON.stringify(body),
   });
 
-// Result A's newest apply_started names run r-apply, with an open agent session and STATUS.
-const applying = async (status: State["status"]) => {
+// Result A's newest apply_started names run r-apply, with STATUS and an agent session that is
+// open when ALIVE.
+const applying = async (status: State["status"], alive = true) => {
   const env = await oneResult();
   await addRun(env.storage, "r-apply", {
     workflow: "test-audit-apply",
@@ -323,7 +324,7 @@ const applying = async (status: State["status"]) => {
     payload: {},
     startedRunId: "r-apply",
   });
-  return { ...env, app: createApi(buildDeps(env.storage, true)) };
+  return { ...env, app: createApi(buildDeps(env.storage, alive)) };
 };
 
 describe("POST /audits/results/:resultId/events", () => {
@@ -390,6 +391,14 @@ describe("POST /audits/results/:resultId/events", () => {
 
     expect(response.status).toBe(status);
     if (status === 409) expect((await response.json()).error.code).toBe("conflict");
+  });
+
+  test("Accept answers 409 while the apply run's agent is dead and its state says running", async () => {
+    const { app, resultId } = await applying("running", false);
+
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(response.status).toBe(409);
   });
 
   test("SC7312: Accept is taken once the result's apply run has ended", async () => {
@@ -687,10 +696,11 @@ describe("the tick's audit apply runs", () => {
   );
 
   test(
-    "SC7321: an apply run whose agent died while its state says running is left alone",
+    "SC7321: an apply run whose agent died while its state says running is left alone, and no second one starts",
     async () => {
       const { storage, launches, deps, a, b, runId } = await appliedOnce();
       await setState(storage, runId, "running");
+      await clickAs(storage, a, "accepted");
 
       await tick(deps(false));
 

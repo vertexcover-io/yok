@@ -78,6 +78,14 @@ const readAudit = async (auditRunId: string, storage: IStorage) => {
   };
 };
 
+// A named run whose agent died while its state says running still holds its results, so a resume
+// can finish it; an unnamed one is going only while isRunGoing says so.
+const isApplyRunGoing = async (run: WorkflowRun, deps: AuditRouteDeps): Promise<boolean> => {
+  const state = await readStateOrNull(deps.storage, run.id);
+  if (state !== null) return isRunLive(state.status);
+  return isRunGoing(run, run.createdAt, deps);
+};
+
 // The signed-in person's GitHub login, else their yok user id. "local" on a server with no
 // GitHub sign-in set up; null when sign-in is set up and nobody is signed in.
 const findDecider = async (
@@ -104,7 +112,7 @@ const recordClick = async (
     return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
   }
   const applyRun = type === "rejected" ? undefined : await findApplyRun(resultId, deps.storage);
-  if (applyRun !== undefined && (await isRunGoing(applyRun, applyRun.createdAt, deps))) {
+  if (applyRun !== undefined && (await isApplyRunGoing(applyRun, deps))) {
     return errorResponse(
       c,
       409,
@@ -126,7 +134,7 @@ const isApplyRunGoingIn = async (project: string, deps: AuditTickDeps): Promise<
   const runs = (await deps.storage.runs.listRuns()).filter(
     (run) => run.project === project && run.workflow === APPLY_WORKFLOW,
   );
-  const going = await Promise.all(runs.map((run) => isRunGoing(run, run.createdAt, deps)));
+  const going = await Promise.all(runs.map((run) => isApplyRunGoing(run, deps)));
   return going.includes(true);
 };
 
@@ -181,14 +189,6 @@ export const startAuditApplyRuns = async (deps: AuditTickDeps): Promise<void> =>
     if (work.length === 0 || (await isApplyRunGoingIn(project, deps))) continue;
     await startApplyRun(project, work, deps);
   }
-};
-
-// A named run whose agent died while its state says running still holds its results, so a resume
-// can finish it; an unnamed one is going only while isRunGoing says so.
-const isApplyRunGoing = async (run: WorkflowRun, deps: AuditTickDeps): Promise<boolean> => {
-  const state = await readStateOrNull(deps.storage, run.id);
-  if (state !== null) return isRunLive(state.status);
-  return isRunGoing(run, run.createdAt, deps);
 };
 
 // fix.at stamps setFix's last write; a finished revert clears it along with the commit
