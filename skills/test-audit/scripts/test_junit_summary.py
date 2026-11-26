@@ -1,5 +1,8 @@
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from junit_summary import classify, load_tree, main, parse_run, render_layer, summarize_layer
@@ -108,7 +111,7 @@ class JunitSummaryTest(unittest.TestCase):
             root = Path(directory)
             for run, flaky in (("run1", ""), ("run2", "<failure />"), ("run3", "")):
                 write(root / "unit" / run, "r.xml", BUN_RUN.format(flaky=flaky))
-            summary = summarize_layer(load_tree(root)["unit"], top=1)
+            summary = summarize_layer(load_tree(root)["unit"])
         self.assertEqual(
             summary,
             {
@@ -118,8 +121,22 @@ class JunitSummaryTest(unittest.TestCase):
                 "failing": [{"file": "b.test.ts", "name": "broken"}],
                 "flaky": [{"file": "a.test.ts", "name": "sometimes", "runs": ["pass", "fail", "pass"]}],
                 "slow": [{"file": "a.test.ts", "seconds": 3.0, "share": 0.9677}],
+                "warning": None,
             },
         )
+
+    def test_json_lists_as_slow_only_files_at_5_percent_or_more_and_keeps_the_run_mismatch_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "unit" / "run1", "r.xml", BUN_RUN.format(flaky=""))
+            write(root / "unit" / "run2", "r.xml", GO_RUN)
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                self.assertEqual(main([str(root), "--json"]), 0)
+        unit = json.loads(printed.getvalue())["unit"]
+        self.assertEqual([slow["file"] for slow in unit["slow"]], ["a.test.ts", "example.com/pkg/store"])
+        self.assertEqual(unit["warning"], "warning: 5 tests appear in some runs and not others; "
+                         "check each run folder holds one whole run of this layer only")
 
     def test_a_folder_not_laid_out_by_layer_and_run_exits_1(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

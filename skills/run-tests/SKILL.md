@@ -46,7 +46,9 @@ broke, a line in `errors`.
    that would reset, migrate or seed data it did not create. Time each run with the wall clock.
 3. **Summarize the runs.** Run `python3 PATH SCRATCH/REPO --json`, where PATH is printed by
    `yok orchestrate skill ref --path test-audit.junit-summary`. It prints, per type, the test
-   count, the tests failing every run, the flaky tests with each run's outcome, and the slow files.
+   count, the tests failing every run, the flaky tests with each run's outcome, the slow files
+   (5% or more of the type's time), and a `warning` when the runs did not hold the same tests;
+   add that warning to `errors`.
 4. **Run the suite once with coverage** as lcov, with the runner's coverage flag, then run
    `yok orchestrate skill run run-tests.coverage LCOV --repo WORKTREE --since PERIOD_START`. It
    prints `coverage` and `coverageChanged`, the coverage of the lines changed in the period, or

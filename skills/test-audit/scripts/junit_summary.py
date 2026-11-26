@@ -162,7 +162,7 @@ def run_outcome(run: list[Case], key: Key) -> str:
     return "skip" if found else "missing"
 
 
-def summarize_layer(runs: list[list[Case]], top: int) -> dict[str, object]:
+def summarize_layer(runs: list[list[Case]]) -> dict[str, object]:
     cases = [case for run in runs for case in run]
     always, flaky = classify(cases)
     tests = seconds_per_pass(cases)
@@ -180,11 +180,13 @@ def summarize_layer(runs: list[list[Case]], top: int) -> dict[str, object]:
             {"file": file, "name": name, "runs": [run_outcome(run, (file, name)) for run in runs]}
             for file, name in flaky
         ],
+        # Only files over the share: the top-N rule of the text report would flag a fast suite.
         "slow": [
             {"file": file, "seconds": round(seconds, 3), "share": round(seconds / (total or 1.0), 4)}
-            for rank, (file, seconds) in enumerate(slow_files)
-            if rank < top or seconds / (total or 1.0) >= SLOW_FILE_SHARE
+            for file, seconds in slow_files
+            if seconds / (total or 1.0) >= SLOW_FILE_SHARE
         ],
+        "warning": mismatch_warning(runs),
     }
 
 def main(argv: list[str]) -> int:
@@ -199,7 +201,7 @@ def main(argv: list[str]) -> int:
         print(f"junit_summary: cannot read the audit folder: {error}", file=sys.stderr)
         return 1
     if args.json:
-        print(json.dumps({name: summarize_layer(runs, args.top) for name, runs in tree.items()}))
+        print(json.dumps({name: summarize_layer(runs) for name, runs in tree.items()}))
         return 0
     print("\n\n".join([*(render_layer(name, runs, args.top) for name, runs in tree.items()), NOTES]))
     return 0
