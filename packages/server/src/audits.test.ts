@@ -677,6 +677,20 @@ describe("the tick's audit apply runs", () => {
   );
 
   test(
+    "an apply run whose agent died before orchestrate init named it marks its results failed",
+    async () => {
+      const { storage, launches, deps, a, b, runId } = await appliedOnce();
+
+      await tick(deps(false));
+
+      expect((await fixOf(storage, a))?.error).toBe(`apply run ${runId} failed`);
+      expect((await fixOf(storage, b))?.error).toBe(`apply run ${runId} failed`);
+      expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "SC7322: a result whose apply run was removed is marked failed",
     async () => {
       const { storage, deps, a, runId } = await appliedOnce();

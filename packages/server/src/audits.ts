@@ -182,8 +182,16 @@ export const startAuditApplyRuns = async (deps: AuditTickDeps): Promise<void> =>
   }
 };
 
-const failIfAbandoned = async (result: AuditResult, storage: IStorage): Promise<void> => {
-  const started = await storage.audits.run(result.id);
+// A named run whose agent died while its state says running still holds its results, so a resume
+// can finish it; an unnamed one is going only while isRunGoing says so.
+const isApplyRunGoing = async (run: WorkflowRun, deps: AuditTickDeps): Promise<boolean> => {
+  const state = await readStateOrNull(deps.storage, run.id);
+  if (state !== null) return isRunLive(state.status);
+  return isRunGoing(run, run.createdAt, deps);
+};
+
+const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promise<void> => {
+  const started = await deps.storage.audits.run(result.id);
   if (result.fix === null || started === undefined) return;
   // fix.at stamps setFix's last write; a finished revert clears it along with the commit
   const written =
@@ -192,9 +200,9 @@ const failIfAbandoned = async (result: AuditResult, storage: IStorage): Promise<
   if (written) return;
   // startedRunId turns null when the run is removed
   const runId = started.startedRunId;
-  const state = runId === null ? null : await readStateOrNull(storage, runId);
-  if (runId !== null && (state === null || isRunLive(state.status))) return;
-  await storage.audits.setFix(result.id, {
+  const run = runId === null ? undefined : await deps.storage.runs.findRun(runId);
+  if (run !== undefined && (await isApplyRunGoing(run, deps))) return;
+  await deps.storage.audits.setFix(result.id, {
     error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
   });
 };
@@ -205,7 +213,7 @@ export const failAbandonedApplies = async (deps: AuditTickDeps): Promise<void> =
   for (const project of Object.keys(await deps.storage.projects.list())) {
     for (const auditRun of await deps.storage.audits.list(project, "test")) {
       const record = await deps.storage.audits.read(auditRun.id);
-      for (const result of record?.results ?? []) await failIfAbandoned(result, deps.storage);
+      for (const result of record?.results ?? []) await failIfAbandoned(result, deps);
     }
   }
 };
