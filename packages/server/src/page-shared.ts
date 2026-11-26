@@ -76,3 +76,9 @@ export const meetsLimit = (info: MetricInfo, value: number): boolean | null => {
   if (info.better === "higher") return value >= info.limit;
   return value <= info.limit;
 };
+
+// A fix's pr is the pull request's URL; a bare number or "#112" also reads as PR #112.
+export const prLabel = (pr: string): string => {
+  const number = /\/pull\/(\d+)\/?$/.exec(pr)?.[1] ?? /^#?(\d+)$/.exec(pr)?.[1];
+  return number === undefined ? pr : `PR #${number}`;
+};

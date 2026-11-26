@@ -30,6 +30,7 @@ import {
   meetsLimit,
   metricChange,
   metricSeries,
+  prLabel,
 } from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -919,6 +920,16 @@ describe("audit page rules", () => {
     ];
     expect(metricSeries(points, "yok", "coverage", "")).toEqual([70, null, 75]);
     expect(metricSeries(points, "yok", "testCount", "unit")).toEqual([null, null, 10]);
+  });
+
+  test.each([
+    ["https://github.com/acme/web/pull/112", "PR #112"],
+    ["112", "PR #112"],
+    ["#112", "PR #112"],
+    ["draft", "draft"],
+    ["https://example.com/v2", "https://example.com/v2"],
+  ])("SC8010: prLabel reads %p as %p", (pr, label) => {
+    expect(prLabel(pr)).toBe(label);
   });
 });
 

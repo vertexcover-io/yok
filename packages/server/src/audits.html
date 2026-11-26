@@ -97,6 +97,24 @@ dl.how { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; m
 dl.how dt { color: var(--muted); }
 dl.how dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
 
+.board-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 8px 0 10px; }
+.board-head h2 { font-size: 15px; margin: 0; }
+.board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 8px; border-radius: 8px; background: var(--panel-2); padding: 10px; }
+.col .t { font-size: 13px; font-weight: 600; }
+.cnt { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--panel); font-family: var(--mono); font-size: 11px; }
+.card { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 10px; }
+.card .open { border: 0; background: none; padding: 0; text-align: left; font-weight: 600; }
+.card .open:hover { text-decoration: underline; }
+.meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+pre.block { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--panel-2); font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; }
+pre.block .add { color: var(--ok); }
+pre.block .del { color: var(--del); }
+blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+@media (max-width: 800px) {
+  .board { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 640px) {
   .bar .right, .range { margin-left: 0; }
 }
@@ -123,6 +141,7 @@ dl.how dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
 <main>
   <p class="empty" id="status" role="status">Loading audits…</p>
   <div id="areas"></div>
+  <section id="board"></section>
 </main>
 <div class="scrim" id="scrim" hidden></div>
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
@@ -132,7 +151,7 @@ dl.how dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
 <footer class="foot">yok v{{VERSION}}</footer>
 
 <script type="module">
-import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries } from "/assets/shared.js";
+import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel } from "/assets/shared.js";
 
 // A year of weekly audits, for the run picker and the trend range.
 const LIST_LIMIT = 52;
@@ -388,7 +407,7 @@ const changedLine = () => {
   return el("p", { className: "sect", textContent: `Code changed this period: ${value}` });
 };
 
-const relatedItem = (result) => el("li", {}, [span("", result.title), span("dim", ` · ${STATE_WORDS[result.state]}`)]);
+const relatedItem = (result) => el("li", {}, [resultCard(result)]);
 const relatedSection = (problemType) => {
   const related = view.detail.results.filter((r) => r.repo === view.repo && r.problemType === problemType);
   return el("section", { className: "sect" }, [
@@ -418,7 +437,17 @@ const tileDrawer = (key) => {
 };
 
 // Each kind of drawer builds its content from view.open; null means what it showed is gone, and the drawer closes.
-const DRAWER_CONTENT = { tile: (open) => tileDrawer(open.key) };
+const DRAWER_CONTENT = {
+  tile: (open) => tileDrawer(open.key),
+  result: (open) => {
+    const result = repoResults().find((r) => r.id === open.id);
+    return result === undefined ? null : resultDrawer(result);
+  },
+  group: (open) => {
+    const results = repoResults().filter((r) => r.state === "auto_fixed" && r.problemType === open.problemType);
+    return results.length === 0 ? null : groupDrawer(open.problemType, results);
+  },
+};
 
 const closeDrawer = () => {
   view.open = null;
@@ -439,6 +468,88 @@ const openDrawer = (open) => {
   $("close").focus();
 };
 const openTile = (key) => openDrawer({ kind: "tile", key });
+
+const COLUMNS = [
+  ["auto_fixed", "yok fixed these on its own."],
+  ["needs_approval", "The fix is known. Accept it and yok applies it in a pull request."],
+  ["needs_work", "No safe fix yet. Copy the prompt to work on it."],
+];
+// Auto-fixed results of one problem type share a card: "Removed 15 duplicate tests".
+const FIXED_WORDS = { duplicates: ["Removed", "duplicate test"], flaky: ["Fixed", "flaky test"], slow: ["Sped up", "slow test"], failing: ["Fixed", "failing test"] };
+const fixedTitle = (problemType, count) => {
+  const [verb, noun] = FIXED_WORDS[problemType];
+  return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}`;
+};
+const repoResults = () => view.detail.results.filter((r) => r.repo === view.repo);
+const resultMeta = (result) => `${result.problemType} · ${result.proof.where ?? result.repo}`;
+
+const openButton = (text, onclick) => el("button", { type: "button", className: "open", textContent: text, onclick });
+const resultCard = (result) => el("div", { className: "card" }, [
+  openButton(result.title, () => openDrawer({ kind: "result", id: result.id })),
+  span("meta", resultMeta(result)),
+]);
+const groupCard = ([problemType, results]) => el("div", { className: "card" }, [
+  openButton(fixedTitle(problemType, results.length), () => openDrawer({ kind: "group", problemType })),
+  span("meta", results.length === 1 ? resultMeta(results[0]) : `${problemType} · ${results.length} places`),
+]);
+
+const columnNode = ([state, note], results) => {
+  const inColumn = results.filter((r) => r.state === state);
+  const cards = state === "auto_fixed"
+    ? [...new Set(inColumn.map((r) => r.problemType))].map((type) => groupCard([type, inColumn.filter((r) => r.problemType === type)]))
+    : inColumn.map(resultCard);
+  return el("section", { className: "col" }, [
+    el("div", { className: "t" }, [STATE_WORDS[state], span("cnt", String(inColumn.length))]),
+    span("meta", note),
+    ...(cards.length === 0 ? [span("meta", "Nothing here.")] : cards),
+  ]);
+};
+
+const renderBoard = () => {
+  const results = repoResults();
+  $("board").replaceChildren(
+    el("div", { className: "board-head" }, [el("h2", { textContent: "Results" }), span("dim", `From the ${day(view.detail.run.periodEnd)} run`)]),
+    el("div", { className: "board" }, COLUMNS.map((column) => columnNode(column, results))),
+  );
+};
+
+// Only http(s) links: proof is written by an agent, and a javascript: link would run on click.
+const safeLink = (href, text) =>
+  /^https?:\/\//.test(href) ? el("a", { href, textContent: text, target: "_blank", rel: "noreferrer" }) : span("", text);
+const diffLineClass = (line) => {
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "";
+};
+const diffBlock = (diff) => el("pre", { className: "block" }, diff.split("\n").map((line) => span(diffLineClass(line), `${line}\n`)));
+
+const blockBody = ({ kind, content }) => {
+  if (kind === "code" || kind === "test-run") return el("pre", { className: "block", textContent: content });
+  if (kind === "diff") return diffBlock(content);
+  if (kind === "quote") return el("blockquote", { textContent: content });
+  if (kind === "link") return el("p", {}, [safeLink(content, content)]);
+  return el("p", { textContent: content });
+};
+const labelled = (label, children) => el("section", { className: "sect" }, [el("div", { className: "label", textContent: label }), ...children]);
+
+const fixSection = (fix) => labelled("The fix", [
+  el("p", { textContent: fix.summary }),
+  ...(fix.diff === undefined ? [] : [diffBlock(fix.diff)]),
+  ...(fix.pr === undefined ? [] : [el("p", {}, [safeLink(fix.pr, prLabel(fix.pr))])]),
+]);
+
+const resultDrawer = (result) => [
+  el("h2", { id: "drawer-title", textContent: result.title }),
+  el("p", { className: "dim", textContent: `${STATE_WORDS[result.state]} · ${resultMeta(result)}` }),
+  labelled("What happened", [el("p", { textContent: result.proof.summary ?? "" })]),
+  ...(result.proof.blocks ?? []).map((block) => labelled(block.title, [blockBody(block)])),
+  ...(result.fix === null ? [] : [fixSection(result.fix)]),
+];
+
+const groupDrawer = (problemType, results) => [
+  el("h2", { id: "drawer-title", textContent: fixedTitle(problemType, results.length) }),
+  el("ul", { className: "list" }, results.map((result) => el("li", {}, [resultCard(result)]))),
+];
 
 const fillSelect = (select, options, selected) => {
   select.replaceChildren(...options.map(([value, label]) => el("option", { value, textContent: label, selected: value === selected })));
@@ -462,6 +573,7 @@ const render = () => {
   showStatus(null);
   renderHeader();
   renderAreas();
+  renderBoard();
   renderDrawer();
 };
 
