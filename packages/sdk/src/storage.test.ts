@@ -421,6 +421,77 @@ describe("runs, events and projects", () => {
     expect(await storage.runs.readEvents("r-1")).toEqual([]);
   });
 
+  test("SC5: a run with tiers, policies, permission mode, source and user, in a project with a git address, reads back as saved", async () => {
+    storage = memoryStorage();
+    const project = { ...PROJECT, git: "https://github.com/acme/repo.git" };
+    await storage.projects.add("repo", project);
+    const [user] = await storage.users.saveGitHubUser(RITESH);
+    const full = draft("r-1", {
+      tiers: { default: "deep", models: { deep: { model: "opus-x", effort: "high" } } },
+      policies: { values: { interaction: false }, sources: { interaction: "cli" } },
+      permissionMode: "acceptEdits",
+      source: "slack",
+      user,
+    });
+    await storage.runs.addRun(full);
+
+    expect(await storage.projects.find("repo")).toEqual(project);
+    expect(await storage.runs.findRun("r-1")).toEqual({ ...full, cwd: "/abs/repo" });
+  });
+
+  test("SC6: removing a run takes its artifact rows, and a trigger's fire keeps the run's name with no run id", async () => {
+    const home = freshHome();
+    storage = openStorage(home);
+    await seedRun(storage);
+    const make: NodeRun = {
+      nodeRunId: "make",
+      nodeType: "agent",
+      status: "completed",
+      startedAt: AT,
+      completedAt: AT,
+      artifacts: [{ type: "plan", name: "plan", path: "artifacts/plan.md" }],
+    };
+    await storage.runs.appendEvent("r-1", {
+      event: event("r-1", 1),
+      state: state("r-1", "feat-x", { lastEventSeq: 1, nodeRuns: { make } }),
+      expectedSeq: 0,
+    });
+    const saved = await storage.triggers.save({
+      project: "repo",
+      name: "digest",
+      config: null,
+      cron: "0 9 * * *",
+      timezone: "UTC",
+      nextFireAt: AT,
+      workflow: "feature",
+    });
+    if (!saved.ok) throw new Error("trigger not saved");
+    const fire = {
+      triggerId: saved.value.id,
+      slot: AT,
+      status: "started" as const,
+      runId: "r-1",
+      runName: "feat-x",
+      at: AT,
+    };
+    await storage.triggers.appendFire(fire);
+    const artifactRows = (): number => {
+      const db = new Database(join(home, "yok.db"), { readonly: true });
+      try {
+        return db.query<{ n: number }, []>("SELECT count(*) AS n FROM artifacts").get()?.n ?? 0;
+      } finally {
+        db.close();
+      }
+    };
+    expect(artifactRows()).toBe(1);
+
+    await storage.runs.removeRun("r-1");
+
+    expect(artifactRows()).toBe(0);
+    const { runId: _gone, ...kept } = fire;
+    expect(await storage.triggers.readFires(saved.value.id, 10)).toEqual([kept]);
+  });
+
   test("readEvent finds r-1's evt-2 by its id, and nothing for an unknown id or for evt-2 asked of r-2", async () => {
     storage = memoryStorage();
     await seedRun(storage);

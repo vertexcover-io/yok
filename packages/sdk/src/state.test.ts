@@ -382,6 +382,34 @@ describe("emitRunEvent with extension handlers", () => {
     expect(await savedState()).toEqual(before);
   });
 
+  test("SC10: a stored event the run's handler throws on, which the stored state lags, refuses the next emit as state not synchronized and stores nothing", async () => {
+    const { run, storage, savedState } = await runWithHandlers({
+      "custom.review.note": [{ handler: "onRisky" }],
+    });
+    const before = await savedState();
+    const lagging: Event = {
+      schemaVersion: 1,
+      seq: 1,
+      id: "evt-lagging",
+      ts: "2026-11-19T10:00:00.000Z",
+      type: "custom.review.note",
+      source: "test",
+      runId: run.id,
+      payload: "bad",
+    };
+    await storage.runs.appendEvent(run.id, { event: lagging, state: before, expectedSeq: 0 });
+
+    const result = await emitRunEvent(
+      run,
+      { type: "custom.review.other", source: "test", payload: "fine" },
+      storage,
+    );
+
+    expect(result.ok ? "" : result.error).toStartWith("state not synchronized: ");
+    expect(await storage.runs.readEvents(run.id)).toEqual([lagging]);
+    expect(await savedState()).toEqual(before);
+  });
+
   test("EH14 — a handler module that throws while loading fails the emit and stores nothing", async () => {
     const broken = join(await realpath(await mkdtemp(join(tmpdir(), "broken-"))), "broken.ts");
     await writeFile(
