@@ -156,7 +156,7 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <footer class="foot">yok v{{VERSION}}</footer>
 
 <script type="module">
-import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel, resultPageState, trendRange } from "/assets/shared.js";
+import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel, rejectBody, resultActions, resultPageState, trendRange } from "/assets/shared.js";
 
 // A year of weekly audits, for the run picker and the trend range.
 const LIST_LIMIT = 52;
@@ -620,8 +620,7 @@ const rejectForm = (result) => {
   const form = el("form", { className: "reject" }, [feedback, el("div", {}, [send])]);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const text = feedback.value.trim();
-    guarded(() => decide(result, text === "" ? { type: "rejected" } : { type: "rejected", feedback: text }, send));
+    guarded(() => decide(result, rejectBody(feedback.value), send));
   });
   return form;
 };
@@ -644,12 +643,14 @@ const copyButton = (prompt) => {
   return button;
 };
 
-const actionsFor = (result, state) => {
-  if (state.kind === "needs-work") return result.fix?.prompt === undefined ? [] : [copyButton(result.fix.prompt)];
-  if (state.kind === "open") return [actionButton(result, "Accept", { type: "accepted" }, "btn pri"), rejectButton(result)];
-  if (["auto-fixed", "applying", "stopped"].includes(state.kind)) return [];
-  return [actionButton(result, "Undo", { type: "undone" })];
+const ACTION_BUTTON = {
+  accept: (result) => actionButton(result, "Accept", { type: "accepted" }, "btn pri"),
+  reject: rejectButton,
+  undo: (result) => actionButton(result, "Undo", { type: "undone" }),
+  "copy-prompt": (result) => copyButton(result.fix.prompt),
 };
+const actionsFor = (result, state) =>
+  resultActions(state, result.fix?.prompt !== undefined).map((action) => ACTION_BUTTON[action](result));
 const decisionNode = (result) => {
   const state = pageState(result);
   const line = STATE_LINE[state.kind];

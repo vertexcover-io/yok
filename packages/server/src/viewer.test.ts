@@ -40,6 +40,8 @@ import {
   metricChange,
   metricSeries,
   prLabel,
+  rejectBody,
+  resultActions,
   resultPageState,
   trendRange,
 } from "./page-shared.ts";
@@ -941,6 +943,31 @@ describe("audit page rules", () => {
     ["https://example.com/v2", "https://example.com/v2"],
   ])("SC8010: prLabel reads %p as %p", (pr, label) => {
     expect(prLabel(pr)).toBe(label);
+  });
+});
+
+describe("result buttons", () => {
+  test.each([
+    [{ kind: "open" }, true, ["accept", "reject"]],
+    [{ kind: "needs-work" }, true, ["copy-prompt"]],
+    [{ kind: "needs-work" }, false, []],
+    [{ kind: "auto-fixed" }, false, []],
+    [{ kind: "applying", runId: "r-9" }, false, []],
+    [{ kind: "stopped", runId: "r-9" }, false, []],
+    [{ kind: "waiting", action: "apply" }, false, ["undo"]],
+    [{ kind: "run-failed", runId: "r-9" }, false, ["undo"]],
+    [{ kind: "applied", commit: "abc1234", pr: null }, false, ["undo"]],
+    [{ kind: "failed", reason: "tests failed" }, false, ["undo"]],
+    [{ kind: "rejected", feedback: null }, false, ["undo"]],
+  ] as const)("a result in state %o (prompt %p) offers %p", (state, hasPrompt, actions) => {
+    expect(resultActions(state, hasPrompt)).toEqual(actions);
+  });
+
+  test("a reject with blank feedback sends no feedback; one with text sends it trimmed", () => {
+    expect([rejectBody("  \n"), rejectBody("  keeps the fixture ")]).toEqual([
+      { type: "rejected" },
+      { type: "rejected", feedback: "keeps the fixture" },
+    ]);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { AuditMetric, AuditResult, AuditResultEvent, MetricInfo } from "@yok/sdk/internal";
 import type { RunStatus } from "./overview.ts";
+import type { AuditEventBody } from "./protocol.ts";
 
 export const RUN_STATUS_WORDS: Readonly<Record<RunStatus, string>> = {
   starting: "starting",
@@ -150,4 +151,22 @@ export const trendRange = (runs: readonly PeriodRun[], fromId: string, toId: str
     to: inRange.map((run) => run.periodEnd).reduce((a, b) => (b > a ? b : a)),
     runIds: inRange.map((run) => run.id),
   };
+};
+
+export type ResultAction = "accept" | "reject" | "undo" | "copy-prompt";
+
+// Undo is offered once the person has decided; nothing while yok's run holds the result.
+export const resultActions = (
+  state: ResultPageState,
+  hasPrompt: boolean,
+): readonly ResultAction[] => {
+  if (state.kind === "needs-work") return hasPrompt ? ["copy-prompt"] : [];
+  if (state.kind === "open") return ["accept", "reject"];
+  if (["auto-fixed", "applying", "stopped"].includes(state.kind)) return [];
+  return ["undo"];
+};
+
+export const rejectBody = (feedback: string): AuditEventBody => {
+  const text = feedback.trim();
+  return text === "" ? { type: "rejected" } : { type: "rejected", feedback: text };
 };
