@@ -128,19 +128,31 @@ const findDecidedIds = (db: Db, auditRunId: string): readonly string[] =>
     .all()
     .map((row) => row.id);
 
+const findRepeats = (keys: readonly string[]): readonly string[] => [
+  ...new Set(keys.filter((key, index) => keys.indexOf(key) !== index)),
+];
+
+// Why the report cannot be stored, checked before any write so a refused report writes nothing.
+const refuseReport = (auditRunId: string, report: AuditReport): string | undefined => {
+  const ids = report.results.map((result) => result.id);
+  const foreign = ids.filter((id) => !id.startsWith(`${auditRunId}:`));
+  if (foreign.length > 0) return `result ids must start with ${auditRunId}: ${foreign.join(", ")}`;
+  const repeatedIds = findRepeats(ids);
+  if (repeatedIds.length > 0) return `repeated result ids: ${repeatedIds.join(", ")}`;
+  // JSON, so a space inside a name never makes two different keys look alike
+  const repeatedMetrics = findRepeats(
+    report.metrics.map(({ repo, metric, scope }) => JSON.stringify([repo, metric, scope])),
+  );
+  if (repeatedMetrics.length > 0) return `repeated metrics: ${repeatedMetrics.join(", ")}`;
+  return undefined;
+};
+
 const finishIn = (db: Db, auditRunId: string, report: AuditReport): Result<AuditRun> =>
   db.transaction((tx): Result<AuditRun> => {
     const run = findAuditRun(tx, auditRunId);
     if (run === undefined) return { ok: false, error: `audit run ${auditRunId} not found` };
-    const foreign = report.results
-      .map((result) => result.id)
-      .filter((id) => !id.startsWith(`${auditRunId}:`));
-    if (foreign.length > 0) {
-      return {
-        ok: false,
-        error: `result ids must start with ${auditRunId}: ${foreign.join(", ")}`,
-      };
-    }
+    const refusal = refuseReport(auditRunId, report);
+    if (refusal !== undefined) return { ok: false, error: refusal };
     tx.update(tables.auditRuns)
       .set({ status: report.status })
       .where(eq(tables.auditRuns.id, auditRunId))

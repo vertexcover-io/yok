@@ -230,6 +230,31 @@ describe("storage.audits", () => {
     ).toEqual({ ok: false, error: "audit run a-missing not found" });
   });
 
+  test("SC7216: a finish that repeats a result id or a metric's repo, metric and scope is refused, names the repeat and writes nothing", async () => {
+    const storage = await seeded();
+    const started = await startOk(storage, week("r-1"));
+    const twice = result(started.id, "twice");
+
+    const repeatedResult = await storage.audits.finish(started.id, {
+      status: "complete",
+      metrics: [metric()],
+      results: [twice, { ...twice, title: "another finding, same slug" }],
+    });
+    const repeatedMetric = await storage.audits.finish(started.id, {
+      status: "complete",
+      metrics: [metric(), metric({ value: 90 }), metric({ scope: "unit" })],
+      results: [result(started.id, "one")],
+    });
+
+    expect(repeatedResult).toEqual({ ok: false, error: `repeated result ids: ${twice.id}` });
+    expect(repeatedMetric).toEqual({ ok: false, error: 'repeated metrics: ["web","coverage",""]' });
+    expect(await storage.audits.read(started.id)).toEqual({
+      run: started,
+      metrics: [],
+      results: [],
+    });
+  });
+
   test("SC7205: unknown metric and problem-type names are stored", async () => {
     const storage = await seeded();
     const started = await startOk(storage, week("r-1"));
