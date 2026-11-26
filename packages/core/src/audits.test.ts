@@ -546,4 +546,44 @@ describe("recordAuditWork", () => {
       expect(four?.fix?.error).toBe("the fix stage did not report this result");
     });
   });
+
+  test("with no pull-request artifact, an applied fix gets its commit and no PR", async () => {
+    await withSeededStorage(async (storage, run) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:r1`, { diff: "-1" }),
+      ]);
+      const r1 = `${id}:yok:flaky:r1`;
+      const runDir = runDirOf(run.cwd, run.name);
+      mkdirSync(join(runDir, "artifacts", "fixes"), { recursive: true });
+      writeFileSync(
+        join(runDir, "artifacts", "fixes", "audit-apply-1.json"),
+        JSON.stringify([{ id: r1, status: "closed", commit: "c1" }]),
+      );
+      await storage.runs.initRun(
+        run.id,
+        run.name,
+        stateWith(runDir, {
+          fix: finished("nr-fix", [
+            {
+              type: "fix-result",
+              name: "audit-apply-1",
+              path: "artifacts/fixes/audit-apply-1.json",
+            },
+          ]),
+          "visual-pr": finished("nr-visual-pr", []),
+        }),
+      );
+
+      const recorded = await recordAuditWork(storage, run, {
+        results: [{ id: r1, action: "apply" }],
+      });
+      if (!recorded.ok) throw new Error(recorded.error);
+      expect(recorded.value[0]?.fix).toEqual({
+        summary: "delete one",
+        diff: "-1",
+        commit: "c1",
+        at: expect.any(String),
+      });
+    });
+  });
 });
