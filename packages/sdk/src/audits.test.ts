@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type AuditMetric,
   type AuditResult,
+  type AuditResultEventDraft,
   type AuditRun,
   type AuditStart,
   TEST_AUDIT_METRICS,
@@ -129,7 +130,7 @@ describe("test-audit names", () => {
       expect(info.limit).toBeGreaterThanOrEqual(0);
       if (info.unit === "percent") expect(info.limit).toBeLessThanOrEqual(100);
     }
-    expect([...TEST_AUDIT_PROBLEM_TYPES]).toEqual(["duplicates", "flaky", "slow"]);
+    expect([...TEST_AUDIT_PROBLEM_TYPES]).toEqual(["duplicates", "flaky", "slow", "failing"]);
   });
 });
 
@@ -347,7 +348,7 @@ describe("storage.audits result events", () => {
         resultId: one.id,
         type: "accepted",
         who: "savitha",
-        startedRunId: "r-2",
+        startedRunId: null,
         payload: { feedback: "merge them" },
       },
       { resultId: one.id, type: "rejected", who: "ritesh", startedRunId: null, payload: {} },
@@ -401,34 +402,111 @@ describe("storage.audits result events", () => {
     expect(await storage.audits.decision(one.id)).toEqual(accepted);
   });
 
-  test("SC7214: a click needs its result and its started run", async () => {
+  test("SC7214: an event needs its result, and a run start needs its run", async () => {
     const { storage, one } = await finished();
-    const click = { type: "accepted", who: "savitha", payload: {} } as const;
 
     await expect(
-      storage.audits.addEvent({ ...click, resultId: "nope", startedRunId: null }),
+      storage.audits.addEvent({
+        resultId: "nope",
+        type: "accepted",
+        who: "savitha",
+        startedRunId: null,
+        payload: {},
+      }),
     ).rejects.toThrow("FOREIGN KEY");
     await expect(
-      storage.audits.addEvent({ ...click, resultId: one.id, startedRunId: "r-missing" }),
+      storage.audits.addEvent({
+        resultId: one.id,
+        type: "apply_started",
+        who: "yok",
+        startedRunId: "r-missing",
+        payload: {},
+      }),
     ).rejects.toThrow("FOREIGN KEY");
     expect(await storage.audits.decision(one.id)).toBeUndefined();
+    expect(await storage.audits.run(one.id)).toBeUndefined();
   });
 
-  test("SC7215: removing the started run keeps the click; removing the audit's run removes the results and their clicks", async () => {
+  test("SC7215: removing the started run keeps its run start; removing the audit's run removes the results and their events", async () => {
     const { storage, run, one } = await finished();
-    const accepted = await storage.audits.addEvent({
+    const started = await storage.audits.addEvent({
       resultId: one.id,
-      type: "accepted",
-      who: "savitha",
+      type: "apply_started",
+      who: "yok",
       startedRunId: "r-2",
       payload: {},
     });
 
     await storage.runs.removeRun("r-2");
-    expect(await storage.audits.decision(one.id)).toEqual({ ...accepted, startedRunId: null });
+    expect(await storage.audits.run(one.id)).toEqual({ ...started, startedRunId: null });
 
     await storage.runs.removeRun("r-1");
-    expect(await storage.audits.decision(one.id)).toBeUndefined();
+    expect(await storage.audits.run(one.id)).toBeUndefined();
     expect(await storage.audits.read(run.id)).toBeUndefined();
+  });
+
+  test("SC7217: the decision stays the person's click after yok starts a run, and run returns yok's row", async () => {
+    const { storage, one } = await finished();
+    expect(await storage.audits.run(one.id)).toBeUndefined();
+
+    const accepted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "accepted",
+      who: "savitha",
+      startedRunId: null,
+      payload: {},
+    });
+    const applyStarted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "apply_started",
+      who: "yok",
+      startedRunId: "r-2",
+      payload: {},
+    });
+    expect(await storage.audits.decision(one.id)).toEqual(accepted);
+    expect(await storage.audits.run(one.id)).toEqual(applyStarted);
+    expect(applyStarted.startedRunId).toBe("r-2");
+
+    const undone = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "undone",
+      who: "savitha",
+      startedRunId: null,
+      payload: {},
+    });
+    const revertStarted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "revert_started",
+      who: "yok",
+      startedRunId: "r-2",
+      payload: {},
+    });
+    expect(await storage.audits.decision(one.id)).toEqual(undone);
+    expect(await storage.audits.run(one.id)).toEqual(revertStarted);
+  });
+
+  test("SC7218: a click that names a run, or a run start that names none, is refused", async () => {
+    const { storage, one } = await finished();
+
+    await expect(
+      storage.audits.addEvent({
+        resultId: one.id,
+        type: "accepted",
+        who: "savitha",
+        startedRunId: "r-2",
+        payload: {},
+      } as unknown as AuditResultEventDraft),
+    ).rejects.toThrow();
+    await expect(
+      storage.audits.addEvent({
+        resultId: one.id,
+        type: "apply_started",
+        who: "yok",
+        startedRunId: null,
+        payload: {},
+      } as unknown as AuditResultEventDraft),
+    ).rejects.toThrow();
+    expect(await storage.audits.decision(one.id)).toBeUndefined();
+    expect(await storage.audits.run(one.id)).toBeUndefined();
   });
 });

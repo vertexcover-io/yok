@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, notInArray, sql } from "drizzle-orm";
 import {
+  AUDIT_CLICK_TYPES,
+  AUDIT_RUN_START_TYPES,
   type AuditMetric,
   AuditMetricSchema,
   type AuditName,
@@ -223,12 +225,21 @@ const addEventIn = (db: Db, draft: AuditResultEventDraft, at: string): AuditResu
   return event;
 };
 
-// By rowid, not ts: two clicks in one millisecond keep the order they were stored in.
-const decisionIn = (db: Db, resultId: string): AuditResultEvent | undefined => {
+// By rowid, not ts: two events in one millisecond keep the order they were stored in.
+const newestEventIn = (
+  db: Db,
+  resultId: string,
+  types: readonly AuditResultEvent["type"][],
+): AuditResultEvent | undefined => {
   const row = db
     .select()
     .from(tables.auditResultEvents)
-    .where(eq(tables.auditResultEvents.resultId, resultId))
+    .where(
+      and(
+        eq(tables.auditResultEvents.resultId, resultId),
+        inArray(tables.auditResultEvents.type, [...types]),
+      ),
+    )
     .orderBy(desc(sql`rowid`))
     .limit(1)
     .get();
@@ -251,5 +262,6 @@ export const auditRepository = (db: Db): IAuditRepository => ({
   list: async (project, audit, filter = {}) => listIn(db, project, audit, filter),
   read: async (auditRunId) => readIn(db, auditRunId),
   addEvent: async (draft) => addEventIn(db, AuditResultEventDraftSchema.parse(draft), now()),
-  decision: async (resultId) => decisionIn(db, resultId),
+  decision: async (resultId) => newestEventIn(db, resultId, AUDIT_CLICK_TYPES),
+  run: async (resultId) => newestEventIn(db, resultId, AUDIT_RUN_START_TYPES),
 });

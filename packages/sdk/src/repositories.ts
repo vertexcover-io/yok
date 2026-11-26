@@ -150,11 +150,13 @@ export interface IAuditRepository {
   // newest period first
   list(project: string, audit: AuditName, filter?: AuditRunFilter): Promise<readonly AuditRun[]>;
   read(auditRunId: string): Promise<AuditRecord | undefined>;
-  // Appends a click with a new id and the current time. Append-only: there is no update or delete.
-  // Rejects when the result or startedRunId has no row.
+  // Appends a click or a run start with a new id and the current time. Append-only: there is no
+  // update or delete. Rejects when the result or startedRunId has no row.
   addEvent(draft: AuditResultEventDraft): Promise<AuditResultEvent>;
-  // the result's newest event; undefined before the first click
+  // the result's newest click (accepted, rejected or undone); undefined before the first click
   decision(resultId: string): Promise<AuditResultEvent | undefined>;
+  // the result's newest apply_started or revert_started; undefined before yok starts a run
+  run(resultId: string): Promise<AuditResultEvent | undefined>;
 }
 
 export interface IStorage {

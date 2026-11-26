@@ -72,21 +72,32 @@ export type AuditRecord = Readonly<{
 // from and to keep the audit runs whose period lies inside them; limit keeps the newest
 export type AuditRunFilter = Readonly<{ from?: string; to?: string; limit?: number }>;
 
-// A person's click on a result. Append-only: a later click is a new event, and the newest is
-// the result's decision.
-export const AuditResultEventSchema = z.strictObject({
-  id: z.uuid(),
+// A person's choice on a result; the newest is the result's decision.
+export const AUDIT_CLICK_TYPES = ["accepted", "rejected", "undone"] as const;
+// Written by yok, who "yok", when it starts the apply run that acts on the newest click.
+export const AUDIT_RUN_START_TYPES = ["apply_started", "revert_started"] as const;
+
+const eventFields = {
   resultId: NonEmptyStringSchema,
-  type: z.enum(["accepted", "rejected", "undone"]),
   who: NonEmptyStringSchema,
-  ts: z.iso.datetime(),
-  // the apply or revert run the click started; null when it started none or that run was removed
-  startedRunId: NonEmptyStringSchema.nullable(),
   payload: z.union([z.strictObject({ feedback: NonEmptyStringSchema }), z.strictObject({})]),
-});
+};
+const clickFields = { ...eventFields, type: z.enum(AUDIT_CLICK_TYPES), startedRunId: z.null() };
+const runStartFields = { ...eventFields, type: z.enum(AUDIT_RUN_START_TYPES) };
+const stamp = { id: z.uuid(), ts: z.iso.datetime() };
+
+// Append-only: a later click or run start is a new event.
+export const AuditResultEventSchema = z.union([
+  z.strictObject({ ...stamp, ...clickFields }),
+  // startedRunId turns null when that run is removed
+  z.strictObject({ ...stamp, ...runStartFields, startedRunId: NonEmptyStringSchema.nullable() }),
+]);
 export type AuditResultEvent = z.infer<typeof AuditResultEventSchema>;
 
-export const AuditResultEventDraftSchema = AuditResultEventSchema.omit({ id: true, ts: true });
+export const AuditResultEventDraftSchema = z.union([
+  z.strictObject(clickFields),
+  z.strictObject({ ...runStartFields, startedRunId: NonEmptyStringSchema }),
+]);
 export type AuditResultEventDraft = z.infer<typeof AuditResultEventDraftSchema>;
 
 export type MetricInfo = Readonly<{
@@ -108,5 +119,6 @@ export const TEST_AUDIT_METRICS = {
 } as const satisfies Readonly<Record<string, MetricInfo>>;
 export type TestAuditMetric = keyof typeof TEST_AUDIT_METRICS;
 
-export const TEST_AUDIT_PROBLEM_TYPES = ["duplicates", "flaky", "slow"] as const;
+// failing: a test that fails on every run, unlike flaky
+export const TEST_AUDIT_PROBLEM_TYPES = ["duplicates", "flaky", "slow", "failing"] as const;
 export type TestAuditProblemType = (typeof TEST_AUDIT_PROBLEM_TYPES)[number];
