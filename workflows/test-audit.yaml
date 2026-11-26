@@ -85,10 +85,11 @@ nodes:
   - id: autofix
     type: switch
     expression: "{{ nodes.audit-sort.output.autoFix }}"
-    dependsOn: [create-workspace, audit-sort]
+    dependsOn: [create-workspace, run-tests, audit-sort]
     input:
       workspace: "{{ nodes.create-workspace.output }}"
       fixes: "{{ nodes.audit-sort.output.fixes }}"
+      tests: "{{ nodes.run-tests.output }}"
     cases:
       - id: delete-duplicates
         value: true
@@ -100,10 +101,14 @@ nodes:
               These items come from the weekly test audit, not from a bug report. Each one
               deletes a test that duplicates its keeper, named in the hint. A deletion has no
               failing test to write first: delete the test, then prove the item by running the
-              keeper's file and the edited file, both passing. Every other step of the skill holds.
+              keeper's file and the edited file, both passing. The input's tests field is this
+              audit's run-tests output: a test it lists as flaky or failing in a repo failed before
+              the deletion, so it is no new failure and never a reason to revert or leave an item.
+              Every other step of the skill holds.
             input:
               workspace: "{{ inputs.workspace }}"
               fixes: "{{ inputs.fixes }}"
+              tests: "{{ inputs.tests }}"
               source: audit
               round: 1
           - id: visual-pr

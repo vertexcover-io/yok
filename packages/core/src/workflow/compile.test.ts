@@ -1441,6 +1441,18 @@ describe("the shipped test-audit workflow", () => {
     );
   });
 
+  test("the auto-fix stage gets run-tests' output and is told a test it found flaky or failing is no new failure", async () => {
+    const plan = await compileWorkflow(TEST_AUDIT);
+    const autofix = plan.nodes.find((node) => node.id === "autofix");
+    if (autofix?.type !== "switch") throw new Error("autofix is not a switch");
+    const fix = autofix.cases[0]?.nodes.find((node) => node.id === "fix");
+    if (fix?.type !== "agent") throw new Error("no fix agent");
+
+    expect(autofix.input).toMatchObject({ tests: "{{ nodes.run-tests.output }}" });
+    expect(fix.input).toMatchObject({ tests: "{{ inputs.tests }}" });
+    expect(fix.prompt).toContain("flaky or failing");
+  });
+
   test("SC23: each limit input defaults to its metric's limit in TEST_AUDIT_METRICS", async () => {
     const plan = await compileWorkflow(TEST_AUDIT);
 
