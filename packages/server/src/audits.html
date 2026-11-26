@@ -596,12 +596,15 @@ const postEvent = async (result, body) => {
 // The notice goes beside the clicked button: a click made in the drawer would hide one placed on the page.
 const decide = async (result, body, button) => {
   button.disabled = true;
-  const refused = await postEvent(result, body);
-  if (refused === null) return refresh();
-  const row = button.closest(".decide");
-  row.querySelector(".notice")?.remove();
-  row.append(el("p", { className: "notice", role: "alert" }, refused));
-  button.disabled = false;
+  try {
+    const refused = await postEvent(result, body);
+    if (refused === null) return await refresh();
+    const row = button.closest(".decide");
+    row.querySelector(".notice")?.remove();
+    row.append(el("p", { className: "notice", role: "alert" }, refused));
+  } finally {
+    button.disabled = false;
+  }
 };
 
 const actionButton = (result, text, body, className = "btn") => {
@@ -663,7 +666,14 @@ const refresh = async () => {
 const scheduleRefresh = () => {
   clearTimeout(view.timer);
   const busy = view.detail.results.some((r) => ["waiting", "applying"].includes(pageState(r).kind));
-  const tick = () => (document.querySelector("form.reject") === null ? guarded(refresh) : scheduleRefresh());
+  const tick = () => {
+    if (document.querySelector("form.reject") !== null) return scheduleRefresh();
+    // render re-arms the timer after a good re-read; a failed one, such as during a server restart, re-arms it here
+    return guarded(() => refresh().catch((error) => {
+      scheduleRefresh();
+      throw error;
+    }));
+  };
   view.timer = busy ? setTimeout(tick, POLL_MS) : null;
 };
 
