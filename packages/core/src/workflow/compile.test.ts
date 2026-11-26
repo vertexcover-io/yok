@@ -1498,8 +1498,8 @@ describe("the shipped test-audit-apply workflow", () => {
     const applyFix = apply.nodes.find((node) => node.id === "fix");
     if (auditFix?.type !== "agent" || applyFix?.type !== "agent") throw new Error("no fix agent");
 
+    expect(auditFix.input).toMatchObject({ source: "audit" });
     expect(applyFix.input).toMatchObject({ source: "audit-apply" });
-    expect(applyFix.input).not.toMatchObject({ source: auditFix.input.source });
     expect(applyFix.prompt).toContain("startSha");
   });
 });
