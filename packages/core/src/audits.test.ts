@@ -428,6 +428,26 @@ describe("listAuditWork", () => {
     });
   });
 
+  test("gh printing something other than JSON reads as no open PR, not a failed run", async () => {
+    await withSeededStorage(async (storage) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:f1`, { diff: "-f", pr: "https://x/P1" }),
+      ]);
+      const bin = tempDir();
+      writeFileSync(join(bin, "gh"), "#!/bin/sh\necho 'not json'\n", { mode: 0o755 });
+      const path = process.env.PATH;
+      process.env.PATH = `${bin}:${path}`;
+      try {
+        const work = await listAuditWork(storage, {
+          results: [{ id: `${id}:yok:flaky:f1`, action: "apply" }],
+        });
+        expect(work).toMatchObject({ ok: true, value: { upstream: null, onPr: false } });
+      } finally {
+        process.env.PATH = path;
+      }
+    });
+  });
+
   test("SC34: work under an unknown audit names the audit run, and a revert with no commit names the result", async () => {
     await withSeededStorage(async (storage) => {
       const unknown = await listAuditWork(

@@ -7,6 +7,7 @@ import {
   type IStorage,
   type JsonValue,
   NonEmptyStringSchema,
+  parseJson,
   type Result,
   type RunRef,
   readState,
@@ -191,7 +192,7 @@ const runGh: Gh = (args) => {
   if (ran.status !== 0) {
     return { ok: false, error: ran.stderr.trim() || `gh exited ${ran.status}` };
   }
-  return { ok: true, value: JSON.parse(ran.stdout) };
+  return parseJson(ran.stdout);
 };
 
 const PrStateSchema = z.looseObject({
