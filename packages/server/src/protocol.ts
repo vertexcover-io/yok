@@ -11,7 +11,7 @@ import {
   withLock,
   yokHome,
 } from "@yok/sdk";
-import { AuditRunSchema, type Project } from "@yok/sdk/internal";
+import { AUDIT_CLICK_TYPES, AuditRunSchema, type Project } from "@yok/sdk/internal";
 import * as z from "zod";
 import { RunStatusSchema } from "./overview.ts";
 
@@ -86,6 +86,7 @@ export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
       "bad-request",
+      "unauthorized",
       "not-found",
       "conflict",
       "agent-failed",
@@ -192,6 +193,13 @@ export const AuditMetricsQuerySchema = AuditProjectsQuerySchema.extend({
   from: z.iso.datetime().optional(),
   to: z.iso.datetime().optional(),
 });
+
+// POST /audits/results/:resultId/events: a person's click; the server sets who
+export const AuditEventBodySchema = z.strictObject({
+  type: z.enum(AUDIT_CLICK_TYPES),
+  feedback: NonEmptyStringSchema.optional(),
+});
+export type AuditEventBody = z.infer<typeof AuditEventBodySchema>;
 
 export type ApiError = ErrorBody["error"];
 

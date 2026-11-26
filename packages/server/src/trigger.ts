@@ -2,12 +2,12 @@ import { resolve } from "node:path";
 import { isWorkflowFile, unwrap, WorkflowError } from "@yok/core";
 import type { ILogger } from "@yok/sdk";
 import { SlugSchema } from "@yok/sdk";
-import { type Fire, isRunLive, type Trigger } from "@yok/sdk/internal";
+import type { Fire, Trigger } from "@yok/sdk/internal";
 import { Cron } from "croner";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
-import { isAgentAlive, readStateOrNull } from "./delivery.ts";
+import { isRunGoing } from "./delivery.ts";
 import { pickProject } from "./projects.ts";
 import {
   type AddTriggerBody,
@@ -86,21 +86,12 @@ const runNameFor = (trigger: Trigger, slot: Date): string => {
   return `${trigger.name}-${parts.year}${parts.month}${parts.day}-${parts.hour}${parts.minute}${parts.second}`;
 };
 
-// A run names itself in its first minute. One still unnamed after 5 minutes has stalled, so it
-// no longer blocks the next firing.
-const STARTING_MS = 5 * 60 * 1000;
-
 const isLastRunGoing = async (trigger: Trigger, deps: TriggerDeps): Promise<boolean> => {
   const fires = await deps.storage.triggers.readFires(trigger.id, Number.MAX_SAFE_INTEGER);
   const started = fires.findLast((fire) => fire.status === "started");
   if (started?.runId === undefined) return false;
   const run = await deps.storage.runs.findRun(started.runId);
-  if (run === undefined || !(await isAgentAlive(run, deps.host))) return false;
-  if (run.name === null) {
-    return deps.now().getTime() - new Date(started.at).getTime() < STARTING_MS;
-  }
-  const state = await readStateOrNull(deps.storage, run.id);
-  return state === null || isRunLive(state.status);
+  return run !== undefined && (await isRunGoing(run, started.at, deps));
 };
 
 const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Promise<Outcome> => {

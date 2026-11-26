@@ -36,6 +36,8 @@ export type ApiDeps = TriggerRouteDeps &
     startedAt: number;
     // Aborted when the server stops; open terminal sockets close on it.
     stopping: AbortSignal;
+    // the clock a session's expiry and a starting run's 5 minutes are read against
+    now: () => Date;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the

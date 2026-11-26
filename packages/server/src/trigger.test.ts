@@ -361,7 +361,7 @@ describe("tick", () => {
   );
 
   test(
-    "SC521: a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
+    "SC521, SC7314: a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
     async () => {
       const { store, storage, launches, deps, trigger } = await setup();
       await tick(deps("2026-10-23T09:00:10.000Z"));
@@ -575,9 +575,8 @@ describe("scheduler", () => {
       const { store, launches, deps, trigger } = await setup();
       const now = new Date();
       await store.save({ ...trigger, cron: "* * * * *", nextFireAt: now.toISOString() });
-      const { now: _now, ...scheduled } = deps(now.toISOString());
       const app = createApi({
-        ...scheduled,
+        ...deps(now.toISOString()),
         pid: 1,
         version: "0.0.0-test",
         startedAt: 0,
@@ -603,9 +602,8 @@ describe("/triggers routes", () => {
   const appFor = async (workflow?: string) => {
     const env = await setup(workflow);
     await env.store.remove(env.trigger.id);
-    const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
     const app = createApi({
-      ...deps,
+      ...env.deps("2026-10-23T09:00:10.000Z"),
       pid: 1,
       version: "0.0.0-test",
       startedAt: 0,

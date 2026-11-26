@@ -1,16 +1,19 @@
 import type { IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
 import { TEST_AUDIT_METRIC_NAMES, TEST_AUDIT_METRICS } from "@yok/sdk/internal";
-import { Hono } from "hono";
-import { errorResponse, queryParams, type Vars } from "./api.ts";
-import { readStateOrNull } from "./delivery.ts";
+import { type Context, Hono } from "hono";
+import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
+import { isRunGoing, readStateOrNull } from "./delivery.ts";
+import { oauthApp, sessionUser } from "./identity.ts";
 import {
+  type AuditEventBody,
+  AuditEventBodySchema,
   AuditMetricsQuerySchema,
   AuditProjectsQuerySchema,
   AuditRunsQuerySchema,
 } from "./protocol.ts";
 import type { RunDeps } from "./run.ts";
 
-export type AuditRouteDeps = RunDeps;
+export type AuditRouteDeps = RunDeps & Readonly<{ now: () => Date }>;
 
 // The run behind the result's newest apply_started or revert_started, while it is still stored.
 export const findApplyRun = async (
@@ -63,6 +66,50 @@ const readAudit = async (auditRunId: string, storage: IStorage) => {
   };
 };
 
+// The signed-in person's GitHub login, else their yok user id. "local" on a server with no
+// GitHub sign-in set up; null when sign-in is set up and nobody is signed in.
+const findDecider = async (
+  c: Context<{ Variables: Vars }>,
+  deps: AuditRouteDeps,
+): Promise<string | null> => {
+  const signedIn = await sessionUser(c, { ...deps, log: c.get("log") });
+  if (signedIn !== null) return signedIn[1].accounts.github?.login ?? signedIn[0];
+  return oauthApp(deps.home) === null ? "local" : null;
+};
+
+const recordClick = async (
+  c: Context<{ Variables: Vars }>,
+  deps: AuditRouteDeps,
+  resultId: string,
+  { type, feedback }: AuditEventBody,
+) => {
+  const who = await findDecider(c, deps);
+  if (who === null) return errorResponse(c, 401, "unauthorized", "sign in to decide");
+  // a result id opens with its audit run's id: AUDIT_RUN_ID:repo:problemType:slug
+  const [auditRunId = ""] = resultId.split(":");
+  const record = await deps.storage.audits.read(auditRunId);
+  if (record?.results.some((result) => result.id === resultId) !== true) {
+    return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
+  }
+  const applyRun = type === "rejected" ? undefined : await findApplyRun(resultId, deps.storage);
+  if (applyRun !== undefined && (await isRunGoing(applyRun, applyRun.createdAt, deps))) {
+    return errorResponse(
+      c,
+      409,
+      "conflict",
+      `apply run ${applyRun.name ?? applyRun.id} is still working on this result; try again when it ends`,
+    );
+  }
+  const event = await deps.storage.audits.addEvent({
+    resultId,
+    type,
+    who,
+    startedRunId: null,
+    payload: feedback === undefined ? {} : { feedback },
+  });
+  return c.json({ event }, 201);
+};
+
 // Mounted at /audits by app.ts. Chained, so each route's input and output types reach ApiType.
 // The fixed paths come before /:auditRunId, which would otherwise match them.
 export const auditRoutes = (deps: AuditRouteDeps) =>
@@ -106,4 +153,8 @@ export const auditRoutes = (deps: AuditRouteDeps) =>
         return errorResponse(c, 404, "not-found", `no audit run with id ${auditRunId}`);
       }
       return c.json(audit, 200);
-    });
+    })
+    // The page URL-encodes resultId, which holds colons; Hono decodes the param.
+    .post("/results/:resultId/events", jsonBody(AuditEventBodySchema), (c) =>
+      recordClick(c, deps, c.req.param("resultId"), c.req.valid("json")),
+    );

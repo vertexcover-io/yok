@@ -129,6 +129,7 @@ const buildDeps = async (
     stopping: new AbortController().signal,
     git: createGit(),
     checkCheckout: readyCheckout,
+    now: () => new Date(),
   };
 };
 

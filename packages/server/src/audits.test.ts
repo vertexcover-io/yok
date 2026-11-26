@@ -6,14 +6,18 @@ import type { IStorage, JsonObject, State } from "@yok/sdk";
 import { createGit, noopLogger } from "@yok/sdk";
 import { type AuditResult, type AuditRun, memoryStorage } from "@yok/sdk/internal";
 import { createApi } from "./app.ts";
-import { fakeHost, fakeProvider, seedState } from "./fake-host.ts";
+import { fakeHost, fakeProvider, seedState, seedUser } from "./fake-host.ts";
+import { sessionSecret, signValue } from "./identity.ts";
+import { updateHomeEnv } from "./protocol.ts";
 
 const AT = "2026-11-01T00:00:00.000Z";
 
-const buildDeps = (storage: IStorage = memoryStorage()) => ({
+// ALIVE: whether every run's agent session is still open
+const buildDeps = (storage: IStorage = memoryStorage(), alive = false) => ({
   storage,
   providerFor: () => fakeProvider("claude", () => Promise.resolve({ ok: false, error: "unused" })),
-  host: fakeHost("", false).host,
+  host: fakeHost("", alive).host,
+  now: () => new Date(),
   log: noopLogger,
   home: mkdtempSync(join(tmpdir(), "yok-home-")),
   publicOrigin: "http://localhost:1",
@@ -38,6 +42,7 @@ type SeedRun = Readonly<{
   project?: string;
   workflow?: string;
   inputs?: JsonObject;
+  terminal?: string;
   state?: Partial<State>;
 }>;
 
@@ -52,7 +57,7 @@ const addRun = async (storage: IStorage, id: string, seed: SeedRun = {}): Promis
     inputs: seed.inputs ?? {},
     sessions: [],
     name: null,
-    terminal: null,
+    terminal: seed.terminal ?? null,
     config: null,
     tiers: null,
     createdAt: AT,
@@ -269,4 +274,149 @@ describe("GET /audits", () => {
     expect(reply.status).toBe(400);
     expect(reply.body.error.code).toBe("bad-request");
   });
+});
+
+// Project web with one audit holding result A, which has a fix.
+const oneResult = async (storage: IStorage = memoryStorage()) => {
+  await addProject(storage, "web");
+  await addRun(storage, "r-audit");
+  const audit = await addAudit(storage, { runId: "r-audit", slugs: ["a"] });
+  return { storage, audit, resultId: `${audit.id}:web:duplicates:a` };
+};
+
+const setUpSignIn = (home: string) =>
+  updateHomeEnv(home, { GITHUB_CLIENT_ID: "x", GITHUB_CLIENT_SECRET: "y" });
+
+const sessionCookie = async (home: string, userId: string): Promise<string> => {
+  const exp = Date.now() + 60 * 60 * 1000;
+  const value = signValue(await sessionSecret(home), { sub: userId, purpose: "session", exp });
+  return `yok_session=${value}`;
+};
+
+const click = (
+  app: ReturnType<typeof createApi>,
+  resultId: string,
+  body: unknown,
+  cookie?: string,
+) =>
+  app.request(`/audits/results/${encodeURIComponent(resultId)}/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(cookie === undefined ? {} : { cookie }) },
+    body: JSON.stringify(body),
+  });
+
+// Result A's newest apply_started names run r-apply, with an open agent session and STATUS.
+const applying = async (status: State["status"]) => {
+  const env = await oneResult();
+  await addRun(env.storage, "r-apply", {
+    workflow: "test-audit-apply",
+    terminal: "t-apply",
+    state: { status },
+  });
+  await env.storage.audits.addEvent({
+    resultId: env.resultId,
+    who: "yok",
+    type: "apply_started",
+    payload: {},
+    startedRunId: "r-apply",
+  });
+  return { ...env, app: createApi(buildDeps(env.storage, true)) };
+};
+
+describe("POST /audits/results/:resultId/events", () => {
+  test("SC7308: a signed-in person's Accept is saved under their GitHub login", async () => {
+    const { storage, audit, resultId } = await oneResult();
+    const deps = buildDeps(storage);
+    await setUpSignIn(deps.home);
+    const userId = await seedUser(storage, { name: "Octo", github: { id: 7, login: "octo" } });
+    const app = createApi(deps);
+
+    const response = await click(
+      app,
+      resultId,
+      { type: "accepted" },
+      await sessionCookie(deps.home, userId),
+    );
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).event).toMatchObject({
+      resultId,
+      type: "accepted",
+      who: "octo",
+      startedRunId: null,
+      payload: {},
+    });
+    const { body } = await getJson(app, `/audits/${audit.id}`);
+    expect(body.results[0].decision.who).toBe("octo");
+    expect(await storage.runs.listRuns()).toHaveLength(1);
+  });
+
+  test("SC7309: on a server with no sign-in set up, a Reject with feedback is saved as local", async () => {
+    const { storage, resultId } = await oneResult();
+    const app = createApi(buildDeps(storage));
+
+    const response = await click(app, resultId, { type: "rejected", feedback: "keep it" });
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).event).toMatchObject({
+      who: "local",
+      payload: { feedback: "keep it" },
+    });
+  });
+
+  test("SC7310: with sign-in set up, a click without a session is refused and nothing is stored", async () => {
+    const { storage, resultId } = await oneResult();
+    const deps = buildDeps(storage);
+    await setUpSignIn(deps.home);
+
+    const response = await click(createApi(deps), resultId, { type: "accepted" });
+
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("unauthorized");
+    expect(await storage.audits.decision(resultId)).toBeUndefined();
+  });
+
+  test.each([
+    ["accepted", 409],
+    ["undone", 409],
+    ["rejected", 201],
+  ])("SC7311: while the result's apply run is going, %s answers %d", async (type, status) => {
+    const { app, resultId } = await applying("running");
+
+    const response = await click(app, resultId, { type });
+
+    expect(response.status).toBe(status);
+    if (status === 409) expect((await response.json()).error.code).toBe("conflict");
+  });
+
+  test("SC7312: Accept is taken once the result's apply run has ended", async () => {
+    const { app, resultId } = await applying("failed");
+
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(response.status).toBe(201);
+  });
+
+  test("SC7313: a click on an unknown result is a 404", async () => {
+    const { storage, audit } = await oneResult();
+
+    const response = await click(createApi(buildDeps(storage)), `${audit.id}:web:flaky:nope`, {
+      type: "accepted",
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()).error.code).toBe("not-found");
+  });
+
+  test.each([[{ type: "applied" }], [{ type: "accepted", who: "mallory" }]])(
+    "SC7313: a bad or forged click body is a 400: %o",
+    async (body) => {
+      const { storage, resultId } = await oneResult();
+
+      const response = await click(createApi(buildDeps(storage)), resultId, body);
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("bad-request");
+    },
+  );
 });
