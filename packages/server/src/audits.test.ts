@@ -204,7 +204,7 @@ describe("GET /audits", () => {
       completedAt: "2026-11-08T09:30:00.000Z",
     };
     await addRun(storage, "r-audit", { inputs: { coverageLimit: 70 }, state: times });
-    await addRun(storage, "r-apply", { workflow: "test-audit-apply" });
+    await addRun(storage, "r-apply", { workflow: "test-audit-apply", terminal: "t-apply" });
     const audit = await addAudit(storage, {
       runId: "r-audit",
       slugs: ["a", "b"],
@@ -225,7 +225,7 @@ describe("GET /audits", () => {
       payload: {},
       startedRunId: "r-apply",
     });
-    const app = createApi(buildDeps(storage));
+    const app = createApi(buildDeps(storage, true));
 
     const { status, body } = await getJson(app, `/audits/${audit.id}`);
 
@@ -422,6 +422,19 @@ describe("POST /audits/results/:resultId/events", () => {
 
     const response = await click(app, resultId, { type: "accepted" });
 
+    expect(response.status).toBe(409);
+  });
+
+  test("an apply run whose agent is dead while its state says running reads as gone, and Accept still answers 409", async () => {
+    const { app, audit, resultId } = await applying("running", false);
+
+    const { body } = await getJson(app, `/audits/${audit.id}`);
+    const response = await click(app, resultId, { type: "accepted" });
+
+    expect(body.results[0]).toMatchObject({
+      id: resultId,
+      applyRun: { id: "r-apply", status: "gone" },
+    });
     expect(response.status).toBe(409);
   });
 

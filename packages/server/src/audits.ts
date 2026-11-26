@@ -9,7 +9,7 @@ import {
 } from "@yok/sdk/internal";
 import { type Context, Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
-import { isRunGoing, readStateOrNull } from "./delivery.ts";
+import { isAgentAlive, isRunGoing, readStateOrNull } from "./delivery.ts";
 import { oauthApp, sessionUser } from "./identity.ts";
 import {
   type AuditEventBody,
@@ -37,11 +37,15 @@ export const findApplyRun = async (
   return storage.runs.findRun(started.startedRunId);
 };
 
-const describeApplyRun = async (resultId: string, storage: IStorage) => {
-  const run = await findApplyRun(resultId, storage);
+// "gone", as the runs page says, when the agent died while the state says running: the page can
+// tell the person the run stopped, though it still holds its results until resumed or cancelled.
+const describeApplyRun = async (resultId: string, deps: AuditRouteDeps) => {
+  const run = await findApplyRun(resultId, deps.storage);
   if (run === undefined) return null;
-  const state = await readStateOrNull(storage, run.id);
-  return { id: run.id, status: state?.status ?? "starting" };
+  const state = await readStateOrNull(deps.storage, run.id);
+  if (state === null) return { id: run.id, status: "starting" };
+  const gone = isRunLive(state.status) && !(await isAgentAlive(run, deps.host));
+  return { id: run.id, status: gone ? "gone" : state.status };
 };
 
 // A project sets its own limit with a workflow input named after the metric, such as coverageLimit.
@@ -54,7 +58,8 @@ const mergeLimits = (inputs: JsonObject) =>
     }),
   );
 
-const readAudit = async (auditRunId: string, storage: IStorage) => {
+const readAudit = async (auditRunId: string, deps: AuditRouteDeps) => {
+  const { storage } = deps;
   const record = await storage.audits.read(auditRunId);
   if (record === undefined) return undefined;
   const run = await storage.runs.findRun(record.run.runId);
@@ -63,7 +68,7 @@ const readAudit = async (auditRunId: string, storage: IStorage) => {
     record.results.map(async (result) => ({
       ...result,
       decision: (await storage.audits.decision(result.id)) ?? null,
-      applyRun: await describeApplyRun(result.id, storage),
+      applyRun: await describeApplyRun(result.id, deps),
     })),
   );
   return {
@@ -266,7 +271,7 @@ export const auditRoutes = (deps: AuditRouteDeps) =>
     })
     .get("/:auditRunId", async (c) => {
       const auditRunId = c.req.param("auditRunId");
-      const audit = await readAudit(auditRunId, deps.storage);
+      const audit = await readAudit(auditRunId, deps);
       if (audit === undefined) {
         return errorResponse(c, 404, "not-found", `no audit run with id ${auditRunId}`);
       }
