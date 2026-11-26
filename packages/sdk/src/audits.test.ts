@@ -774,6 +774,27 @@ describe("storage.audits pending work", () => {
     expect(await pending(storage)).toEqual([]);
   });
 
+  test("a commit or an error ends the pending apply even when no run start was recorded", async () => {
+    const { storage, one, two } = await finished();
+    await click(storage, one.id, "accepted");
+    await click(storage, two.id, "accepted");
+
+    await setFix(storage, one.id, { error: "conflict" });
+    await setFix(storage, two.id, { commit: "abc" });
+
+    expect(await pending(storage)).toEqual([]);
+  });
+
+  test("an error written in the same millisecond as the accept counts as after it", async () => {
+    const { storage, one } = await finished();
+    await click(storage, one.id, "accepted");
+
+    const reply = await storage.audits.setFix(one.id, { error: "conflict" });
+
+    expect(reply.ok).toBe(true);
+    expect(await pending(storage)).toEqual([]);
+  });
+
   test("SC7225: an undone applied fix is pending revert until yok starts the revert", async () => {
     const { storage, run, one } = await finished();
     await click(storage, one.id, "accepted");
