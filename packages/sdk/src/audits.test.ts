@@ -299,6 +299,14 @@ describe("storage.audits", () => {
         to: "2026-11-16T00:00:00Z",
       }),
     ).toEqual([second]);
+    // Bounds exactly on the second week, spelled unlike the stored "…00.000Z": with the
+    // -05:00 offset, a string compare without normalizing would put "to" before the week's end.
+    expect(
+      await storage.audits.list("web", "test", {
+        from: "2026-11-08T00:00:00Z",
+        to: "2026-11-14T19:00:00-05:00",
+      }),
+    ).toEqual([second]);
   });
 
   test("SC7207: audit rows need their run and project, and leave with their run", async () => {
