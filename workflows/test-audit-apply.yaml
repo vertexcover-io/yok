@@ -62,12 +62,15 @@ nodes:
       These items come from the test audit, not from a bug report. An item whose hint is a diff:
       apply it with git apply, and when it no longer applies make the change its summary and
       trigger describe. An item whose hint is a git revert: run it. Neither needs a failing test
-      first; prove each by running the files it touches, all passing. Every other step of the
-      skill holds.
+      first; prove each by running the files it touches, all passing. Only a fix(audit-apply-1 …)
+      commit after the repo's startSha in the workspace input is an earlier attempt of this run;
+      one at or before startSha came from an earlier apply run, so do that item again. Every other
+      step of the skill holds.
+    # Not test-audit's source: its fix(audit-1 ID) deletions sit on the same PR branch.
     input:
       workspace: "{{ nodes.workspace.output }}"
       fixes: "{{ nodes.audit-work.output.fixes }}"
-      source: audit
+      source: audit-apply
       round: 1
 
   - id: visual-pr

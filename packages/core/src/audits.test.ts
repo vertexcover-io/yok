@@ -371,7 +371,7 @@ describe("recordAuditWork", () => {
       const runDir = runDirOf(run.cwd, run.name);
       mkdirSync(join(runDir, "artifacts", "fixes"), { recursive: true });
       writeFileSync(
-        join(runDir, "artifacts", "fixes", "audit-1.json"),
+        join(runDir, "artifacts", "fixes", "audit-apply-1.json"),
         JSON.stringify([
           { id: r1, status: "closed", commit: "c1" },
           { id: r2, status: "closed", commit: "c2" },
@@ -384,7 +384,11 @@ describe("recordAuditWork", () => {
         run.name,
         stateWith(runDir, {
           fix: finished("nr-fix", [
-            { type: "fix-result", name: "audit-1", path: "artifacts/fixes/audit-1.json" },
+            {
+              type: "fix-result",
+              name: "audit-apply-1",
+              path: "artifacts/fixes/audit-apply-1.json",
+            },
           ]),
           "visual-pr": finished("nr-visual-pr", [{ type: "pull-request", name: "yok", url }]),
         }),

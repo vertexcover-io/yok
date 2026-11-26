@@ -1518,14 +1518,14 @@ describe("orchestrate audit", () => {
     const fixes = join(repo, ".yok", "apply", "artifacts", "fixes");
     mkdirSync(fixes, { recursive: true });
     writeFileSync(
-      join(fixes, "audit-1.json"),
+      join(fixes, "audit-apply-1.json"),
       JSON.stringify([
         { id: r1, status: "closed", commit: "c1" },
         { id: r2, status: "closed", commit: "c3" },
       ]),
     );
     done(fix.nodeRunId, [
-      { type: "fix-result", name: "audit-1", path: "artifacts/fixes/audit-1.json" },
+      { type: "fix-result", name: "audit-apply-1", path: "artifacts/fixes/audit-apply-1.json" },
     ]);
 
     const pr = next();

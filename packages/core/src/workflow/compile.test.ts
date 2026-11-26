@@ -1462,6 +1462,24 @@ describe("the shipped test-audit-apply workflow", () => {
       "audit-record",
     ]);
   });
+
+  test("the apply run's fix commits never share test-audit's fix(audit-1 …) subject, and an earlier run's commit is not taken as already fixed", async () => {
+    const apply = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit-apply.yaml"),
+    );
+    const audit = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit.yaml"),
+    );
+    const autofix = audit.nodes.find((node) => node.id === "autofix");
+    if (autofix?.type !== "switch") throw new Error("autofix is not a switch");
+    const auditFix = autofix.cases[0]?.nodes.find((node) => node.id === "fix");
+    const applyFix = apply.nodes.find((node) => node.id === "fix");
+    if (auditFix?.type !== "agent" || applyFix?.type !== "agent") throw new Error("no fix agent");
+
+    expect(applyFix.input).toMatchObject({ source: "audit-apply" });
+    expect(applyFix.input).not.toMatchObject({ source: auditFix.input.source });
+    expect(applyFix.prompt).toContain("startSha");
+  });
 });
 
 describe("the shipped regression workflow", () => {
