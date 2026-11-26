@@ -265,3 +265,5 @@ _Avoid_: Post-mortem
 - The orchestrate help text calls a run's name its "spec name". Resolved: **Run name**.
 - "Blocked" meant two things: a stage `next` cannot hand out until its consumed artifacts exist, and a run whose status is `blocked` because it waits on the person. Resolved: **Missing artifacts** for the first (the code's `workflow.blocked` and `kind: "blocked"` keep their names for now), **Blocked** and **Blocker** for the second.
 - "Event handler" and "subscriber" both react to events. Resolved: an **Event handler** changes state; a **Subscriber** only reacts.
+
+This line was added by a QA throwaway run and will be removed.
