@@ -662,6 +662,31 @@ describe("the tick's audit apply runs", () => {
   );
 
   test(
+    "outcomes the apply run writes after the sweep read the audit, before it read the run, are left alone",
+    async () => {
+      const { storage, deps, a, b, runId } = await appliedOnce();
+      await setState(storage, runId, "completed");
+      // the run writes its outcomes while the sweep is between its audit read and its first run read
+      let written = false;
+      const findRun = async (id: string) => {
+        if (!written) {
+          written = true;
+          await storage.audits.setFix(a, { commit: "c1" });
+          await storage.audits.setFix(b, { clear: true });
+        }
+        return storage.runs.findRun(id);
+      };
+
+      await tick({ ...deps(), storage: { ...storage, runs: { ...storage.runs, findRun } } });
+
+      expect(await fixOf(storage, a)).toMatchObject({ commit: "c1" });
+      expect((await fixOf(storage, a))?.error).toBeUndefined();
+      expect((await fixOf(storage, b))?.error).toBeUndefined();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     "SC7321: an apply run whose agent died while its state says running is left alone",
     async () => {
       const { storage, launches, deps, a, b, runId } = await appliedOnce();

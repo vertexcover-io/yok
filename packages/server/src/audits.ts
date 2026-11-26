@@ -2,6 +2,7 @@ import type { ILogger, IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
 import {
   type AuditPendingWork,
   type AuditResult,
+  type AuditResultEvent,
   isRunLive,
   TEST_AUDIT_METRIC_NAMES,
   TEST_AUDIT_METRICS,
@@ -190,18 +191,27 @@ const isApplyRunGoing = async (run: WorkflowRun, deps: AuditTickDeps): Promise<b
   return isRunGoing(run, run.createdAt, deps);
 };
 
+// fix.at stamps setFix's last write; a finished revert clears it along with the commit
+const isOutcomeWritten = (fix: AuditResult["fix"], started: AuditResultEvent): boolean =>
+  fix === null ||
+  (fix.at ?? "") >= started.ts ||
+  (started.type === "revert_started" && fix.commit === undefined);
+
+const readFix = async (resultId: string, storage: IStorage) => {
+  const [auditRunId = ""] = resultId.split(":");
+  const record = await storage.audits.read(auditRunId);
+  return record?.results.find((entry) => entry.id === resultId)?.fix ?? null;
+};
+
 const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promise<void> => {
   const started = await deps.storage.audits.run(result.id);
-  if (result.fix === null || started === undefined) return;
-  // fix.at stamps setFix's last write; a finished revert clears it along with the commit
-  const written =
-    (result.fix.at ?? "") >= started.ts ||
-    (started.type === "revert_started" && result.fix.commit === undefined);
-  if (written) return;
+  if (started === undefined || isOutcomeWritten(result.fix, started)) return;
   // startedRunId turns null when the run is removed
   const runId = started.startedRunId;
   const run = runId === null ? undefined : await deps.storage.runs.findRun(runId);
   if (run !== undefined && (await isApplyRunGoing(run, deps))) return;
+  // the run may have written its outcomes since the audit was read, just before it ended
+  if (isOutcomeWritten(await readFix(result.id, deps.storage), started)) return;
   await deps.storage.audits.setFix(result.id, {
     error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
   });
