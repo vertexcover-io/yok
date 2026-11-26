@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AuditMetric } from "@yok/sdk";
 import type { RunTestsRepo } from "../../run-tests/scripts/coverage.ts";
 import type { DuplicatesRepo } from "../../test-duplicates/scripts/duplicates.ts";
@@ -196,4 +199,60 @@ describe("settleAutoFix", () => {
       });
     },
   );
+});
+
+describe("main", () => {
+  test("node show's fix-result:audit-1 and pull-request:yok give the printed auto-fix its commit and PR", () => {
+    const dir = mkdtempSync(join(tmpdir(), "report-"));
+    const autoFixed = {
+      ...sortedResult("copy"),
+      id: "a-1:yok:duplicates:copy",
+      problemType: "duplicates" as const,
+      state: "auto_fixed" as const,
+      fix: { summary: "delete copy", diff: "-copy" },
+    };
+    const fixResult = join(dir, "audit-1.json");
+    writeFileSync(
+      fixResult,
+      JSON.stringify([{ id: autoFixed.id, status: "closed", commit: "c1" }]),
+    );
+    // the shape `yok orchestrate node show` prints, keys as artifactPaths writes them
+    const facts = {
+      nodeRunId: "nr-publish",
+      stage: "audit-publish",
+      attempt: 1,
+      input: inputOf({
+        sorted: {
+          results: [autoFixed],
+          autoFix: true,
+          fixes: [
+            {
+              id: autoFixed.id,
+              repo: "yok",
+              file: "a.test.ts",
+              summary: "copy duplicates one",
+              trigger: "copy checks what one checks",
+              hint: "delete copy; keep one",
+            },
+          ],
+        },
+      }),
+      consumed: {
+        "fix-result:audit-1": fixResult,
+        "pull-request:yok": "https://github.com/o/yok/pull/7",
+      },
+      runDir: dir,
+    };
+    const ran = Bun.spawnSync({
+      cmd: [process.execPath, join(import.meta.dir, "report.ts")],
+      stdin: Buffer.from(JSON.stringify(facts)),
+    });
+    expect(ran.stderr.toString()).toBe("");
+    expect(JSON.parse(ran.stdout.toString()).results).toEqual([
+      {
+        ...autoFixed,
+        fix: { ...autoFixed.fix, commit: "c1", pr: "https://github.com/o/yok/pull/7" },
+      },
+    ]);
+  });
 });
