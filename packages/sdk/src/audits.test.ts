@@ -4,6 +4,7 @@ import {
   type AUDIT_RUN_START_TYPES,
   type AuditFixPatch,
   type AuditMetric,
+  type AuditReport,
   type AuditResult,
   type AuditResultEventDraft,
   type AuditRun,
@@ -264,23 +265,32 @@ describe("storage.audits", () => {
     });
   });
 
-  test("SC7205: unknown metric and problem-type names are stored", async () => {
+  test("SC7205: a finish naming an unknown metric or problem type is refused and writes nothing", async () => {
     const storage = await seeded();
     const started = await startOk(storage, week("r-1"));
-    const orphan = result(started.id, "x", {
-      id: `${started.id}:web:orphan:x`,
-      problemType: "orphan",
-    });
-
-    await storage.audits.finish(started.id, {
+    const report = {
       status: "complete",
-      metrics: [metric({ metric: "mutationScore" })],
-      results: [orphan],
-    });
+      metrics: [metric()],
+      results: [result(started.id, "ok")],
+    } as const;
 
-    const record = await storage.audits.read(started.id);
-    expect(record?.metrics.map((row) => row.metric)).toEqual(["mutationScore"]);
-    expect(record?.results.map((row) => row.problemType)).toEqual(["orphan"]);
+    await expect(
+      storage.audits.finish(started.id, {
+        ...report,
+        metrics: [{ ...metric(), metric: "mutationScore" }],
+      } as unknown as AuditReport),
+    ).rejects.toThrow("metric");
+    await expect(
+      storage.audits.finish(started.id, {
+        ...report,
+        results: [{ ...result(started.id, "x"), problemType: "orphan" }],
+      } as unknown as AuditReport),
+    ).rejects.toThrow("problemType");
+    expect(await storage.audits.read(started.id)).toEqual({
+      run: started,
+      metrics: [],
+      results: [],
+    });
   });
 
   test("SC7206: a project's audits list newest period first, with a limit and a period filter", async () => {

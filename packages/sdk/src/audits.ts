@@ -1,6 +1,39 @@
 import * as z from "zod";
 import { NonEmptyStringSchema } from "./contracts.ts";
 
+export type MetricInfo = Readonly<{
+  unit: "percent" | "count" | "seconds";
+  better: "higher" | "lower";
+  // a project's own limit replaces it; null is charted and never flagged
+  limit: number | null;
+}>;
+
+export const TEST_AUDIT_METRIC_NAMES = [
+  "coverage",
+  "coverageChanged",
+  "testCount",
+  "testTime",
+  "flakyTests",
+  "duplicates",
+  "duplicatesPct",
+] as const;
+export type TestAuditMetric = (typeof TEST_AUDIT_METRIC_NAMES)[number];
+
+// Percent is stored 0-100 and time in seconds.
+export const TEST_AUDIT_METRICS = {
+  coverage: { unit: "percent", better: "higher", limit: 80 },
+  coverageChanged: { unit: "percent", better: "higher", limit: 80 },
+  testCount: { unit: "count", better: "higher", limit: null },
+  testTime: { unit: "seconds", better: "lower", limit: 240 },
+  flakyTests: { unit: "count", better: "lower", limit: 0 },
+  duplicates: { unit: "count", better: "lower", limit: 0 },
+  duplicatesPct: { unit: "percent", better: "lower", limit: 2 },
+} as const satisfies Readonly<Record<TestAuditMetric, MetricInfo>>;
+
+// failing: a test that fails on every run, unlike flaky
+export const TEST_AUDIT_PROBLEM_TYPES = ["duplicates", "flaky", "slow", "failing"] as const;
+export type TestAuditProblemType = (typeof TEST_AUDIT_PROBLEM_TYPES)[number];
+
 // A periodic audit of one project. The period is the window it looks at, of any length.
 export const AuditRunSchema = z.strictObject({
   id: NonEmptyStringSchema,
@@ -22,8 +55,8 @@ export type AuditStart = z.infer<typeof AuditStartSchema>;
 
 export const AuditMetricSchema = z.strictObject({
   repo: NonEmptyStringSchema,
-  // any name: TEST_AUDIT_METRICS lists the test audit's, and a new audit adds its own
-  metric: NonEmptyStringSchema,
+  // a new audit adds its own names beside the test audit's
+  metric: z.enum(TEST_AUDIT_METRIC_NAMES),
   // '' for the whole suite, else a layer such as unit or e2e, or a code area such as packages/sdk
   scope: z.string(),
   status: z.enum(["measured", "not_measured"]),
@@ -39,7 +72,7 @@ export const AuditResultSchema = z.strictObject({
   // same finding again
   id: NonEmptyStringSchema,
   repo: NonEmptyStringSchema,
-  problemType: NonEmptyStringSchema,
+  problemType: z.enum(TEST_AUDIT_PROBLEM_TYPES),
   state: z.enum(["auto_fixed", "needs_approval", "needs_work"]),
   title: NonEmptyStringSchema,
   proof: z.record(z.string(), z.json()),
@@ -126,26 +159,3 @@ export type AuditPendingWork = Readonly<{
   event: AuditResultEvent;
   action: "apply" | "revert";
 }>;
-
-export type MetricInfo = Readonly<{
-  unit: "percent" | "count" | "seconds";
-  better: "higher" | "lower";
-  // a project's own limit replaces it; null is charted and never flagged
-  limit: number | null;
-}>;
-
-// Percent is stored 0-100 and time in seconds.
-export const TEST_AUDIT_METRICS = {
-  coverage: { unit: "percent", better: "higher", limit: 80 },
-  coverageChanged: { unit: "percent", better: "higher", limit: 80 },
-  testCount: { unit: "count", better: "higher", limit: null },
-  testTime: { unit: "seconds", better: "lower", limit: 240 },
-  flakyTests: { unit: "count", better: "lower", limit: 0 },
-  duplicates: { unit: "count", better: "lower", limit: 0 },
-  duplicatesPct: { unit: "percent", better: "lower", limit: 2 },
-} as const satisfies Readonly<Record<string, MetricInfo>>;
-export type TestAuditMetric = keyof typeof TEST_AUDIT_METRICS;
-
-// failing: a test that fails on every run, unlike flaky
-export const TEST_AUDIT_PROBLEM_TYPES = ["duplicates", "flaky", "slow", "failing"] as const;
-export type TestAuditProblemType = (typeof TEST_AUDIT_PROBLEM_TYPES)[number];
