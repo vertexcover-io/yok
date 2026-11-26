@@ -41,6 +41,7 @@ import {
   metricSeries,
   prLabel,
   resultPageState,
+  trendRange,
 } from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
@@ -940,6 +941,27 @@ describe("audit page rules", () => {
     ["https://example.com/v2", "https://example.com/v2"],
   ])("SC8010: prLabel reads %p as %p", (pr, label) => {
     expect(prLabel(pr)).toBe(label);
+  });
+});
+
+describe("trendRange", () => {
+  // oldest first by period end, as the page orders the list route's runs; b is a longer period overlapping a
+  const runs = [
+    { id: "a", periodStart: "2026-11-01T00:00:00.000Z", periodEnd: "2026-11-08T00:00:00.000Z" },
+    { id: "b", periodStart: "2026-10-01T00:00:00.000Z", periodEnd: "2026-11-15T00:00:00.000Z" },
+    { id: "c", periodStart: "2026-11-15T00:00:00.000Z", periodEnd: "2026-11-22T00:00:00.000Z" },
+  ];
+
+  test("a range opening at a short run reaches back to a longer run's earlier start, so the route returns every run in the range", () => {
+    expect(trendRange(runs, "a", "c")).toEqual({
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-11-22T00:00:00.000Z",
+      runIds: ["a", "b", "c"],
+    });
+  });
+
+  test("a range from b to c keeps a out of its run ids, though a lies inside b's wider window", () => {
+    expect(trendRange(runs, "b", "c").runIds).toEqual(["b", "c"]);
   });
 });
 

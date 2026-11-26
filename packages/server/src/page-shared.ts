@@ -135,3 +135,19 @@ export const resultPageState = (
   }
   return { kind: "waiting", action: decision.type === "undone" ? "revert" : "apply" };
 };
+
+type PeriodRun = Readonly<{ id: string; periodStart: string; periodEnd: string }>;
+
+// The metrics route keeps only runs wholly inside from..to, so from is the earliest start of any
+// run in the range, not the first run's; runIds then drops a run that window pulls in from outside.
+export const trendRange = (runs: readonly PeriodRun[], fromId: string, toId: string) => {
+  const inRange = runs.slice(
+    runs.findIndex((run) => run.id === fromId),
+    runs.findIndex((run) => run.id === toId) + 1,
+  );
+  return {
+    from: inRange.map((run) => run.periodStart).reduce((a, b) => (b < a ? b : a)),
+    to: inRange.map((run) => run.periodEnd).reduce((a, b) => (b > a ? b : a)),
+    runIds: inRange.map((run) => run.id),
+  };
+};
