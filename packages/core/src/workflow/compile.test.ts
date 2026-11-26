@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Notifier, runDirOf, type Samskara } from "@yok/sdk";
+import { type Notifier, runDirOf, type Samskara, TEST_AUDIT_METRICS } from "@yok/sdk";
 import { noProjectConfig } from "../stage.ts";
 import { compileWorkflow, runStageDirs } from "./compile.ts";
 import { evaluateBoolean, resolveValue, type Scope } from "./evaluate.ts";
@@ -1403,6 +1403,43 @@ describe("the shipped pr-fix workflow", () => {
       allowFailure: true,
       input: { pr: "{{ inputs.pr }}", prompt: "{{ inputs.prompt }}" },
     });
+  });
+});
+
+describe("the shipped test-audit workflow", () => {
+  const TEST_AUDIT = join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit.yaml");
+
+  test("SC22: fires on Saturday at 02:00 with interaction off, runs its nodes in order, and always closes its audit", async () => {
+    const plan = await compileWorkflow(TEST_AUDIT);
+
+    expect(plan.trigger).toMatchObject({ cron: "0 2 * * 6" });
+    expect(plan.policies).toMatchObject({ interaction: false });
+    expect(plan.nodes.map((node) => node.id)).toEqual([
+      "create-workspace",
+      "audit-start",
+      "run-tests",
+      "test-duplicates",
+      "audit-sort",
+      "audit-publish",
+      "audit-close",
+    ]);
+    expect(plan.nodes.find((node) => node.id === "audit-close")).toMatchObject({
+      always: true,
+      allowFailure: true,
+      input: {},
+    });
+  });
+
+  test("SC23: each limit input defaults to its metric's limit in TEST_AUDIT_METRICS", async () => {
+    const plan = await compileWorkflow(TEST_AUDIT);
+
+    const limits = Object.entries(TEST_AUDIT_METRICS).flatMap(([metric, info]) =>
+      info.limit === null ? [] : [[`${metric}Limit`, info.limit] as const],
+    );
+    expect(limits).not.toHaveLength(0);
+    for (const [input, limit] of limits) {
+      expect(plan.inputs[input]).toMatchObject({ type: "number", default: limit });
+    }
   });
 });
 

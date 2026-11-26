@@ -27,6 +27,7 @@ references:
     description: >-
       Summarises the audit folder (audit/LAYER/runN/*.xml) per layer: tests failing every time,
       flaky tests, slowest files and tests. Run it with python3 at step 2; do not read it.
+      With --json it prints one object per layer instead.
 ---
 
 # Test audit

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from junit_summary import classify, load_tree, main, parse_run, render_layer
+from junit_summary import classify, load_tree, main, parse_run, render_layer, summarize_layer
 
 BUN_RUN = """<?xml version="1.0"?>
 <testsuites name="bun test">
@@ -102,6 +102,24 @@ class JunitSummaryTest(unittest.TestCase):
         self.assertIn("- 3.00s  97%  a.test.ts", report)
         self.assertNotIn("3%  b.test.ts", report)
         self.assertNotIn("later", report)
+
+    def test_sc13_json_gives_counts_failing_tests_flaky_tests_with_each_run_and_slow_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for run, flaky in (("run1", ""), ("run2", "<failure />"), ("run3", "")):
+                write(root / "unit" / run, "r.xml", BUN_RUN.format(flaky=flaky))
+            summary = summarize_layer(load_tree(root)["unit"], top=1)
+        self.assertEqual(
+            summary,
+            {
+                "runs": 3,
+                "tests": 4,
+                "seconds": 3.1,
+                "failing": [{"file": "b.test.ts", "name": "broken"}],
+                "flaky": [{"file": "a.test.ts", "name": "sometimes", "runs": ["pass", "fail", "pass"]}],
+                "slow": [{"file": "a.test.ts", "seconds": 3.0, "share": 0.9677}],
+            },
+        )
 
     def test_a_folder_not_laid_out_by_layer_and_run_exits_1(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

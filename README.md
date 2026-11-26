@@ -182,7 +182,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships five, `task`, `quick`, `regression`, `skill` and `pr-fix`. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
+A workflow is a YAML file of nodes. Yok ships six, `task`, `quick`, `regression`, `skill`, `pr-fix` and `test-audit`, the weekly unattended test audit. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
 
 ### task: the full pipeline
 
@@ -347,6 +347,10 @@ Each skill is a folder under `skills/`. In Claude Code every one is a slash comm
 | [pr-triage](./skills/pr-triage/README.md) | Reads an open pull request and turns the prompt into the work list pr-fix builds from |
 | [pr-reply](./skills/pr-reply/README.md) | Posts pr-fix's one free-text reply on the pull request: what was done, or which step failed |
 | [test-audit](./skills/test-audit/README.md) | Finds broken, flaky, slow and redundant tests, then proposes and applies a cleanup plan |
+| [run-tests](./skills/run-tests/README.md) | Runs each repo's suite three times and once with coverage for the weekly test audit |
+| [test-duplicates](./skills/test-duplicates/README.md) | Finds tests added in the audit's period that duplicate another test, each with its keeper |
+| [audit-sort](./skills/audit-sort/README.md) | Turns the test audit's findings into results with proof and a fix |
+| [audit-publish](./skills/audit-publish/README.md) | Builds the test audit's metrics and results and publishes them |
 | [learn](./skills/learn/README.md) | Turns a correction into a short learning in `docs/learnings/` after you pick between fixes, and logs every proposal |
 | [adr](./skills/adr/README.md) | Records one architecture decision in `docs/adr/` and adds it to the index |
 | [retro](./skills/retro/README.md) | Audits a finished run's transcripts and writes a ranked report of yok defects |

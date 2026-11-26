@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -11,8 +11,10 @@ import {
   SubscriberCalledEvent,
   type WorkflowRun,
 } from "@yok/sdk";
+import { withStorage, writeShim } from "@yok/sdk/internal";
 import * as z from "zod";
 import {
+  CLI,
   configuredRepo,
   eventsOf,
   fileArtifact,
@@ -1223,7 +1225,7 @@ describe("orchestrate workflows", () => {
     return JSON.parse(listed.stdout) as readonly Listed[];
   };
 
-  test("prints every shipped workflow with its name, description and file as JSON", async () => {
+  test("SC24: prints every shipped workflow, test-audit included, with its name, description and file as JSON", async () => {
     const workflows = list(tempRepo());
 
     expect(workflows.map((workflow) => workflow.name)).toEqual([
@@ -1232,6 +1234,7 @@ describe("orchestrate workflows", () => {
       "regression",
       "skill",
       "task",
+      "test-audit",
     ]);
     for (const workflow of workflows) {
       expect(workflow.description).not.toBe("");
@@ -1257,6 +1260,7 @@ describe("orchestrate workflows", () => {
       "regression",
       "skill",
       "task",
+      "test-audit",
       "nightly",
     ]);
     expect(workflows.at(-1)).toEqual({
@@ -1316,5 +1320,65 @@ describe("orchestrate audit", () => {
     const bad = audit(["start"], "not json");
     expect(bad.code).toBe(1);
     expect(bad.stderr).toContain("stdin is not valid JSON");
+  });
+
+  test("SC25: a test-audit run whose run-tests stage fails still closes its audit as failed", async () => {
+    const source = readFileSync(
+      join(import.meta.dir, "..", "..", "..", "workflows", "test-audit.yaml"),
+      "utf8",
+    );
+    const shims = tempDir();
+    const env = {
+      YOK_SKILLS_DIR: undefined,
+      YOK_SELF: undefined,
+      PATH: `${writeShim(["bun", "--no-env-file", CLI], shims, false)}:${process.env.PATH}`,
+    };
+    const { repo, home } = await startedRun(source, undefined, { inputs: {} }, { env });
+    const step = (args: readonly string[], input = "") => orchestrate(repo, home, args, env, input);
+    const next = () => {
+      const reply = step(["next", "--run", "feat-x"]);
+      if (reply.code !== 0) throw new Error(reply.stderr);
+      return parseStep(reply.stdout);
+    };
+    const summary = ["--summary", "Did the work."];
+    // An exec node's command runs in the run's session, whose environment names the run.
+    const session = (command: string) =>
+      spawnSync("sh", ["-c", command], {
+        cwd: repo,
+        env: { ...process.env, ...env, YOK_HOME: home, YOK_RUN_ID: "r-1" },
+      });
+
+    const workspace = next();
+    expect(workspace.nodeId).toBe("create-workspace");
+    const output = {
+      layout: "mono",
+      branch: "audit",
+      workspaceDir: repo,
+      repos: [{ name: "yok", worktreeDir: repo }],
+    };
+    expect(
+      step(
+        ["done", workspace.nodeRunId, "--run", "feat-x", ...summary, "--output", "-"],
+        JSON.stringify(output),
+      ).code,
+    ).toBe(0);
+
+    const start = next();
+    expect(start).toMatchObject({ kind: "exec", nodeId: "audit-start" });
+    expect(session(start.command).status).toBe(0);
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const audits = () => withStorage(home, (storage) => storage.audits.list("repo", "test"));
+    expect(await audits()).toEqual([
+      expect.objectContaining({ status: "running", commits: { yok: head } }),
+    ]);
+
+    const tests = next();
+    expect(tests.nodeId).toBe("run-tests");
+    step(["done", tests.nodeRunId, "--run", "feat-x", "--error", "-"], "the runner crashed");
+
+    const close = next();
+    expect(close).toMatchObject({ kind: "exec", nodeId: "audit-close" });
+    expect(session(close.command).status).toBe(0);
+    expect(await audits()).toEqual([expect.objectContaining({ status: "failed" })]);
   });
 });

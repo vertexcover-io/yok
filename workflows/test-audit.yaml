@@ -1,0 +1,101 @@
+name: test-audit
+description: >-
+  Audit a project's test suite every Saturday at 02:00, unattended: run it three times and once
+  with coverage, find flaky, failing, slow and duplicate tests, and save the metrics and findings
+  as the project's test audit.
+policies:
+  interaction: false
+trigger:
+  cron: "0 2 * * 6"
+# The limits the audit page flags against, saved with the run; the same defaults as
+# TEST_AUDIT_METRICS in packages/sdk/src/audits.ts.
+inputs:
+  coverageLimit:
+    type: number
+    default: 80
+  coverageChangedLimit:
+    type: number
+    default: 80
+  testTimeLimit:
+    type: number
+    default: 240
+  flakyTestsLimit:
+    type: number
+    default: 0
+  duplicatesLimit:
+    type: number
+    default: 0
+  duplicatesPctLimit:
+    type: number
+    default: 2
+doctor:
+  - check: binary
+    key: python3
+    fix: Install Python 3
+nodes:
+  - id: create-workspace
+    type: agent
+    stage: create-workspace
+    notify: false
+    input:
+      request: Audit the project's test suite.
+
+  - id: audit-start
+    type: exec
+    runtime: sh
+    script: yok orchestrate audit start
+    notify: false
+    dependsOn: [create-workspace]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+    output:
+      zodSchema: Json
+
+  - id: run-tests
+    type: agent
+    stage: run-tests
+    dependsOn: [create-workspace, audit-start]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      audit: "{{ nodes.audit-start.output }}"
+
+  - id: test-duplicates
+    type: agent
+    stage: test-duplicates
+    dependsOn: [create-workspace, audit-start, run-tests]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      audit: "{{ nodes.audit-start.output }}"
+
+  - id: audit-sort
+    type: agent
+    stage: audit-sort
+    dependsOn: [audit-start, run-tests, test-duplicates]
+    input:
+      audit: "{{ nodes.audit-start.output }}"
+      tests: "{{ nodes.run-tests.output }}"
+      duplicates: "{{ nodes.test-duplicates.output }}"
+
+  - id: audit-publish
+    type: agent
+    stage: audit-publish
+    dependsOn: [audit-start, run-tests, test-duplicates, audit-sort]
+    input:
+      audit: "{{ nodes.audit-start.output }}"
+      tests: "{{ nodes.run-tests.output }}"
+      duplicates: "{{ nodes.test-duplicates.output }}"
+      sorted: "{{ nodes.audit-sort.output }}"
+
+  # always: a run whose stage crashed still leaves its audit failed, never running; it reads no
+  # node output (ADR 0008). allowFailure: its own failure never changes the run's status.
+  - id: audit-close
+    type: exec
+    runtime: sh
+    script: yok orchestrate audit close
+    notify: false
+    dependsOn: [audit-publish]
+    always: true
+    allowFailure: true
+    input: {}
+    output:
+      zodSchema: Json

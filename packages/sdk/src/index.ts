@@ -16,6 +16,18 @@ export {
   type TerminalSpec,
 } from "./agent.ts";
 export {
+  type AuditMetric,
+  AuditMetricSchema,
+  type AuditReport,
+  type AuditResult,
+  AuditResultSchema,
+  TEST_AUDIT_METRIC_NAMES,
+  TEST_AUDIT_METRICS,
+  TEST_AUDIT_PROBLEM_TYPES,
+  type TestAuditMetric,
+  type TestAuditProblemType,
+} from "./audits.ts";
+export {
   type Check,
   type CheckContext,
   type CheckStatus,
