@@ -238,6 +238,17 @@ const ghSaying =
   (state: string): Gh =>
   () => ({ ok: true, value: { state, headRefName: "audit-b" } });
 
+// gh reporting each PR url's state, and its head branch as the url's last part.
+const ghByUrl =
+  (states: Readonly<Record<string, string>>): Gh =>
+  (args) => {
+    const url = args.at(-1) ?? "";
+    return {
+      ok: true,
+      value: { state: states[url] ?? "MERGED", headRefName: url.split("/").at(-1) },
+    };
+  };
+
 describe("listAuditWork", () => {
   test("SC32: an accepted result applies its diff and an undone one reverts its commit with git revert", async () => {
     await withSeededStorage(async (storage) => {
@@ -310,6 +321,34 @@ describe("listAuditWork", () => {
         ghSaying("OPEN"),
       );
       expect(work).toMatchObject({ ok: true, value: { repos: ["web", "yok"] } });
+    });
+  });
+
+  test("the newest audit's open PR wins over its merged auto-fix PR, though the auto-fix sorts first by id", async () => {
+    await withSeededStorage(async (storage) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(
+          `${audit}:yok:duplicates:d1`,
+          { diff: "-d", commit: "C", pr: "https://x/auto", at: "2026-11-21T03:00:00.000Z" },
+          "auto_fixed",
+        ),
+        withFix(`${audit}:yok:flaky:f1`, {
+          diff: "-f",
+          commit: "D",
+          pr: "https://x/apply",
+          at: "2026-11-22T03:00:00.000Z",
+        }),
+        withFix(`${audit}:yok:flaky:f2`, { diff: "-g" }),
+      ]);
+      const work = await listAuditWork(
+        storage,
+        { results: [{ id: `${id}:yok:flaky:f2`, action: "apply" }] },
+        ghByUrl({ "https://x/apply": "OPEN" }),
+      );
+      expect(work).toMatchObject({
+        ok: true,
+        value: { pr: "https://x/apply", upstream: "apply", onPr: true },
+      });
     });
   });
 

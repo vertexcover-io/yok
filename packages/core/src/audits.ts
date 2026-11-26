@@ -254,12 +254,24 @@ export const listAuditWork = (
       if (result === undefined) throw new Error(`no audit result ${item.id}`);
       return toFixItem(result, item.action);
     });
-    // The newest audit's PR collects the run's commits, whichever audit each result came from.
+    // The newest audit's open PR collects the run's commits, whichever audit each result came
+    // from: its auto-fix PR may be merged while a later apply run's PR is still open.
     const newest = [...audits].sort((a, b) => b.run.periodEnd.localeCompare(a.run.periodEnd))[0];
-    const pr = newest?.results.find((result) => result.fix?.pr !== undefined)?.fix?.pr ?? null;
-    const upstream = pr === null ? null : readOpenBranch(gh, pr);
+    const prs = (newest?.results ?? [])
+      .flatMap(({ fix }) => (fix?.pr === undefined ? [] : [{ pr: fix.pr, at: fix.at ?? "" }]))
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .map(({ pr }) => pr);
+    const open = [...new Set(prs)]
+      .map((pr) => ({ pr, upstream: readOpenBranch(gh, pr) }))
+      .find(({ upstream }) => upstream !== null);
     const repos = [...new Set(fixes.map((fix) => fix.repo))].sort();
-    return { fixes, repos, pr, upstream, onPr: upstream !== null };
+    return {
+      fixes,
+      repos,
+      pr: open?.pr ?? prs[0] ?? null,
+      upstream: open?.upstream ?? null,
+      onPr: open !== undefined,
+    };
   });
 
 const FixResultsSchema = z.array(
