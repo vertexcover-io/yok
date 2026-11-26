@@ -76,4 +76,24 @@ describe("schema checks", () => {
     expect(() => insertAccount("u_2", "U7")).toThrow("UNIQUE");
     db.close();
   });
+
+  test("SC7210: the schema refuses a non-JSON audit metric and a metric for a missing audit run", () => {
+    const { db, insertRun } = seeded();
+    insertRun("r-1", "{}");
+    db.run(
+      "INSERT INTO audit_runs (id, run_id, project, audit, period_start, period_end, commits, status, created_at) VALUES ('a-1', 'r-1', 'web', 'test', 's', 'e', '{}', 'running', 'x')",
+    );
+    const insertMetric = (auditRunId: string, how: string) =>
+      db.run(
+        "INSERT INTO audit_metrics (audit_run_id, repo, metric, scope, status, how) VALUES (?, 'web', 'coverage', '', 'measured', ?)",
+        [auditRunId, how],
+      );
+    expect(() => insertMetric("a-1", "not json")).toThrow("audit_metrics_how_json");
+    expect(() => insertMetric("a-missing", "{}")).toThrow("FOREIGN KEY");
+    insertMetric("a-1", "{}");
+    expect(db.query("SELECT audit_run_id FROM audit_metrics").all()).toEqual([
+      { audit_run_id: "a-1" },
+    ]);
+    db.close();
+  });
 });

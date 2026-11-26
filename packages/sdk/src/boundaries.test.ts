@@ -351,6 +351,7 @@ describe("source boundaries", () => {
       "packages/sdk/src/db.ts",
       "packages/sdk/src/schema.ts",
       "packages/sdk/src/storage.ts",
+      "packages/sdk/src/storage/audits.ts",
       "packages/sdk/src/storage/comments.ts",
       "packages/sdk/src/storage/common.ts",
       "packages/sdk/src/storage/projects.ts",

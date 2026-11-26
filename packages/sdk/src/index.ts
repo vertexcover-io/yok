@@ -253,6 +253,7 @@ export {
   yokHome,
 } from "./registry.ts";
 export type {
+  IAuditRepository,
   ICommentRepository,
   IProjectRepository,
   IRunRepository,

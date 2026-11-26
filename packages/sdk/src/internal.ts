@@ -1,6 +1,26 @@
 // The engine's side of the sdk: core, server and cli import these. Extension code uses
 // @yok/sdk; a skill script never imports this file.
 export {
+  type AuditMetric,
+  AuditMetricSchema,
+  type AuditName,
+  type AuditRecord,
+  type AuditReport,
+  AuditReportSchema,
+  type AuditResult,
+  AuditResultSchema,
+  type AuditRun,
+  type AuditRunFilter,
+  AuditRunSchema,
+  type AuditStart,
+  AuditStartSchema,
+  type MetricInfo,
+  TEST_AUDIT_METRICS,
+  TEST_AUDIT_PROBLEM_TYPES,
+  type TestAuditMetric,
+  type TestAuditProblemType,
+} from "./audits.ts";
+export {
   type AgentReply,
   type Comment,
   CommentSchema,

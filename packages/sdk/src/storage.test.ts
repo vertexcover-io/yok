@@ -11,6 +11,10 @@ import { memoryStorage, openStorage } from "./storage.ts";
 
 const TABLES = [
   "artifacts",
+  "audit_metrics",
+  "audit_result_events",
+  "audit_results",
+  "audit_runs",
   "comments",
   "events",
   "projects",
@@ -69,13 +73,13 @@ const RITESH = {
 };
 
 describe("opening yok.db", () => {
-  test("SC107: a fresh home gets yok.db, -wal and -shm at mode 0600 in a 0700 home, WAL, foreign keys and all nine tables", async () => {
+  test("SC107: a fresh home gets yok.db, -wal and -shm at mode 0600 in a 0700 home, WAL, foreign keys and all thirteen tables", async () => {
     const home = freshHome();
     const storage = openStorage(home);
     const db = join(home, "yok.db");
     expect(mode(home)).toBe(0o700);
     for (const file of [db, `${db}-wal`, `${db}-shm`]) expect(mode(file)).toBe(0o600);
-    expect(readPragma(db, "user_version")).toBe(1);
+    expect(readPragma(db, "user_version")).toBe(2);
     expect(readPragma(db, "journal_mode")).toBe("wal");
     expect(tablesIn(db)).toEqual(TABLES);
     // foreign_keys is a per-connection setting, so it is proved through the storage's own one
@@ -103,22 +107,22 @@ describe("opening yok.db", () => {
     const saved = await first.users.saveGitHubUser(RITESH);
     await first.close();
     const second = openStorage(home);
-    expect(readPragma(join(home, "yok.db"), "user_version")).toBe(1);
+    expect(readPragma(join(home, "yok.db"), "user_version")).toBe(2);
     expect(await second.users.list()).toEqual([saved]);
     await second.close();
   });
 
-  test("SC110: a yok.db at user_version 2 is refused as written by a newer yok and left at 2", async () => {
+  test("SC110: a yok.db at user_version 3 is refused as written by a newer yok and left at 3", async () => {
     const home = freshHome();
     await openStorage(home).close();
     const path = join(home, "yok.db");
     const raw = new Database(path);
-    raw.run("PRAGMA user_version = 2");
+    raw.run("PRAGMA user_version = 3");
     raw.close();
     expect(() => openStorage(home)).toThrow(
-      "yok.db was written by a newer yok (schema 2); update yok",
+      "yok.db was written by a newer yok (schema 3); update yok",
     );
-    expect(readPragma(path, "user_version")).toBe(2);
+    expect(readPragma(path, "user_version")).toBe(3);
   });
 
   test("SC111: four processes opening one fresh home at once all exit 0 and leave it migrated once", async () => {
@@ -129,7 +133,7 @@ describe("opening yok.db", () => {
     const errors = await Promise.all(procs.map((proc) => new Response(proc.stderr).text()));
     expect({ exits, errors }).toEqual({ exits: [0, 0, 0, 0], errors: ["", "", "", ""] });
     const path = join(home, "yok.db");
-    expect(readPragma(path, "user_version")).toBe(1);
+    expect(readPragma(path, "user_version")).toBe(2);
     expect(tablesIn(path)).toEqual(TABLES);
   });
 });

@@ -1,4 +1,12 @@
 import type * as z from "zod";
+import type {
+  AuditName,
+  AuditRecord,
+  AuditReport,
+  AuditRun,
+  AuditRunFilter,
+  AuditStart,
+} from "./audits.ts";
 import type { AgentReply, Comment } from "./comments.ts";
 import type { Event, EventSchema, Result, State } from "./contracts.ts";
 import type { CommentDraft } from "./events.ts";
@@ -128,11 +136,26 @@ export interface ITriggerRepository {
 
 export type EventDraft = Omit<z.input<typeof EventSchema>, "schemaVersion" | "seq">;
 
+export interface IAuditRepository {
+  // Stores the audit run as running, or sets the one this run already holds back to running with
+  // this period and commits, keeping its id. Refused, naming the run, when another run holds the
+  // project, audit and period. Rejects when the run or the project has no row.
+  start(start: AuditStart): Promise<Result<AuditRun>>;
+  // Sets the status and makes the audit run's metrics and results exactly the listed ones.
+  // Refused, with nothing written, for an unknown audit run or a result id that does not start
+  // with `AUDIT_RUN_ID:`.
+  finish(auditRunId: string, report: AuditReport): Promise<Result<AuditRun>>;
+  // newest period first
+  list(project: string, audit: AuditName, filter?: AuditRunFilter): Promise<readonly AuditRun[]>;
+  read(auditRunId: string): Promise<AuditRecord | undefined>;
+}
+
 export interface IStorage {
   users: IUserRepository;
   runs: IRunRepository;
   projects: IProjectRepository;
   comments: ICommentRepository;
   triggers: ITriggerRepository;
+  audits: IAuditRepository;
   close(): Promise<void>;
 }
