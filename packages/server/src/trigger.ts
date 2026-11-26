@@ -2,12 +2,13 @@ import { resolve } from "node:path";
 import { isWorkflowFile, unwrap, WorkflowError } from "@yok/core";
 import type { ILogger } from "@yok/sdk";
 import { SlugSchema } from "@yok/sdk";
-import { type Fire, isRunLive, type Trigger } from "@yok/sdk/internal";
+import type { Fire, Trigger } from "@yok/sdk/internal";
 import { Cron } from "croner";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
-import { isAgentAlive, readStateOrNull } from "./delivery.ts";
+import { failAbandonedApplies, startAuditApplyRuns } from "./audits.ts";
+import { isRunGoing } from "./delivery.ts";
 import { pickProject } from "./projects.ts";
 import {
   type AddTriggerBody,
@@ -21,6 +22,10 @@ type Schedule = Readonly<{ cron: string; timezone: string }>;
 
 // A slot more than 6h old is skipped, not fired: a 9am digest is no use at 6pm.
 const LATE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+// The trigger exempt from that skip (ADR 0023's 6h rule): a test audit looks back over a period
+// that has already ended, so its latest missed slot still fires once, however late.
+const CATCH_UP_TRIGGER = "test-audit";
 
 const parseSchedule = ({ cron, timezone }: Schedule): Cron =>
   new Cron(cron, { mode: "5-part", timezone, paused: true });
@@ -86,21 +91,12 @@ const runNameFor = (trigger: Trigger, slot: Date): string => {
   return `${trigger.name}-${parts.year}${parts.month}${parts.day}-${parts.hour}${parts.minute}${parts.second}`;
 };
 
-// A run names itself in its first minute. One still unnamed after 5 minutes has stalled, so it
-// no longer blocks the next firing.
-const STARTING_MS = 5 * 60 * 1000;
-
 const isLastRunGoing = async (trigger: Trigger, deps: TriggerDeps): Promise<boolean> => {
   const fires = await deps.storage.triggers.readFires(trigger.id, Number.MAX_SAFE_INTEGER);
   const started = fires.findLast((fire) => fire.status === "started");
   if (started?.runId === undefined) return false;
   const run = await deps.storage.runs.findRun(started.runId);
-  if (run === undefined || !(await isAgentAlive(run, deps.host))) return false;
-  if (run.name === null) {
-    return deps.now().getTime() - new Date(started.at).getTime() < STARTING_MS;
-  }
-  const state = await readStateOrNull(deps.storage, run.id);
-  return state === null || isRunLive(state.status);
+  return run !== undefined && (await isRunGoing(run, started.at, deps));
 };
 
 const launchFiring = async (trigger: Trigger, slot: Date, deps: TriggerDeps): Promise<Outcome> => {
@@ -194,17 +190,20 @@ export const tick = async (deps: TriggerDeps): Promise<void> => {
       const reason = `missed: slept through the slots up to ${due.slot.toISOString()}`;
       await recordFire(trigger, due.missedFrom, { status: "skipped", reason }, deps);
     }
-    if (due.tooLate) {
+    if (due.tooLate && trigger.name !== CATCH_UP_TRIGGER) {
       const reason = "too late: more than 6h past its slot";
       await recordFire(trigger, due.slot, { status: "skipped", reason }, deps);
       continue;
     }
     await fireTrigger(trigger, due.slot, deps);
   }
+  await failAbandonedApplies(deps);
+  await startAuditApplyRuns(deps);
 };
 
 // One check every 15s for what is due, rather than a timer per trigger, so slots missed while
-// the laptop slept or the server restarted are caught at the next check.
+// the laptop slept or the server restarted are caught at the next check. The same check starts
+// test-audit apply runs.
 const TICK_MS = 15_000;
 let timer: Timer | undefined;
 let scheduling = false;

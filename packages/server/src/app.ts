@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorResponse, type Vars } from "./api.ts";
+import { auditRoutes } from "./audits.ts";
 import { type ProjectDeps, projectRoutes } from "./projects.ts";
 import { doctorRoutes, runRoutes } from "./run.ts";
 import { terminalRoutes } from "./terminal.ts";
@@ -35,6 +36,8 @@ export type ApiDeps = TriggerRouteDeps &
     startedAt: number;
     // Aborted when the server stops; open terminal sockets close on it.
     stopping: AbortSignal;
+    // the clock a session's expiry and a starting run's 5 minutes are read against
+    now: () => Date;
   }>;
 
 // Routes are chained so their input and output types build up in the app's type, which the
@@ -56,6 +59,7 @@ export const createApi = (deps: ApiDeps) =>
     .route("/runs", terminalRoutes(deps))
     .route("/projects", projectRoutes(deps))
     .route("/triggers", triggerRoutes(deps))
-    .route("/doctor", doctorRoutes(deps));
+    .route("/doctor", doctorRoutes(deps))
+    .route("/audits", auditRoutes(deps));
 
 export type ApiType = ReturnType<typeof createApi>;
