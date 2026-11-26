@@ -207,13 +207,19 @@ const runGh: Gh = (args) => {
   return { ok: true, value: JSON.parse(ran.stdout) };
 };
 
-const PrStateSchema = z.looseObject({ state: z.string(), headRefName: NonEmptyStringSchema });
+const PrStateSchema = z.looseObject({
+  state: z.string(),
+  headRefName: NonEmptyStringSchema,
+  isCrossRepository: z.boolean(),
+});
 
-// A merged, closed or unreadable PR takes no more commits; the run then opens a new one.
+// A merged, closed or unreadable PR takes no more commits; the run then opens a new one. Nor
+// does a fork's PR: its head name (often main) would be pushed to as a branch of origin.
 const readOpenBranch = (gh: Gh, url: string): string | null => {
-  const viewed = gh(["pr", "view", "--json", "state,headRefName", "--", url]);
+  const viewed = gh(["pr", "view", "--json", "state,headRefName,isCrossRepository", "--", url]);
   const pr = viewed.ok ? PrStateSchema.safeParse(viewed.value) : undefined;
-  return pr?.success === true && pr.data.state === "OPEN" ? pr.data.headRefName : null;
+  if (pr?.success !== true || pr.data.isCrossRepository) return null;
+  return pr.data.state === "OPEN" ? pr.data.headRefName : null;
 };
 
 const toFixItem = (result: AuditResult, action: AuditWorkItem["action"]): FixItem => {

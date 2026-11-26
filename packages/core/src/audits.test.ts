@@ -265,7 +265,7 @@ const withFix = (id: string, fix: object, state = "needs_approval") => ({
 
 const ghSaying =
   (state: string): Gh =>
-  () => ({ ok: true, value: { state, headRefName: "audit-b" } });
+  () => ({ ok: true, value: { state, headRefName: "audit-b", isCrossRepository: false } });
 
 // gh reporting each PR url's state, and its head branch as the url's last part.
 const ghByUrl =
@@ -274,7 +274,11 @@ const ghByUrl =
     const url = args.at(-1) ?? "";
     return {
       ok: true,
-      value: { state: states[url] ?? "MERGED", headRefName: url.split("/").at(-1) },
+      value: {
+        state: states[url] ?? "MERGED",
+        headRefName: url.split("/").at(-1),
+        isCrossRepository: false,
+      },
     };
   };
 
@@ -403,6 +407,24 @@ describe("listAuditWork", () => {
         ok: true,
         value: { pr: "https://x/old", upstream: "old", onPr: true },
       });
+    });
+  });
+
+  test("an open PR from a fork is never pushed to: the work starts a new branch", async () => {
+    await withSeededStorage(async (storage) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:f1`, { diff: "-f", pr: "https://x/fork" }),
+      ]);
+      const fork: Gh = () => ({
+        ok: true,
+        value: { state: "OPEN", headRefName: "main", isCrossRepository: true },
+      });
+      const work = await listAuditWork(
+        storage,
+        { results: [{ id: `${id}:yok:flaky:f1`, action: "apply" }] },
+        fork,
+      );
+      expect(work).toMatchObject({ ok: true, value: { upstream: null, onPr: false } });
     });
   });
 
