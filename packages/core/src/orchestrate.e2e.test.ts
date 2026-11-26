@@ -1225,7 +1225,7 @@ describe("orchestrate workflows", () => {
     return JSON.parse(listed.stdout) as readonly Listed[];
   };
 
-  test("SC24: prints every shipped workflow, test-audit included, with its name, description and file as JSON", async () => {
+  test("SC24, SC38: prints every shipped workflow, test-audit and test-audit-apply included, with its name, description and file as JSON", async () => {
     const workflows = list(tempRepo());
 
     expect(workflows.map((workflow) => workflow.name)).toEqual([
@@ -1234,6 +1234,7 @@ describe("orchestrate workflows", () => {
       "regression",
       "skill",
       "task",
+      "test-audit-apply",
       "test-audit",
     ]);
     for (const workflow of workflows) {
@@ -1260,6 +1261,7 @@ describe("orchestrate workflows", () => {
       "regression",
       "skill",
       "task",
+      "test-audit-apply",
       "test-audit",
       "nightly",
     ]);
@@ -1380,5 +1382,173 @@ describe("orchestrate audit", () => {
     expect(close).toMatchObject({ kind: "exec", nodeId: "audit-close" });
     expect(session(close.command).status).toBe(0);
     expect(await audits()).toEqual([expect.objectContaining({ status: "failed" })]);
+  });
+
+  test("SC37: an apply run started with an accepted and an undone result records the commit and PR, clears the revert, and leaves no work pending", async () => {
+    const repo = tempRepo();
+    const home = tempDir();
+    const shims = tempDir();
+    const env = {
+      YOK_SKILLS_DIR: undefined,
+      YOK_SELF: undefined,
+      PATH: `${writeShim(["bun", "--no-env-file", CLI], shims, false)}:${process.env.PATH}`,
+    };
+    await seedRuns(home, [savedRun(repo, { id: "r-2" })]);
+    const fixOf = (diff: string, commit?: string) => ({
+      summary: "delete the copy",
+      diff,
+      ...(commit === undefined ? {} : { commit }),
+    });
+    const [r1, r2] = await withStorage(home, async (storage) => {
+      const audit = await storage.audits.start({
+        runId: "r-2",
+        project: "repo",
+        audit: "test",
+        periodStart: "2026-11-14T02:00:00.000Z",
+        periodEnd: "2026-11-21T02:00:00.000Z",
+        commits: { yok: "abc" },
+      });
+      if (!audit.ok) throw new Error(audit.error);
+      const result = (slug: string, state: "needs_approval" | "auto_fixed", fix: object) => ({
+        id: `${audit.value.id}:yok:duplicates:${slug}`,
+        repo: "yok",
+        problemType: "duplicates" as const,
+        state,
+        title: `${slug} duplicates its keeper`,
+        proof: {},
+        fix: { summary: "delete the copy", ...fix },
+      });
+      const results = [
+        result("r1", "needs_approval", fixOf("-r1")),
+        result("r2", "auto_fixed", fixOf("-r2", "C")),
+      ];
+      await storage.audits.finish(audit.value.id, { status: "complete", metrics: [], results });
+      return results.map((item) => item.id);
+    });
+    if (r1 === undefined || r2 === undefined) throw new Error("no results");
+
+    const workflowPath = join(repo, "apply.yaml");
+    writeFileSync(
+      workflowPath,
+      readFileSync(
+        join(import.meta.dir, "..", "..", "..", "workflows", "test-audit-apply.yaml"),
+        "utf8",
+      ),
+    );
+    const work = [
+      { id: r1, action: "apply" },
+      { id: r2, action: "revert" },
+    ];
+    await seedRuns(home, [
+      savedRun(repo, { workflowPath, inputs: { project: "repo", results: work } }),
+    ]);
+    await withStorage(home, async (storage) => {
+      for (const [resultId, click, start] of [
+        [r1, "accepted", "apply_started"],
+        [r2, "undone", "revert_started"],
+      ] as const) {
+        await storage.audits.addEvent({
+          resultId,
+          type: click,
+          who: "person",
+          payload: {},
+          startedRunId: null,
+        });
+        await storage.audits.addEvent({
+          resultId,
+          type: start,
+          who: "yok",
+          payload: {},
+          startedRunId: "r-1",
+        });
+      }
+    });
+    expect(orchestrate(repo, home, ["init", "apply", "--run-id", "r-1"], env).code).toBe(0);
+
+    const step = (args: readonly string[], input = "") => orchestrate(repo, home, args, env, input);
+    const next = () => {
+      const reply = step(["next", "--run", "apply"]);
+      if (reply.code !== 0) throw new Error(reply.stderr);
+      return parseStep(reply.stdout);
+    };
+    const session = (command: string) =>
+      spawnSync("sh", ["-c", command], {
+        cwd: repo,
+        encoding: "utf8",
+        env: { ...process.env, ...env, YOK_HOME: home, YOK_RUN_ID: "r-1" },
+      });
+    const done = (nodeRunId: string, artifacts: readonly object[], output = "Did the work.") => {
+      const flags = artifacts.flatMap((ref) => ["--artifact", JSON.stringify(ref)]);
+      const finished = step(
+        [
+          "done",
+          nodeRunId,
+          "--run",
+          "apply",
+          "--summary",
+          "Did the work.",
+          ...flags,
+          "--output",
+          "-",
+        ],
+        output,
+      );
+      if (finished.code !== 0) throw new Error(finished.stderr);
+    };
+
+    const listed = next();
+    expect(listed).toMatchObject({ kind: "exec", nodeId: "audit-work" });
+    expect(session(listed.command).status).toBe(0);
+
+    const workspace = next();
+    expect(workspace.nodeId).toBe("create-workspace");
+    done(
+      workspace.nodeRunId,
+      [],
+      JSON.stringify({
+        layout: "mono",
+        branch: "apply",
+        workspaceDir: repo,
+        repos: [{ name: "yok", worktreeDir: repo }],
+      }),
+    );
+
+    const fix = next();
+    expect(fix.nodeId).toBe("fix");
+    const fixes = join(repo, ".yok", "apply", "artifacts", "fixes");
+    mkdirSync(fixes, { recursive: true });
+    writeFileSync(
+      join(fixes, "audit-1.json"),
+      JSON.stringify([
+        { id: r1, status: "closed", commit: "c1" },
+        { id: r2, status: "closed", commit: "c3" },
+      ]),
+    );
+    done(fix.nodeRunId, [
+      { type: "fix-result", name: "audit-1", path: "artifacts/fixes/audit-1.json" },
+    ]);
+
+    const pr = next();
+    expect(pr.nodeId).toBe("visual-pr");
+    const url = "https://github.com/o/yok/pull/9";
+    writeFileSync(
+      join(repo, ".yok", "apply", "artifacts", "pr-description.md"),
+      "Deletes copies.\n",
+    );
+    done(pr.nodeRunId, [
+      { type: "pull-request", name: "yok", url },
+      { type: "pr-description", name: "pr-description", path: "artifacts/pr-description.md" },
+    ]);
+
+    const record = next();
+    expect(record).toMatchObject({ kind: "exec", nodeId: "audit-record" });
+    expect(session(record.command).status).toBe(0);
+
+    await withStorage(home, async (storage) => {
+      const results = (await storage.audits.read(r1.split(":")[0] ?? ""))?.results ?? [];
+      expect(results.find((item) => item.id === r1)?.fix).toMatchObject({ commit: "c1", pr: url });
+      expect(results.find((item) => item.id === r2)?.fix).toEqual(fixOf("-r2"));
+      expect(await storage.audits.pendingWork("repo")).toEqual([]);
+    });
   });
 });

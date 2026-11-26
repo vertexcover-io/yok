@@ -1444,6 +1444,26 @@ describe("the shipped test-audit workflow", () => {
   });
 });
 
+describe("the shipped test-audit-apply workflow", () => {
+  test("SC36: takes only project and results, both required, runs unattended with no trigger, and runs its nodes in order", async () => {
+    const plan = await compileWorkflow(
+      join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit-apply.yaml"),
+    );
+
+    expect(Object.keys(plan.inputs).sort()).toEqual(["project", "results"]);
+    expect(plan.inputs).toMatchObject({ project: { required: true }, results: { required: true } });
+    expect(plan.policies).toMatchObject({ interaction: false });
+    expect(plan.trigger).toBeUndefined();
+    expect(plan.nodes.map((node) => node.id)).toEqual([
+      "audit-work",
+      "workspace",
+      "fix",
+      "visual-pr",
+      "audit-record",
+    ]);
+  });
+});
+
 describe("the shipped regression workflow", () => {
   const REGRESSION_WORKFLOW = join(
     import.meta.dir,

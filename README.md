@@ -182,7 +182,7 @@ yok view RUN_NAME      # reopen the run's page in the browser
 
 ## Workflows
 
-A workflow is a YAML file of nodes. Yok ships six, `task`, `quick`, `regression`, `skill`, `pr-fix` and `test-audit`, the weekly unattended test audit. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
+A workflow is a YAML file of nodes. Yok ships seven, `task`, `quick`, `regression`, `skill`, `pr-fix`, `test-audit`, the weekly unattended test audit, and `test-audit-apply`, which applies the audit fixes people accept. A bare name runs a shipped one, else one from the folder your config's `workflowPath` names; a path, or a name ending in `.yaml` or `.yml`, runs a file from your project. `yok orchestrate workflows` lists them all with their descriptions.
 
 ### task: the full pipeline
 

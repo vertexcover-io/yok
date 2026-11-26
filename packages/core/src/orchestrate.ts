@@ -45,7 +45,14 @@ import {
 } from "@yok/sdk/internal";
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
 import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
-import { closeAudit, finishAudit, setAuditFix, startAudit } from "./audits.ts";
+import {
+  closeAudit,
+  finishAudit,
+  listAuditWork,
+  recordAuditWork,
+  setAuditFix,
+  startAudit,
+} from "./audits.ts";
 import { runAutoResume } from "./auto-resume.ts";
 import { runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
@@ -927,6 +934,30 @@ const auditCommand = () => {
       const input = await readStdinJson();
       if (!input.ok) return fail(input.error);
       printResult(await setAuditFix(storage(), resultId, input.value));
+    });
+  audit
+    .command("work")
+    .description(
+      "Print the fix items and branch for an apply run; stdin is { results: [{ id, action }] }",
+    )
+    .action(async () => {
+      const input = await readStdinJson();
+      if (!input.ok) return fail(input.error);
+      printResult(await listAuditWork(storage(), input.value));
+    });
+  audit
+    .command("record")
+    .description(
+      "Write each result's commit and PR, error, or clear from the run's fix and PR; stdin is { results }",
+    )
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      const input = await readStdinJson();
+      if (!input.ok) return fail(input.error);
+      printResult(await recordAuditWork(storage(), run.value, input.value));
     });
   return audit;
 };

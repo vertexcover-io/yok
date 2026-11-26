@@ -1,0 +1,90 @@
+name: test-audit-apply
+description: >-
+  Apply the test-audit fixes people accepted and revert the ones they undid, in the newest audit's
+  pull request or a new one, then record each outcome on its audit result. The yok server starts
+  it with the results it handed over.
+policies:
+  interaction: false
+inputs:
+  project:
+    type: string
+    required: true
+  # [{ id, action: apply | revert }], one per result the server wrote a *_started row for
+  results:
+    type: array
+    required: true
+doctor:
+  - check: binary
+    key: gh
+    fix: Install the GitHub CLI and run gh auth login
+nodes:
+  - id: audit-work
+    type: exec
+    runtime: sh
+    script: yok orchestrate audit work
+    notify: false
+    input:
+      results: "{{ inputs.results }}"
+    output:
+      zodSchema: Json
+
+  # The newest audit's PR takes the commits while it is open; otherwise a new branch from the base.
+  - id: workspace
+    type: switch
+    expression: "{{ nodes.audit-work.output.onPr }}"
+    dependsOn: [audit-work]
+    input:
+      upstream: "{{ nodes.audit-work.output.upstream }}"
+    cases:
+      - id: on-pr
+        value: true
+        nodes:
+          - id: create-workspace
+            type: agent
+            stage: create-workspace
+            notify: false
+            input:
+              request: Apply the accepted test-audit fixes.
+              upstream: "{{ inputs.upstream }}"
+    default:
+      - id: create-workspace
+        type: agent
+        stage: create-workspace
+        notify: false
+        input:
+          request: Apply the accepted test-audit fixes.
+
+  - id: fix
+    type: agent
+    stage: fix
+    dependsOn: [audit-work, workspace]
+    prompt: >-
+      These items come from the test audit, not from a bug report. An item whose hint is a diff:
+      apply it with git apply, and when it no longer applies make the change its summary and
+      trigger describe. An item whose hint is a git revert: run it. Neither needs a failing test
+      first; prove each by running the files it touches, all passing. Every other step of the
+      skill holds.
+    input:
+      workspace: "{{ nodes.workspace.output }}"
+      fixes: "{{ nodes.audit-work.output.fixes }}"
+      source: audit
+      round: 1
+
+  - id: visual-pr
+    type: agent
+    stage: visual-pr
+    dependsOn: [workspace, fix]
+    input:
+      workspace: "{{ nodes.workspace.output }}"
+      task: Apply the test-audit fixes people accepted and revert the ones they undid.
+
+  - id: audit-record
+    type: exec
+    runtime: sh
+    script: yok orchestrate audit record
+    notify: false
+    dependsOn: [visual-pr]
+    input:
+      results: "{{ inputs.results }}"
+    output:
+      zodSchema: Json

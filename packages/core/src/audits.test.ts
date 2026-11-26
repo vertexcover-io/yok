@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { createGit, type IStorage, type RunRef } from "@yok/sdk";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createGit, type IStorage, type RunRef, runDirOf, type State } from "@yok/sdk";
 import { withStorage } from "@yok/sdk/internal";
-import { closeAudit, finishAudit, startAudit } from "./audits.ts";
+import {
+  closeAudit,
+  finishAudit,
+  type Gh,
+  listAuditWork,
+  recordAuditWork,
+  startAudit,
+} from "./audits.ts";
 import { savedRun, seedRuns, tempDir, tempRepo } from "./test-orchestrate.ts";
 
 const NOW = new Date("2026-11-28T02:00:00.000Z");
@@ -192,6 +201,209 @@ describe("closeAudit", () => {
         value: { status: "complete" },
       });
       expect(await storage.audits.read(audit.id)).toMatchObject({ results: [result] });
+    });
+  });
+});
+
+// Publishes, for RUN_ID, an audit ending at PERIOD_END that holds RESULTS made from its own id.
+const publish = async (
+  storage: IStorage,
+  runId: string,
+  periodEnd: string,
+  results: (auditRunId: string) => readonly object[],
+): Promise<string> => {
+  const audit = await storage.audits.start({
+    runId,
+    project: "repo",
+    audit: "test",
+    periodStart: "2026-11-01T02:00:00.000Z",
+    periodEnd,
+    commits: { yok: "abc" },
+  });
+  if (!audit.ok) throw new Error(audit.error);
+  const report = { status: "complete" as const, metrics: [], results: results(audit.value.id) };
+  const finished = await storage.audits.finish(audit.value.id, report as never);
+  if (!finished.ok) throw new Error(finished.error);
+  return audit.value.id;
+};
+
+const withFix = (id: string, fix: object, state = "needs_approval") => ({
+  ...resultOf(id.split(":")[0] ?? id),
+  id,
+  state,
+  fix: { summary: "delete one", ...fix },
+});
+
+const ghSaying =
+  (state: string): Gh =>
+  () => ({ ok: true, value: { state, headRefName: "audit-b" } });
+
+describe("listAuditWork", () => {
+  test("SC32: an accepted result applies its diff and an undone one reverts its commit with git revert", async () => {
+    await withSeededStorage(async (storage) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:r1`, { diff: "-a\n+b" }),
+        withFix(`${audit}:yok:duplicates:r2`, { diff: "-copy", commit: "C" }, "auto_fixed"),
+      ]);
+      const work = await listAuditWork(
+        storage,
+        {
+          results: [
+            { id: `${id}:yok:flaky:r1`, action: "apply" },
+            { id: `${id}:yok:duplicates:r2`, action: "revert" },
+          ],
+        },
+        ghSaying("OPEN"),
+      );
+      if (!work.ok) throw new Error(work.error);
+      const [apply, revert] = work.value.fixes;
+      expect(apply).toMatchObject({ repo: "yok", summary: "two tests check one rule" });
+      expect(apply?.hint).toContain("-a\n+b");
+      expect(apply?.hint).toContain("make the change its summary describes");
+      expect(revert?.hint).toBe("git revert --no-edit C");
+    });
+  });
+
+  test.each([
+    ["OPEN", "audit-b", true],
+    ["MERGED", null, false],
+  ])(
+    "SC33: the newest audit's PR, %s, gives upstream %s and onPr %s",
+    async (state, upstream, onPr) => {
+      await withSeededStorage(async (storage) => {
+        const older = await publish(storage, "r-2", "2026-11-14T02:00:00.000Z", (audit) => [
+          withFix(`${audit}:yok:flaky:old`, { diff: "-o", pr: "https://x/P1" }),
+        ]);
+        const newer = await publish(storage, "r-3", "2026-11-21T02:00:00.000Z", (audit) => [
+          withFix(`${audit}:yok:flaky:new`, { diff: "-n", pr: "https://x/P2" }),
+        ]);
+        const work = await listAuditWork(
+          storage,
+          {
+            results: [
+              { id: `${older}:yok:flaky:old`, action: "apply" },
+              { id: `${newer}:yok:flaky:new`, action: "apply" },
+            ],
+          },
+          ghSaying(state),
+        );
+        expect(work).toMatchObject({ ok: true, value: { pr: "https://x/P2", upstream, onPr } });
+      });
+    },
+  );
+
+  test("SC34: work under an unknown audit names the audit run, and a revert with no commit names the result", async () => {
+    await withSeededStorage(async (storage) => {
+      const unknown = await listAuditWork(
+        storage,
+        { results: [{ id: "a-missing:yok:flaky:x", action: "apply" }] },
+        ghSaying("OPEN"),
+      );
+      expect(!unknown.ok && unknown.error).toContain("a-missing");
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:r1`, { diff: "-a" }),
+      ]);
+      const revert = await listAuditWork(
+        storage,
+        { results: [{ id: `${id}:yok:flaky:r1`, action: "revert" }] },
+        ghSaying("OPEN"),
+      );
+      expect(!revert.ok && revert.error).toContain(`${id}:yok:flaky:r1`);
+    });
+  });
+});
+
+const stateWith = (runDir: string, nodeRuns: State["nodeRuns"]): State => ({
+  schemaVersion: 1,
+  lastEventSeq: 0,
+  runId: "r-1",
+  runName: "audit",
+  runDir,
+  config: { path: null, root: runDir },
+  version: "2.0.0",
+  workflow: { name: "test-audit-apply", path: "workflow.yaml" },
+  input: {},
+  scope: null,
+  startedAt: "2026-11-28T02:00:00Z",
+  completedAt: null,
+  status: "running",
+  workspace: {
+    type: "mono",
+    path: runDir,
+    repositories: {
+      yok: { path: runDir, git: { branch: "b", baseBranch: "main", startSha: "a" } },
+    },
+  },
+  nodeRuns,
+  activeSessions: [],
+  tiers: null,
+  eventHandlers: {},
+  subscribers: {},
+});
+
+const finished = (nodeRunId: string, artifacts: State["nodeRuns"][string]["artifacts"]) => ({
+  nodeRunId,
+  nodeType: "agent" as const,
+  status: "completed" as const,
+  startedAt: "2026-11-28T02:00:00Z",
+  completedAt: "2026-11-28T02:01:00Z",
+  artifacts,
+  input: null,
+});
+
+describe("recordAuditWork", () => {
+  test("SC35: an applied fix gets commit and PR, a reverted one is cleared, one left gets its reason, one unreported an error", async () => {
+    await withSeededStorage(async (storage, run) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        withFix(`${audit}:yok:flaky:r1`, { diff: "-1" }),
+        withFix(
+          `${audit}:yok:duplicates:r2`,
+          { diff: "-2", commit: "old", pr: "https://x/old" },
+          "auto_fixed",
+        ),
+        withFix(`${audit}:yok:flaky:r3`, { diff: "-3" }),
+        withFix(`${audit}:yok:flaky:r4`, { diff: "-4" }),
+      ]);
+      const r1 = `${id}:yok:flaky:r1`;
+      const r2 = `${id}:yok:duplicates:r2`;
+      const r3 = `${id}:yok:flaky:r3`;
+      const r4 = `${id}:yok:flaky:r4`;
+      const runDir = runDirOf(run.cwd, run.name);
+      mkdirSync(join(runDir, "artifacts", "fixes"), { recursive: true });
+      writeFileSync(
+        join(runDir, "artifacts", "fixes", "audit-1.json"),
+        JSON.stringify([
+          { id: r1, status: "closed", commit: "c1" },
+          { id: r2, status: "closed", commit: "c2" },
+          { id: r3, status: "left", reason: "keeper fails" },
+        ]),
+      );
+      const url = "https://github.com/o/yok/pull/9";
+      await storage.runs.initRun(
+        run.id,
+        run.name,
+        stateWith(runDir, {
+          fix: finished("nr-fix", [
+            { type: "fix-result", name: "audit-1", path: "artifacts/fixes/audit-1.json" },
+          ]),
+          "visual-pr": finished("nr-visual-pr", [{ type: "pull-request", name: "yok", url }]),
+        }),
+      );
+
+      const recorded = await recordAuditWork(storage, run, {
+        results: [
+          { id: r1, action: "apply" },
+          { id: r2, action: "revert" },
+          { id: r3, action: "apply" },
+          { id: r4, action: "apply" },
+        ],
+      });
+      if (!recorded.ok) throw new Error(recorded.error);
+      const [one, two, three, four] = recorded.value;
+      expect(one?.fix).toMatchObject({ commit: "c1", pr: url });
+      expect(two?.fix).toEqual({ summary: "delete one", diff: "-2" });
+      expect(three?.fix?.error).toBe("keeper fails");
+      expect(four?.fix?.error).toBe("the fix stage did not report this result");
     });
   });
 });

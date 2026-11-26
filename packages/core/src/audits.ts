@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import {
   type IGit,
   type IStorage,
@@ -5,10 +7,13 @@ import {
   NonEmptyStringSchema,
   type Result,
   type RunRef,
+  readState,
+  runDirOf,
 } from "@yok/sdk";
 import {
   type AuditFixPatch,
   AuditFixPatchSchema,
+  type AuditRecord,
   type AuditReport,
   AuditReportSchema,
   type AuditResult,
@@ -16,6 +21,7 @@ import {
 } from "@yok/sdk/internal";
 import * as z from "zod";
 import { unwrap } from "./agents/common.ts";
+import { findNewestArtifacts } from "./workflow/done.ts";
 
 // A project's first audit looks back one week.
 const FIRST_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
@@ -153,3 +159,159 @@ export const setAuditFix = (
       ),
     ),
   );
+
+// The server tick's handover: each result it wrote a *_started row for, and what to do with it.
+const AuditWorkInputSchema = z.object({
+  results: z
+    .array(z.object({ id: NonEmptyStringSchema, action: z.enum(["apply", "revert"]) }))
+    .min(1),
+});
+type AuditWorkItem = z.infer<typeof AuditWorkInputSchema>["results"][number];
+
+// One item in the shape skills/fix reads; its id is the result's.
+type FixItem = Readonly<{
+  id: string;
+  repo: string;
+  summary: string;
+  trigger: string;
+  hint: string;
+}>;
+
+export type AuditWork = Readonly<{
+  fixes: readonly FixItem[];
+  // the newest audit's PR, and its head branch while it is open
+  pr: string | null;
+  upstream: string | null;
+  onPr: boolean;
+}>;
+
+export type Gh = (args: readonly string[]) => Result<unknown>;
+
+const runGh: Gh = (args) => {
+  const ran = spawnSync("gh", [...args], { encoding: "utf8" });
+  if (ran.error !== undefined) return { ok: false, error: ran.error.message };
+  if (ran.status !== 0) {
+    return { ok: false, error: ran.stderr.trim() || `gh exited ${ran.status}` };
+  }
+  return { ok: true, value: JSON.parse(ran.stdout) };
+};
+
+const PrStateSchema = z.looseObject({ state: z.string(), headRefName: NonEmptyStringSchema });
+
+// A merged, closed or unreadable PR takes no more commits; the run then opens a new one.
+const readOpenBranch = (gh: Gh, url: string): string | null => {
+  const viewed = gh(["pr", "view", "--json", "state,headRefName", "--", url]);
+  const pr = viewed.ok ? PrStateSchema.safeParse(viewed.value) : undefined;
+  return pr?.success === true && pr.data.state === "OPEN" ? pr.data.headRefName : null;
+};
+
+const toFixItem = (result: AuditResult, action: AuditWorkItem["action"]): FixItem => {
+  const { fix } = result;
+  if (fix === null) throw new Error(`audit result ${result.id} has no fix`);
+  if (action === "revert") {
+    if (fix.commit === undefined) {
+      throw new Error(`audit result ${result.id} has no commit to revert`);
+    }
+    return {
+      id: result.id,
+      repo: result.repo,
+      summary: `Undo: ${result.title}`,
+      trigger: `A person undid this fix, applied in commit ${fix.commit}.`,
+      hint: `git revert --no-edit ${fix.commit}`,
+    };
+  }
+  const hint =
+    fix.diff === undefined
+      ? (fix.prompt ?? fix.summary)
+      : `Apply this diff with git apply; when it no longer applies, make the change its summary describes.\n${fix.diff}`;
+  return { id: result.id, repo: result.repo, summary: result.title, trigger: fix.summary, hint };
+};
+
+const readAudits = (storage: IStorage, ids: readonly string[]): Promise<readonly AuditRecord[]> =>
+  Promise.all(
+    ids.map(async (id) => {
+      const record = await storage.audits.read(id);
+      if (record === undefined) throw new Error(`no audit run ${id}`);
+      return record;
+    }),
+  );
+
+export const listAuditWork = (
+  storage: IStorage,
+  input: JsonValue,
+  gh: Gh = runGh,
+): Promise<Result<AuditWork>> =>
+  toResult(async () => {
+    const work = parseInput(AuditWorkInputSchema, input, "work");
+    // A result id is AUDIT_RUN_ID:repo:problemType:slug, and an audit run id holds no colon.
+    const auditIds = new Set(work.results.map((item) => item.id.split(":")[0] ?? item.id));
+    const audits = await readAudits(storage, [...auditIds]);
+    const results = audits.flatMap((record) => record.results);
+    const fixes = work.results.map((item) => {
+      const result = results.find((candidate) => candidate.id === item.id);
+      if (result === undefined) throw new Error(`no audit result ${item.id}`);
+      return toFixItem(result, item.action);
+    });
+    // The newest audit's PR collects the run's commits, whichever audit each result came from.
+    const newest = [...audits].sort((a, b) => b.run.periodEnd.localeCompare(a.run.periodEnd))[0];
+    const pr = newest?.results.find((result) => result.fix?.pr !== undefined)?.fix?.pr ?? null;
+    const upstream = pr === null ? null : readOpenBranch(gh, pr);
+    return { fixes, pr, upstream, onPr: upstream !== null };
+  });
+
+const FixResultsSchema = z.array(
+  z.object({
+    id: NonEmptyStringSchema,
+    status: z.enum(["closed", "left"]),
+    commit: NonEmptyStringSchema.optional(),
+    reason: NonEmptyStringSchema.optional(),
+  }),
+);
+type FixResults = z.infer<typeof FixResultsSchema>;
+
+const decidePatch = (
+  item: AuditWorkItem,
+  fixResults: FixResults,
+  prs: ReadonlyMap<string, string>,
+): AuditFixPatch => {
+  const done = fixResults.find((entry) => entry.id === item.id);
+  if (done === undefined) return { error: "the fix stage did not report this result" };
+  if (done.status === "left" || done.commit === undefined) {
+    return { error: done.reason ?? "the fix stage left it" };
+  }
+  if (item.action === "revert") return { clear: true };
+  const pr = prs.get(item.id.split(":")[1] ?? "");
+  return pr === undefined ? { commit: done.commit } : { commit: done.commit, pr };
+};
+
+export const recordAuditWork = (
+  storage: IStorage,
+  run: RunRef,
+  input: JsonValue,
+): Promise<Result<readonly AuditResult[]>> =>
+  toResult(async () => {
+    const work = parseInput(AuditWorkInputSchema, input, "record");
+    const state = await readState(run, storage);
+    if (state === null) throw new Error(`run ${run.name} has no state`);
+    const fixResult = findNewestArtifacts("fix-result", state.nodeRuns)[0];
+    const fixResults =
+      fixResult === undefined || !("path" in fixResult)
+        ? []
+        : FixResultsSchema.parse(
+            JSON.parse(await Bun.file(join(runDirOf(run.cwd, run.name), fixResult.path)).text()),
+          );
+    // visual-pr names each pull-request artifact after its repo
+    const prs = new Map(
+      findNewestArtifacts("pull-request", state.nodeRuns).flatMap((ref) =>
+        "url" in ref ? [[ref.name, ref.url] as const] : [],
+      ),
+    );
+    // One result at a time, so a refusal stops before the rest are written.
+    const recorded: AuditResult[] = [];
+    for (const item of work.results) {
+      recorded.push(
+        unwrap(await storage.audits.setFix(item.id, decidePatch(item, fixResults, prs))),
+      );
+    }
+    return recorded;
+  });
