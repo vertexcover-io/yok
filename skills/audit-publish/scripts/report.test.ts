@@ -188,7 +188,10 @@ describe("settleAutoFix", () => {
   });
 
   test.each([
-    ["left by the fix stage", [{ id: autoFixed.id, status: "left" as const }]],
+    [
+      "left by the fix stage",
+      [{ id: autoFixed.id, status: "left" as const, reason: "keeper fails" }],
+    ],
     ["never reported", []],
   ])(
     "SC30: an auto-fix %s goes to needs_approval with its diff, no commit and no pr",

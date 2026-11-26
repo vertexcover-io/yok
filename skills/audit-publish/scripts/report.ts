@@ -4,6 +4,8 @@ import {
   type AuditMetric,
   type AuditReport,
   type AuditResult,
+  type FixResult,
+  FixResultsSchema,
   type JsonValue,
   NonEmptyStringSchema,
   type TestAuditMetric,
@@ -156,25 +158,15 @@ const decideStatus = (metrics: readonly AuditMetric[], errors: number): AuditRep
   return errors > 0 ? "partial" : "complete";
 };
 
-// What the fix stage did with each item, from its fix-result artifact.
-const FixResultsSchema = z.array(
-  z.object({
-    id: NonEmptyStringSchema,
-    status: z.enum(["closed", "left"]),
-    commit: NonEmptyStringSchema.optional(),
-  }),
-);
-type FixResults = z.infer<typeof FixResultsSchema>;
-
 // An auto-fix the fix stage closed carries its commit and PR; any other goes to a person.
 export const settleAutoFix = (
   result: AuditResult,
-  fixResults: FixResults,
+  fixResults: readonly FixResult[],
   prs: ReadonlyMap<string, string>,
 ): AuditResult => {
   if (result.state !== "auto_fixed" || result.fix === null) return result;
   const done = fixResults.find((item) => item.id === result.id);
-  if (done?.status !== "closed" || done.commit === undefined) {
+  if (done?.status !== "closed") {
     return { ...result, state: "needs_approval" };
   }
   const pr = prs.get(result.repo);
@@ -186,7 +178,7 @@ export const settleAutoFix = (
 
 export const buildReport = (
   input: PublishInput,
-  fixResults: FixResults = [],
+  fixResults: readonly FixResult[] = [],
   prs: ReadonlyMap<string, string> = new Map(),
 ): AuditReport => {
   const repos = Object.keys(input.audit.commits).sort();
@@ -211,7 +203,7 @@ export const buildReport = (
 
 // node show keys a consumed artifact TYPE, or TYPE:NAME when its name differs; visual-pr names
 // each pull-request after its repo.
-const readFixResults = (consumed: Readonly<Record<string, string>>): FixResults => {
+const readFixResults = (consumed: Readonly<Record<string, string>>): readonly FixResult[] => {
   const path = Object.entries(consumed).find(([key]) => key.startsWith("fix-result"))?.[1];
   return path === undefined ? [] : FixResultsSchema.parse(JSON.parse(readFileSync(path, "utf8")));
 };

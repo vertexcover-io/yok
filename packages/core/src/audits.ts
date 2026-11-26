@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
+  type FixResult,
+  FixResultsSchema,
   type IGit,
   type IStorage,
   type JsonValue,
@@ -279,26 +281,14 @@ export const listAuditWork = (
     };
   });
 
-const FixResultsSchema = z.array(
-  z.object({
-    id: NonEmptyStringSchema,
-    status: z.enum(["closed", "left"]),
-    commit: NonEmptyStringSchema.optional(),
-    reason: NonEmptyStringSchema.optional(),
-  }),
-);
-type FixResults = z.infer<typeof FixResultsSchema>;
-
 const decidePatch = (
   item: AuditWorkItem,
-  fixResults: FixResults,
+  fixResults: readonly FixResult[],
   prs: ReadonlyMap<string, string>,
 ): AuditFixPatch => {
   const done = fixResults.find((entry) => entry.id === item.id);
   if (done === undefined) return { error: "the fix stage did not report this result" };
-  if (done.status === "left" || done.commit === undefined) {
-    return { error: done.reason ?? "the fix stage left it" };
-  }
+  if (done.status === "left") return { error: done.reason };
   if (item.action === "revert") return { clear: true };
   const pr = prs.get(item.id.split(":")[1] ?? "");
   return pr === undefined ? { commit: done.commit } : { commit: done.commit, pr };

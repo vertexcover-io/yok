@@ -270,6 +270,19 @@ export const FixRequestSchema = z.strictObject({
   askUser: z.boolean().optional(),
 });
 
+// What the fix stage did with one fix request, in artifacts/fixes/SOURCE-ROUND.json; decision is
+// the user's answer when the request had askUser.
+const fixResultBase = { id: NonEmptyStringSchema, decision: NonEmptyStringSchema.optional() };
+export const FixResultSchema = z.discriminatedUnion("status", [
+  z.strictObject({ ...fixResultBase, status: z.literal("closed"), commit: NonEmptyStringSchema }),
+  z.strictObject({ ...fixResultBase, status: z.literal("left"), reason: NonEmptyStringSchema }),
+]);
+export const FixResultsSchema = z
+  .array(FixResultSchema)
+  .refine((items) => new Set(items.map((item) => item.id)).size === items.length, {
+    message: "each id appears once",
+  });
+
 export const WorkflowRefSchema = z.strictObject({
   name: SlugSchema,
   path: RunPathSchema,
@@ -427,6 +440,7 @@ export type Workspace = z.infer<typeof WorkspaceSchema>;
 export type Ticket = z.infer<typeof TicketSchema>;
 export type Notification = z.infer<typeof NotificationSchema>;
 export type FixRequest = z.infer<typeof FixRequestSchema>;
+export type FixResult = z.infer<typeof FixResultSchema>;
 export type WorkflowRef = z.infer<typeof WorkflowRefSchema>;
 export type EventHandlerRef = z.infer<typeof EventHandlerRefSchema>;
 export type EventHandlerRefs = z.infer<typeof EventHandlerRefsSchema>;

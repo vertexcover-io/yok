@@ -52,6 +52,8 @@ const PUBLIC_RUNTIME_NAMES = [
   "FileArtifactSchema",
   "FindingSchema",
   "FixRequestSchema",
+  "FixResultSchema",
+  "FixResultsSchema",
   "GitStateSchema",
   "JsonObjectSchema",
   "LayoutSchema",
