@@ -7,6 +7,7 @@ import { Cron } from "croner";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
+import { failAbandonedApplies, startAuditApplyRuns } from "./audits.ts";
 import { isRunGoing } from "./delivery.ts";
 import { pickProject } from "./projects.ts";
 import {
@@ -192,10 +193,13 @@ export const tick = async (deps: TriggerDeps): Promise<void> => {
     }
     await fireTrigger(trigger, due.slot, deps);
   }
+  await failAbandonedApplies(deps);
+  await startAuditApplyRuns(deps);
 };
 
 // One check every 15s for what is due, rather than a timer per trigger, so slots missed while
-// the laptop slept or the server restarted are caught at the next check.
+// the laptop slept or the server restarted are caught at the next check. The same check starts
+// test-audit apply runs.
 const TICK_MS = 15_000;
 let timer: Timer | undefined;
 let scheduling = false;

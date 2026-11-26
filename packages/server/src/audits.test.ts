@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IStorage, JsonObject, State } from "@yok/sdk";
+import type { IStorage, JsonObject, LaunchOptions, State } from "@yok/sdk";
 import { createGit, noopLogger } from "@yok/sdk";
 import { type AuditResult, type AuditRun, memoryStorage } from "@yok/sdk/internal";
 import { createApi } from "./app.ts";
-import { fakeHost, fakeProvider, seedState, seedUser } from "./fake-host.ts";
+import { fakeHost, fakePane, fakeProvider, seedState, seedUser } from "./fake-host.ts";
 import { sessionSecret, signValue } from "./identity.ts";
 import { updateHomeEnv } from "./protocol.ts";
+import { checkCheckoutWith } from "./server.ts";
+import { type TriggerDeps, tick } from "./trigger.ts";
 
 const AT = "2026-11-01T00:00:00.000Z";
 
@@ -418,5 +421,271 @@ describe("POST /audits/results/:resultId/events", () => {
       expect(response.status).toBe(400);
       expect((await response.json()).error.code).toBe("bad-request");
     },
+  );
+});
+
+const APPLY_WORKFLOW = [
+  "name: test-audit-apply",
+  "inputs:",
+  "  results: { type: array, required: true }",
+  "nodes:",
+  "  - id: a",
+  "    type: exec",
+  "    runtime: sh",
+  '    script: "true"',
+  "    input: null",
+  "",
+].join("\n");
+
+// A git checkout with a workflows folder, holding test-audit-apply.yaml when WITH_WORKFLOW.
+const makeRepo = (withWorkflow: boolean): string => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-audit-repo-")));
+  execFileSync("git", ["init", "-q"], { cwd });
+  writeFileSync(join(cwd, ".gitignore"), ".yok/\n");
+  writeFileSync(
+    join(cwd, "orchestrate.config.json"),
+    '{ "version": 2, "workflowPath": "workflows" }',
+  );
+  mkdirSync(join(cwd, "workflows"));
+  if (withWorkflow) writeFileSync(join(cwd, "workflows", "test-audit-apply.yaml"), APPLY_WORKFLOW);
+  return cwd;
+};
+
+const TICK_AT = "2026-11-26T10:00:10.000Z";
+
+// A server's view for the tick: each project a checkout of its own, and a provider that records
+// each launch instead of starting an agent.
+const tickSetup = async (projects: readonly string[] = ["web"], withWorkflow = true) => {
+  const storage = memoryStorage();
+  const home = mkdtempSync(join(tmpdir(), "yok-audit-home-"));
+  for (const name of projects) {
+    const added = await storage.projects.add(name, {
+      path: makeRepo(withWorkflow),
+      addedBy: { channel: "cli" },
+      addedAt: AT,
+    });
+    if (!added.ok) throw new Error(added.error);
+  }
+  const launches: LaunchOptions[] = [];
+  const deps = (alive = true, now = TICK_AT): TriggerDeps => ({
+    storage,
+    providerFor: (agent) =>
+      fakeProvider(agent, (options) => {
+        launches.push(options);
+        return Promise.resolve({
+          ok: true,
+          value: { terminalName: "s1", terminal: fakePane("s1") },
+        });
+      }),
+    host: fakeHost("", alive).host,
+    home,
+    publicOrigin: "http://localhost:1",
+    git: createGit(),
+    checkCheckout: (input) => checkCheckoutWith([], input),
+    log: noopLogger,
+    now: () => new Date(now),
+  });
+  return { storage, launches, deps };
+};
+
+const clickAs = (storage: IStorage, resultId: string, type: "accepted" | "undone") =>
+  storage.audits.addEvent({ resultId, who: "ana", type, payload: {}, startedRunId: null });
+
+const fixOf = async (storage: IStorage, resultId: string) => {
+  const [auditRunId = ""] = resultId.split(":");
+  const record = await storage.audits.read(auditRunId);
+  return record?.results.find((entry) => entry.id === resultId)?.fix;
+};
+
+// One audit of PROJECT holding results for SLUGS; returns their ids in order.
+const auditWith = async (storage: IStorage, project: string, slugs: readonly string[]) => {
+  await addRun(storage, `r-audit-${project}`, { project });
+  const audit = await addAudit(storage, { runId: `r-audit-${project}`, project, slugs });
+  return slugs.map((slug) => `${audit.id}:web:duplicates:${slug}`);
+};
+
+// Sets the stored state of run RUN_ID to STATUS, naming it as orchestrate init does.
+const setState = async (storage: IStorage, runId: string, status: State["status"]) => {
+  await storage.runs.releaseRun(runId);
+  const state = { ...seedState(`/abs/.yok/${runId}`, {}), runId, status };
+  const named = await storage.runs.initRun(runId, `apply-${runId}`, state);
+  if (!named.ok) throw new Error(named.error);
+};
+
+// Project web with result A accepted and result B undone after a commit, then one tick.
+const appliedOnce = async () => {
+  const env = await tickSetup();
+  const [a = "", b = ""] = await auditWith(env.storage, "web", ["a", "b"]);
+  await clickAs(env.storage, b, "accepted");
+  await env.storage.audits.setFix(b, { commit: "abc" });
+  await clickAs(env.storage, a, "accepted");
+  await clickAs(env.storage, b, "undone");
+  await tick(env.deps());
+  const runId = (await env.storage.audits.run(a))?.startedRunId ?? "";
+  return { ...env, a, b, runId };
+};
+
+const TIMEOUT_MS = 20_000;
+
+describe("the tick's audit apply runs", () => {
+  test(
+    "SC7315: a tick starts one apply run for a project's accepted and undone results",
+    async () => {
+      const { storage, launches, a, b, runId } = await appliedOnce();
+
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.prompt).toEndWith(
+        `--inputs {"results":[{"id":"${a}","action":"apply"},{"id":"${b}","action":"revert"}]} --name test-audit-apply-20261126-100010`,
+      );
+      expect(runId).toMatch(/^r-/);
+      expect(await storage.audits.run(a)).toMatchObject({
+        type: "apply_started",
+        who: "yok",
+        startedRunId: runId,
+      });
+      expect(await storage.audits.run(b)).toMatchObject({
+        type: "revert_started",
+        who: "yok",
+        startedRunId: runId,
+      });
+      expect(await storage.audits.pendingWork("web")).toEqual([]);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7316: a tick while the apply run is going starts nothing, and the next click waits for it to end",
+    async () => {
+      const { storage, launches, deps, a, b, runId } = await appliedOnce();
+      await setState(storage, runId, "running");
+      await addRun(storage, "r-audit-2");
+      const later = await addAudit(storage, { runId: "r-audit-2", day: 15, slugs: ["c"] });
+      const c = `${later.id}:web:duplicates:c`;
+      await clickAs(storage, c, "accepted");
+
+      await tick(deps());
+      expect(launches).toHaveLength(1);
+      expect(await storage.audits.pendingWork("web")).toHaveLength(1);
+
+      await storage.audits.setFix(a, { commit: "c1" });
+      await storage.audits.setFix(b, { clear: true });
+      await setState(storage, runId, "completed");
+      await tick(deps());
+
+      expect(launches).toHaveLength(2);
+      expect(launches[1]?.prompt).toContain(
+        `--inputs {"results":[{"id":"${c}","action":"apply"}]}`,
+      );
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7317: two projects with pending work each get their own apply run",
+    async () => {
+      const { storage, launches, deps } = await tickSetup(["web", "api"]);
+      const [web = ""] = await auditWith(storage, "web", ["a"]);
+      const [api = ""] = await auditWith(storage, "api", ["a"]);
+      await clickAs(storage, web, "accepted");
+      await clickAs(storage, api, "accepted");
+
+      await tick(deps());
+
+      expect(launches).toHaveLength(2);
+      const webRun = await storage.runs.findRun(
+        (await storage.audits.run(web))?.startedRunId ?? "",
+      );
+      const apiRun = await storage.runs.findRun(
+        (await storage.audits.run(api))?.startedRunId ?? "",
+      );
+      expect(webRun?.project).toBe("web");
+      expect(apiRun?.project).toBe("api");
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7318: a refused start writes the reason on each pending result and is not retried",
+    async () => {
+      const { storage, launches, deps } = await tickSetup(["web"], false);
+      const [a = ""] = await auditWith(storage, "web", ["a"]);
+      await clickAs(storage, a, "accepted");
+
+      await tick(deps());
+      const error = (await fixOf(storage, a))?.error;
+      await tick(deps());
+
+      expect(launches).toHaveLength(0);
+      expect(await storage.audits.run(a)).toBeUndefined();
+      expect(error).toStartWith("could not start apply run: ");
+      expect((await fixOf(storage, a))?.error).toBe(error);
+    },
+    TIMEOUT_MS,
+  );
+
+  test.each(["failed", "completed", "cancelled"] as const)(
+    "SC7319: an apply run that ended %s without writing its results' outcomes marks them failed",
+    async (status) => {
+      const { storage, launches, deps, a, b, runId } = await appliedOnce();
+      await setState(storage, runId, status);
+
+      await tick(deps());
+
+      expect((await fixOf(storage, a))?.error).toBe(`apply run ${runId} failed`);
+      expect(await fixOf(storage, b)).toMatchObject({
+        error: `apply run ${runId} failed`,
+        commit: "abc",
+      });
+      expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7320: outcomes the apply run did write are left alone",
+    async () => {
+      const { storage, deps, a, b, runId } = await appliedOnce();
+      await storage.audits.setFix(a, { commit: "c1", pr: "7" });
+      await storage.audits.setFix(b, { clear: true });
+      await setState(storage, runId, "completed");
+
+      await tick(deps());
+
+      const fixA = await fixOf(storage, a);
+      expect(fixA).toMatchObject({ commit: "c1", pr: "7" });
+      expect(fixA?.error).toBeUndefined();
+      const fixB = await fixOf(storage, b);
+      expect(fixB?.commit).toBeUndefined();
+      expect(fixB?.error).toBeUndefined();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7321: an apply run whose agent died while its state says running is left alone",
+    async () => {
+      const { storage, launches, deps, a, b, runId } = await appliedOnce();
+      await setState(storage, runId, "running");
+
+      await tick(deps(false));
+
+      expect((await fixOf(storage, a))?.error).toBeUndefined();
+      expect((await fixOf(storage, b))?.error).toBeUndefined();
+      expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7322: a result whose apply run was removed is marked failed",
+    async () => {
+      const { storage, deps, a, runId } = await appliedOnce();
+      await storage.runs.removeRun(runId);
+
+      await tick(deps());
+
+      expect((await fixOf(storage, a))?.error).toBe("apply run failed: it was removed");
+    },
+    TIMEOUT_MS,
   );
 });

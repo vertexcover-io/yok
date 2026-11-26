@@ -1,5 +1,11 @@
-import type { IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
-import { TEST_AUDIT_METRIC_NAMES, TEST_AUDIT_METRICS } from "@yok/sdk/internal";
+import type { ILogger, IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
+import {
+  type AuditPendingWork,
+  type AuditResult,
+  isRunLive,
+  TEST_AUDIT_METRIC_NAMES,
+  TEST_AUDIT_METRICS,
+} from "@yok/sdk/internal";
 import { type Context, Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isRunGoing, readStateOrNull } from "./delivery.ts";
@@ -11,9 +17,14 @@ import {
   AuditProjectsQuerySchema,
   AuditRunsQuerySchema,
 } from "./protocol.ts";
-import type { RunDeps } from "./run.ts";
+import { type GitDeps, type RunDeps, startProjectRun } from "./run.ts";
 
 export type AuditRouteDeps = RunDeps & Readonly<{ now: () => Date }>;
+// What the trigger tick passes: TriggerDeps, named here so this file never imports trigger.ts.
+export type AuditTickDeps = AuditRouteDeps & GitDeps & Readonly<{ log: ILogger }>;
+
+// The workflow that applies an accepted fix or reverts an undone one; PR 4 ships it.
+const APPLY_WORKFLOW = "test-audit-apply";
 
 // The run behind the result's newest apply_started or revert_started, while it is still stored.
 export const findApplyRun = async (
@@ -108,6 +119,95 @@ const recordClick = async (
     payload: feedback === undefined ? {} : { feedback },
   });
   return c.json({ event }, 201);
+};
+
+const isApplyRunGoingIn = async (project: string, deps: AuditTickDeps): Promise<boolean> => {
+  const runs = (await deps.storage.runs.listRuns()).filter(
+    (run) => run.project === project && run.workflow === APPLY_WORKFLOW,
+  );
+  const going = await Promise.all(runs.map((run) => isRunGoing(run, run.createdAt, deps)));
+  return going.includes(true);
+};
+
+const startApplyRun = async (
+  project: string,
+  work: readonly AuditPendingWork[],
+  deps: AuditTickDeps,
+): Promise<void> => {
+  const launched = await startProjectRun(
+    {
+      project,
+      workflow: APPLY_WORKFLOW,
+      inputs: { results: work.map(({ result, action }) => ({ id: result.id, action })) },
+      // `orchestrate init` refuses a run folder that exists, so every apply run gets a new name
+      name: `${APPLY_WORKFLOW}-${deps.now().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-")}`,
+      // nobody is attached to answer a question
+      policies: { interaction: false },
+    },
+    deps,
+    deps.log,
+    { source: "trigger" },
+  ).catch((error: unknown) => ({
+    ok: false as const,
+    error: { message: error instanceof Error ? error.message : String(error) },
+  }));
+  if (!launched.ok) {
+    deps.log.info({ project, err: launched.error.message }, "audit apply run not started");
+    for (const { result } of work) {
+      await deps.storage.audits.setFix(result.id, {
+        error: `could not start apply run: ${launched.error.message}`,
+      });
+    }
+    return;
+  }
+  const runId = launched.value.run.id;
+  for (const { result, action } of work) {
+    await deps.storage.audits.addEvent({
+      resultId: result.id,
+      type: action === "apply" ? "apply_started" : "revert_started",
+      who: "yok",
+      startedRunId: runId,
+      payload: {},
+    });
+  }
+  deps.log.info({ project, runId, results: work.length }, "audit apply run started");
+};
+
+// One apply run per project at a time; a click made meanwhile waits for the next one.
+export const startAuditApplyRuns = async (deps: AuditTickDeps): Promise<void> => {
+  for (const project of Object.keys(await deps.storage.projects.list())) {
+    const work = await deps.storage.audits.pendingWork(project);
+    if (work.length === 0 || (await isApplyRunGoingIn(project, deps))) continue;
+    await startApplyRun(project, work, deps);
+  }
+};
+
+const failIfAbandoned = async (result: AuditResult, storage: IStorage): Promise<void> => {
+  const started = await storage.audits.run(result.id);
+  if (result.fix === null || started === undefined) return;
+  // fix.at stamps setFix's last write; a finished revert clears it along with the commit
+  const written =
+    (result.fix.at ?? "") >= started.ts ||
+    (started.type === "revert_started" && result.fix.commit === undefined);
+  if (written) return;
+  // startedRunId turns null when the run is removed
+  const runId = started.startedRunId;
+  const state = runId === null ? null : await readStateOrNull(storage, runId);
+  if (runId !== null && (state === null || isRunLive(state.status))) return;
+  await storage.audits.setFix(result.id, {
+    error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
+  });
+};
+
+// Every test audit result of every project, each tick: cheap at today's volume, and grows with
+// every audit kept.
+export const failAbandonedApplies = async (deps: AuditTickDeps): Promise<void> => {
+  for (const project of Object.keys(await deps.storage.projects.list())) {
+    for (const auditRun of await deps.storage.audits.list(project, "test")) {
+      const record = await deps.storage.audits.read(auditRun.id);
+      for (const result of record?.results ?? []) await failIfAbandoned(result, deps.storage);
+    }
+  }
 };
 
 // Mounted at /audits by app.ts. Chained, so each route's input and output types reach ApiType.
