@@ -549,6 +549,7 @@ const fixSection = (fix) => labelled("The fix", [
   el("p", { textContent: fix.summary }),
   ...(fix.diff === undefined ? [] : [diffBlock(fix.diff)]),
   ...(fix.pr === undefined ? [] : [el("p", {}, [safeLink(fix.pr, prLabel(fix.pr))])]),
+  ...(fix.prompt === undefined ? [] : [el("pre", { className: "block", textContent: fix.prompt })]),
 ]);
 
 const resultDrawer = (result) => [
@@ -636,8 +637,9 @@ const rejectButton = (result) => {
 const copyButton = (prompt) => {
   const button = el("button", { type: "button", className: "btn", textContent: "Copy prompt" });
   button.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(prompt);
-    button.textContent = "Copied";
+    const copied = await (navigator.clipboard?.writeText(prompt) ?? Promise.reject()).then(() => true, () => false);
+    // On failure the prompt is still in the result's drawer to copy by hand.
+    button.textContent = copied ? "Copied" : "Copy failed";
   });
   return button;
 };
