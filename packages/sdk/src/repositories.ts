@@ -3,6 +3,8 @@ import type {
   AuditName,
   AuditRecord,
   AuditReport,
+  AuditResultEvent,
+  AuditResultEventDraft,
   AuditRun,
   AuditRunFilter,
   AuditStart,
@@ -141,13 +143,18 @@ export interface IAuditRepository {
   // this period and commits, keeping its id. Refused, naming the run, when another run holds the
   // project, audit and period. Rejects when the run or the project has no row.
   start(start: AuditStart): Promise<Result<AuditRun>>;
-  // Sets the status and makes the audit run's metrics and results exactly the listed ones.
-  // Refused, with nothing written, for an unknown audit run or a result id that does not start
-  // with `AUDIT_RUN_ID:`.
+  // Sets the status and makes the audit run's metrics and results exactly the listed ones, but
+  // keeps an unlisted result that has events. Refused, with nothing written, for an unknown audit
+  // run or a result id that does not start with `AUDIT_RUN_ID:`.
   finish(auditRunId: string, report: AuditReport): Promise<Result<AuditRun>>;
   // newest period first
   list(project: string, audit: AuditName, filter?: AuditRunFilter): Promise<readonly AuditRun[]>;
   read(auditRunId: string): Promise<AuditRecord | undefined>;
+  // Appends a click with a new id and the current time. Append-only: there is no update or delete.
+  // Rejects when the result or startedRunId has no row.
+  addEvent(draft: AuditResultEventDraft): Promise<AuditResultEvent>;
+  // the result's newest event; undefined before the first click
+  decision(resultId: string): Promise<AuditResultEvent | undefined>;
 }
 
 export interface IStorage {

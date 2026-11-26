@@ -72,6 +72,23 @@ export type AuditRecord = Readonly<{
 // from and to keep the audit runs whose period lies inside them; limit keeps the newest
 export type AuditRunFilter = Readonly<{ from?: string; to?: string; limit?: number }>;
 
+// A person's click on a result. Append-only: a later click is a new event, and the newest is
+// the result's decision.
+export const AuditResultEventSchema = z.strictObject({
+  id: z.uuid(),
+  resultId: NonEmptyStringSchema,
+  type: z.enum(["accepted", "rejected", "undone"]),
+  who: NonEmptyStringSchema,
+  ts: z.iso.datetime(),
+  // the apply or revert run the click started; null when it started none or that run was removed
+  startedRunId: NonEmptyStringSchema.nullable(),
+  payload: z.union([z.strictObject({ feedback: NonEmptyStringSchema }), z.strictObject({})]),
+});
+export type AuditResultEvent = z.infer<typeof AuditResultEventSchema>;
+
+export const AuditResultEventDraftSchema = AuditResultEventSchema.omit({ id: true, ts: true });
+export type AuditResultEventDraft = z.infer<typeof AuditResultEventDraftSchema>;
+
 export type MetricInfo = Readonly<{
   unit: "percent" | "count" | "seconds";
   better: "higher" | "lower";

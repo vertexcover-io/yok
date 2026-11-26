@@ -296,3 +296,106 @@ describe("storage.audits", () => {
     expect(await storage.audits.list("web", "test")).toEqual([]);
   });
 });
+
+describe("storage.audits result events", () => {
+  // Run r-1's finished test audit, with results AUDIT:web:duplicates:one and :two.
+  const finished = async () => {
+    const storage = await seeded();
+    const run = await startOk(storage, week("r-1"));
+    const [one, two] = [result(run.id, "one"), result(run.id, "two")];
+    await storage.audits.finish(run.id, { status: "complete", metrics: [], results: [one, two] });
+    return { storage, run, one, two };
+  };
+
+  test("SC7211: a result's decision is its newest click", async () => {
+    const { storage, one, two } = await finished();
+    const clicks = [
+      {
+        resultId: one.id,
+        type: "accepted",
+        who: "savitha",
+        startedRunId: "r-2",
+        payload: { feedback: "merge them" },
+      },
+      { resultId: one.id, type: "rejected", who: "ritesh", startedRunId: null, payload: {} },
+      { resultId: one.id, type: "undone", who: "savitha", startedRunId: null, payload: {} },
+    ] as const;
+
+    for (const click of clicks) {
+      const event = await storage.audits.addEvent(click);
+      expect(event).toEqual({
+        ...click,
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        ts: expect.any(String),
+      });
+      expect(new Date(event.ts).toISOString()).toBe(event.ts);
+      expect(await storage.audits.decision(one.id)).toEqual(event);
+    }
+    expect(await storage.audits.decision(two.id)).toBeUndefined();
+  });
+
+  test("SC7212: a retried finish keeps a clicked result it no longer lists, and drops an unclicked one", async () => {
+    const { storage, run, one } = await finished();
+    const accepted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "accepted",
+      who: "savitha",
+      startedRunId: null,
+      payload: {},
+    });
+
+    await startOk(storage, week("r-1"));
+    await storage.audits.finish(run.id, { status: "complete", metrics: [], results: [] });
+
+    expect((await storage.audits.read(run.id))?.results).toEqual([one]);
+    expect(await storage.audits.decision(one.id)).toEqual(accepted);
+  });
+
+  test("SC7213: a retried finish that lists a clicked result updates it and keeps its clicks", async () => {
+    const { storage, run, one } = await finished();
+    const accepted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "accepted",
+      who: "savitha",
+      startedRunId: null,
+      payload: {},
+    });
+    const updated = { ...one, title: "merged duplicate tests", state: "auto_fixed" as const };
+
+    await storage.audits.finish(run.id, { status: "complete", metrics: [], results: [updated] });
+
+    expect((await storage.audits.read(run.id))?.results).toEqual([updated]);
+    expect(await storage.audits.decision(one.id)).toEqual(accepted);
+  });
+
+  test("SC7214: a click needs its result and its started run", async () => {
+    const { storage, one } = await finished();
+    const click = { type: "accepted", who: "savitha", payload: {} } as const;
+
+    await expect(
+      storage.audits.addEvent({ ...click, resultId: "nope", startedRunId: null }),
+    ).rejects.toThrow("FOREIGN KEY");
+    await expect(
+      storage.audits.addEvent({ ...click, resultId: one.id, startedRunId: "r-missing" }),
+    ).rejects.toThrow("FOREIGN KEY");
+    expect(await storage.audits.decision(one.id)).toBeUndefined();
+  });
+
+  test("SC7215: removing the started run keeps the click; removing the audit's run removes the results and their clicks", async () => {
+    const { storage, run, one } = await finished();
+    const accepted = await storage.audits.addEvent({
+      resultId: one.id,
+      type: "accepted",
+      who: "savitha",
+      startedRunId: "r-2",
+      payload: {},
+    });
+
+    await storage.runs.removeRun("r-2");
+    expect(await storage.audits.decision(one.id)).toEqual({ ...accepted, startedRunId: null });
+
+    await storage.runs.removeRun("r-1");
+    expect(await storage.audits.decision(one.id)).toBeUndefined();
+    expect(await storage.audits.read(run.id)).toBeUndefined();
+  });
+});

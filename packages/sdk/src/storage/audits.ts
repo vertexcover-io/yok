@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gte, lte, notInArray } from "drizzle-orm";
+import { randomBytes, randomUUID } from "node:crypto";
+import { and, asc, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
 import {
   type AuditMetric,
   AuditMetricSchema,
@@ -8,6 +8,10 @@ import {
   type AuditReport,
   AuditReportSchema,
   type AuditResult,
+  type AuditResultEvent,
+  type AuditResultEventDraft,
+  AuditResultEventDraftSchema,
+  AuditResultEventSchema,
   AuditResultSchema,
   type AuditRun,
   type AuditRunFilter,
@@ -114,6 +118,16 @@ const dropUnlisted = (db: Db, auditRunId: string, keep: readonly string[]): void
     .run();
 };
 
+// The audit run's results that have at least one event: a retried publish never deletes them.
+const findDecidedIds = (db: Db, auditRunId: string): readonly string[] =>
+  db
+    .selectDistinct({ id: tables.auditResultEvents.resultId })
+    .from(tables.auditResultEvents)
+    .innerJoin(tables.auditResults, eq(tables.auditResults.id, tables.auditResultEvents.resultId))
+    .where(eq(tables.auditResults.auditRunId, auditRunId))
+    .all()
+    .map((row) => row.id);
+
 const finishIn = (db: Db, auditRunId: string, report: AuditReport): Result<AuditRun> =>
   db.transaction((tx): Result<AuditRun> => {
     const run = findAuditRun(tx, auditRunId);
@@ -133,11 +147,10 @@ const finishIn = (db: Db, auditRunId: string, report: AuditReport): Result<Audit
       .run();
     replaceMetrics(tx, auditRunId, report.metrics);
     upsertResults(tx, auditRunId, report.results);
-    dropUnlisted(
-      tx,
-      auditRunId,
-      report.results.map((result) => result.id),
-    );
+    dropUnlisted(tx, auditRunId, [
+      ...report.results.map((result) => result.id),
+      ...findDecidedIds(tx, auditRunId),
+    ]);
     return { ok: true, value: { ...run, status: report.status } };
   }, IMMEDIATE);
 
@@ -192,6 +205,24 @@ const readIn = (db: Db, auditRunId: string): AuditRecord | undefined =>
     return { run, metrics, results };
   });
 
+const addEventIn = (db: Db, draft: AuditResultEventDraft, at: string): AuditResultEvent => {
+  const event = AuditResultEventSchema.parse({ ...draft, id: randomUUID(), ts: at });
+  db.insert(tables.auditResultEvents).values(event).run();
+  return event;
+};
+
+// By rowid, not ts: two clicks in one millisecond keep the order they were stored in.
+const decisionIn = (db: Db, resultId: string): AuditResultEvent | undefined => {
+  const row = db
+    .select()
+    .from(tables.auditResultEvents)
+    .where(eq(tables.auditResultEvents.resultId, resultId))
+    .orderBy(desc(sql`rowid`))
+    .limit(1)
+    .get();
+  return row === undefined ? undefined : AuditResultEventSchema.parse(row);
+};
+
 // Normalized before the holder lookup, so two spellings of one period find the same row.
 const parseStart = (start: AuditStart): AuditStart => {
   const parsed = AuditStartSchema.parse(start);
@@ -207,4 +238,6 @@ export const auditRepository = (db: Db): IAuditRepository => ({
   finish: async (auditRunId, report) => finishIn(db, auditRunId, AuditReportSchema.parse(report)),
   list: async (project, audit, filter = {}) => listIn(db, project, audit, filter),
   read: async (auditRunId) => readIn(db, auditRunId),
+  addEvent: async (draft) => addEventIn(db, AuditResultEventDraftSchema.parse(draft), now()),
+  decision: async (resultId) => decisionIn(db, resultId),
 });
