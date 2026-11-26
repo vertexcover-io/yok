@@ -226,7 +226,7 @@ export const runCommand = () => {
       const typed = remote ? remoteTarget(workflowArg, opts) : null;
       if (typed !== null && !typed.ok) return fail(typed.error);
       // Before the project lookup, which calls the server.
-      const client = await resolveClient(remote);
+      const client = await resolveClient(remote, "stop");
       const target = typed ?? (await localTarget(client, { workflow: workflowArg, opts, cwd }));
       if (!target.ok) return fail(target.error);
 
@@ -278,7 +278,7 @@ const relaunch = async (
       ? await localPick(typed.value, opts.runId)
       : { ok: true as const, value: typed.value };
   if (!pick.ok) return fail(pick.error);
-  const client = await resolveClient(remote);
+  const client = await resolveClient(remote, "stop");
   const result =
     action === "retry"
       ? await client.retry({ run: pick.value, answered: opts.answered === true })

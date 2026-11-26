@@ -13,6 +13,14 @@ export { resolveTiers, uniqueNames } from "./config.ts";
 export { AgentModeSchema, isRunLive, pickTierModel } from "./contracts.ts";
 export { checkSqliteVersion, sqliteVersion } from "./db.ts";
 export {
+  homeEnvPath,
+  publicOrigin,
+  readHomeEnv,
+  readHomeFile,
+  readServerDomain,
+  readViewerOrigin,
+} from "./env.ts";
+export {
   AgentStatusSchema,
   type Anchor,
   AnchorSchema,
@@ -59,7 +67,6 @@ export type {
   AppendInput,
   EventDraft,
   GitHubSignIn,
-  IEventStore,
   ImportedRun,
   ImportedUser,
   IProjectRepository,
@@ -75,6 +82,7 @@ export {
   createState,
   type EventHandlers,
   type ExtensionHandlers,
+  loadRunHandlers,
   projectEvents,
   readGit,
   syncState,

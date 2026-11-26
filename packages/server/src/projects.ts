@@ -72,7 +72,7 @@ export const pickProject = async (
 export const refuseBody = (c: Context, error: z.core.$ZodError) =>
   errorResponse(c, 400, "bad-request", z.prettifyError(error));
 
-// Only a folder yok cloned is purged or pulled: a project added by path, or a symlink, that sits
+// Only a folder yok cloned is deleted or pulled: a project added by path, or a symlink, that sits
 // in the clones folder belongs to the person who named it.
 const isClone = (home: string, project: Project): boolean => {
   const clones = clonesDir(home);
@@ -199,7 +199,7 @@ export const deleteRun = async (
 const removeProject = async (
   c: Context<{ Variables: Vars }>,
   deps: ProjectDeps,
-  { name, purge, force }: Readonly<{ name: string; purge: boolean; force: boolean }>,
+  { name, force }: Readonly<{ name: string; force: boolean }>,
 ) => {
   const project = await deps.storage.projects.find(name);
   if (project === undefined) {
@@ -238,13 +238,12 @@ const removeProject = async (
     const message = `${name} has runs started while it was being removed: ${started.join(", ")}; try again once they finish`;
     return errorResponse(c, 409, "conflict", message);
   }
-  // --force removes everything yok owns, so it purges a clone too.
-  const purging = purge || force;
+  // --force removes everything yok owns, so it deletes a clone too.
   const cloned = isClone(deps.home, project);
-  if (purging && cloned) await rm(project.path, { recursive: true, force: true });
+  if (force && cloned) await rm(project.path, { recursive: true, force: true });
   const note =
-    purging && !cloned ? `kept ${project.path}: yok deletes only the folders it cloned` : null;
-  return c.json({ removed: name, runs: ids, purged: purging && cloned, note }, 200);
+    force && !cloned ? `kept ${project.path}: yok deletes only the folders it cloned` : null;
+  return c.json({ removed: name, runs: ids, purged: force && cloned, note }, 200);
 };
 
 // Mounted at /projects by app.ts. Chained, so each route's types reach ApiType.
@@ -258,19 +257,9 @@ export const projectRoutes = (deps: ProjectDeps) =>
     .post("/", jsonBody(AddProjectBodySchema), (c) => addProject(c, deps, c.req.valid("json")))
     .delete(
       "/:name",
-      zValidator(
-        "query",
-        z.strictObject({
-          purge: z.enum(["true", "false"]).optional(),
-          force: z.enum(["true", "false"]).optional(),
-        }),
-      ),
+      zValidator("query", z.strictObject({ force: z.enum(["true", "false"]).optional() })),
       (c) => {
-        const { purge, force } = c.req.valid("query");
-        return removeProject(c, deps, {
-          name: c.req.param("name"),
-          purge: purge === "true",
-          force: force === "true",
-        });
+        const { force } = c.req.valid("query");
+        return removeProject(c, deps, { name: c.req.param("name"), force: force === "true" });
       },
     );

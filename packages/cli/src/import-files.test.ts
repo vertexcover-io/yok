@@ -37,7 +37,7 @@ const tempDir = (prefix: string): string => {
 };
 
 const NOTHING_IMPORTED =
-  "imported users=0 projects=0 runs=0 events=0 comments=0 triggers=0 fires=0 skipped=0";
+  "imported users=0 projects=0 runs=0 events=0 comments=0 triggers=0 fires=0 skipped=0 failed=0";
 
 const ANA = {
   name: "Ana",
@@ -144,7 +144,7 @@ const rowsIn = async (storage: IStorage) => ({
   users: await storage.users.list(),
   projects: await storage.projects.list(),
   runs: await storage.runs.listRuns(),
-  events: await storage.events("r-1").read(),
+  events: await storage.runs.readEvents("r-1"),
   comments: await storage.comments.list("r-1"),
   triggers: await storage.triggers.list(),
   fires: await storage.triggers.readFires("t-aaaa1111", 20),
@@ -165,6 +165,7 @@ describe("importFiles", () => {
     expect(report).toEqual({
       summary: NOTHING_IMPORTED.replace("users=0", "users=2"),
       skipped: [],
+      failed: [],
     });
   });
 
@@ -206,13 +207,13 @@ describe("importFiles", () => {
 
     const report = await importFiles(memoryStorage(), home);
 
-    expect(report.skipped).toHaveLength(1);
-    expect(report.skipped[0]).toStartWith(`${home}/users.json:`);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0]).toStartWith(`${home}/users.json:`);
     expect(existsSync(join(home, "users.json"))).toBe(true);
     expect(existsSync(join(home, "projects.yaml"))).toBe(false);
     expect(existsSync(join(home, "projects.yaml.imported"))).toBe(true);
     expect(report.summary).toBe(
-      NOTHING_IMPORTED.replace("projects=0", "projects=1").replace("skipped=0", "skipped=1"),
+      NOTHING_IMPORTED.replace("projects=0", "projects=1").replace("failed=0", "failed=1"),
     );
   });
 
@@ -223,8 +224,8 @@ describe("importFiles", () => {
     await importFiles(storage, home);
 
     expect(await storage.runs.findRun("r-1")).toEqual({ ...run, project: "app", cwd: checkout });
-    expect(await storage.events("r-1").read()).toEqual(events);
-    expect(await storage.events("r-1").readState()).toEqual(state);
+    expect(await storage.runs.readEvents("r-1")).toEqual(events);
+    expect(await storage.runs.readState("r-1")).toEqual(state);
     expect(await storage.comments.list("r-1")).toEqual(comments);
   });
 
@@ -261,9 +262,9 @@ describe("importFiles", () => {
 
     await importFiles(storage, home);
 
-    const state = await storage.events("r-1").readState();
+    const state = await storage.runs.readState("r-1");
     expect([state?.lastEventSeq, state?.status]).toEqual([4, "completed"]);
-    expect(await storage.events("r-1").read()).toHaveLength(4);
+    expect(await storage.runs.readEvents("r-1")).toHaveLength(4);
   });
 
   test("SC707: run r-2 whose .yok/old-task folder is gone is left out and named, and registry.json is still marked imported", async () => {
@@ -295,7 +296,7 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect((await storage.runs.findRunsByName("fix")).map((run) => run.id)).toEqual(["r-new"]);
-    expect(await storage.events("r-new").read()).toEqual(events);
+    expect(await storage.runs.readEvents("r-new")).toEqual(events);
     expect(report.skipped).toEqual(["run r-old (fix): a newer run took its name and folder"]);
   });
 
@@ -307,8 +308,8 @@ describe("importFiles", () => {
     await importFiles(storage, home);
 
     expect((await storage.runs.findRun("r-3"))?.name).toBeNull();
-    expect(await storage.events("r-3").readState()).toBeNull();
-    expect(await storage.events("r-3").read()).toEqual([]);
+    expect(await storage.runs.readState("r-3")).toBeNull();
+    expect(await storage.runs.readEvents("r-3")).toEqual([]);
   });
 
   test("SC710: r-4 keeps its starter u_1a2b3c4d from users.json, and r-5 drops u_99999999, whom users.json never held", async () => {
@@ -329,23 +330,26 @@ describe("importFiles", () => {
     expect(r5).not.toHaveProperty("user");
   });
 
-  test("SC711: an unparsable comments.json leaves r-1 imported with its events and state but no comments, and keeps its name", async () => {
-    const { home, dir, events, state } = await fixLoginHome();
+  test("SC711: an unparsable comments.json fails r-1 whole, keeping its files and registry.json, and once repaired r-1 imports with its comments", async () => {
+    const { home, dir, events, comments } = await fixLoginHome();
+    const good = readFileSync(join(dir, "comments.json"), "utf8");
     writeFileSync(join(dir, "comments.json"), "{ broken");
     const storage = memoryStorage();
 
     const report = await importFiles(storage, home);
 
-    expect(await storage.runs.findRun("r-1")).toBeDefined();
-    expect(await storage.events("r-1").read()).toEqual(events);
-    expect(await storage.events("r-1").readState()).toEqual(state);
-    expect(await storage.comments.list("r-1")).toEqual([]);
-    expect(report.skipped).toHaveLength(1);
-    expect(report.skipped[0]).toStartWith(`${dir}/comments.json:`);
-    for (const file of ["state.json", "event.jsonl"]) {
-      expect(existsSync(join(dir, `${file}.imported`))).toBe(true);
-    }
-    expect(existsSync(join(dir, "comments.json"))).toBe(true);
+    expect(await storage.runs.findRun("r-1")).toBeUndefined();
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0]).toStartWith(`run r-1 (fix-login): ${dir}/comments.json:`);
+    expect(filesIn(dir)).toEqual(["comments.json", "event.jsonl", "state.json", "workflow.yaml"]);
+    expect(existsSync(join(home, "registry.json"))).toBe(true);
+
+    writeFileSync(join(dir, "comments.json"), good);
+    const again = await importFiles(storage, home);
+
+    expect(again.failed).toEqual([]);
+    expect(await storage.runs.readEvents("r-1")).toEqual(events);
+    expect(await storage.comments.list("r-1")).toEqual(comments);
   });
 
   test("SC712: r-1 with no state.json is skipped whole, and its event.jsonl and comments.json keep their names", async () => {
@@ -356,8 +360,8 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect(await storage.runs.findRun("r-1")).toBeUndefined();
-    expect(await storage.events("r-1").read()).toEqual([]);
-    expect(report.skipped).toEqual([`run r-1 (fix-login): ${dir}/state.json is missing`]);
+    expect(await storage.runs.readEvents("r-1")).toEqual([]);
+    expect(report.failed).toEqual([`run r-1 (fix-login): ${dir}/state.json is missing`]);
     expect(existsSync(join(dir, "event.jsonl"))).toBe(true);
     expect(existsSync(join(dir, "comments.json"))).toBe(true);
   });
@@ -403,7 +407,7 @@ describe("importFiles", () => {
     const report = await importFiles(memoryStorage(), home);
 
     expect(report.summary).toBe(
-      "imported users=1 projects=1 runs=1 events=2 comments=1 triggers=1 fires=1 skipped=1",
+      "imported users=1 projects=1 runs=1 events=2 comments=1 triggers=1 fires=1 skipped=1 failed=0",
     );
     expect(filesIn(home)).toEqual([
       "projects.yaml.imported",
@@ -428,7 +432,7 @@ describe("importFiles", () => {
 
     const report = await importFiles(storage, home);
 
-    expect(report).toEqual({ summary: NOTHING_IMPORTED, skipped: [] });
+    expect(report).toEqual({ summary: NOTHING_IMPORTED, skipped: [], failed: [] });
     expect(await rowsIn(storage)).toEqual(first);
     expect(first.runs.map((run) => run.id)).toEqual(["r-1"]);
     const twice = [...filesIn(home), ...filesIn(runDir)].filter((file) =>
@@ -455,7 +459,7 @@ describe("importFiles", () => {
     expect(report.summary).toContain("runs=0 events=0 comments=0 triggers=0 fires=0");
   });
 
-  test("a run whose store throws is reported, the runs after it still import, and registry.json is marked imported", async () => {
+  test("a run whose store throws fails, the runs after it still import, and registry.json keeps its name for another try", async () => {
     const home = tempDir("yok-import-home-");
     const checkout = checkoutAt("yok-import-app-");
     writeRegistry(home, [oldRun("r-3", null, checkout), oldRun("r-4", null, checkout)]);
@@ -473,12 +477,20 @@ describe("importFiles", () => {
 
     const report = await importFiles(storage, home);
 
-    expect(report.skipped).toEqual(["run r-3 (unnamed): database is locked"]);
+    expect(report.failed).toEqual(["run r-3 (unnamed): database is locked"]);
     expect(await real.runs.findRun("r-4")).toBeDefined();
+    expect(existsSync(join(home, "registry.json"))).toBe(true);
+    expect(existsSync(join(home, "registry.json.imported"))).toBe(false);
+
+    const again = await importFiles(real, home);
+
+    expect(again.failed).toEqual([]);
+    expect(again.skipped).toEqual(["run r-4 (unnamed): run r-4 is already stored"]);
+    expect(await real.runs.findRun("r-3")).toBeDefined();
     expect(existsSync(join(home, "registry.json.imported"))).toBe(true);
   });
 
-  test("a trigger whose project has no row is reported and the trigger after it still imports", async () => {
+  test("a trigger whose project has no row fails, the trigger after it still imports, and triggers.json keeps its name", async () => {
     const home = tempDir("yok-import-home-");
     writeFileSync(join(home, "projects.yaml"), projectsYaml(tempDir("yok-import-app-")));
     const ghost = { ...TRIGGER, id: "t-dddd4444", name: "ghostly", project: "ghost" };
@@ -490,9 +502,9 @@ describe("importFiles", () => {
 
     const report = await importFiles(storage, home);
 
-    expect(report.skipped).toHaveLength(1);
-    expect(report.skipped[0]).toStartWith("trigger t-dddd4444:");
+    expect(report.failed).toEqual(["trigger t-dddd4444: its project ghost is not stored"]);
     expect((await storage.triggers.list()).map((trigger) => trigger.id)).toEqual([TRIGGER.id]);
+    expect(existsSync(join(home, "triggers.json"))).toBe(true);
   });
 
   test("registry.json and triggers.json read again after a crash before their rename skip the stored run and trigger, and keep the first backups", async () => {
@@ -509,6 +521,7 @@ describe("importFiles", () => {
     const report = await importFiles(storage, home);
 
     expect(report).toEqual({
+      failed: [],
       summary: NOTHING_IMPORTED.replace("skipped=0", "skipped=2"),
       skipped: [
         "run r-3 (unnamed): run r-3 is already stored",
@@ -519,5 +532,161 @@ describe("importFiles", () => {
       expect(readFileSync(join(home, `${file}.imported`), "utf8")).toBe("first backup");
       expect(existsSync(join(home, file))).toBe(false);
     }
+  });
+  test("two users on one GitHub account: the second fails by name, users.json keeps its name and both tokens, and the first is stored", async () => {
+    const home = tempDir("yok-import-home-");
+    const twin = { ...BO, accounts: { github: { id: 101, login: "ana", token: "gho_b" } } };
+    const users = { u_1a2b3c4d: ANA, u_5e6f7a8b: twin };
+    writeJson(join(home, "users.json"), users);
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(report.failed).toEqual([
+      "user u_5e6f7a8b: its github account 101 belongs to user u_1a2b3c4d",
+    ]);
+    expect(await storage.users.find("u_1a2b3c4d")).toEqual(ANA);
+    expect(await storage.users.find("u_5e6f7a8b")).toBeUndefined();
+    expect(filesIn(home)).toEqual(["users.json"]);
+    expect(JSON.parse(readFileSync(join(home, "users.json"), "utf8"))).toEqual(users);
+
+    const again = await importFiles(storage, home);
+
+    expect(again.summary).toStartWith("imported users=0 ");
+    expect(again.skipped).toEqual(["user u_1a2b3c4d: user u_1a2b3c4d is already stored"]);
+  });
+
+  test("an unreadable projects.yaml holds back registry.json and triggers.json, so no project is made up; once repaired, app comes back with its run and trigger", async () => {
+    const { home, checkout } = await triggersHome();
+    const good = readFileSync(join(home, "projects.yaml"), "utf8");
+    writeFileSync(join(home, "projects.yaml"), "app: [unclosed");
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(report.failed).toHaveLength(3);
+    expect(report.failed[0]).toStartWith(`${home}/projects.yaml:`);
+    expect(report.failed.slice(1)).toEqual([
+      `${home}/registry.json: waits for projects.yaml to import`,
+      `${home}/triggers.json: waits for projects.yaml to import`,
+    ]);
+    expect(await storage.projects.list()).toEqual({});
+    expect(await storage.runs.listRuns()).toEqual([]);
+    expect(filesIn(home)).toEqual(["projects.yaml", "registry.json", "triggers.json"]);
+
+    writeFileSync(join(home, "projects.yaml"), good);
+    const again = await importFiles(storage, home);
+
+    expect(again.failed).toEqual([]);
+    expect((await storage.projects.find("app"))?.path).toBe(checkout);
+    expect(await storage.runs.findRun("r-1")).toMatchObject({ project: "app" });
+    expect((await storage.triggers.list()).map((trigger) => trigger.id)).toContain(TRIGGER.id);
+  });
+
+  test("projects.yaml read again after a crash before its rename counts app as already stored, not as a clash", async () => {
+    const home = tempDir("yok-import-home-");
+    const yaml = projectsYaml(tempDir("yok-import-app-"));
+    writeFileSync(join(home, "projects.yaml"), yaml);
+    const storage = memoryStorage();
+    await importFiles(storage, home);
+    writeFileSync(join(home, "projects.yaml"), yaml);
+
+    const report = await importFiles(storage, home);
+
+    expect(report.failed).toEqual([]);
+    expect(report.skipped).toEqual(["project app: project app is already stored"]);
+    expect(existsSync(join(home, "projects.yaml"))).toBe(false);
+  });
+  test("events stored after state.json are folded with the run's own handlers too, and a handler module that is gone fails the run and keeps its files", async () => {
+    const home = tempDir("yok-import-home-");
+    const checkout = checkoutAt("yok-import-app-");
+    const module = join(tempDir("yok-import-handlers-"), "pings.ts");
+    writeFileSync(
+      module,
+      "export const onPing = (state) => ({ ...state, custom: { ...state.custom, pings: (state.custom?.pings ?? 0) + 1 } });\n",
+    );
+    const run = oldRun("r-1", "fix-login", checkout);
+    writeRegistry(home, [run]);
+    const events = [1, 2, 3].map((seq) => oldEvent("r-1", seq));
+    const eventHandlers = { "custom.demo.ping": [{ module, handler: "onPing" }] };
+    await writeRunFolder({ run, events, stateSeq: 1, eventHandlers });
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(report.failed).toEqual([]);
+    const state = await storage.runs.readState("r-1");
+    expect([state?.lastEventSeq, state?.custom]).toEqual([3, { pings: 2 }]);
+
+    const gone = tempDir("yok-import-home-");
+    const other = oldRun("r-2", "gone-handler", checkout);
+    writeRegistry(gone, [other]);
+    const missing = {
+      "custom.demo.ping": [{ module: join(gone, "nowhere.ts"), handler: "onPing" }],
+    };
+    await writeRunFolder({
+      run: other,
+      events: [1, 2].map((seq) => oldEvent("r-2", seq)),
+      stateSeq: 1,
+      eventHandlers: missing,
+    });
+
+    const refused = await importFiles(memoryStorage(), gone);
+
+    expect(refused.failed).toHaveLength(1);
+    expect(refused.failed[0]).toStartWith("run r-2 (gone-handler): ");
+    expect(refused.failed[0]).toContain("nowhere.ts");
+    expect(existsSync(join(gone, "registry.json"))).toBe(true);
+    expect(filesIn(runDirOf(checkout, "gone-handler"))).toContain("state.json");
+  });
+
+  test("comments that fail to store after their run did are stored by the next import, which skips the run and then renames its files", async () => {
+    const { home, dir, comments } = await fixLoginHome();
+    const real = memoryStorage();
+    let refuse = true;
+    const storage: IStorage = {
+      ...real,
+      comments: {
+        ...real.comments,
+        importComments: async (runId, imported) => {
+          if (refuse) throw new Error("database is locked");
+          return real.comments.importComments(runId, imported);
+        },
+      },
+    };
+
+    const first = await importFiles(storage, home);
+
+    expect(first.failed).toEqual(["run r-1 (fix-login): database is locked"]);
+    expect(await real.runs.findRun("r-1")).toBeDefined();
+    expect(filesIn(dir)).toContain("comments.json");
+
+    refuse = false;
+    const again = await importFiles(storage, home);
+
+    expect(again.failed).toEqual([]);
+    expect(await real.comments.list("r-1")).toEqual(comments);
+    expect(filesIn(dir)).toEqual([
+      "comments.json.imported",
+      "event.jsonl.imported",
+      "state.json.imported",
+      "workflow.yaml",
+    ]);
+    expect(existsSync(join(home, "registry.json.imported"))).toBe(true);
+  });
+
+  test("a fire written twice in one trigger-fires.jsonl is stored once, and the second line is reported as already stored", async () => {
+    const { home } = await triggersHome();
+    const once = fire("t-aaaa1111", "2026-02-01T03:30:00.000Z", { runId: "r-1" });
+    const line = JSON.stringify(once);
+    writeFileSync(join(home, "trigger-fires.jsonl"), `${line}\n${line}\n`);
+    const storage = memoryStorage();
+
+    const report = await importFiles(storage, home);
+
+    expect(await storage.triggers.readFires("t-aaaa1111", 20)).toEqual([once]);
+    expect(report.skipped).toEqual([
+      "fire of t-aaaa1111 for 2026-02-01T03:30:00.000Z is already stored",
+    ]);
   });
 });

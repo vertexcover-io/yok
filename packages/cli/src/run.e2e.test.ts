@@ -16,7 +16,6 @@ import { basename, dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
 import { VERSION } from "@yok/sdk/internal";
 import { readPort } from "@yok/server";
-import { restartServer, yokClient } from "./client.ts";
 import { savedRun, savedRuns, savedState } from "./test-runs.ts";
 
 const TIMEOUT_MS = 40_000;
@@ -844,30 +843,31 @@ describe("yok run", () => {
   );
 
   test(
-    "restartServer replaces a running server and leaves a stopped one down",
-    async () => {
+    "server restart starts a stopped server, replaces a running one, and leaves the run's tmux session alive",
+    () => {
       const repo = makeRepo();
-      const { env, home } = makeEnv();
-      const self = process.env.YOK_SELF;
-      process.env.YOK_SELF = JSON.stringify(["bun", NO_DOTENV, CLI]);
-      cleanups.push(() => {
-        if (self === undefined) delete process.env.YOK_SELF;
-        else process.env.YOK_SELF = self;
-      });
-      // A client is bound to the port the server had when it was made.
-      const health = () => yokClient(home).health();
+      const { env, home, socket } = makeEnv();
+      const status = () => yok(repo, env, "server", "status").stdout.trim();
 
-      await restartServer(home);
-      expect((await health()).ok).toBe(false);
+      const started = yok(repo, env, "server", "restart");
+      expect(started.code).toBe(0);
+      expect(started.stdout).toMatch(
+        /^restarted the yok server \(pid \d+, version .+\); its tmux sessions keep running\n$/,
+      );
 
       expect(yok(repo, env, "run", "ok.yaml", "--prompt", "x").code).toBe(0);
-      const before = await health();
-      await restartServer(home);
-      const after = await health();
+      const before = status();
+      expect(yok(repo, env, "server", "restart").code).toBe(0);
+      const after = status();
 
-      expect(before.ok && after.ok).toBe(true);
-      expect(after.ok && after.value.pid).not.toBe(before.ok && before.value.pid);
+      expect(before).toMatch(/^pid \d+, version /);
+      expect(after).toMatch(/^pid \d+, version /);
+      expect(after).not.toBe(before);
       expect(serverPids(home)).toHaveLength(1);
+      const sessions = spawnSync("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], {
+        encoding: "utf8",
+      });
+      expect(sessions.stdout.trim().length).toBeGreaterThan(0);
 
       stopServer(repo, env);
     },
@@ -1667,12 +1667,12 @@ describe("yok --remote", () => {
       stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
     },
     {
-      args: ["project", "remove", "web", "--purge"],
+      args: ["project", "remove", "web"],
       answers: {
         "DELETE /api/projects/web": () =>
-          Response.json({ removed: "web", runs: [], purged: true, note: null }),
+          Response.json({ removed: "web", runs: [], purged: false, note: null }),
       },
-      request: { request: "DELETE /api/projects/web?purge=true&force=false", body: null },
+      request: { request: "DELETE /api/projects/web?force=false", body: null },
       stdout: /^removed web\n$/,
     },
   ])(
@@ -1701,7 +1701,7 @@ describe("yok --remote", () => {
 
       expect(result.stderr).toBe("");
       expect(routeCalls(server.seen)).toEqual([
-        { request: "DELETE /api/projects/web?purge=false&force=true", body: null },
+        { request: "DELETE /api/projects/web?force=true", body: null },
       ]);
       expect(result.stdout).toBe("removed web and its runs r-1, r-2\n");
     },

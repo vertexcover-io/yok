@@ -42,7 +42,7 @@ write.
   feature is about.
 - **Gates before the code under test.** Entitlements, feature flags, allow-lists, and status preconditions sit in
   front of most interesting paths. When a walk produces nothing, read the gate before concluding the feature is
-  unreachable — that reading is what separates a real gap from an early stop (Step 4).
+  unreachable — that reading is what separates a real gap from an early stop (Step 5).
 - **Shared datastores.** Where a scenario asserts an absence, count the pre-existing rows before and after — a row
   another run left behind reads exactly like one your walk wrote.
 
@@ -51,5 +51,5 @@ write.
 Frames and videos do not exist here, so the exchange is the whole evidence. Each step says, in one plain
 sentence, what was asked of the system and on whose behalf, in the order it was asked. Under it sit the checks
 it brings about: accepted or refused, and what was returned or saved. The request line, the status and the values a check rests on go into the `raw` of the proof that check cites,
-one proof per thing confirmed. How such an entry is written, and everything
+one proof per check. How such an entry is written, and everything
 about grading, coverage, gaps and the derived verdict, is in `writing-the-report.md`.

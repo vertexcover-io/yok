@@ -254,7 +254,6 @@ export {
 } from "./registry.ts";
 export type {
   ICommentRepository,
-  IEventStore,
   IProjectRepository,
   IRunRepository,
   IStorage,

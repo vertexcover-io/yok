@@ -196,9 +196,12 @@ export const isRemote = (command: CommandUnknownOpts): boolean =>
   command.optsWithGlobals().remote === true;
 
 // The saved login is read only with --remote, so a plain command never leaves this machine.
-export const resolveClient = async (remote: boolean): Promise<YokClient> => {
+export const resolveClient = async (
+  remote: boolean,
+  onOtherVersion: OnOtherVersion = "warn",
+): Promise<YokClient> => {
   if (remote) return (await connect(process.env, yokHome())).client;
-  await ensureServer();
+  await ensureServer(yokHome(), defaultReplaceBefore(), onOtherVersion);
   return yokClient();
 };
 
@@ -218,7 +221,7 @@ const REMOTE_COMMANDS = new Set([
   "retry",
   "server status",
 ]);
-const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop"]);
+const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop", "server restart"]);
 
 // Refuses --remote on a command that acts on this machine before the action runs: the message
 // names the command and the exact thing to type instead.
@@ -297,27 +300,53 @@ export const stopServer = async (pid: number): Promise<void> => {
 // From source, a server older than this command runs stale code and is replaced.
 const defaultReplaceBefore = (): number => (isCompiled ? 0 : performance.timeOrigin);
 
-// A server of another version is replaced too: an upgrade swaps the binary without a restart.
-export const isCurrentServer = (
-  server: Running | null,
-  replaceBefore: number,
-  version: string,
-): boolean => server !== null && server.startedAt >= replaceBefore && server.version === version;
+// A server of another version is kept: whatever started it (systemd, a person) restarts it.
+export const isCurrentServer = (server: Running | null, replaceBefore: number): boolean =>
+  server !== null && server.startedAt >= replaceBefore;
+
+const RESTART_HINT = "If this is a local yok server, run `yok server restart`.";
+
+export const versionWarning = (server: string, cli: string): string | null =>
+  server === cli
+    ? null
+    : `warning: this CLI is ${cli}, the yok server is ${server}; restart the server to use ${cli}.\n${RESTART_HINT}`;
+
+export const updateWarning = (pid: number): string =>
+  `warning: restart the yok server (pid ${pid}) so it runs the installed version.\n${RESTART_HINT}`;
+
+export const runBlocked = (server: string, cli: string): string =>
+  `the yok server is on version ${server} and this CLI is ${cli}; restart the server before starting a run.\n${RESTART_HINT}`;
+
+// "stop" is for a command that starts a run: the server checks the plugin against its own
+// version, and the plugin ships at the CLI's, so the run would be refused there with fixes that
+// do not restart the server.
+export type OnOtherVersion = "warn" | "stop";
+
+const checkVersion = (server: Running, onOtherVersion: OnOtherVersion): void => {
+  if (server.version === VERSION) return;
+  if (onOtherVersion === "stop") throw new Error(runBlocked(server.version, VERSION));
+  const warning = versionWarning(server.version, VERSION);
+  if (warning !== null) console.error(warning);
+};
 
 // Starts the server under a lock, replacing one started before replaceBefore (epoch ms).
 export const ensureServer = async (
   home: string = yokHome(),
   replaceBefore: number = defaultReplaceBefore(),
+  onOtherVersion: OnOtherVersion = "warn",
 ): Promise<void> => {
-  const isFresh = (server: Running | null): boolean =>
-    isCurrentServer(server, replaceBefore, VERSION);
   // Checked again inside the lock: another command may have started the server meanwhile.
-  if (isFresh(await runningServer(home))) return;
+  const found = await runningServer(home);
+  if (found !== null && isCurrentServer(found, replaceBefore)) {
+    return checkVersion(found, onOtherVersion);
+  }
   // withLock would create a missing home with the umask's mode.
   mkdirSync(home, { recursive: true, mode: 0o700 });
   await withLock(join(home, ".start.lock"), async () => {
     const running = await runningServer(home);
-    if (isFresh(running)) return;
+    if (running !== null && isCurrentServer(running, replaceBefore)) {
+      return checkVersion(running, onOtherVersion);
+    }
     const log = cliLog().child({ component: "cli" });
     if (running !== null) {
       log.info({ pid: running.pid, startedAt: running.startedAt }, "replacing an older server");
@@ -346,11 +375,12 @@ export const ensureServer = async (
   });
 };
 
-// A stopped server stays down: the next command that needs one starts it.
-export const restartServer = async (home: string = yokHome()): Promise<boolean> => {
-  if ((await runningServer(home)) === null) return false;
+// Replaces a running server and starts a stopped one. The new one keeps the old one's port.
+export const restartServer = async (home: string = yokHome()): Promise<Running> => {
   await ensureServer(home, Date.now());
-  return true;
+  const running = await runningServer(home);
+  if (running === null) throw new Error("the yok server stopped right after it started");
+  return running;
 };
 
 type OpenDecision = Readonly<{

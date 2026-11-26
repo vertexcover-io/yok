@@ -2647,12 +2647,12 @@ describe("Slack commands", () => {
     expect(table?.rows.find((row) => row[0] === "demo2")).toEqual(["demo2", "ready", dir, "slack"]);
   });
 
-  test("SC36: project remove demo2 --purge on a folder yok did not clone keeps it and says so", async () => {
+  test("SC36: project remove demo2 --force on a folder yok did not clone keeps it and says so", async () => {
     const { deps } = await chatDeps();
     const dir = gitRepo();
     await chat(deps, `project add demo2 --path ${dir}`);
 
-    expect(await chat(deps, "project remove demo2 --purge")).toBe(
+    expect(await chat(deps, "project remove demo2 --force")).toBe(
       `Removed *demo2*\nkept ${dir}: yok deletes only the folders it cloned`,
     );
     expect(existsSync(dir)).toBe(true);
@@ -2856,7 +2856,7 @@ describe("DELETE /runs/:id", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ removed: "r-done" });
     expect(await deps.storage.runs.findRun("r-done")).toBeUndefined();
-    expect(await deps.storage.events("r-done").read()).toEqual([]);
+    expect(await deps.storage.runs.readEvents("r-done")).toEqual([]);
     expect(await deps.storage.comments.list("r-done")).toEqual([]);
     expect(existsSync(runDir)).toBe(false);
     expect(calls).toContain("kill");
@@ -2887,7 +2887,7 @@ describe("DELETE /runs/:id", () => {
       "run demo-run is still going; yok rm removes only a run that has finished or lost its session",
     );
     expect(await deps.storage.runs.findRun("r-live")).toBeDefined();
-    expect(await deps.storage.events("r-live").read()).toHaveLength(1);
+    expect(await deps.storage.runs.readEvents("r-live")).toHaveLength(1);
     expect(existsSync(runDir)).toBe(true);
     expect(calls).not.toContain("kill");
   });
@@ -3306,7 +3306,7 @@ describe("/projects", () => {
     expect((await listProjects(app)).map((project) => project.name)).toEqual(["web", "api"]);
   });
 
-  test("SC208, SC617: purge deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
+  test("SC208, SC617: --force deletes a folder yok cloned and keeps one it did not, even one added by path inside the clones folder", async () => {
     const { deps } = await projectDeps();
     const cloned = join(deps.home, "projects", "cloned");
     const placed = join(deps.home, "projects", "placed");
@@ -3317,26 +3317,26 @@ describe("/projects", () => {
     await addProjectEntry(deps.storage, "outside", outside);
     await addProjectEntry(deps.storage, "placed", placed);
     const app = createApi(deps);
-    const purge = async (name: string) => {
-      const res = await app.request(`/projects/${name}?purge=true`, {
+    const forceRemove = async (name: string) => {
+      const res = await app.request(`/projects/${name}?force=true`, {
         method: "DELETE",
       });
       return res.json();
     };
 
-    expect(await purge("cloned")).toEqual({
+    expect(await forceRemove("cloned")).toEqual({
       removed: "cloned",
       runs: [],
       purged: true,
       note: null,
     });
-    expect(await purge("outside")).toEqual({
+    expect(await forceRemove("outside")).toEqual({
       removed: "outside",
       runs: [],
       purged: false,
       note: `kept ${outside}: yok deletes only the folders it cloned`,
     });
-    expect(await purge("placed")).toEqual({
+    expect(await forceRemove("placed")).toEqual({
       removed: "placed",
       runs: [],
       purged: false,
@@ -3347,7 +3347,7 @@ describe("/projects", () => {
     expect(existsSync(placed)).toBe(true);
   });
 
-  test("SC208: purge keeps the target of a symlink in the clones folder, even one registered with a git URL", async () => {
+  test("SC208: --force keeps the target of a symlink in the clones folder, even one registered with a git URL", async () => {
     const { deps } = await projectDeps();
     const target = gitRepo();
     const link = join(deps.home, "projects", "link");
@@ -3355,7 +3355,7 @@ describe("/projects", () => {
     symlinkSync(target, link);
     await addProjectEntry(deps.storage, "link", link, "https://example.test/link.git");
 
-    const res = await createApi(deps).request("/projects/link?purge=true", {
+    const res = await createApi(deps).request("/projects/link?force=true", {
       method: "DELETE",
     });
 
@@ -3471,11 +3471,11 @@ describe("/projects", () => {
     expect(await deps.storage.runs.findRun("r-a")).toBeUndefined();
   });
 
-  test("SC614: --purge without --force on cloned with run r-a is 409 has runs, keeping the clone and the run", async () => {
+  test("SC614: remove without --force on cloned with run r-a is 409 has runs, keeping the clone and the run", async () => {
     const { deps } = await projectDeps();
     const cloned = await clonedWithRun(deps.storage, deps.home);
 
-    const res = await removeWith(deps, "/projects/cloned?purge=true");
+    const res = await removeWith(deps, "/projects/cloned");
 
     expect(res.status).toBe(409);
     expect((await errorOf(res)).message).toBe(
@@ -3598,10 +3598,9 @@ const modelEvent = (
 // Stores DRAFT as the run's next event without folding it into the run's state, as an event
 // stored after the state's last write leaves it.
 const appendEvent = async (storage: IStorage, draft: EventDraft): Promise<Event> => {
-  const store = storage.events(draft.runId);
-  const expectedSeq = (await store.read()).length;
+  const expectedSeq = (await storage.runs.readEvents(draft.runId)).length;
   const event = EventSchema.parse({ ...draft, schemaVersion: 1, seq: expectedSeq + 1 });
-  const appended = await store.append({ event, state: null, expectedSeq });
+  const appended = await storage.runs.appendEvent(draft.runId, { event, state: null, expectedSeq });
   if (appended.kind !== "stored") throw new Error(`event ${draft.id} was not stored`);
   return event;
 };
@@ -4131,7 +4130,7 @@ const retry = (deps: Parameters<typeof createApi>[0], runId: string, answered?: 
   });
 
 const stateOf = async (storage: IStorage, run: WorkflowRun): Promise<State> => {
-  const state = await storage.events(run.id).readState();
+  const state = await storage.runs.readState(run.id);
   if (state === null) throw new Error(`run ${run.id} has no state`);
   return state;
 };

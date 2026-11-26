@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import type { AgentType } from "./agent.ts";
@@ -5,6 +6,7 @@ import type { EnvLayer } from "./config.ts";
 import type { Result } from "./contracts.ts";
 import { readIfExists, readText } from "./files.ts";
 import { prependPath } from "./process.ts";
+import { yokHome } from "./registry.ts";
 import type { IStorage } from "./repositories.ts";
 import { type CheckoutConfig, findConfigRoot, findRoot } from "./runs.ts";
 import { ownerEnv } from "./users.ts";
@@ -117,3 +119,42 @@ export const sessionEnv = async (
   YOK_HOME: home,
   YOK_SERVER_TOKEN: "",
 });
+
+export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
+
+// A missing file reads as empty; any other failure throws, so a public server that cannot read its
+// domain fails instead of acting as one without a domain.
+export const readHomeFile = (path: string): string => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+};
+
+export const readHomeEnv = (home: string): Record<string, string | undefined> =>
+  parseEnv(readHomeFile(homeEnvPath(home)));
+
+// The domain a reverse proxy in front of yok answers on, or undefined when none is set. A browser
+// sends its Host lowercase and without a scheme, so the saved value is cleaned to match.
+export const readServerDomain = (home: string): string | undefined => {
+  const domain = (readHomeEnv(home).SERVER_DOMAIN ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+    .replace(/\/+$/, "");
+  return domain || undefined;
+};
+
+// Plain http only for this machine: any other domain is reached through a proxy doing https.
+export const publicOrigin = (domain: string): string =>
+  `${/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(domain) ? "http" : "https"}://${domain}`;
+
+// Where a person outside this machine opens the run viewer, or undefined when the server has no
+// public domain, or only a loopback one, and only this machine could open a link.
+export const readViewerOrigin = (home: string = yokHome()): string | undefined => {
+  const domain = readServerDomain(home);
+  if (domain === undefined || publicOrigin(domain).startsWith("http:")) return undefined;
+  return publicOrigin(domain);
+};

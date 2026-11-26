@@ -75,19 +75,6 @@ export const probe = async () => {
 };
 `;
 
-describe("yok sqlite-check", () => {
-  test("SC129: exits 0 with nothing on stdout or stderr, and yok --help does not list it", async () => {
-    const cli = (...args: string[]) =>
-      spawnProcess(process.execPath, ["--no-env-file", CLI, ...args], { cwd: REPO_ROOT });
-    const checked = await cli("sqlite-check");
-    expect([checked.code, checked.stdout, checked.stderr]).toEqual([0, "", ""]);
-    const help = await cli("--help");
-    expect(help.code).toBe(0);
-    expect(help.stdout).toContain("doctor");
-    expect(help.stdout).not.toContain("sqlite-check");
-  }, 30_000);
-});
-
 describe("yok as one program", () => {
   let repo = "";
   let subscribers = "";

@@ -45,7 +45,7 @@ export const findSessionState = async (
 ): Promise<Readonly<{ run: RunRef; state: State }> | undefined> => {
   const run = await findSessionRun(input, deps);
   if (run === undefined) return undefined;
-  const state = await deps.storage.events(run.id).readState();
+  const state = await deps.storage.runs.readState(run.id);
   return state === null ? undefined : { run, state };
 };
 

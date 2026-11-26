@@ -265,7 +265,7 @@ const runWithSubscribers = async (specs: Readonly<Record<string, readonly Spec[]
   const claimed = await storage.runs.initRun(run.id, run.name, state);
   if (!claimed.ok) throw new Error(claimed.error);
   const calls = async () =>
-    (await storage.events(run.id).read()).filter((stored) => stored.type === "subscriber.called");
+    (await storage.runs.readEvents(run.id)).filter((stored) => stored.type === "subscriber.called");
   return { run, runDir, cwd, calls, storage, home };
 };
 
@@ -278,11 +278,14 @@ const ping = (id?: string) => ({
 
 // Stores a ping as given, with no state and so no subscriber call, as a run's other process might.
 const storePing = async (storage: IStorage, run: RunRef): Promise<Event> => {
-  const store = storage.events(run.id);
-  const seq = (await store.read()).length + 1;
+  const seq = (await storage.runs.readEvents(run.id)).length + 1;
   const event = buildEvent(run.id, { ...ping(), id: crypto.randomUUID() }, seq);
   if (!event.ok) throw new Error(event.error);
-  const appended = await store.append({ event: event.value, state: null, expectedSeq: seq - 1 });
+  const appended = await storage.runs.appendEvent(run.id, {
+    event: event.value,
+    state: null,
+    expectedSeq: seq - 1,
+  });
   if (appended.kind !== "stored") throw new Error(`ping not stored: ${appended.kind}`);
   return event.value;
 };
@@ -366,7 +369,7 @@ describe("appendRunEvent with subscribers", () => {
       },
       { subscriber: "good", status: "ok", output: "fine" },
     ]);
-    expect((await storage.events(run.id).readState())?.status).toBe("running");
+    expect((await storage.runs.readState(run.id))?.status).toBe("running");
   });
 
   test("SC114: one subscriber's non-blocking calls never overlap", async () => {
@@ -425,7 +428,7 @@ await appendRunEvent(openStorage(${JSON.stringify(home)}), ${JSON.stringify(run)
     const appended = await appendRunEvent(storage, run, ping());
 
     expect(appended.ok).toBe(true);
-    const types = (await storage.events(run.id).read()).map((stored) => stored.type);
+    const types = (await storage.runs.readEvents(run.id)).map((stored) => stored.type);
     expect(types).toContain("custom.demo.pong");
     expect((await calls()).map((call) => call.payload)).toMatchObject([
       { subscriber: "listener", eventType: "custom.demo.pong", status: "ok" },

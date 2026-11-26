@@ -25,7 +25,7 @@ import {
 import {
   appendRunEvent,
   foldModelSwitch,
-  type IEventStore,
+  type IRunRepository,
   isProcessAlive,
   pickTierModel,
   runLockPath,
@@ -190,8 +190,10 @@ const typeAtInputBox = async (
   }
 };
 
-const isResumed = async (store: IEventStore, afterSeq: number): Promise<boolean> =>
-  (await store.read()).some((event) => event.seq > afterSeq && event.type === "orchestrate.resume");
+const isResumed = async (runs: IRunRepository, runId: string, afterSeq: number): Promise<boolean> =>
+  (await runs.readEvents(runId)).some(
+    (event) => event.seq > afterSeq && event.type === "orchestrate.resume",
+  );
 
 // lost: Claude sat free for RESUME_TIMEOUT_MS without running `orchestrate resume`, so the line
 // can be typed again. still-busy: the cap passed with Claude at work or waiting on a person, where
@@ -202,13 +204,14 @@ type ResumeWait = "resumed" | "lost" | "still-busy";
 // spinner until a moment after Enter.
 const waitForResumed = async (
   terminal: ITerminal,
-  store: IEventStore,
+  runs: IRunRepository,
+  runId: string,
   afterSeq: number,
 ): Promise<ResumeWait> => {
   const cap = Date.now() + RESUME_CAP_MS;
   let freeSince: number | undefined;
   for (;;) {
-    if (await isResumed(store, afterSeq)) return "resumed";
+    if (await isResumed(runs, runId, afterSeq)) return "resumed";
     const now = Date.now();
     const busy = isClaudeHeld(unwrap(await terminal.capture()));
     freeSince = busy ? undefined : (freeSince ?? now);
@@ -440,7 +443,7 @@ export const findOpenContextRun = (
 
 // The action the helper began for this node run, from its workflow.context.started event.
 const findStartedAction = async (storage: IStorage, run: RunRef, nodeRunId: string) => {
-  const events = await storage.events(run.id).read();
+  const events = await storage.runs.readEvents(run.id);
   const started = events
     .filter((event) => event.type === "workflow.context.started")
     .map((event) => ContextStartedEvent.safeParse(event))
@@ -457,7 +460,7 @@ export const completeContextOnSessionStart = async (
   sessionId: string,
   source: string,
 ): Promise<void> => {
-  const state = await storage.events(run.id).readState();
+  const state = await storage.runs.readState(run.id);
   const open = state === null ? undefined : findOpenContextRun(state.nodeRuns);
   if (open === undefined) return;
   const started = await findStartedAction(storage, run, open.nodeRunId);
@@ -484,15 +487,14 @@ const resumeRun = async (
   const line = resumePrompt(run);
   let typedOnce = false;
   try {
-    const store = storage.events(run.id);
-    const afterSeq = launchedAfterSeq ?? (await store.read()).at(-1)?.seq ?? 0;
+    const afterSeq = launchedAfterSeq ?? (await storage.runs.readEvents(run.id)).at(-1)?.seq ?? 0;
     const attempts = launchedAfterSeq === undefined ? RESUME_ATTEMPTS : 1;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       if (launchedAfterSeq === undefined) {
         if (!(await typeAtInputBox(terminal, line, log))) continue;
         typedOnce = true;
       }
-      const wait = await waitForResumed(terminal, store, afterSeq);
+      const wait = await waitForResumed(terminal, storage.runs, run.id, afterSeq);
       if (wait === "resumed") return;
       if (wait === "still-busy") {
         return log.warn(
@@ -583,10 +585,7 @@ const sessionInPane = async (
   run: RunRef,
   oldSessionId: string,
 ): Promise<PaneSession> => {
-  const events = await storage
-    .events(run.id)
-    .read()
-    .catch(() => []);
+  const events = await storage.runs.readEvents(run.id).catch(() => []);
   const swap = events
     .filter((event) => event.type === "workflow.session.replaced")
     .map((event) => ({
@@ -629,8 +628,7 @@ const resumeOnModel = async (
   const { run, provider, sessionId, launch, storage, home } = options;
   const env = unwrap(await loadSessionEnv(storage, run, provider.type));
   await waitForIdle(terminal);
-  const store = storage.events(run.id);
-  const before = (await store.read()).at(-1)?.seq ?? 0;
+  const before = (await storage.runs.readEvents(run.id)).at(-1)?.seq ?? 0;
   unwrap(
     await provider.relaunch(terminal, sessionId, {
       ...launch,
@@ -641,13 +639,14 @@ const resumeOnModel = async (
       name: run.name,
     }),
   );
-  await waitForResume(store, sessionId, before, target.model);
+  await waitForResume(storage.runs, run.id, sessionId, before, target.model);
 };
 
 // A relaunch only proves tmux respawned the pane: the switch happened once the resumed session's
 // SessionStart arrives, which a Claude that rejects the model never sends.
 const waitForResume = (
-  store: IEventStore,
+  runs: IRunRepository,
+  runId: string,
   sessionId: string,
   afterSeq: number,
   model: string,
@@ -659,7 +658,7 @@ const waitForResume = (
       timeoutError: `no SessionStart within ${DONE_TIMEOUT_MS.new / 1000} seconds after resuming on ${model}`,
     },
     async () => {
-      const events = await store.read();
+      const events = await runs.readEvents(runId);
       const resumed = events.some((event) => {
         if (event.seq <= afterSeq || event.type !== "hooks.session-start.called") return false;
         const parsed = SessionStartCalledEvent.safeParse(event);
@@ -680,8 +679,10 @@ export const runModelStep = async (options: ModelStepOptions): Promise<void> => 
   const lock = `model-${seq}`;
   if (!(await claimLock(run, lock))) return log.info({ seq }, "another helper has this switch");
   const runDir = runDirOf(run.cwd, run.name);
-  const store = storage.events(run.id);
-  const [state, events] = await Promise.all([store.readState(), store.read()]);
+  const [state, events] = await Promise.all([
+    storage.runs.readState(run.id),
+    storage.runs.readEvents(run.id),
+  ]);
   const { pending } = foldModelSwitch(events, state?.tiers ?? null);
   if (pending?.seq !== seq) return log.info({ seq }, "no open model switch");
   const target = pickTierModel(pending);

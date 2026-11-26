@@ -394,27 +394,32 @@ describe("runs, events and projects", () => {
   test("SC203: an append whose expectedSeq is stale replies conflict and writes nothing; the current seq stores it, and its id again replies exists", async () => {
     storage = memoryStorage();
     await seedRun(storage);
-    const events = storage.events("r-1");
-    const first = await events.append({
+    const first = await storage.runs.appendEvent("r-1", {
       event: event("r-1", 1),
       state: state("r-1", "feat-x", { lastEventSeq: 1 }),
       expectedSeq: 0,
     });
     expect(first.kind).toBe("stored");
-    const before = await events.readState();
+    const before = await storage.runs.readState("r-1");
     const second = event("r-1", 2);
     const next = state("r-1", "feat-x", { lastEventSeq: 2 });
-    expect(await events.append({ event: second, state: next, expectedSeq: 0 })).toEqual({
+    expect(
+      await storage.runs.appendEvent("r-1", { event: second, state: next, expectedSeq: 0 }),
+    ).toEqual({
       kind: "conflict",
     });
-    expect((await events.read()).map((stored) => stored.seq)).toEqual([1]);
-    expect(await events.readState()).toEqual(before);
-    expect(await events.append({ event: second, state: next, expectedSeq: 1 })).toEqual({
+    expect((await storage.runs.readEvents("r-1")).map((stored) => stored.seq)).toEqual([1]);
+    expect(await storage.runs.readState("r-1")).toEqual(before);
+    expect(
+      await storage.runs.appendEvent("r-1", { event: second, state: next, expectedSeq: 1 }),
+    ).toEqual({
       kind: "stored",
       event: second,
     });
     const again = { ...event("r-1", 3), id: second.id };
-    expect(await events.append({ event: again, state: next, expectedSeq: 2 })).toEqual({
+    expect(
+      await storage.runs.appendEvent("r-1", { event: again, state: next, expectedSeq: 2 }),
+    ).toEqual({
       kind: "exists",
       event: second,
     });
@@ -453,7 +458,7 @@ describe("runs, events and projects", () => {
       error: "run name feat-x is taken in project repo",
     });
     expect((await storage.runs.findRun("r-2"))?.name).toBeNull();
-    expect(await storage.events("r-2").readState()).toBeNull();
+    expect(await storage.runs.readState("r-2")).toBeNull();
     expect((await storage.runs.initRun("r-3", "feat-x", state("r-3", "feat-x"))).ok).toBe(true);
     expect((await storage.runs.findRunsByName("feat-x")).map((run) => run.id)).toEqual([
       "r-3",
@@ -480,12 +485,93 @@ describe("runs, events and projects", () => {
   test("SC210: removing a run with two stored events takes the run and its events", async () => {
     storage = memoryStorage();
     await seedRun(storage);
-    const events = storage.events("r-1");
-    await events.append({ event: event("r-1", 1), state: null, expectedSeq: 0 });
-    await events.append({ event: event("r-1", 2), state: null, expectedSeq: 1 });
+    await storage.runs.appendEvent("r-1", { event: event("r-1", 1), state: null, expectedSeq: 0 });
+    await storage.runs.appendEvent("r-1", { event: event("r-1", 2), state: null, expectedSeq: 1 });
     await storage.runs.removeRun("r-1");
     expect(await storage.runs.findRun("r-1")).toBeUndefined();
-    expect(await storage.events("r-1").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-1")).toEqual([]);
+  });
+
+  test("SC5: a run with tiers, policies, permission mode, source and user, in a project with a git address, reads back as saved", async () => {
+    storage = memoryStorage();
+    const project = { ...PROJECT, git: "https://github.com/acme/repo.git" };
+    await storage.projects.add("repo", project);
+    const [user] = await storage.users.saveGitHubUser(RITESH);
+    const full = draft("r-1", {
+      tiers: { default: "deep", models: { deep: { model: "opus-x", effort: "high" } } },
+      policies: { values: { interaction: false }, sources: { interaction: "cli" } },
+      permissionMode: "acceptEdits",
+      source: "slack",
+      user,
+    });
+    await storage.runs.addRun(full);
+
+    expect(await storage.projects.find("repo")).toEqual(project);
+    expect(await storage.runs.findRun("r-1")).toEqual({ ...full, cwd: "/abs/repo" });
+  });
+
+  test("SC6: removing a run takes its artifact rows, and a trigger's fire keeps the run's name with no run id", async () => {
+    const home = freshHome();
+    storage = openStorage(home);
+    await seedRun(storage);
+    const make: NodeRun = {
+      nodeRunId: "make",
+      nodeType: "agent",
+      status: "completed",
+      startedAt: AT,
+      completedAt: AT,
+      artifacts: [{ type: "plan", name: "plan", path: "artifacts/plan.md" }],
+    };
+    await storage.runs.appendEvent("r-1", {
+      event: event("r-1", 1),
+      state: state("r-1", "feat-x", { lastEventSeq: 1, nodeRuns: { make } }),
+      expectedSeq: 0,
+    });
+    const saved = await storage.triggers.save({
+      project: "repo",
+      name: "digest",
+      config: null,
+      cron: "0 9 * * *",
+      timezone: "UTC",
+      nextFireAt: AT,
+      workflow: "feature",
+    });
+    if (!saved.ok) throw new Error("trigger not saved");
+    const fire = {
+      triggerId: saved.value.id,
+      slot: AT,
+      status: "started" as const,
+      runId: "r-1",
+      runName: "feat-x",
+      at: AT,
+    };
+    await storage.triggers.appendFire(fire);
+    const artifactRows = (): number => {
+      const db = new Database(join(home, "yok.db"), { readonly: true });
+      try {
+        return db.query<{ n: number }, []>("SELECT count(*) AS n FROM artifacts").get()?.n ?? 0;
+      } finally {
+        db.close();
+      }
+    };
+    expect(artifactRows()).toBe(1);
+
+    await storage.runs.removeRun("r-1");
+
+    expect(artifactRows()).toBe(0);
+    const { runId: _gone, ...kept } = fire;
+    expect(await storage.triggers.readFires(saved.value.id, 10)).toEqual([kept]);
+  });
+
+  test("readEvent finds r-1's evt-2 by its id, and nothing for an unknown id or for evt-2 asked of r-2", async () => {
+    storage = memoryStorage();
+    await seedRun(storage);
+    await storage.runs.appendEvent("r-1", { event: event("r-1", 1), state: null, expectedSeq: 0 });
+    await storage.runs.appendEvent("r-1", { event: event("r-1", 2), state: null, expectedSeq: 1 });
+
+    expect(await storage.runs.readEvent("r-1", "evt-2")).toEqual(event("r-1", 2));
+    expect(await storage.runs.readEvent("r-1", "evt-9")).toBeUndefined();
+    expect(await storage.runs.readEvent("r-2", "evt-2")).toBeUndefined();
   });
 
   test("SC211: folders get today's project names, and a taken name, git URL or path is refused", async () => {
@@ -545,9 +631,12 @@ describe("runs, events and projects", () => {
       pr,
     });
     const withArtifacts = state("r-1", "feat-x", { lastEventSeq: 1, nodeRuns: { make } });
-    const events = storage.events("r-1");
-    await events.append({ event: event("r-1", 1), state: withArtifacts, expectedSeq: 0 });
-    await events.append({
+    await storage.runs.appendEvent("r-1", {
+      event: event("r-1", 1),
+      state: withArtifacts,
+      expectedSeq: 0,
+    });
+    await storage.runs.appendEvent("r-1", {
       event: event("r-1", 2),
       state: { ...withArtifacts, lastEventSeq: 2 },
       expectedSeq: 1,
@@ -588,12 +677,10 @@ describe("runs, events and projects", () => {
       error: "run name fix is taken in project app",
     });
     expect(await storage.runs.findRun("r-9")).toBeUndefined();
-    expect(await storage.events("r-9").read()).toEqual([]);
+    expect(await storage.runs.readEvents("r-9")).toEqual([]);
     expect((await storage.runs.findRun("r-1"))?.name).toBe("fix");
-    expect(await storage.events("r-1").read()).toEqual([event("r-1", 1)]);
-    expect(await storage.events("r-1").readState()).toEqual(
-      state("r-1", "fix", { lastEventSeq: 1 }),
-    );
+    expect(await storage.runs.readEvents("r-1")).toEqual([event("r-1", 1)]);
+    expect(await storage.runs.readState("r-1")).toEqual(state("r-1", "fix", { lastEventSeq: 1 }));
   });
 });
 

@@ -41,7 +41,7 @@ const setUp = async () => {
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  return { runDir, cwd, deps, readEvents: () => storage.events("r-1").read() };
+  return { runDir, cwd, deps, readEvents: () => storage.runs.readEvents("r-1") };
 };
 
 const failure = (error: string, sessionId = "s1"): StopFailureInput => ({

@@ -47,11 +47,10 @@ export const seedRuns = (
 // the run's state, if it has one, only has its lastEventSeq moved.
 export const seedEvents = (home: string, runId: string, events: readonly Event[]): Promise<void> =>
   withStorage(home, async (storage) => {
-    const store = storage.events(runId);
-    const state = await store.readState();
+    const state = await storage.runs.readState(runId);
     for (const [index, event] of events.entries()) {
       const seq = index + 1;
-      const appended = await store.append({
+      const appended = await storage.runs.appendEvent(runId, {
         event: { ...event, seq, runId },
         state: state === null ? null : { ...state, lastEventSeq: seq },
         expectedSeq: index,
@@ -67,10 +66,10 @@ export const savedRuns = (home: string): Promise<readonly WorkflowRun[]> =>
   withStorage(home, (storage) => storage.runs.listRuns());
 
 export const savedState = (home: string, runId: string): Promise<State | null> =>
-  withStorage(home, (storage) => storage.events(runId).readState());
+  withStorage(home, (storage) => storage.runs.readState(runId));
 
 export const savedEvents = (home: string, runId: string): Promise<readonly Event[]> =>
-  withStorage(home, (storage) => storage.events(runId).read());
+  withStorage(home, (storage) => storage.runs.readEvents(runId));
 
 // The files a yok from before yok.db kept, for the yok import-files tests.
 
@@ -145,6 +144,7 @@ type RunFolderInput = Readonly<{
   // the seq state.json was last written at; the events after it were stored but never folded
   stateSeq?: number;
   comments?: readonly Comment[];
+  eventHandlers?: State["eventHandlers"];
 }>;
 
 // A run folder as init and the event store left it: state.json is the first state folded up to
@@ -154,6 +154,7 @@ export const writeRunFolder = async ({
   events,
   stateSeq = events.length,
   comments,
+  eventHandlers = {},
 }: RunFolderInput): Promise<State> => {
   const dir = runDirOf(run.cwd, run.name ?? "");
   mkdirSync(dir, { recursive: true });
@@ -162,7 +163,7 @@ export const writeRunFolder = async ({
     runId: run.id,
     runDir: dir,
     version: "1.0.0",
-    eventHandlers: {},
+    eventHandlers,
   });
   const state = projectEvents({
     state: first,

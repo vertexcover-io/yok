@@ -1,4 +1,4 @@
-import { basename, join, resolve } from "node:path";
+import { basename, join, matchesGlob, resolve } from "node:path";
 
 // Where a command runs, and what `~`, `$HOME` and `$YOK_HOME` stand for there.
 export type PathBase = Readonly<{ cwd: string; home: string; yokHome: string }>;
@@ -272,15 +272,19 @@ const expandAll = (paths: readonly string[], base: PathBase): readonly string[] 
     return expanded === undefined ? [] : [expanded];
   });
 
-// The absolute paths a shell command writes, moves or deletes. A segment it cannot parse gives none.
-export const shellWriteTargets = (
+type TargetsOf = (name: string, args: readonly string[]) => readonly string[];
+
+// The absolute paths targetsOf picks out of each command, redirects included when asked.
+const walkShell = (
   command: string,
   base: PathBase,
-  depth = 0,
+  targetsOf: TargetsOf,
+  withWrites: boolean,
+  depth: number,
 ): readonly string[] => {
   const { text: commands, bodies } = splitHeredocs(command);
   let cwd = base.cwd;
-  const targets: string[] = [...expandAll(heredocTargets(bodies), base)];
+  const targets: string[] = withWrites ? [...expandAll(heredocTargets(bodies), base)] : [];
   for (const text of splitSegments(commands)) {
     const segment = parseSegment(text);
     if (segment === undefined) continue;
@@ -291,8 +295,58 @@ export const shellWriteTargets = (
       continue;
     }
     const script = depth < MAX_NESTING ? nestedScript(name, args) : undefined;
-    if (script !== undefined) targets.push(...shellWriteTargets(script, here, depth + 1));
-    targets.push(...expandAll([...redirects, ...commandTargets(name, args)], here));
+    if (script !== undefined) {
+      targets.push(...walkShell(script, here, targetsOf, withWrites, depth + 1));
+    }
+    const named = targetsOf(name, args);
+    targets.push(...expandAll(withWrites ? [...redirects, ...named] : named, here));
   }
   return targets;
 };
+
+// The absolute paths a shell command writes, moves or deletes. A segment it cannot parse gives none.
+export const shellWriteTargets = (command: string, base: PathBase): readonly string[] =>
+  walkShell(command, base, commandTargets, true, 0);
+
+const FIND_DELETERS: ReadonlySet<string> = new Set(["rm", "unlink", "shred"]);
+const FIND_NAME_TESTS: ReadonlySet<string> = new Set(["-name", "-iname"]);
+
+// find deletes under its starting points, unless every -name it tests misses fileNames.
+const findRemovals = (args: readonly string[], fileNames: readonly string[]): readonly string[] => {
+  const deletes = args.some(
+    (arg, i) =>
+      arg === "-delete" ||
+      ((arg === "-exec" || arg === "-execdir") && FIND_DELETERS.has(basename(args[i + 1] ?? ""))),
+  );
+  if (!deletes) return [];
+  const names = args.filter((_, i) => FIND_NAME_TESTS.has(args[i - 1] ?? ""));
+  const matches = names.some((pattern) => fileNames.some((file) => matchesGlob(file, pattern)));
+  if (names.length > 0 && !matches) return [];
+  const expression = args.findIndex((arg) => arg.startsWith("-") || arg === "(" || arg === "!");
+  return expression === -1 ? args : args.slice(0, expression);
+};
+
+// What a command deletes or moves away whole, folders included: rm's operands, mv's sources, the
+// destination rsync --delete prunes, and find's starting points when it deletes.
+const removalsOf = (
+  name: string,
+  args: readonly string[],
+  fileNames: readonly string[],
+): readonly string[] => {
+  const operands = operandsOf(args);
+  if (name === "rm" || name === "rmdir" || name === "unlink" || name === "shred") return operands;
+  if (name === "mv") return operands.slice(0, -1);
+  if (name === "rsync" && args.some((arg) => arg.startsWith("--delete"))) {
+    return operands.slice(-1);
+  }
+  return name === "find" ? findRemovals(args, fileNames) : [];
+};
+
+// The absolute paths a shell command deletes or moves away; find counts only when one of its
+// -name tests could match fileNames.
+export const shellRemovedTargets = (
+  command: string,
+  base: PathBase,
+  fileNames: readonly string[],
+): readonly string[] =>
+  walkShell(command, base, (name, args) => removalsOf(name, args, fileNames), false, 0);

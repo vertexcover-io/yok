@@ -70,6 +70,7 @@ export const schemas = { "qa.output.v1": QaOutputSchema };
 // One line a scenario shows its reader: what should be true, and the proofs that show it.
 const checkFields = {
   text: NonEmptyStringSchema,
+  req: z.array(NonEmptyStringSchema).optional(),
   saw: z.string().optional(),
   note: z.string().optional(),
   proofs: z.array(NonEmptyStringSchema).optional(),
@@ -236,7 +237,10 @@ const TECHNICAL = /`|rgb\(|#[0-9a-f]{6}\b|getComputedStyle|\b(GET|POST|PUT|PATCH
 const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => {
   const driven = ["SUCCESS", "FAILURE"].includes(text(scenario["verdict"]));
   const given = strings(scenario["given"]);
-  const steps = list(scenario["steps"]);
+  // A scenario told in parts keeps each part's steps and takes; read together, they are its own.
+  const parts = list(scenario["parts"]);
+  const topSteps = list(scenario["steps"]);
+  const steps = [...parts.flatMap((part) => list(part["steps"])), ...topSteps];
   const stepChecks = steps.flatMap((step) => list(step["checks"]));
   const designChecks = list(
     z.looseObject({ checks: z.unknown() }).safeParse(scenario["visualMatch"]).data?.checks,
@@ -245,13 +249,46 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   const proofs = list(scenario["proofs"]);
   const ids = proofs.map((proof) => text(proof["id"]));
   const group = text(scenario["group"]);
-  const recordings = list(scenario["recordings"]);
+  const recordings = [
+    ...parts.flatMap((part) => list(part["recordings"])),
+    ...list(scenario["recordings"]),
+  ];
+  const phoneOnly = (part: Record<string, unknown>): boolean => {
+    const takes = list(part["recordings"]);
+    return takes.length > 0 && takes.every((recording) => recording["size"] === "phone");
+  };
   const drivenByHand = recordings.some((recording) => list(recording["frames"]).length > 0);
+  const phone = record.safeParse(scenario["phone"]).data ?? {};
+  const phoneDecided =
+    ["required", "not needed"].includes(text(phone["replay"])) && text(phone["why"]) !== "";
+  const filmedOnPhone = recordings.some(
+    (recording) => recording["size"] === "phone" && list(recording["frames"]).length > 0,
+  );
+  const thirdParty = text(scenario["thirdParty"]);
+  const filmedOnThirdParty = recordings.some(
+    (recording) =>
+      text(recording["thirdParty"]) === thirdParty && list(recording["frames"]).length > 0,
+  );
   const raws = proofs.map((proof) => text(proof["raw"]));
   const cited = checks.flatMap((check) => strings(check["proofs"]));
   const failed = checks.filter((check) => check["result"] === "fail");
+  // a check left without a result was never reached, so it has nothing to cite
+  const unproven = checks.filter(
+    (check) => text(check["result"]) !== "" && strings(check["proofs"]).length === 0,
+  );
   const unknown = [...new Set(cited.filter((id) => !ids.includes(id)))];
   const uncited = ids.filter((id) => id !== "" && !cited.includes(id));
+  const shared = [...new Set(cited.filter((id, i) => cited.indexOf(id) !== i))];
+  const unsourced = proofs.filter(
+    (proof) => text(proof["raw"]) === "" && text(proof["image"]) === "",
+  );
+  const pictured = new Set(
+    proofs.filter((proof) => text(proof["image"]) !== "").map((proof) => text(proof["id"])),
+  );
+  const doubled = checks.filter((check) => {
+    const own = strings(check["proofs"]);
+    return own.some((id) => pictured.has(id)) && own.some((id) => !pictured.has(id));
+  });
   const shown = [
     text(scenario["title"]),
     group,
@@ -263,6 +300,26 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
   const problems: readonly (readonly [boolean, string])[] = [
     [text(scenario["title"]) === "", "has no title: write the question the scenario answers"],
     [
+      text(scenario["title"]) !== "" && !text(scenario["title"]).endsWith("?"),
+      "has a title that is not a question: ask whether the user's action gets the exact outcome expected",
+    ],
+    [
+      parts.some((part) => text(part["title"]) === ""),
+      "has a part with no title: name the stretch of the flow each part covers",
+    ],
+    [
+      parts.length > 0 && topSteps.length > 0,
+      "has both parts and top-level steps: put every step in the part it belongs to",
+    ],
+    [
+      parts.length > 0 && list(scenario["recordings"]).length > 0,
+      "has both parts and top-level recordings: put every recording in the part it films",
+    ],
+    [
+      parts.some(phoneOnly),
+      "has a phone replay written as a part of its own: add it as a recording of the part it replays, with its checks under that part's steps",
+    ],
+    [
       group === "",
       "has no group: set group to journey for a primary journey, else to the heading its group is listed under",
     ],
@@ -273,6 +330,22 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
     [
       group === "journey" && recordings.length > 0 && !drivenByHand,
       "is a primary journey with no driven recording: drive it, or list it under the heading of the group it belongs to",
+    ],
+    [
+      recordings.some((recording) => text(recording["browser"]) !== "") && !phoneDecided,
+      "has no phone decision: set phone.replay to required where it shows a screen this change adds or lays out anew, else to not needed, and give the reason in phone.why",
+    ],
+    [
+      driven && phone["replay"] === "required" && !filmedOnPhone,
+      "owes a phone replay it does not have: film it on the phone as a recording whose size is phone, or grade it NOT VERIFIED",
+    ],
+    [
+      driven && thirdParty !== "" && !filmedOnThirdParty,
+      `reads the screen of ${thirdParty} with no take of it: film it on that screen, signed in, as a recording whose thirdParty names it, or grade it NOT VERIFIED`,
+    ],
+    [
+      !driven && thirdParty !== "" && stepChecks.some((check) => text(check["result"]) !== ""),
+      `carries a result on a check of ${thirdParty}'s screen it could not open: leave every check of a NOT VERIFIED scenario without a result`,
     ],
     [
       given.length === 0 || given.some((line) => line.trim() === ""),
@@ -308,12 +381,28 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
       "is a FAILURE with no failed check: mark the check that failed and say what was seen",
     ],
     [
+      unproven.length > 0,
+      "has a check with a result that cites no proof: cite the frame that shows it or a reading from its source",
+    ],
+    [
       unknown.length > 0,
       `cites ${unknown.join(", ")}, which is not the id of one of its proofs: cite each proof by its id`,
     ],
     [
       uncited.length > 0,
       `has proofs no check cites (${uncited.join(", ")}): cite each under the check it backs, or drop it`,
+    ],
+    [
+      shared.length > 0,
+      `has proofs cited by more than one check (${shared.join(", ")}): give each check a proof of its own`,
+    ],
+    [
+      unsourced.length > 0,
+      "has a proof with no reading and no picture: give it the raw read from its source or the frame that shows the check, or drop it",
+    ],
+    [
+      doubled.length > 0,
+      "has a check citing both a picture and a reading: the frame that shows a check is its whole proof, so drop the reading",
     ],
     [ids.includes(""), "has a proof with no id: give every proof an id its checks can cite"],
     [
@@ -339,6 +428,90 @@ const shapeProblems = (scenario: Record<string, unknown>): readonly string[] => 
 // The qa stage's second verifier, for a PASS or PARTIAL. The report page shows whatever it is
 // given, so the contract is held here. A scenario an older round wrote in another shape fails it,
 // and is driven again.
+// The verdict is read off coverage[], never chosen: any FAILURE row fails the feature, else any
+// NOT VERIFIED row leaves it PARTIAL.
+const derivedVerdict = (coverage: readonly Record<string, unknown>[]): string => {
+  const verdicts = coverage.map((row) => text(row["verdict"]));
+  if (verdicts.includes("FAILURE")) return "FAIL";
+  return verdicts.includes("NOT VERIFIED") ? "PARTIAL" : "PASS";
+};
+
+const checksOf = (scenario: Record<string, unknown>): readonly Record<string, unknown>[] => {
+  const steps = [
+    ...list(scenario["parts"]).flatMap((part) => list(part["steps"])),
+    ...list(scenario["steps"]),
+  ];
+  const design = z.looseObject({ checks: z.unknown() }).safeParse(scenario["visualMatch"]).data;
+  return [...steps.flatMap((step) => list(step["checks"])), ...list(design?.checks)];
+};
+
+// A row's verdict comes from the checks that prove its requirement, so one failed check does not
+// fail every requirement that shares its scenario.
+const rowVerdict = (checks: readonly Record<string, unknown>[]): string => {
+  const results = checks.map((check) => text(check["result"]));
+  if (results.includes("fail")) return "FAILURE";
+  return results.every((result) => result === "pass") ? "SUCCESS" : "NOT VERIFIED";
+};
+
+const coverageProblems = (data: unknown): readonly string[] => {
+  const report = z
+    .looseObject({ coverage: z.unknown(), scenarios: z.unknown() })
+    .safeParse(data).data;
+  const checks = list(report?.scenarios).flatMap(checksOf);
+  const rows = list(report?.coverage);
+  const listed = new Set(rows.map((row) => text(row["req"])));
+  // a requirement with no row drops out of the derived verdict, failed checks and all
+  const unlisted = [...new Set(checks.flatMap((check) => strings(check["req"])))]
+    .filter((req) => !listed.has(req))
+    .map(
+      (req) =>
+        `checks carry ${req}, but coverage[] has no ${req} row: give every requirement a check carries its row`,
+    );
+  return [
+    ...unlisted,
+    ...rows.flatMap((row) => {
+      const req = text(row["req"]);
+      const written = text(row["verdict"]);
+      if (req === "" || written === "INVALID") return [];
+      const proving = checks.filter((check) => strings(check["req"]).includes(req));
+      if (proving.length === 0)
+        return written === "NOT VERIFIED"
+          ? []
+          : [
+              `coverage row ${req} names no check: put ${req} in the req of every check that proves it`,
+            ];
+      const derived = rowVerdict(proving);
+      return derived === written
+        ? []
+        : [
+            `coverage row ${req} is ${written} but the checks carrying ${req} give ${derived}: grade each row by its own checks`,
+          ];
+    }),
+  ];
+};
+
+const verdictProblems = (data: unknown, status: string): readonly string[] => {
+  const report = z
+    .looseObject({ coverage: z.unknown(), verdict: z.unknown() })
+    .safeParse(data).data;
+  const coverage = list(report?.coverage);
+  if (coverage.length === 0) return [];
+  const derived = derivedVerdict(coverage);
+  const written = text(report?.verdict);
+  return [
+    ...(derived === status
+      ? []
+      : [
+          `the stage returned ${status} but coverage[] derives ${derived}: return the verdict coverage[] gives`,
+        ]),
+    ...(written === "" || written === derived
+      ? []
+      : [
+          `the report's verdict is ${written} but coverage[] derives ${derived}: write the verdict coverage[] gives`,
+        ]),
+  ];
+};
+
 export const checkReportShape = async (input: VerifierInput): Promise<VerifierResult> => {
   const report = input.artifacts.find(
     (artifact): artifact is FileArtifact => artifact.type === "proof-report" && "path" in artifact,
@@ -353,6 +526,8 @@ export const checkReportShape = async (input: VerifierInput): Promise<VerifierRe
       path: report.path,
     })),
   );
+  for (const message of [...coverageProblems(data), ...verdictProblems(data, shipped.data.status)])
+    findings.push({ message, path: report.path });
   // The reader opens the report to see the happy paths first.
   if (scenarios.length > 0 && !scenarios.some((scenario) => scenario["group"] === "journey"))
     findings.push({

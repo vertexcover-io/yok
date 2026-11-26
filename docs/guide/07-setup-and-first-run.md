@@ -223,7 +223,7 @@ Open `/settings` on the server in a browser to see each token with its last use,
 
 A plain command on the server's own machine, such as `yok ls`, sends no token. On a gated server it gets a 401 and tells you to run `yok login --server URL` and then use `--remote`. A `--remote` command whose saved login is an old password says to run `yok login --server URL`.
 
-Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`.
+Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`. `yok update` never restarts a server itself: on the server it prints `warning: restart the yok server (pid N) so it runs the installed version`, and the service restart is yours to run.
 
 A remote run prints its id and dashboard link, and does not attach. Nobody sits at its terminal, so it runs with `interaction: false` unless you pass `--interaction true`. While its agent runs, answer it from the run's page: the Terminal tab attaches to the run's tmux session in the browser, as `yok attach` does on the server.
 
@@ -288,6 +288,7 @@ Comment `/yok fix the review comments` on a pull request. The comment can be in 
 ```bash
 yok-dev server status           # is the server up, pid, version
 yok-dev server stop             # stop it; tmux sessions keep running
+yok-dev server restart          # stop it if running, start it in the background
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project rm NAME         # forget one; --force deletes its runs and a folder yok cloned

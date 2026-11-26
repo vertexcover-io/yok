@@ -31,7 +31,7 @@ conclusions already in your head.
 
 It produces the scenario's `visualMatch` — the design, the screen as built, and a list of checks a Product or
 QA reader can follow (shape in `writing-the-report.md`) — and, for anything a user would be wrong-footed by, a
-bug that routes through Step 4.
+bug that routes through Step 5.
 
 **Contents:**
 
@@ -65,7 +65,7 @@ the phone; otherwise its `baseline` is `null` and only the *(always)* questions 
 ## The three grades
 
 - **BLOCKER** — the build does not do what the design says. It is a check with `result` `fail`, its scenario is
-  a `FAILURE`, and the divergence is a bug: filmed from its own repro in Step 4, with a `bugs[]` entry like any
+  a `FAILURE`, and the divergence is a bug: filmed from its own repro in Step 5, with a `bugs[]` entry like any
   other.
 - **HIGH** — the build says something different from the design, or the screen is degraded on its own terms.
   It is a check with `result` `warn`: a finding on the scenario, which still passes.
@@ -132,10 +132,10 @@ Ask all of these of each frame, in this order, so two runs of the same screen re
   every rule, the rule as the spec writes it and the values you read, held or not: they go in the proof the
   rule's check cites. A broken rule is a finding, graded by the question above that it belongs to.
 
-**One question needs driving, and Step 4 owns it.** Content longer than the fixture — a long name, a long label,
+**One question needs driving, and Step 5 owns it.** Content longer than the fixture — a long name, a long label,
 a number with more digits — is the check most worth having, because a layout that survives seeded data and
 breaks on a real customer's name breaks in production and not here. It is an attack, not a look, so it is driven
-as a Step 4 probe under that step's rules, not from this file.
+as a Step 5 probe under that step's rules, not from this file.
 
 **Every question is answered.** A finding with its evidence, or a clean answer naming what was looked at. A pass you did not look for is
 not a pass, and "looks off", "spacing feels wrong", "colours are a bit different" are not findings — name the
@@ -144,21 +144,21 @@ element and quote the observation, or you have not looked closely enough to repo
 ## What it produces
 
 **Turn the seven answers into checks, written for the report's reader.** Each check is one plain sentence about
-what the screen does, in everyday words and the product's own, with the measurement behind it in a proof:
+what the screen does, in everyday words and the product's own, with its evidence in the proofs it cites:
 
 1. **Say what lined up.** Each question that came back clean becomes a `pass` check naming what was looked at.
    Questions that tell the reader one thing share one check.
 2. **Say what differs.** Each finding becomes its own check: `fail` for a BLOCKER, `warn` for a HIGH. The text
    says what the user meets on the screen; `saw` on a `fail` says what the build shows in place of the design;
    `note` on a `warn` says why it leaves the verdict alone.
-3. **Put the evidence in a proof the check cites.** Its `raw` holds what the design shows or the rule as the
-   spec writes it, then the values read from the page, laid out as `writing-the-report.md` says. A clean answer
-   that rests on a measurement cites that measurement the same way.
+3. **Give each check its proofs** as `writing-the-report.md`'s *Proofs* says: the frame that shows it, or a
+   reading for a rule or a measurement the frame cannot show, its `raw` holding what the design shows or the
+   rule as the spec writes it, then the values read from the page.
 4. **Cover every spec rule from question 7** with a check, grouping rules that tell the reader one thing.
 
 Then route what you found:
 
-- **Any BLOCKER, and any finding a user would be wrong-footed by** — a bug. Step 4 films it from its own repro
+- **Any BLOCKER, and any finding a user would be wrong-footed by** — a bug. Step 5 films it from its own repro
   and it earns a `bugs[]` entry with its `reachedBy` and `origin`, like every other bug.
 - **Everything else** — the scenario's `visualMatch`.
 - **Cosmetic drift nobody would be wrong-footed by** — a note in `extra[]`.

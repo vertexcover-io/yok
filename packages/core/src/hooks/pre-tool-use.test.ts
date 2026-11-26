@@ -19,7 +19,7 @@ import {
 import { appendRunEvent, memoryStorage } from "@yok/sdk/internal";
 import {
   bashAntipatterns,
-  protectedRecordOf,
+  databaseFileOf,
   questionGuard,
   questionNotice,
   recordGuard,
@@ -27,9 +27,9 @@ import {
   runPreToolUse,
 } from "./pre-tool-use.ts";
 
-describe("protectedRecordOf", () => {
+describe("databaseFileOf", () => {
   const where = { cwd: "/repo", home: "/home/u", yokHome: "/home/u/.yok" };
-  const recordAt = (path: string) => protectedRecordOf(path, where);
+  const recordAt = (path: string) => databaseFileOf(path, where);
 
   test("SC7 — only yok.db and its -wal and -shm files are protected, however the home is spelled", () => {
     expect(recordAt("/home/u/.yok/yok.db")).toBe("/home/u/.yok/yok.db");
@@ -77,7 +77,7 @@ const setUp = async (state?: (runDir: string, cwd: string) => State) => {
     if (!claimed.ok) throw new Error(claimed.error);
   }
   const deps = { storage, env: { YOK_RUN_ID: "r-1", YOK_HOME: home }, log: noopLogger };
-  const events = () => storage.events("r-1").read();
+  const events = () => storage.runs.readEvents("r-1");
   return { cwd, home, runDir, deps, events };
 };
 
@@ -135,7 +135,7 @@ describe("recordGuard through runPreToolUse", () => {
       expect(verdict).toMatchObject({ kind: "deny", path: paths[index] });
       const message = verdict.kind === "deny" ? verdict.message : "";
       expect(message).toContain(`${paths[index]} is yok's database`);
-      expect(message).toContain("A run changes only through `yok orchestrate` commands");
+      expect(message).toContain("Change a run only through `yok orchestrate`");
     });
     const allowed = [
       use(cwd, write(join(home, "notes.txt"))),
@@ -143,6 +143,56 @@ describe("recordGuard through runPreToolUse", () => {
     ];
     for (const call of allowed) {
       expect(await runPreToolUse(call, recordGuard, deps)).toEqual({ kind: "allow" });
+    }
+  });
+
+  test("deleting or moving the folder that holds the database, a wildcard that matches it, or find deleting it is refused; the same commands on other files are allowed", async () => {
+    const { cwd, home, deps } = await setUp();
+    const refused = [
+      `rm -rf ${home}`,
+      `rm -rf ${home}/`,
+      `rm -rf ${join(home, "..")}`,
+      `mv ${home} ${home}.bak`,
+      `find ${home} -name 'yok.db*' -delete`,
+      `find ${home} -exec rm {} +`,
+      `rm ${home}/yok.d*`,
+      `rm ${home}/*.db`,
+      `rm -rf ${home.slice(0, -2)}*`,
+      `rsync -a --delete /tmp/empty/ ${home}/`,
+    ];
+    const allowed = [
+      `rm -rf ${home}/old-logs`,
+      `find ${home} -name '*.log' -delete`,
+      `find ${home} -name 'yok.db*'`,
+      `rm ${home}/*.log`,
+      `cp notes.txt ${home}/`,
+      `mv ${home}/a.txt ${home}/b.txt`,
+      `rsync -a /tmp/empty/ ${home}/`,
+    ];
+
+    const verdictOf = (command: string) =>
+      runPreToolUse(use(cwd, shell(command), { toolName: "Bash" }), recordGuard, deps);
+
+    for (const command of refused) {
+      const verdict = await verdictOf(command);
+      expect({ command, kind: verdict.kind }).toEqual({ command, kind: "deny" });
+      const message = verdict.kind === "deny" ? verdict.message : "";
+      expect(message).toContain("yok's database");
+      expect(message).toContain("Change a run only through `yok orchestrate`");
+    }
+    const wildcard = await verdictOf(`rm ${home}/*.db`);
+    expect(wildcard.kind === "deny" ? wildcard.message : "").toStartWith(
+      `${home}/*.db matches yok's database`,
+    );
+    const folder = await verdictOf(`rm -rf ${home}`);
+    expect(folder.kind === "deny" ? folder.message : "").toStartWith(
+      `${home} holds yok's database`,
+    );
+    for (const command of allowed) {
+      expect({ command, verdict: await verdictOf(command) }).toEqual({
+        command,
+        verdict: { kind: "allow" },
+      });
     }
   });
 
@@ -176,9 +226,8 @@ describe("recordGuard through runPreToolUse", () => {
     const path = join(home, "yok.db");
     expect(verdict).toMatchObject({ kind: "deny", path });
     const message = verdict.kind === "deny" ? verdict.message : "";
-    expect(message).toContain("yok orchestrate next --run NAME");
-    expect(message).toContain("exec|done NODE_RUN_ID --run NAME");
-    expect(message).toContain("orchestrate emit");
+    expect(message).toContain("Change a run only through `yok orchestrate`");
+    expect(message).toContain("(`next`, `exec`, `done`, `emit`, `link-session`)");
     expect(message).not.toContain("bun run");
     expect((await events()).map((event) => event.payload)).toEqual([
       {
@@ -334,14 +383,14 @@ describe("on a blocked run", () => {
   };
   test.each([
     ["its state cannot be read", { readState: failing }],
-    ["its events cannot be stored", { append: failing }],
+    ["its events cannot be stored", { appendEvent: failing }],
   ])(
     "recordResumed still allows a Bash call on a blocked run when %s, so a failed record never refuses a call",
     async (_label, broken) => {
       const { cwd, deps, events } = await runBlockedBy("agent.question.asked", question);
       const storage: IStorage = {
         ...deps.storage,
-        events: (runId) => ({ ...deps.storage.events(runId), ...broken }),
+        runs: { ...deps.storage.runs, ...broken },
       };
 
       const verdict = await recordResumed.run(use(cwd, shell("bun test"), { toolName: "Bash" }), {

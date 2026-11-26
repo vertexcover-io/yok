@@ -342,7 +342,7 @@ describe("source boundaries", () => {
     }
   });
 
-  test("SC105: only db.ts, schema.ts and storage.ts import bun:sqlite or drizzle-orm", () => {
+  test("SC105: only db.ts, schema.ts, storage.ts and storage/ import bun:sqlite or drizzle-orm", () => {
     // Built from parts so this file's own needle text can't match itself.
     const storeImport = new RegExp(
       `from "(${["bun", "sqlite"].join(":")}|${["drizzle", "orm"].join("-")})`,
@@ -351,6 +351,12 @@ describe("source boundaries", () => {
       "packages/sdk/src/db.ts",
       "packages/sdk/src/schema.ts",
       "packages/sdk/src/storage.ts",
+      "packages/sdk/src/storage/comments.ts",
+      "packages/sdk/src/storage/common.ts",
+      "packages/sdk/src/storage/projects.ts",
+      "packages/sdk/src/storage/runs.ts",
+      "packages/sdk/src/storage/triggers.ts",
+      "packages/sdk/src/storage/users.ts",
     ]);
   });
 

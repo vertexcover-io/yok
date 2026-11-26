@@ -93,7 +93,7 @@ const capture = async (
 const baselineOf = (runDir: string): Baseline =>
   JSON.parse(readFileSync(join(runDir, "artifacts", "baseline.json"), "utf8"));
 
-const eventsIn = (home: string) => withStorage(home, (storage) => storage.events("r-1").read());
+const eventsIn = (home: string) => withStorage(home, (storage) => storage.runs.readEvents("r-1"));
 
 const pkg = (baseline: string | object | null | undefined, path = ".") => ({
   path,

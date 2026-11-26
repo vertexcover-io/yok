@@ -45,7 +45,7 @@ export interface IUserRepository {
   // write on every call.
   touchToken(tokenId: string, at: Date): Promise<void>;
   // Only for `yok import-files`: stores the user under its old id. Deleted with that command.
-  importUser(id: string, user: ImportedUser): Promise<void>;
+  importUser(id: string, user: ImportedUser): Promise<Result<void>>;
 }
 
 // A user as users.json held it, for `yok import-files`.
@@ -70,6 +70,12 @@ export interface IRunRepository {
   releaseRun(runId: string): Promise<void>;
   setTerminal(runId: string, terminal: string): Promise<void>;
   linkSession(runId: string, session: SessionRef): Promise<void>;
+  // in seq order
+  readEvents(runId: string): Promise<readonly Event[]>;
+  readEvent(runId: string, eventId: string): Promise<Event | undefined>;
+  // null before init
+  readState(runId: string): Promise<State | null>;
+  appendEvent(runId: string, input: AppendInput): Promise<Appended>;
   // Only for `yok import-files`: the run, its state and its events as an older yok kept them.
   // Fails when the run id is stored, or with initRun's message when the project holds the name.
   importRun(input: ImportedRun): Promise<Result<void>>;
@@ -90,13 +96,6 @@ export type Appended =
 
 // expectedSeq is the number of events the caller read
 export type AppendInput = Readonly<{ event: Event; state: State | null; expectedSeq: number }>;
-
-export interface IEventStore {
-  read(): Promise<readonly Event[]>;
-  // null before init
-  readState(): Promise<State | null>;
-  append(input: AppendInput): Promise<Appended>;
-}
 
 export interface IProjectRepository {
   list(): Promise<Readonly<Record<string, Project>>>;
@@ -148,6 +147,5 @@ export interface IStorage {
   projects: IProjectRepository;
   comments: ICommentRepository;
   triggers: ITriggerRepository;
-  events(runId: string): IEventStore;
   close(): Promise<void>;
 }

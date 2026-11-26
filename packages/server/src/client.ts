@@ -113,11 +113,11 @@ export const createYokClient = ({
     retry: (body: RetryRunBody) => call(api.runs.retry.$post({ json: body })),
     projects: () => call(api.projects.$get()),
     addProject: (body: AddProjectRequest) => call(api.projects.$post({ json: body })),
-    removeProject: (name: string, flags: Readonly<{ purge: boolean; force: boolean }>) =>
+    removeProject: (name: string, flags: Readonly<{ force: boolean }>) =>
       call(
         api.projects[":name"].$delete({
           param: { name },
-          query: { purge: flags.purge ? "true" : "false", force: flags.force ? "true" : "false" },
+          query: { force: flags.force ? "true" : "false" },
         }),
       ),
     doctor: (body: DoctorBody) => call(api.doctor.$post({ json: body })),

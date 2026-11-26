@@ -507,7 +507,7 @@ const relaunchRun = async (
   if (state === null) return conflict(c, `run ${run.name} has no readable state`);
   const stillAlive = `run ${run.name} still has its agent session; use yok attach ${run.name}`;
   if (await isAgentAlive(run, deps.host)) return conflict(c, stillAlive);
-  const events = await deps.storage.events(id).read();
+  const events = await deps.storage.runs.readEvents(id);
   const session = lastStartedSession(events) ?? linked;
   const agent = WorkflowAgentSchema.safeParse(session.agent);
   if (!agent.success) {

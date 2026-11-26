@@ -41,14 +41,15 @@ test("SC216: two conditional appends started together on one state at seq 0: exa
     ok: false,
     error: "condition-failed",
   });
-  expect(await storage.events(run.id).read()).toHaveLength(1);
+  expect(await storage.runs.readEvents(run.id)).toHaveLength(1);
 });
 
 test("conditional append checks the stored events when the stored state is behind", async () => {
   const { run, storage } = await runWithHandlers({});
-  const store = storage.events(run.id);
   const prior = { ...event(1, "custom.once.note"), id: "already-stored", source: "prior" };
-  expect((await store.append({ event: prior, state: null, expectedSeq: 0 })).kind).toBe("stored");
+  expect(
+    (await storage.runs.appendEvent(run.id, { event: prior, state: null, expectedSeq: 0 })).kind,
+  ).toBe("stored");
 
   const attempted = await appendRunEventIf(
     storage,
@@ -58,7 +59,7 @@ test("conditional append checks the stored events when the stored state is behin
   );
 
   expect(attempted).toMatchObject({ ok: false, error: "condition-failed" });
-  expect(await store.read()).toHaveLength(1);
+  expect(await storage.runs.readEvents(run.id)).toHaveLength(1);
   expect((await syncState(storage, run.id))?.lastEventSeq).toBe(1);
 });
 
@@ -173,18 +174,25 @@ describe("projectEvents", () => {
 describe("syncState", () => {
   test("a stored state behind its events catches up from the events stored after its seq", async () => {
     const { run, storage } = await runWithHandlers({});
-    const store = storage.events(run.id);
     const opened = (seq: number, file: string): Event => event(seq, "workflow.file.opened", file);
-    await store.append({
+    await storage.runs.appendEvent(run.id, {
       event: opened(1, "a.ts"),
       state: { ...seed, lastEventSeq: 1 },
       expectedSeq: 0,
     });
-    await store.append({ event: opened(2, "b.ts"), state: null, expectedSeq: 1 });
-    await store.append({ event: opened(3, "c.ts"), state: null, expectedSeq: 2 });
+    await storage.runs.appendEvent(run.id, {
+      event: opened(2, "b.ts"),
+      state: null,
+      expectedSeq: 1,
+    });
+    await storage.runs.appendEvent(run.id, {
+      event: opened(3, "c.ts"),
+      state: null,
+      expectedSeq: 2,
+    });
 
     expect(await syncState(storage, run.id)).toEqual({ ...seed, lastEventSeq: 3 });
-    expect((await store.readState())?.lastEventSeq).toBe(1);
+    expect((await storage.runs.readState(run.id))?.lastEventSeq).toBe(1);
   });
 });
 
@@ -236,7 +244,7 @@ const runWithHandlers = async (
   const storage = memoryStorage();
   await seedRun(storage, run, { ...seed, eventHandlers });
   const savedState = async (): Promise<State> => {
-    const state = await storage.events(run.id).readState();
+    const state = await storage.runs.readState(run.id);
     if (state === null) throw new Error("no state");
     return state;
   };
@@ -253,7 +261,7 @@ describe("emitRunEvent", () => {
 
       expect(result.ok).toBe(false);
       expect(result.ok ? "" : result.error).toStartWith(type);
-      expect(await storage.events(run.id).read()).toHaveLength(0);
+      expect(await storage.runs.readEvents(run.id)).toHaveLength(0);
     },
   );
 });
@@ -315,7 +323,7 @@ describe("emitRunEvent with extension handlers", () => {
 
     expect(result.ok ? "" : result.error).toContain(named);
     expect(result.ok ? "" : result.error).toContain(ref.handler);
-    expect(await storage.events(run.id).read()).toEqual([]);
+    expect(await storage.runs.readEvents(run.id)).toEqual([]);
     expect((await savedState()).lastEventSeq).toBe(0);
   });
 
@@ -348,7 +356,7 @@ describe("emitRunEvent with extension handlers", () => {
 
       expect(bad.ok ? "" : bad.error).toContain("event not stored");
       expect(good.ok).toBe(true);
-      expect((await storage.events(run.id).read()).map((event) => event.type)).toEqual([
+      expect((await storage.runs.readEvents(run.id)).map((event) => event.type)).toEqual([
         "custom.review.other",
       ]);
       expect(await savedState()).toMatchObject({ lastEventSeq: 1, custom: { note: "fine" } });
@@ -370,7 +378,35 @@ describe("emitRunEvent with extension handlers", () => {
     expect(result.ok ? "" : result.error).toContain(
       "event not stored, a handler could not apply it",
     );
-    expect(await storage.events(run.id).read()).toEqual([]);
+    expect(await storage.runs.readEvents(run.id)).toEqual([]);
+    expect(await savedState()).toEqual(before);
+  });
+
+  test("SC10: a stored event the run's handler throws on, which the stored state lags, refuses the next emit as state not synchronized and stores nothing", async () => {
+    const { run, storage, savedState } = await runWithHandlers({
+      "custom.review.note": [{ handler: "onRisky" }],
+    });
+    const before = await savedState();
+    const lagging: Event = {
+      schemaVersion: 1,
+      seq: 1,
+      id: "evt-lagging",
+      ts: "2026-11-19T10:00:00.000Z",
+      type: "custom.review.note",
+      source: "test",
+      runId: run.id,
+      payload: "bad",
+    };
+    await storage.runs.appendEvent(run.id, { event: lagging, state: before, expectedSeq: 0 });
+
+    const result = await emitRunEvent(
+      run,
+      { type: "custom.review.other", source: "test", payload: "fine" },
+      storage,
+    );
+
+    expect(result.ok ? "" : result.error).toStartWith("state not synchronized: ");
+    expect(await storage.runs.readEvents(run.id)).toEqual([lagging]);
     expect(await savedState()).toEqual(before);
   });
 
@@ -395,7 +431,7 @@ describe("emitRunEvent with extension handlers", () => {
     );
 
     expect(result.ok ? "" : result.error).toContain("module is broken");
-    expect(await storage.events(run.id).read()).toEqual([]);
+    expect(await storage.runs.readEvents(run.id)).toEqual([]);
   });
 });
 
@@ -573,13 +609,13 @@ describe("storing events through storage", () => {
     let appends = 0;
     const storage: IStorage = {
       ...real,
-      events: (runId) => ({
-        ...real.events(runId),
-        append: async () => {
+      runs: {
+        ...real.runs,
+        appendEvent: async () => {
           appends += 1;
           return { kind: "conflict" };
         },
-      }),
+      },
     };
 
     const result = await appendRunEvent(storage, run, PING);
@@ -627,11 +663,11 @@ describe("storing events through storage", () => {
         errors: writers.map(() => ""),
       });
       const total = stored + processes * each;
-      const events = await storage.events(run.id).read();
+      const events = await storage.runs.readEvents(run.id);
       expect(events.map((event) => event.seq)).toEqual(
         Array.from({ length: total }, (_, i) => i + 1),
       );
-      const state = await storage.events(run.id).readState();
+      const state = await storage.runs.readState(run.id);
       expect(state?.lastEventSeq).toBe(total);
       expect(await syncState(storage, run.id)).toEqual(state);
       await storage.close();
@@ -667,7 +703,7 @@ describe("storing events through storage", () => {
         "-e",
         `import { openStorage } from ${JSON.stringify(join(import.meta.dir, "storage.ts"))};
          const storage = openStorage(${JSON.stringify(home)});
-         console.log((await storage.events("r-1").readState()).lastEventSeq);
+         console.log((await storage.runs.readState("r-1")).lastEventSeq);
          await storage.close();`,
       ],
       { stdout: "pipe", stderr: "pipe" },

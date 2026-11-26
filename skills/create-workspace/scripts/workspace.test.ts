@@ -125,7 +125,7 @@ const newRun = async (): Promise<RunRef> => {
 };
 
 const eventsOf = (run: RunRef) =>
-  withStorage(homeOf(run), (storage) => storage.events(run.id).read());
+  withStorage(homeOf(run), (storage) => storage.runs.readEvents(run.id));
 
 const writeConfig = (root: string, config: object): void =>
   writeFileSync(join(root, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));

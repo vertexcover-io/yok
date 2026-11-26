@@ -12,11 +12,11 @@ describe("sdk-types.json", () => {
     ).toStrictEqual(buildSdkTypes());
   });
 
-  test("SC106, SC215: the public types hold the run, project and event repository interfaces, sessionEnv takes an IStorage, and nothing names drizzle-orm, bun:sqlite or the store", () => {
+  test("SC106, SC215: the public types hold the run and project repository interfaces, sessionEnv takes an IStorage, and nothing names drizzle-orm, bun:sqlite or the store", () => {
     const { files } = buildSdkTypes();
     expect(Object.keys(files)).toContain("repositories.d.ts");
     expect(Object.keys(files)).not.toContain("storage.d.ts");
-    for (const name of ["IStorage", "IRunRepository", "IProjectRepository", "IEventStore"]) {
+    for (const name of ["IStorage", "IRunRepository", "IProjectRepository"]) {
       expect(files["repositories.d.ts"]).toContain(`export interface ${name}`);
     }
     expect(files["env.d.ts"]).toContain("sessionEnv: (storage: IStorage,");

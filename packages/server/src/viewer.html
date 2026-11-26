@@ -560,15 +560,18 @@ const FOLD_KEEP = 30;
 
 const slug = (text) => text.toLowerCase().trim().replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-");
 
+// A # inside a file's name travels as %23, so the address is split on its first raw # before
+// either part is decoded.
+const encodePath = (path) => path.split("/").map(encodeURIComponent).join("/");
 const parseHash = () => {
-  const [path = "", section = ""] = decodeURIComponent(location.hash.slice(1)).split("#");
-  return { path, section };
+  const [path = "", section = ""] = location.hash.slice(1).split(/#(.*)/s);
+  return { path: decodeURIComponent(path), section: decodeURIComponent(section) };
 };
 
 function goToSection(name) {
   const target = docRoot()?.querySelector(`[data-anchor="${CSS.escape(name)}"]`);
   if (!target || !current) return;
-  history.replaceState(null, "", `#${current}#${name}`);
+  history.replaceState(null, "", `#${encodePath(current)}#${encodeURIComponent(name)}`);
   const pane = $("#docPane");
   const top = Math.max(pane.getBoundingClientRect().top, $("#docHead").getBoundingClientRect().bottom);
   pane.scrollTop += target.getBoundingClientRect().top - top - 8;
@@ -576,7 +579,7 @@ function goToSection(name) {
 
 function sectionLink(path, name) {
   const link = el("a", "anchor");
-  link.href = `#${path}#${name}`;
+  link.href = `#${encodePath(path)}#${encodeURIComponent(name)}`;
   link.setAttribute("aria-label", "Link to this section");
   link.addEventListener("click", (event) => {
     event.preventDefault();
@@ -846,7 +849,7 @@ async function select(path) {
   focusId = null;
   currentReply = null;
   blockKeys = new Set();
-  history.replaceState(null, "", `#${path}`);
+  history.replaceState(null, "", `#${encodePath(path)}`);
   hideSelbar();
   renderFiles();
   renderHead();
