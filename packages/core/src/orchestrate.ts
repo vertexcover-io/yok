@@ -50,7 +50,6 @@ import {
   finishAudit,
   listAuditWork,
   recordAuditWork,
-  setAuditFix,
   startAudit,
 } from "./audits.ts";
 import { runAutoResume } from "./auto-resume.ts";
@@ -888,7 +887,7 @@ const readStdinJson = async (): Promise<Result<JsonValue>> =>
 
 const auditCommand = () => {
   const audit = new Command("audit").description(
-    "Write the run's test audit to yok.db: open it, publish it, close it, record an applied fix",
+    "Write the run's test audit to yok.db: open, publish and close it, and record an apply run",
   );
   audit
     .command("start")
@@ -923,17 +922,6 @@ const auditCommand = () => {
       const run = await requireRun(runInputFromFlags(opts));
       if (!run.ok) return fail(run.error);
       printResult(await closeAudit(storage(), run.value));
-    });
-  audit
-    .command("fix")
-    .description(
-      "Write what an apply run did to one result; stdin is { commit, pr, error } or { clear: true }",
-    )
-    .argument("<resultId>", "the audit result's id")
-    .action(async (resultId) => {
-      const input = await readStdinJson();
-      if (!input.ok) return fail(input.error);
-      printResult(await setAuditFix(storage(), resultId, input.value));
     });
   audit
     .command("work")

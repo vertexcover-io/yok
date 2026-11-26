@@ -12,7 +12,6 @@ import {
 } from "@yok/sdk";
 import {
   type AuditFixPatch,
-  AuditFixPatchSchema,
   type AuditRecord,
   type AuditReport,
   AuditReportSchema,
@@ -154,20 +153,6 @@ export const closeAudit = (storage: IStorage, run: RunRef): Promise<Result<Audit
       await storage.audits.finish(own.id, { status: "failed", metrics: [], results: [] }),
     );
   });
-
-export const setAuditFix = (
-  storage: IStorage,
-  resultId: string,
-  input: JsonValue,
-): Promise<Result<AuditResult>> =>
-  toResult(async () =>
-    unwrap(
-      await storage.audits.setFix(
-        resultId,
-        parseInput<AuditFixPatch>(AuditFixPatchSchema, input, "fix"),
-      ),
-    ),
-  );
 
 // The server tick's handover: each result it wrote a *_started row for, and what to do with it.
 const AuditWorkInputSchema = z.object({

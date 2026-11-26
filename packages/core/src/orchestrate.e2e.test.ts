@@ -1275,7 +1275,7 @@ describe("orchestrate workflows", () => {
 });
 
 describe("orchestrate audit", () => {
-  test("SC9: audit start, finish, fix and close act on the run named by YOK_RUN_ID and print JSON", async () => {
+  test("SC9: audit start, finish and close act on the run named by YOK_RUN_ID and print JSON; there is no audit fix", async () => {
     const repo = tempRepo();
     const home = tempDir();
     await initializedRun(home, repo, "audit");
@@ -1311,9 +1311,11 @@ describe("orchestrate audit", () => {
     expect(finish.code).toBe(0);
     expect(JSON.parse(finish.stdout)).toMatchObject({ id: opened.id, status: "complete" });
 
+    // audit record makes an apply run's writes; a bare result write would let anyone mark a
+    // result applied.
     const fix = audit(["fix", resultId], JSON.stringify({ commit: "abc" }));
-    expect(fix.code).toBe(0);
-    expect(JSON.parse(fix.stdout).fix.commit).toBe("abc");
+    expect(fix.code).not.toBe(0);
+    expect(fix.stderr).toContain("unknown command 'fix'");
 
     const close = audit(["close"], "{}");
     expect(close.code).toBe(0);
