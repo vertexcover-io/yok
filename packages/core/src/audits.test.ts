@@ -119,6 +119,35 @@ describe("startAudit", () => {
     });
   });
 
+  test.each([
+    ["running", false],
+    ["cancelled", true],
+  ] as const)(
+    "while another run's audit of the project is running and that run is %s, starting is allowed: %p",
+    async (status, allowed) => {
+      await withSeededStorage(async (storage, run, repo) => {
+        await storage.audits.start({
+          runId: "r-2",
+          project: "repo",
+          audit: "test",
+          periodStart: "2026-11-21T02:00:00.000Z",
+          periodEnd: "2026-11-28T01:00:00.000Z",
+          commits: {},
+        });
+        await storage.runs.initRun("r-2", "other", {
+          ...stateWith(repo, {}),
+          runId: "r-2",
+          runName: "other",
+          status,
+        });
+        const audit = await startAudit(storage, createGit(), run, workspaceOf(repo), NOW);
+        expect(audit.ok || audit.error).toBe(
+          allowed || "audit start: run r-2 is still auditing repo",
+        );
+      });
+    },
+  );
+
   test("SC4: a workspace with no repos is refused before any audit is stored", async () => {
     await withSeededStorage(async (storage, run) => {
       const refused = await startAudit(

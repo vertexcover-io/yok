@@ -87,9 +87,18 @@ export const startAudit = (
   toResult(async () => {
     const { workspace } = parseInput(AuditStartInputSchema, input, "start");
     const project = await findProject(storage, run);
+    const audits = await storage.audits.list(project, "test");
+    // Two audits at once would both cover the same period and both delete the same duplicates.
+    // A run that stopped without closing its audit no longer blocks once it is cancelled.
+    for (const audit of audits.filter((a) => a.runId !== run.id && a.status === "running")) {
+      const status = (await storage.runs.readState(audit.runId))?.status;
+      if (status === "running" || status === "blocked") {
+        throw new Error(`audit start: run ${audit.runId} is still auditing ${project}`);
+      }
+    }
     const commits = await readCommits(git, workspace.repos);
     // A failed or unfinished audit measured nothing, so the next one covers its period again.
-    const previous = (await storage.audits.list(project, "test")).find(
+    const previous = audits.find(
       (audit) =>
         audit.runId !== run.id && (audit.status === "complete" || audit.status === "partial"),
     );
