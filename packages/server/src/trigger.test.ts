@@ -566,6 +566,27 @@ describe("tick", () => {
     },
     TIMEOUT_MS,
   );
+
+  test.each([
+    ["SC7323: a test-audit trigger fires once", "test-audit", 1, "started"],
+    ["SC7324: a digest trigger is still skipped", "digest", 0, "skipped"],
+  ] as const)(
+    "%s when its slot is 10 hours old",
+    async (_label, name, launchCount, outcome) => {
+      const { store, launches, deps, trigger } = await setup();
+      await store.remove(trigger.id);
+      const saved = await saveOk(store, { ...trigger, name });
+
+      await tick(deps("2026-10-23T19:00:10.000Z"));
+
+      expect(launches).toHaveLength(launchCount);
+      const last = (await store.readFires(saved.id, 20)).at(-1);
+      expect(last).toMatchObject({ status: outcome, slot: "2026-10-23T09:00:00.000Z" });
+      if (outcome === "skipped") expect(last?.reason).toBe("too late: more than 6h past its slot");
+      expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
+    },
+    TIMEOUT_MS,
+  );
 });
 
 describe("scheduler", () => {

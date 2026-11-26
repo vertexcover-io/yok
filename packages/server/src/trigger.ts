@@ -23,6 +23,10 @@ type Schedule = Readonly<{ cron: string; timezone: string }>;
 // A slot more than 6h old is skipped, not fired: a 9am digest is no use at 6pm.
 const LATE_AFTER_MS = 6 * 60 * 60 * 1000;
 
+// The trigger exempt from that skip (ADR 0023's 6h rule): a test audit looks back over a period
+// that has already ended, so its latest missed slot still fires once, however late.
+const CATCH_UP_TRIGGER = "test-audit";
+
 const parseSchedule = ({ cron, timezone }: Schedule): Cron =>
   new Cron(cron, { mode: "5-part", timezone, paused: true });
 
@@ -186,7 +190,7 @@ export const tick = async (deps: TriggerDeps): Promise<void> => {
       const reason = `missed: slept through the slots up to ${due.slot.toISOString()}`;
       await recordFire(trigger, due.missedFrom, { status: "skipped", reason }, deps);
     }
-    if (due.tooLate) {
+    if (due.tooLate && trigger.name !== CATCH_UP_TRIGGER) {
       const reason = "too late: more than 6h past its slot";
       await recordFire(trigger, due.slot, { status: "skipped", reason }, deps);
       continue;
