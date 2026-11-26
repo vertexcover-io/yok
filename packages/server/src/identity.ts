@@ -412,7 +412,7 @@ main{max-width:480px;margin:0 auto;padding:48px 16px}
 h1{margin:0 0 16px;font-size:18px;font-weight:600}
 p{margin:0 0 16px}p:last-child{margin-bottom:0}
 .muted{color:var(--muted)}
-code{font-family:var(--mono);font-size:12.5px;background:var(--panel-2);padding:1px 6px;border-radius:4px}
+code{font-family:var(--mono);font-size:12.5px;background:var(--panel-2);padding:1px 6px;border-radius:4px;overflow-wrap:anywhere}
 dl{margin:0}
 dt{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
 dd{margin:0 0 20px;overflow-wrap:anywhere}

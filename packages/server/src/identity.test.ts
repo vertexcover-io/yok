@@ -951,6 +951,17 @@ describe("CLI device login", () => {
     expect(wrong.status).toBe(400);
   });
 
+  test("/device wraps a long unbroken machine name inside the card instead of widening the page", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { userCode } = await startDevice(s, "b".repeat(100));
+
+    const confirm = await (await s.app.request(`/device?code=${userCode}`, { headers })).text();
+
+    expect(confirm).toContain(`<code>${"b".repeat(100)}</code>`);
+    expect(confirm.match(/code\{([^}]*)\}/)?.[1]).toContain("overflow-wrap:anywhere");
+  });
+
   test("SC21: approving with a Bearer token instead of a cookie is refused and the request stays pending", async () => {
     const s = setup();
     await signIn(s);
