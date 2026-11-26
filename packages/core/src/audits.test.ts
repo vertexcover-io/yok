@@ -292,6 +292,27 @@ describe("listAuditWork", () => {
     },
   );
 
+  test("the work names each repo its fixes touch once, so the workspace holds only those repos", async () => {
+    await withSeededStorage(async (storage) => {
+      const id = await publish(storage, "r-2", "2026-11-21T02:00:00.000Z", (audit) => [
+        { ...withFix(`${audit}:web:flaky:w1`, { diff: "-w" }), repo: "web" },
+        withFix(`${audit}:yok:flaky:y1`, { diff: "-y" }),
+        withFix(`${audit}:yok:flaky:y2`, { diff: "-z" }),
+      ]);
+      const work = await listAuditWork(
+        storage,
+        {
+          results: ["web:flaky:w1", "yok:flaky:y1", "yok:flaky:y2"].map((rest) => ({
+            id: `${id}:${rest}`,
+            action: "apply",
+          })),
+        },
+        ghSaying("OPEN"),
+      );
+      expect(work).toMatchObject({ ok: true, value: { repos: ["web", "yok"] } });
+    });
+  });
+
   test("SC34: work under an unknown audit names the audit run, and a revert with no commit names the result", async () => {
     await withSeededStorage(async (storage) => {
       const unknown = await listAuditWork(

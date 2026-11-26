@@ -179,6 +179,8 @@ type FixItem = Readonly<{
 
 export type AuditWork = Readonly<{
   fixes: readonly FixItem[];
+  // the repos the fixes touch, which the run's workspace holds
+  repos: readonly string[];
   // the newest audit's PR, and its head branch while it is open
   pr: string | null;
   upstream: string | null;
@@ -256,7 +258,8 @@ export const listAuditWork = (
     const newest = [...audits].sort((a, b) => b.run.periodEnd.localeCompare(a.run.periodEnd))[0];
     const pr = newest?.results.find((result) => result.fix?.pr !== undefined)?.fix?.pr ?? null;
     const upstream = pr === null ? null : readOpenBranch(gh, pr);
-    return { fixes, pr, upstream, onPr: upstream !== null };
+    const repos = [...new Set(fixes.map((fix) => fix.repo))].sort();
+    return { fixes, repos, pr, upstream, onPr: upstream !== null };
   });
 
 const FixResultsSchema = z.array(

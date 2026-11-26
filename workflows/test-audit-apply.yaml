@@ -35,6 +35,7 @@ nodes:
     dependsOn: [audit-work]
     input:
       upstream: "{{ nodes.audit-work.output.upstream }}"
+      repos: "{{ nodes.audit-work.output.repos }}"
     cases:
       - id: on-pr
         value: true
@@ -46,6 +47,7 @@ nodes:
             input:
               request: Apply the accepted test-audit fixes.
               upstream: "{{ inputs.upstream }}"
+              repos: "{{ inputs.repos }}"
     default:
       - id: create-workspace
         type: agent
@@ -53,6 +55,7 @@ nodes:
         notify: false
         input:
           request: Apply the accepted test-audit fixes.
+          repos: "{{ inputs.repos }}"
 
   - id: fix
     type: agent
