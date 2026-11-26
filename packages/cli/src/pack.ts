@@ -85,17 +85,29 @@ const zipFiles = (files: readonly ZipFile[]): Buffer => {
   return Buffer.concat([...locals, central, end]);
 };
 
+// A live run renames its temp and lock files away, so one listed a moment ago may be gone.
+const unlessGone = <T>(read: Promise<T>): Promise<T | undefined> =>
+  read.catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+
 // Every file under the run's folder, named NAME/PATH so the zip unpacks into one folder.
 const readRunFiles = async (runDir: string, name: string): Promise<readonly ZipFile[]> => {
   const found = await readdir(runDir, { recursive: true, withFileTypes: true });
   const paths = found.filter((entry) => entry.isFile()).map((e) => join(e.parentPath, e.name));
-  return Promise.all(
-    paths.map(async (path) => ({
-      name: [name, ...relative(runDir, path).split(sep)].join("/"),
-      data: await readFile(path),
-      modified: (await stat(path)).mtime,
-    })),
+  const files = await Promise.all(
+    paths.map(async (path) =>
+      unlessGone(
+        Promise.all([readFile(path), stat(path)]).then(([data, info]) => ({
+          name: [name, ...relative(runDir, path).split(sep)].join("/"),
+          data,
+          modified: info.mtime,
+        })),
+      ),
+    ),
   );
+  return files.filter((file) => file !== undefined);
 };
 
 export const packCommand = () =>
