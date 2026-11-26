@@ -181,7 +181,7 @@ const AREAS = [
   { name: "Efficiency", question: "The suite itself", tiles: ["speed", "flakiness", "redundancy"] },
 ];
 
-const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null, open: null, timer: null };
+const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null, open: null, timer: null, notices: new Map() };
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -581,7 +581,7 @@ const STATE_LINE = {
 
 const signInLink = () => el("a", { href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`, textContent: "Sign in" });
 
-// The reason a click was refused, as nodes for its notice; null when it was saved.
+// Why a click was refused, { signIn } or { message }; null when it was saved.
 const postEvent = async (result, body) => {
   const res = await fetch(`/api/audits/results/${encodeURIComponent(result.id)}/events`, {
     method: "POST",
@@ -589,20 +589,26 @@ const postEvent = async (result, body) => {
     body: JSON.stringify(body),
   });
   if (res.ok) return null;
-  if (res.status === 401) return [signInLink(), " to accept, reject or undo a fix."];
+  if (res.status === 401) return { signIn: true };
   const reply = await res.json().catch(() => null);
-  return [reply?.error?.message ?? `The server answered ${res.status}.`];
+  return { message: reply?.error?.message ?? `The server answered ${res.status}.` };
 };
+const noticeNode = (refused) =>
+  el("p", { className: "notice", role: "alert" }, refused.signIn ? [signInLink(), " to accept, reject or undo a fix."] : [refused.message]);
 
 // The notice goes beside the clicked button: a click made in the drawer would hide one placed on the page.
+// view.notices keeps it through re-renders until the next click or a change in the result's state.
 const decide = async (result, body, button) => {
   button.disabled = true;
+  view.notices.delete(result.id);
   try {
     const refused = await postEvent(result, body);
     if (refused === null) return await refresh();
+    view.notices.set(result.id, { kind: pageState(result).kind, refused });
+    // in place rather than by render, which would wipe a reject box's feedback
     const row = button.closest(".decide");
     row.querySelector(".notice")?.remove();
-    row.append(el("p", { className: "notice", role: "alert" }, refused));
+    row.append(noticeNode(refused));
   } finally {
     button.disabled = false;
   }
@@ -654,9 +660,11 @@ const actionsFor = (result, state) =>
 const decisionNode = (result) => {
   const state = pageState(result);
   const line = STATE_LINE[state.kind];
+  const notice = view.notices.get(result.id);
   return el("div", { className: "decide" }, [
     ...(line === undefined ? [] : [el("span", { className: "state" }, line(state))]),
     ...actionsFor(result, state),
+    ...(notice?.kind === state.kind ? [noticeNode(notice.refused)] : []),
   ]);
 };
 
