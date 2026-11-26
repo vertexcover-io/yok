@@ -2,6 +2,7 @@ import type * as z from "zod";
 import type {
   AuditFixPatch,
   AuditName,
+  AuditPendingWork,
   AuditRecord,
   AuditReport,
   AuditResult,
@@ -163,6 +164,11 @@ export interface IAuditRepository {
   // keeping summary, diff and prompt; a commit or pr drops an earlier error, an error keeps the
   // commit. clear removes commit, pr, error and at. Refused for an unknown result or one with no fix.
   setFix(resultId: string, patch: AuditFixPatch): Promise<Result<AuditResult>>;
+  // The project's results whose newest click still owes work, oldest click first: accepted with
+  // no commit (apply), or undone with a commit (revert). Not listed once yok wrote the matching
+  // apply_started or revert_started after that click, or once an error was written at or after
+  // it. A result with no fix is never listed.
+  pendingWork(project: string): Promise<readonly AuditPendingWork[]>;
 }
 
 export interface IStorage {

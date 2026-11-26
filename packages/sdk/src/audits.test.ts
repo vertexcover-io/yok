@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
+  type AUDIT_CLICK_TYPES,
+  type AUDIT_RUN_START_TYPES,
+  type AuditFixPatch,
   type AuditMetric,
   type AuditResult,
   type AuditResultEventDraft,
@@ -41,10 +44,15 @@ const runState = (runId: string, runName: string): State => ({
   subscribers: {},
 });
 
-const addRun = async (storage: IStorage, id: string, name: string): Promise<void> => {
+const addRun = async (
+  storage: IStorage,
+  id: string,
+  name: string,
+  project = "web",
+): Promise<void> => {
   await storage.runs.addRun({
     id,
-    project: "web",
+    project,
     workflow: "test-audit",
     workflowPath: "/abs/web/workflow.yaml",
     inputs: {},
@@ -597,5 +605,203 @@ describe("storage.audits fixes", () => {
       "a fix patch sets commit, pr or error",
     );
     expect(await fixOf(storage, run.id, one.id)).toEqual(instruction);
+  });
+});
+
+describe("storage.audits pending work", () => {
+  const instruction = { summary: "merge the two tests", diff: "--- a\n+++ b" };
+  let seconds = 0;
+
+  // One second per action, so clicks and setFix writes never share a time.
+  const tick = (): void => {
+    seconds += 1;
+    setSystemTime(new Date(Date.parse(AT) + seconds * 1000));
+  };
+
+  afterEach(() => {
+    seconds = 0;
+    setSystemTime();
+  });
+
+  // Run r-1's finished test audit: results one and two have a fix, three has none.
+  const finished = async () => {
+    const storage = await seeded();
+    const run = await startOk(storage, week("r-1"));
+    const [one, two, three] = [
+      result(run.id, "one", { fix: instruction }),
+      result(run.id, "two", { fix: instruction }),
+      result(run.id, "three"),
+    ];
+    await storage.audits.finish(run.id, {
+      status: "complete",
+      metrics: [],
+      results: [one, two, three],
+    });
+    return { storage, run, one, two, three };
+  };
+
+  const click = async (
+    storage: IStorage,
+    resultId: string,
+    type: (typeof AUDIT_CLICK_TYPES)[number],
+  ) => {
+    tick();
+    return storage.audits.addEvent({
+      resultId,
+      type,
+      who: "savitha",
+      startedRunId: null,
+      payload: {},
+    });
+  };
+
+  const startRun = async (
+    storage: IStorage,
+    resultId: string,
+    type: (typeof AUDIT_RUN_START_TYPES)[number],
+  ) => {
+    tick();
+    return storage.audits.addEvent({
+      resultId,
+      type,
+      who: "yok",
+      startedRunId: "r-2",
+      payload: {},
+    });
+  };
+
+  const setFix = async (storage: IStorage, resultId: string, patch: AuditFixPatch) => {
+    tick();
+    const reply = await storage.audits.setFix(resultId, patch);
+    if (!reply.ok) throw new Error(reply.error);
+  };
+
+  const pending = async (storage: IStorage, project = "web") =>
+    (await storage.audits.pendingWork(project)).map((work) => ({
+      auditRunId: work.auditRunId,
+      resultId: work.result.id,
+      eventId: work.event.id,
+      action: work.action,
+    }));
+
+  test("SC7223: an accepted fix no run has taken is pending apply, until yok starts one", async () => {
+    const { storage, run, one, two } = await finished();
+    const added = await storage.projects.add("api", {
+      path: "/abs/api",
+      addedBy: { channel: "cli" },
+      addedAt: AT,
+    });
+    if (!added.ok) throw new Error(added.error);
+    await addRun(storage, "r-3", "weekly-api", "api");
+    const apiRun = await startOk(storage, week("r-3", { project: "api" }));
+    const apiResult = result(apiRun.id, "api", { fix: instruction });
+    await storage.audits.finish(apiRun.id, {
+      status: "complete",
+      metrics: [],
+      results: [apiResult],
+    });
+
+    const accepted = await click(storage, one.id, "accepted");
+    await click(storage, two.id, "rejected");
+    const apiAccepted = await click(storage, apiResult.id, "accepted");
+
+    expect(await storage.audits.pendingWork("web")).toEqual([
+      { auditRunId: run.id, result: one, event: accepted, action: "apply" },
+    ]);
+    expect(await pending(storage, "api")).toEqual([
+      { auditRunId: apiRun.id, resultId: apiResult.id, eventId: apiAccepted.id, action: "apply" },
+    ]);
+
+    await startRun(storage, one.id, "apply_started");
+    expect(await storage.audits.pendingWork("web")).toEqual([]);
+  });
+
+  test("SC7224: a commit or an error ends the pending apply, and a new accept after a failure retries", async () => {
+    const { storage, run, one } = await finished();
+    await click(storage, one.id, "accepted");
+    await startRun(storage, one.id, "apply_started");
+    await setFix(storage, one.id, { error: "conflict" });
+    expect(await pending(storage)).toEqual([]);
+
+    const again = await click(storage, one.id, "accepted");
+    expect(await pending(storage)).toEqual([
+      { auditRunId: run.id, resultId: one.id, eventId: again.id, action: "apply" },
+    ]);
+
+    await startRun(storage, one.id, "apply_started");
+    await setFix(storage, one.id, { commit: "abc" });
+    expect(await pending(storage)).toEqual([]);
+  });
+
+  test("SC7225: an undone applied fix is pending revert until yok starts the revert", async () => {
+    const { storage, run, one } = await finished();
+    await click(storage, one.id, "accepted");
+    await startRun(storage, one.id, "apply_started");
+    await setFix(storage, one.id, { commit: "abc", pr: "https://github.com/o/web/pull/7" });
+
+    const undone = await click(storage, one.id, "undone");
+    expect(await pending(storage)).toEqual([
+      { auditRunId: run.id, resultId: one.id, eventId: undone.id, action: "revert" },
+    ]);
+
+    await startRun(storage, one.id, "revert_started");
+    expect(await pending(storage)).toEqual([]);
+    await setFix(storage, one.id, { clear: true });
+    expect(await pending(storage)).toEqual([]);
+  });
+
+  test("SC7226: a failed revert waits for a new undo", async () => {
+    const { storage, run, one } = await finished();
+    await click(storage, one.id, "accepted");
+    await startRun(storage, one.id, "apply_started");
+    await setFix(storage, one.id, { commit: "abc" });
+    await click(storage, one.id, "undone");
+    await startRun(storage, one.id, "revert_started");
+    await setFix(storage, one.id, { error: "revert conflict" });
+    expect(await pending(storage)).toEqual([]);
+
+    const again = await click(storage, one.id, "undone");
+    expect(await pending(storage)).toEqual([
+      { auditRunId: run.id, resultId: one.id, eventId: again.id, action: "revert" },
+    ]);
+  });
+
+  test("SC7227: undo of a fix never applied, a result with no fix, and a run start of the other kind owe or block nothing", async () => {
+    const { storage, run, one, two, three } = await finished();
+    await click(storage, one.id, "accepted");
+    await click(storage, one.id, "undone");
+    await click(storage, three.id, "accepted");
+    const accepted = await click(storage, two.id, "accepted");
+    await startRun(storage, two.id, "revert_started");
+
+    expect(await pending(storage)).toEqual([
+      { auditRunId: run.id, resultId: two.id, eventId: accepted.id, action: "apply" },
+    ]);
+  });
+
+  test("SC7228: pending work spans the project's audit runs and lists the oldest click first", async () => {
+    const storage = await seeded();
+    const first = await startOk(storage, week("r-1"));
+    const second = await startOk(
+      storage,
+      week("r-2", {
+        periodStart: "2026-11-08T00:00:00.000Z",
+        periodEnd: "2026-11-15T00:00:00.000Z",
+      }),
+    );
+    const [older, newer] = [
+      result(first.id, "one", { fix: instruction }),
+      result(second.id, "one", { fix: instruction }),
+    ];
+    await storage.audits.finish(first.id, { status: "complete", metrics: [], results: [older] });
+    await storage.audits.finish(second.id, { status: "complete", metrics: [], results: [newer] });
+
+    const newerAccepted = await click(storage, newer.id, "accepted");
+    const olderAccepted = await click(storage, older.id, "accepted");
+
+    expect(await pending(storage)).toEqual([
+      { auditRunId: second.id, resultId: newer.id, eventId: newerAccepted.id, action: "apply" },
+      { auditRunId: first.id, resultId: older.id, eventId: olderAccepted.id, action: "apply" },
+    ]);
   });
 });

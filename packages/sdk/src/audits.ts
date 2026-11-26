@@ -119,6 +119,14 @@ export const AuditResultEventDraftSchema = z.union([
 ]);
 export type AuditResultEventDraft = z.infer<typeof AuditResultEventDraftSchema>;
 
+// A result an apply run owes work: apply its fix, or revert the commit it applied.
+export type AuditPendingWork = Readonly<{
+  auditRunId: string;
+  result: AuditResult;
+  event: AuditResultEvent;
+  action: "apply" | "revert";
+}>;
+
 export type MetricInfo = Readonly<{
   unit: "percent" | "count" | "seconds";
   better: "higher" | "lower";

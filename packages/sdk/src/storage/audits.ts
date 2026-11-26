@@ -9,6 +9,7 @@ import {
   type AuditMetric,
   AuditMetricSchema,
   type AuditName,
+  type AuditPendingWork,
   type AuditRecord,
   type AuditReport,
   AuditReportSchema,
@@ -282,6 +283,46 @@ const setFixIn = (
     return { ok: true, value: toResult(stored) };
   }, IMMEDIATE);
 
+// Equal times count as after the click: the apply run writes only after it read the click.
+const pendingAction = (
+  fix: AuditFix | null,
+  click: AuditResultEvent,
+  runStartedSinceClick: boolean,
+): AuditPendingWork["action"] | undefined => {
+  if (fix === null || runStartedSinceClick) return undefined;
+  if (fix.error !== undefined && (fix.at ?? "") >= click.ts) return undefined;
+  if (click.type === "accepted" && fix.commit === undefined) return "apply";
+  if (click.type === "undone" && fix.commit !== undefined) return "revert";
+  return undefined;
+};
+
+// The type lists are AUDIT_CLICK_TYPES and the run start each click asks for. Every rowid names
+// the events table: a bare one is ambiguous in the joined query.
+const isNewestClick = sql`${tables.auditResultEvents}.rowid = (SELECT max(newest.rowid) FROM ${tables.auditResultEvents} AS newest WHERE newest.result_id = ${tables.auditResultEvents.resultId} AND newest.type IN ('accepted', 'rejected', 'undone'))`;
+const runStartedSinceClick = sql<number>`EXISTS (SELECT 1 FROM ${tables.auditResultEvents} AS started WHERE started.result_id = ${tables.auditResultEvents.resultId} AND started.rowid > ${tables.auditResultEvents}.rowid AND started.type = CASE ${tables.auditResultEvents.type} WHEN 'accepted' THEN 'apply_started' ELSE 'revert_started' END)`;
+
+const pendingWorkIn = (db: Db, project: string): readonly AuditPendingWork[] =>
+  db
+    .select({
+      result: tables.auditResults,
+      event: tables.auditResultEvents,
+      runStarted: runStartedSinceClick,
+    })
+    .from(tables.auditResultEvents)
+    .innerJoin(tables.auditResults, eq(tables.auditResults.id, tables.auditResultEvents.resultId))
+    .innerJoin(tables.auditRuns, eq(tables.auditRuns.id, tables.auditResults.auditRunId))
+    .where(and(eq(tables.auditRuns.project, project), isNewestClick))
+    .orderBy(asc(sql`${tables.auditResultEvents}.rowid`))
+    .all()
+    .flatMap((row) => {
+      const result = toResult(row.result);
+      const event = AuditResultEventSchema.parse(row.event);
+      const action = pendingAction(result.fix, event, row.runStarted === 1);
+      return action === undefined
+        ? []
+        : [{ auditRunId: row.result.auditRunId, result, event, action }];
+    });
+
 // Normalized before the holder lookup, so two spellings of one period find the same row.
 const parseStart = (start: AuditStart): AuditStart => {
   const parsed = AuditStartSchema.parse(start);
@@ -302,4 +343,5 @@ export const auditRepository = (db: Db): IAuditRepository => ({
   run: async (resultId) => newestEventIn(db, resultId, AUDIT_RUN_START_TYPES),
   setFix: async (resultId, patch) =>
     setFixIn(db, resultId, AuditFixPatchSchema.parse(patch), now()),
+  pendingWork: async (project) => pendingWorkIn(db, project),
 });
