@@ -342,21 +342,26 @@ const memberOf = (thread: ChatThread): string => {
   return thread.user;
 };
 
+// A link the member opens signed in to yok; confirming it moves the Slack account to that person.
+const slackLinkUrl = async (member: string, deps: DispatchDeps): Promise<string> => {
+  const exp = deps.now().getTime() + LINK_TTL_MS;
+  const state = signValue(await sessionSecret(deps.home), { sub: member, purpose: "link", exp });
+  return `${deps.publicOrigin}/link/slack?state=${encodeURIComponent(state)}`;
+};
+
 const linkLogin = async (_args: Args, thread: ChatThread, deps: DispatchDeps): Promise<Reply> => {
   const member = memberOf(thread);
   const linked = await deps.storage.users.findByAccount("slack", member);
+  // The member may now sign in with another GitHub account, so they get a link to move to it.
   if (linked?.[1].accessRevokedAt !== undefined) {
     return {
-      text: `Your access to yok ended. Sign in at ${deps.publicOrigin}/login with a GitHub account in one of the server's orgs to get it back.`,
+      text: `Your access to yok ended. Sign in at ${deps.publicOrigin}/login with a GitHub account in one of the server's orgs to get it back, or open this link to link this Slack account to another yok account (it works for 10 minutes):\n${await slackLinkUrl(member, deps)}`,
       private: true,
     };
   }
   if (linked !== undefined) return { text: `Already linked to yok user *${linked[1].name}*.` };
-  const exp = deps.now().getTime() + LINK_TTL_MS;
-  const state = signValue(await sessionSecret(deps.home), { sub: member, purpose: "link", exp });
-  const url = `${deps.publicOrigin}/link/slack?state=${encodeURIComponent(state)}`;
   return {
-    text: `Sign in to yok to link this Slack account (the link works for 10 minutes):\n${url}`,
+    text: `Sign in to yok to link this Slack account (the link works for 10 minutes):\n${await slackLinkUrl(member, deps)}`,
     private: true,
   };
 };

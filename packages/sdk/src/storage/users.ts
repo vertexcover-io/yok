@@ -195,17 +195,28 @@ export const userRepository = (db: Db): IUserRepository => ({
       .run();
   },
   importUser: async (id, user) => importUserIn(db, id, user, now()),
+  // One write each, so a token approved while access is being ended cannot outlive it.
   setAccessRevokedAt: async (userId, at) => {
-    db.update(users).set({ accessRevokedAt: at }).where(eq(users.id, userId)).run();
+    db.transaction((tx) => {
+      tx.update(users).set({ accessRevokedAt: at }).where(eq(users.id, userId)).run();
+      if (at !== null) tx.delete(apiTokens).where(eq(apiTokens.userId, userId)).run();
+    }, IMMEDIATE);
   },
   createToken: async (userId, name, tokenHash) =>
-    toApiToken(
-      db
+    db.transaction((tx) => {
+      const revoked = tx
+        .select({ at: users.accessRevokedAt })
+        .from(users)
+        .where(eq(users.id, userId))
+        .get()?.at;
+      if (revoked !== null && revoked !== undefined) return undefined;
+      const row = tx
         .insert(apiTokens)
         .values({ id: newTokenId(), userId, name, tokenHash, createdAt: now() })
         .returning()
-        .get(),
-    ),
+        .get();
+      return toApiToken(row);
+    }, IMMEDIATE),
   findToken: async (tokenHash) => {
     const row = db.select().from(apiTokens).where(eq(apiTokens.tokenHash, tokenHash)).get();
     return row === undefined ? undefined : toApiToken(row);
@@ -224,9 +235,6 @@ export const userRepository = (db: Db): IUserRepository => ({
       .where(and(eq(apiTokens.userId, userId), eq(apiTokens.id, tokenId)))
       .returning({ id: apiTokens.id })
       .all().length > 0,
-  deleteTokens: async (userId) => {
-    db.delete(apiTokens).where(eq(apiTokens.userId, userId)).run();
-  },
   touchToken: async (tokenId, at) => {
     const stale = new Date(at.getTime() - TOUCH_EVERY_MS).toISOString();
     db.update(apiTokens)

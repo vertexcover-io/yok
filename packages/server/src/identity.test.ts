@@ -141,6 +141,13 @@ const cookieOf = (res: Response, name = "yok_session"): string =>
     .find((cookie) => cookie.startsWith(`${name}=`))
     ?.split(";")[0] ?? "";
 
+// A token for a user whose access is not ended; the test fails here if none is made.
+const madeToken = async (s: Setup, userId: string, name: string, token: string) => {
+  const made = await s.storage.users.createToken(userId, name, hashToken(token));
+  if (made === undefined) throw new Error(`no token made for ${userId}`);
+  return made;
+};
+
 const startSignIn = async ({ app }: Setup, next = "/settings") => {
   const start = await app.request(`/auth/github?next=${encodeURIComponent(next)}`);
   const authorize = new URL(start.headers.get("location") ?? "");
@@ -1006,9 +1013,9 @@ describe("tokens in settings", () => {
     const s = setup();
     const headers = await signedInHeaders(s);
     const [userId] = (await s.storage.users.list())[0] ?? [""];
-    const used = await s.storage.users.createToken(userId, "laptop", hashToken("yok_a"));
+    const used = await madeToken(s, userId, "laptop", "yok_a");
     await s.storage.users.touchToken(used.id, NOW);
-    const idle = await s.storage.users.createToken(userId, "ci", hashToken("yok_b"));
+    const idle = await madeToken(s, userId, "ci", "yok_b");
 
     const page = await (await s.app.request("/settings", { headers })).text();
 
@@ -1056,7 +1063,7 @@ describe("tokens in settings", () => {
     const s = setup();
     const headers = await signedInHeaders(s);
     const [userId] = (await s.storage.users.list())[0] ?? [""];
-    const mine = await s.storage.users.createToken(userId, "laptop", hashToken("yok_mine"));
+    const mine = await madeToken(s, userId, "laptop", "yok_mine");
     const other = await s.storage.users.saveGitHubUser({
       id: 2,
       login: "bo",
@@ -1064,11 +1071,7 @@ describe("tokens in settings", () => {
       email: "",
       token: "gho_b",
     });
-    const theirs = await s.storage.users.createToken(
-      other[0],
-      "bo-laptop",
-      hashToken("yok_theirs"),
-    );
+    const theirs = await madeToken(s, other[0], "bo-laptop", "yok_theirs");
 
     const foreign = await s.app.request(`/settings/tokens/${theirs.id}/revoke`, {
       method: "POST",

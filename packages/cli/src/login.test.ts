@@ -211,6 +211,10 @@ describe("login", () => {
       reply: new Response("<html>Bad gateway</html>", { status: 502 }),
       shown: "answered /api/auth/device with 502; is it a yok server?",
     },
+    {
+      reply: new Response("Not Found", { status: 404 }),
+      shown: "answered /api/auth/device with 404; is it a yok server?",
+    },
   ])(
     "a refused login start shows the yok server's own message, else asks whether it is a yok server: $shown",
     async ({ reply, shown }) => {

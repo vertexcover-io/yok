@@ -356,6 +356,8 @@ describe("runContextStep: new", () => {
       YOK_RUN_ID: "r-1",
       YOK_HOME: HOME,
       YOK_SERVER_TOKEN: "",
+      YOK_SERVER_USER: "",
+      YOK_SERVER_PASSWORD: "",
     });
   });
 

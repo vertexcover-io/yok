@@ -359,7 +359,13 @@ export const ensureServer = async (
       cwd: home,
       // The server's env reaches every run's agent session, so a remote login set in this shell
       // stays out of it.
-      env: { YOK_HOME: home, YOK_SERVER_URL: undefined, YOK_SERVER_TOKEN: undefined },
+      env: {
+        YOK_HOME: home,
+        YOK_SERVER_URL: undefined,
+        YOK_SERVER_TOKEN: undefined,
+        YOK_SERVER_USER: undefined,
+        YOK_SERVER_PASSWORD: undefined,
+      },
       output: logPath(home),
     });
     log.info({ pid, command: [command, ...args], log: logPath(home) }, "server process started");

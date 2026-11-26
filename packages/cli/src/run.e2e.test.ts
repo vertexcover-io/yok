@@ -1937,7 +1937,7 @@ describe("yok --remote beside a local server", () => {
   );
 
   test(
-    "a server yok starts holds neither the shell's remote login token nor its URL in its own process environment",
+    "a server yok starts holds neither the shell's remote login token, its URL, nor the old shared password in its own process environment",
     () => {
       const repo = makeRepo();
       const { home, env } = makeEnv();
@@ -1945,6 +1945,8 @@ describe("yok --remote beside a local server", () => {
         ...env,
         YOK_SERVER_URL: "https://yok.example.com",
         YOK_SERVER_TOKEN: "yok_secret_in_shell",
+        YOK_SERVER_USER: "team",
+        YOK_SERVER_PASSWORD: "shared_password_in_shell",
       };
 
       expect(yok(repo, shell, "project", "add", "web", "--path", repo).code).toBe(0);
@@ -1954,6 +1956,8 @@ describe("yok --remote beside a local server", () => {
       expect(serverEnv).toContain(`YOK_HOME=${home}`);
       expect(serverEnv).not.toContain("yok_secret_in_shell");
       expect(serverEnv).not.toContain("YOK_SERVER_URL");
+      expect(serverEnv).not.toContain("shared_password_in_shell");
+      expect(serverEnv).not.toContain("YOK_SERVER_USER");
 
       stopServer(repo, env);
     },

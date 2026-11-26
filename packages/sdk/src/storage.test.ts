@@ -263,6 +263,7 @@ describe("api tokens and revoked access", () => {
 
     const made = await storage.users.createToken(id, "laptop", "hash-1");
     await storage.users.createToken(id, "ci", "hash-2");
+    if (made === undefined) throw new Error("token not made");
 
     expect(made).toMatchObject({ userId: id, name: "laptop", lastUsedAt: null });
     expect(await storage.users.findToken("hash-1")).toEqual(made);
@@ -275,8 +276,6 @@ describe("api tokens and revoked access", () => {
     expect(await storage.users.deleteToken(other, made.id)).toBe(false);
     expect(await storage.users.deleteToken(id, made.id)).toBe(true);
     expect(await storage.users.findToken("hash-1")).toBeUndefined();
-    await storage.users.deleteTokens(id);
-    expect(await storage.users.listTokens(id)).toEqual([]);
   });
 
   test("two tokens cannot share a hash, and a token for a missing user is rejected", async () => {
@@ -294,6 +293,7 @@ describe("api tokens and revoked access", () => {
     storage = memoryStorage();
     const [id] = await storage.users.saveGitHubUser(RITESH);
     const made = await storage.users.createToken(id, "laptop", "hash-1");
+    if (made === undefined) throw new Error("token not made");
     const lastUsed = async () => (await storage.users.findToken("hash-1"))?.lastUsedAt;
     const first = new Date("2026-11-19T10:00:00.000Z");
 
@@ -317,6 +317,24 @@ describe("api tokens and revoked access", () => {
 
     await storage.users.setAccessRevokedAt(id, null);
     expect(await storage.users.find(id)).toEqual(signedIn);
+  });
+
+  test("ending access deletes the user's tokens in the same write, and no token is made while it stays ended", async () => {
+    storage = memoryStorage();
+    const [id] = await storage.users.saveGitHubUser(RITESH);
+    await storage.users.createToken(id, "laptop", "hash-1");
+
+    await storage.users.setAccessRevokedAt(id, "2026-11-19T10:00:00.000Z");
+    const late = await storage.users.createToken(id, "approved before the refusal", "hash-2");
+
+    expect(late).toBeUndefined();
+    expect(await storage.users.listTokens(id)).toEqual([]);
+
+    await storage.users.setAccessRevokedAt(id, null);
+    expect(await storage.users.listTokens(id)).toEqual([]);
+    expect(await storage.users.createToken(id, "laptop", "hash-3")).toMatchObject({
+      name: "laptop",
+    });
   });
 });
 

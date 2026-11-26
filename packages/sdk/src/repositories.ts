@@ -31,16 +31,17 @@ export interface IUserRepository {
   saveGitHubUser(input: GitHubSignIn): Promise<UserEntry>;
   addUserAccount(userId: string, account: UserAccount): Promise<void>;
   removeUserAccount(userId: string, provider: string): Promise<void>;
-  // Stamps the time a sign-in was refused, or clears it with null.
+  // Stamps the time a sign-in was refused and deletes the user's CLI tokens in the same write, or
+  // clears the stamp with null.
   setAccessRevokedAt(userId: string, at: string | null): Promise<void>;
-  // Only the SHA-256 of a CLI token is stored, never the token.
-  createToken(userId: string, name: string, tokenHash: string): Promise<ApiToken>;
+  // Only the SHA-256 of a CLI token is stored, never the token. Undefined, storing nothing, while
+  // the user's access is ended.
+  createToken(userId: string, name: string, tokenHash: string): Promise<ApiToken | undefined>;
   findToken(tokenHash: string): Promise<ApiToken | undefined>;
   // oldest first
   listTokens(userId: string): Promise<readonly ApiToken[]>;
   // false when the user has no such token
   deleteToken(userId: string, tokenId: string): Promise<boolean>;
-  deleteTokens(userId: string): Promise<void>;
   // Writes last-used only when it was never set or is over 5 minutes old, so a busy CLI does not
   // write on every call.
   touchToken(tokenId: string, at: Date): Promise<void>;

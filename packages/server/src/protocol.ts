@@ -73,6 +73,7 @@ export const ErrorBodySchema = z.strictObject({
     code: z.enum([
       "bad-request",
       "unauthenticated",
+      "forbidden",
       "not-found",
       "conflict",
       "too-many-requests",

@@ -12,7 +12,7 @@ export type Vars = { log: ILogger; caller: Caller | undefined };
 
 export const errorResponse = (
   c: Context,
-  status: 400 | 401 | 404 | 409 | 422 | 429 | 500 | 502,
+  status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502,
   code: ErrorCode,
   message: string,
   details?: JsonValue,

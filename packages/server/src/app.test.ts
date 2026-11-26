@@ -674,6 +674,8 @@ describe("POST /runs", () => {
       YOK_RUN_ID: run.id,
       YOK_HOME: deps.home,
       YOK_SERVER_TOKEN: "",
+      YOK_SERVER_USER: "",
+      YOK_SERVER_PASSWORD: "",
     });
   });
 
@@ -1366,7 +1368,7 @@ describe("createRoot caller gate", () => {
     expect(await deps.storage.users.listTokens(userId)).toHaveLength(1);
   });
 
-  test("SC4: a user with access revoked is refused by cookie and by token, until access is restored", async () => {
+  test("SC4: a user with access revoked is refused by cookie and by token; a restore brings the cookie back, not the deleted token", async () => {
     const { app, deps, userId, cookie, bearer } = await gatedRoot();
     const status = async (headers: Record<string, string>) =>
       (await app.request("/api/me", { headers: { host: DOMAIN, ...headers } })).status;
@@ -1376,7 +1378,7 @@ describe("createRoot caller gate", () => {
 
     expect([await status(cookie), await status(bearer)]).toEqual([401, 401]);
     await deps.storage.users.setAccessRevokedAt(userId, null);
-    expect([await status(cookie), await status(bearer)]).toEqual([200, 200]);
+    expect([await status(cookie), await status(bearer)]).toEqual([200, 401]);
   });
 
   test("SC5: a cookie caller's POST with no Origin is refused and starts nothing; with the Origin, or by token, it goes through", async () => {
@@ -2182,13 +2184,14 @@ describe("Slack gate", () => {
     expect(replies(login)[0]).toContain("/link/slack?state=");
   });
 
-  test("SC31: a revoked member's login points them to sign in again, not to an already-linked line", async () => {
+  test("SC31: a revoked member's login points them to sign in again, or to link another yok account, not to an already-linked line", async () => {
     const { say } = await gatedSlack();
 
     const login = await say("U9", "login", "Ev1");
 
     expect(login[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
     expect(replies(login)[0]).toContain("/login");
+    expect(replies(login)[0]).toContain("/link/slack?state=");
     expect(replies(login)[0]).not.toContain("Already linked");
   });
 
@@ -2253,6 +2256,44 @@ describe("run and project owners", () => {
       channel: "api",
       user: userId,
     });
+  });
+
+  test("a signed-in caller cannot resume or retry another person's run, which would launch with that person's GitHub token", async () => {
+    const { app, deps, bearer } = await gatedRoot();
+    const github = { id: 2, login: "bo", token: "gho_bo" };
+    const other = await seedUser(deps.storage, { name: "Bo", github });
+    const run = await seedRun(deps.storage, { run: { source: "slack", user: other } });
+
+    const answers = await Promise.all(
+      ["resume", "retry"].map((action) =>
+        app.request(`/api/runs/${action}`, {
+          method: "POST",
+          headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+          body: JSON.stringify({ run: { id: run.id } }),
+        }),
+      ),
+    );
+
+    for (const res of answers) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: { code: string; message: string } }).error).toEqual({
+        code: "forbidden",
+        message: `run ${run.name} belongs to Bo; only Bo can resume or retry it`,
+      });
+    }
+  });
+
+  test("a signed-in caller resumes their own run past the owner check", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    const run = await seedRun(deps.storage, { run: { source: "slack", user: userId } });
+
+    const res = await app.request("/api/runs/resume", {
+      method: "POST",
+      headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+      body: JSON.stringify({ run: { id: run.id } }),
+    });
+
+    expect(res.status).not.toBe(403);
   });
 
   test("SC32: a caller cannot name another user in the body: the caller is the one recorded", async () => {

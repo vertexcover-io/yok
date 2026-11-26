@@ -21,6 +21,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const EXPIRED = "the login was not approved in time; run yok login again";
+const TOKEN_PATH = "/api/auth/device/token";
 
 const postJson = async <S extends z.ZodType>(
   url: string,
@@ -36,7 +37,8 @@ const postJson = async <S extends z.ZodType>(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   }).catch(() => null);
   if (reply === null) throw new Error(`${host} is not answering`);
-  if (reply.status === 404) throw new Error(EXPIRED);
+  // Only the poll knows the code: a code the server has forgotten is a login that expired.
+  if (reply.status === 404 && path === TOKEN_PATH) throw new Error(EXPIRED);
   const json: unknown = await reply.json().catch(() => null);
   const refused = ErrorBodySchema.safeParse(json);
   if (!reply.ok && refused.success) throw new Error(`${host}: ${refused.data.error.message}`);
@@ -56,7 +58,7 @@ const waitForToken = async (
   while (Date.now() < deadline) {
     const reply = await postJson(
       url,
-      "/api/auth/device/token",
+      TOKEN_PATH,
       { deviceCode: start.deviceCode },
       DeviceTokenReplySchema,
     );

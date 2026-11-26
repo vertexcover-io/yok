@@ -529,11 +529,12 @@ const pollDevice = async (
   const user = await activeUser(deps.storage, request.approvedBy);
   if (user === undefined) return errorResponse(c, 404, "not-found", EXPIRED);
   const token = newToken();
-  await deps.storage.users.createToken(
+  const made = await deps.storage.users.createToken(
     request.approvedBy,
     `CLI on ${request.hostname}`,
     hashToken(token),
   );
+  if (made === undefined) return errorResponse(c, 404, "not-found", EXPIRED);
   return c.json({ status: "approved", token } satisfies DeviceTokenReply, 200);
 };
 
@@ -625,7 +626,6 @@ const refuseSignIn = async (
   const known = await deps.storage.users.findByAccount("github", String(identity.id));
   if (known !== undefined) {
     await deps.storage.users.setAccessRevokedAt(known[0], deps.now().toISOString());
-    await deps.storage.users.deleteTokens(known[0]);
   }
   deps.log.info({ login: identity.login }, "sign-in refused");
   return c.html(
@@ -832,7 +832,8 @@ export const identityRoutes = (deps: IdentityDeps) => {
           );
         }
         const token = newToken();
-        await deps.storage.users.createToken(signedIn[0], name.data, hashToken(token));
+        const made = await deps.storage.users.createToken(signedIn[0], name.data, hashToken(token));
+        if (made === undefined) return c.redirect(loginRedirect("/settings"));
         c.header("Cache-Control", "no-store");
         return c.html(
           page(

@@ -105,7 +105,8 @@ const runEnv = async (
 
 // What a run's agent session starts with: the run's env, under yok's own variables, with the
 // shim folder first on PATH so the session's `yok` is the program that started the run. A yok
-// token is blanked, not dropped, because the session's env is laid over the server's own.
+// token, and the shared password from before it, are blanked, not dropped, because the session's
+// env is laid over the server's own.
 export const sessionEnv = async (
   storage: IStorage,
   env: Readonly<Record<string, string>>,
@@ -118,6 +119,8 @@ export const sessionEnv = async (
   YOK_RUN_ID: runId,
   YOK_HOME: home,
   YOK_SERVER_TOKEN: "",
+  YOK_SERVER_USER: "",
+  YOK_SERVER_PASSWORD: "",
 });
 
 export const homeEnvPath = (home: string = yokHome()): string => join(home, ".env");
