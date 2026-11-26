@@ -115,7 +115,7 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 .decide .state { color: var(--muted); }
 .reject { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .reject textarea { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 6px 8px; font-size: 13px; }
-.notice { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.notice { flex-basis: 100%; margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
 @media (max-width: 800px) {
   .board { grid-template-columns: 1fr; }
 }
@@ -146,7 +146,6 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <main>
   <p class="empty" id="status" role="status">Loading audits…</p>
   <div id="areas"></div>
-  <p class="notice" id="notice" role="alert" hidden></p>
   <section id="board"></section>
 </main>
 <div class="scrim" id="scrim" hidden></div>
@@ -579,13 +578,9 @@ const STATE_LINE = {
   rejected: (state) => [state.feedback === null ? "rejected" : `rejected: ${state.feedback}`],
 };
 
-const showNotice = (children) => {
-  $("notice").replaceChildren(...children);
-  $("notice").hidden = children.length === 0;
-};
 const signInLink = () => el("a", { href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`, textContent: "Sign in" });
 
-// The reason a click was refused, as nodes for the notice; null when it was saved.
+// The reason a click was refused, as nodes for its notice; null when it was saved.
 const postEvent = async (result, body) => {
   const res = await fetch(`/api/audits/results/${encodeURIComponent(result.id)}/events`, {
     method: "POST",
@@ -598,15 +593,15 @@ const postEvent = async (result, body) => {
   return [reply?.error?.message ?? `The server answered ${res.status}.`];
 };
 
+// The notice goes beside the clicked button: a click made in the drawer would hide one placed on the page.
 const decide = async (result, body, button) => {
   button.disabled = true;
   const refused = await postEvent(result, body);
-  showNotice(refused ?? []);
-  if (refused !== null) {
-    button.disabled = false;
-    return;
-  }
-  await refresh();
+  if (refused === null) return refresh();
+  const row = button.closest(".decide");
+  row.querySelector(".notice")?.remove();
+  row.append(el("p", { className: "notice", role: "alert" }, refused));
+  button.disabled = false;
 };
 
 const actionButton = (result, text, body, className = "btn") => {
