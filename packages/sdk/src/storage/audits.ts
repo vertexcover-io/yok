@@ -3,6 +3,9 @@ import { and, asc, desc, eq, gte, inArray, lte, notInArray, sql } from "drizzle-
 import {
   AUDIT_CLICK_TYPES,
   AUDIT_RUN_START_TYPES,
+  type AuditFix,
+  type AuditFixPatch,
+  AuditFixPatchSchema,
   type AuditMetric,
   AuditMetricSchema,
   type AuditName,
@@ -246,6 +249,39 @@ const newestEventIn = (
   return row === undefined ? undefined : AuditResultEventSchema.parse(row);
 };
 
+// A commit or pr means the apply worked, so an error from an earlier try goes; an error keeps the
+// commit, since a failed revert leaves the applied commit in place.
+const patchFix = (fix: AuditFix, patch: AuditFixPatch, at: string): AuditFix => {
+  const { commit, pr, error, at: _at, ...instruction } = fix;
+  if ("clear" in patch) return instruction;
+  const applied = patch.commit !== undefined || patch.pr !== undefined;
+  return { ...instruction, commit, pr, error: applied ? undefined : error, ...patch, at };
+};
+
+const setFixIn = (
+  db: Db,
+  resultId: string,
+  patch: AuditFixPatch,
+  at: string,
+): Result<AuditResult> =>
+  db.transaction((tx): Result<AuditResult> => {
+    const row = tx
+      .select()
+      .from(tables.auditResults)
+      .where(eq(tables.auditResults.id, resultId))
+      .get();
+    if (row === undefined) return { ok: false, error: `audit result ${resultId} not found` };
+    const { fix } = toResult(row);
+    if (fix === null) return { ok: false, error: `audit result ${resultId} has no fix` };
+    const stored = tx
+      .update(tables.auditResults)
+      .set({ fix: patchFix(fix, patch, at) })
+      .where(eq(tables.auditResults.id, resultId))
+      .returning()
+      .get();
+    return { ok: true, value: toResult(stored) };
+  }, IMMEDIATE);
+
 // Normalized before the holder lookup, so two spellings of one period find the same row.
 const parseStart = (start: AuditStart): AuditStart => {
   const parsed = AuditStartSchema.parse(start);
@@ -264,4 +300,6 @@ export const auditRepository = (db: Db): IAuditRepository => ({
   addEvent: async (draft) => addEventIn(db, AuditResultEventDraftSchema.parse(draft), now()),
   decision: async (resultId) => newestEventIn(db, resultId, AUDIT_CLICK_TYPES),
   run: async (resultId) => newestEventIn(db, resultId, AUDIT_RUN_START_TYPES),
+  setFix: async (resultId, patch) =>
+    setFixIn(db, resultId, AuditFixPatchSchema.parse(patch), now()),
 });

@@ -50,10 +50,29 @@ export const AuditResultSchema = z.strictObject({
       prompt: z.string().optional(),
       commit: z.string().optional(),
       pr: z.string().optional(),
+      // why the apply run could not apply or revert it
+      error: z.string().optional(),
+      // when setFix last wrote commit, pr or error
+      at: z.iso.datetime().optional(),
     })
     .nullable(),
 });
 export type AuditResult = z.infer<typeof AuditResultSchema>;
+export type AuditFix = NonNullable<AuditResult["fix"]>;
+
+// What the apply run writes onto a result's fix: what it applied, or why it could not. clear
+// removes all of it after a revert.
+export const AuditFixPatchSchema = z.union([
+  z.strictObject({ clear: z.literal(true) }),
+  z
+    .strictObject({
+      commit: NonEmptyStringSchema.optional(),
+      pr: NonEmptyStringSchema.optional(),
+      error: NonEmptyStringSchema.optional(),
+    })
+    .refine((patch) => Object.keys(patch).length > 0, "a fix patch sets commit, pr or error"),
+]);
+export type AuditFixPatch = z.infer<typeof AuditFixPatchSchema>;
 
 // What a finished audit publishes; a retried publish sends the whole report again.
 export const AuditReportSchema = z.strictObject({

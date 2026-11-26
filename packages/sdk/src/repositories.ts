@@ -1,8 +1,10 @@
 import type * as z from "zod";
 import type {
+  AuditFixPatch,
   AuditName,
   AuditRecord,
   AuditReport,
+  AuditResult,
   AuditResultEvent,
   AuditResultEventDraft,
   AuditRun,
@@ -157,6 +159,10 @@ export interface IAuditRepository {
   decision(resultId: string): Promise<AuditResultEvent | undefined>;
   // the result's newest apply_started or revert_started; undefined before yok starts a run
   run(resultId: string): Promise<AuditResultEvent | undefined>;
+  // Merges commit, pr or error into the result's fix and stamps fix.at with the current time,
+  // keeping summary, diff and prompt; a commit or pr drops an earlier error, an error keeps the
+  // commit. clear removes commit, pr, error and at. Refused for an unknown result or one with no fix.
+  setFix(resultId: string, patch: AuditFixPatch): Promise<Result<AuditResult>>;
 }
 
 export interface IStorage {

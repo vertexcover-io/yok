@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
   type AuditMetric,
   type AuditResult,
@@ -508,5 +508,94 @@ describe("storage.audits result events", () => {
     ).rejects.toThrow();
     expect(await storage.audits.decision(one.id)).toBeUndefined();
     expect(await storage.audits.run(one.id)).toBeUndefined();
+  });
+});
+
+describe("storage.audits fixes", () => {
+  const instruction = { summary: "merge the two tests", diff: "--- a\n+++ b" };
+
+  // Run r-1's finished test audit: result one has a fix, result two has none.
+  const finished = async (fix: AuditResult["fix"] = instruction) => {
+    const storage = await seeded();
+    const run = await startOk(storage, week("r-1"));
+    const [one, two] = [result(run.id, "one", { fix }), result(run.id, "two")];
+    await storage.audits.finish(run.id, { status: "complete", metrics: [], results: [one, two] });
+    return { storage, run, one, two };
+  };
+
+  const fixOf = async (storage: IStorage, auditRunId: string, resultId: string) =>
+    (await storage.audits.read(auditRunId))?.results.find((row) => row.id === resultId)?.fix;
+
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  test("SC7219: writing a commit and PR keeps the instruction and stamps the time", async () => {
+    const { storage, run, one } = await finished();
+    setSystemTime(new Date("2026-11-02T10:00:00.000Z"));
+
+    const reply = await storage.audits.setFix(one.id, {
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+    });
+
+    const fix = {
+      ...instruction,
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+      at: "2026-11-02T10:00:00.000Z",
+    };
+    expect(reply).toEqual({ ok: true, value: { ...one, fix } });
+    expect(await fixOf(storage, run.id, one.id)).toEqual(fix);
+  });
+
+  test("SC7220: a commit replaces an earlier error, while an error keeps the commit", async () => {
+    const { storage, run, one } = await finished();
+
+    await storage.audits.setFix(one.id, { error: "merge conflict" });
+    await storage.audits.setFix(one.id, { commit: "abc123" });
+    const applied = await fixOf(storage, run.id, one.id);
+    expect(applied).toEqual({ ...instruction, commit: "abc123", at: expect.any(String) });
+    expect(applied).not.toHaveProperty("error");
+
+    await storage.audits.setFix(one.id, { error: "revert failed" });
+    expect(await fixOf(storage, run.id, one.id)).toEqual({
+      ...instruction,
+      commit: "abc123",
+      error: "revert failed",
+      at: expect.any(String),
+    });
+  });
+
+  test("SC7221: clearing removes everything the apply run wrote", async () => {
+    const withPrompt = { ...instruction, prompt: "merge them" };
+    const { storage, run, one } = await finished(withPrompt);
+    await storage.audits.setFix(one.id, {
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+    });
+    await storage.audits.setFix(one.id, { error: "revert failed" });
+
+    await storage.audits.setFix(one.id, { clear: true });
+
+    expect(await fixOf(storage, run.id, one.id)).toEqual(withPrompt);
+  });
+
+  test("SC7222: a patch for an unknown result, a result with no fix, or with nothing to set is refused", async () => {
+    const { storage, run, one, two } = await finished();
+
+    expect(await storage.audits.setFix("nope", { commit: "c" })).toEqual({
+      ok: false,
+      error: "audit result nope not found",
+    });
+    expect(await storage.audits.setFix(two.id, { commit: "c" })).toEqual({
+      ok: false,
+      error: `audit result ${two.id} has no fix`,
+    });
+    expect(await fixOf(storage, run.id, two.id)).toBeNull();
+    await expect(storage.audits.setFix(one.id, {})).rejects.toThrow(
+      "a fix patch sets commit, pr or error",
+    );
+    expect(await fixOf(storage, run.id, one.id)).toEqual(instruction);
   });
 });
