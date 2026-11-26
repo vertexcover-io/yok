@@ -57,28 +57,33 @@ const zipFiles = (files: readonly ZipFile[]): Buffer => {
     ];
     return { name, packed, shared };
   });
-  const locals = entries.map((entry) =>
-    Buffer.concat([littleEndian([[4, LOCAL_HEADER], ...entry.shared]), entry.name, entry.packed]),
-  );
-  const offsets = locals.map((_, i) => locals.slice(0, i).reduce((sum, l) => sum + l.length, 0));
-  const central = Buffer.concat(
-    entries.map((entry, i) =>
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  // Each central record points at its local record; the running total ends as their size.
+  let localsSize = 0;
+  for (const entry of entries) {
+    const local = Buffer.concat([
+      littleEndian([[4, LOCAL_HEADER], ...entry.shared]),
+      entry.name,
+      entry.packed,
+    ]);
+    const tail: readonly Field[] = [
+      [2, 0],
+      [2, 0],
+      [2, 0],
+      [4, 0],
+      [4, localsSize],
+    ];
+    centrals.push(
       Buffer.concat([
-        littleEndian([
-          [4, CENTRAL_HEADER],
-          [2, VERSION],
-          ...entry.shared,
-          [2, 0],
-          [2, 0],
-          [2, 0],
-          [4, 0],
-          [4, offsets[i] ?? 0],
-        ]),
+        littleEndian([[4, CENTRAL_HEADER], [2, VERSION], ...entry.shared, ...tail]),
         entry.name,
       ]),
-    ),
-  );
-  const localsSize = locals.reduce((sum, l) => sum + l.length, 0);
+    );
+    locals.push(local);
+    localsSize += local.length;
+  }
+  const central = Buffer.concat(centrals);
   const end = littleEndian([
     [4, END_OF_CENTRAL],
     [2, 0],
