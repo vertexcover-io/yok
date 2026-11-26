@@ -10,12 +10,12 @@ The `test-audit` workflow runs it after `test-duplicates`. It runs unattended an
 
 1. Makes one result per finding, with an id built from the audit, repo, problem type and test, so the same finding next week gets the same id.
 2. Writes the proof for someone who has not seen the code: where, a plain summary, and evidence blocks.
-3. Marks a change a person can judge as `needs_approval` with its diff, and a problem that needs investigating as `needs_work` with the prompt that would start it.
+3. Marks a duplicate whose keeper stays as `auto_fixed` and lists it for the fix stage, a change a person can judge as `needs_approval` with its diff, and a problem that needs investigating as `needs_work` with the prompt that would start it.
 
 ## Inputs and outputs
 
 - Reads: `audit`, `tests` and `duplicates`, the outputs of audit-start, run-tests and test-duplicates.
-- Produces: the `audit-sort.output.v1` JSON, `{ results }`.
+- Produces: the `audit-sort.output.v1` JSON, `{ results, autoFix, fixes }`; the workflow runs the fix stage and visual-pr on `fixes` when `autoFix` is true.
 
 ## Files
 

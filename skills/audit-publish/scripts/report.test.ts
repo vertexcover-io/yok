@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AuditMetric } from "@yok/sdk";
 import type { RunTestsRepo } from "../../run-tests/scripts/coverage.ts";
 import type { DuplicatesRepo } from "../../test-duplicates/scripts/duplicates.ts";
-import { buildReport, type PublishInput } from "./report.ts";
+import { buildReport, type PublishInput, settleAutoFix } from "./report.ts";
 
 const testsOf = (repo: string, overrides: Partial<RunTestsRepo> = {}): RunTestsRepo => ({
   repo,
@@ -51,7 +51,7 @@ const inputOf = (overrides: Partial<PublishInput> = {}): PublishInput => ({
   audit: { id: "a-1", commits: { yok: "abc" } },
   tests: { repos: [testsOf("yok")] },
   duplicates: { repos: [duplicatesOf("yok")] },
-  sorted: { results: ["a", "b", "c"].map(sortedResult) },
+  sorted: { results: ["a", "b", "c"].map(sortedResult), autoFix: false, fixes: [] },
   ...overrides,
 });
 
@@ -158,4 +158,42 @@ describe("buildReport", () => {
     );
     expect(failed.status).toBe("failed");
   });
+});
+
+describe("settleAutoFix", () => {
+  const autoFixed = {
+    id: "a-1:web:duplicates:copy",
+    repo: "web",
+    problemType: "duplicates" as const,
+    state: "auto_fixed" as const,
+    title: "copy duplicates one",
+    proof: {},
+    fix: { summary: "delete copy", diff: "-copy" },
+  };
+  const prs = new Map([["web", "https://github.com/o/web/pull/7"]]);
+
+  test("SC29: an auto-fix the fix stage closed stays auto_fixed with its commit c1 and its repo's PR", () => {
+    const settled = settleAutoFix(
+      autoFixed,
+      [{ id: autoFixed.id, status: "closed", commit: "c1" }],
+      prs,
+    );
+    expect(settled).toEqual({
+      ...autoFixed,
+      fix: { ...autoFixed.fix, commit: "c1", pr: "https://github.com/o/web/pull/7" },
+    });
+  });
+
+  test.each([
+    ["left by the fix stage", [{ id: autoFixed.id, status: "left" as const }]],
+    ["never reported", []],
+  ])(
+    "SC30: an auto-fix %s goes to needs_approval with its diff, no commit and no pr",
+    (_label, fixResults) => {
+      expect(settleAutoFix(autoFixed, fixResults, prs)).toEqual({
+        ...autoFixed,
+        state: "needs_approval",
+      });
+    },
+  );
 });

@@ -31,6 +31,7 @@ import {
   type CompletionIssue,
   findConsumedArtifacts,
   findDefaultIssues,
+  findNewestArtifacts,
   readOutput,
   SUMMARY_LIMIT,
   summaryIssues,
@@ -259,7 +260,7 @@ describe("findConsumedArtifacts", () => {
     artifacts: [file("plan", `artifacts/${path}`)],
   });
 
-  test("hands over the newest completed run's artifact of each consumed type, nested runs too", async () => {
+  test("SC27 (regression): hands over the newest completed run's artifact of each consumed type, nested runs too", async () => {
     const consumer = await compileAgent(
       "  - { id: make, type: agent, stage: stages/producer, input: {} }\n  - { id: use, type: agent, stage: stages/consumer, dependsOn: [make], input: {} }\n",
       "use",
@@ -276,6 +277,33 @@ describe("findConsumedArtifacts", () => {
 
     expect(findConsumedArtifacts(consumer.stage, runs)).toEqual([
       file("plan", "artifacts/second.md"),
+    ]);
+  });
+});
+
+describe("findNewestArtifacts", () => {
+  test("SC26: every pull-request of the newest node that listed one, A1 and W1, and not the older A0", () => {
+    const pr = (name: string, url: string) => ({ type: "pull-request", name, url });
+    const run = (completedAt: string, artifacts: NodeRun["artifacts"]): NodeRun => ({
+      nodeRunId: `nr-${completedAt}`,
+      nodeType: "agent",
+      status: "completed",
+      startedAt: "2026-09-28T09:00:00Z",
+      completedAt,
+      artifacts,
+    });
+    const runs = {
+      old: run("2026-09-28T09:01:00Z", [pr("api", "https://x/A0")]),
+      new: run("2026-09-28T09:02:00Z", [
+        pr("api", "https://x/A1"),
+        pr("web", "https://x/W1"),
+        file("plan"),
+      ]),
+    };
+
+    expect(findNewestArtifacts("pull-request", runs)).toEqual([
+      pr("api", "https://x/A1"),
+      pr("web", "https://x/W1"),
     ]);
   });
 });

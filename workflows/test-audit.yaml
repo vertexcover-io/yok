@@ -76,10 +76,52 @@ nodes:
       tests: "{{ nodes.run-tests.output }}"
       duplicates: "{{ nodes.test-duplicates.output }}"
 
+  # fix and visual-pr run only when audit-sort auto-fixed a duplicate. The no-op default keeps the
+  # switch completed, so audit-publish, which depends on it, is never skipped with a skipped fix.
+  - id: autofix
+    type: switch
+    expression: "{{ nodes.audit-sort.output.autoFix }}"
+    dependsOn: [create-workspace, audit-sort]
+    input:
+      workspace: "{{ nodes.create-workspace.output }}"
+      fixes: "{{ nodes.audit-sort.output.fixes }}"
+    cases:
+      - id: delete-duplicates
+        value: true
+        nodes:
+          - id: fix
+            type: agent
+            stage: fix
+            prompt: >-
+              These items come from the weekly test audit, not from a bug report. Each one
+              deletes a test that duplicates its keeper, named in the hint. A deletion has no
+              failing test to write first: delete the test, then prove the item by running the
+              keeper's file and the edited file, both passing. Every other step of the skill holds.
+            input:
+              workspace: "{{ inputs.workspace }}"
+              fixes: "{{ inputs.fixes }}"
+              source: audit
+              round: 1
+          - id: visual-pr
+            type: agent
+            stage: visual-pr
+            input:
+              workspace: "{{ inputs.workspace }}"
+              task: Delete the duplicate tests this week's test audit found; each one's keeper stays.
+    default:
+      - id: no-fixes
+        type: exec
+        runtime: sh
+        script: echo null
+        notify: false
+        input: {}
+        output:
+          zodSchema: Json
+
   - id: audit-publish
     type: agent
     stage: audit-publish
-    dependsOn: [audit-start, run-tests, test-duplicates, audit-sort]
+    dependsOn: [audit-start, run-tests, test-duplicates, audit-sort, autofix]
     input:
       audit: "{{ nodes.audit-start.output }}"
       tests: "{{ nodes.run-tests.output }}"

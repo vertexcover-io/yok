@@ -31,11 +31,44 @@ export const SortedResultSchema = AuditResultSchema.extend({
 );
 export type SortedResult = z.infer<typeof SortedResultSchema>;
 
+// One item for the fix stage, in the shape skills/fix reads; its id is the result's.
+const FixItemSchema = z.strictObject({
+  id: NonEmptyStringSchema,
+  repo: NonEmptyStringSchema,
+  file: NonEmptyStringSchema,
+  summary: NonEmptyStringSchema,
+  trigger: NonEmptyStringSchema,
+  hint: NonEmptyStringSchema,
+});
+
 export const AuditSortOutputSchema = z
-  .strictObject({ results: z.array(SortedResultSchema) })
+  .strictObject({
+    results: z.array(SortedResultSchema),
+    // whether the workflow runs the fix stage and visual-pr on fixes
+    autoFix: z.boolean(),
+    fixes: z.array(FixItemSchema),
+  })
   .refine(
     ({ results }) => new Set(results.map((result) => result.id)).size === results.length,
     "each result id appears once",
-  );
+  )
+  .refine(
+    ({ results }) =>
+      results.every(
+        (result) => result.state !== "auto_fixed" || result.problemType === "duplicates",
+      ),
+    "only a duplicate is auto_fixed",
+  )
+  .refine(({ results, fixes, autoFix }) => {
+    const autoFixed = results
+      .filter((result) => result.state === "auto_fixed")
+      .map((result) => result.id);
+    const items = fixes.map((item) => item.id);
+    return (
+      autoFix === items.length > 0 &&
+      items.length === autoFixed.length &&
+      items.every((id) => autoFixed.includes(id))
+    );
+  }, "fixes holds one item per auto_fixed result, and autoFix is true exactly when it has any");
 export type AuditSortOutput = z.infer<typeof AuditSortOutputSchema>;
 export const schemas = { "audit-sort.output.v1": AuditSortOutputSchema };

@@ -35,9 +35,14 @@ This stage runs unattended. Ask nobody anything.
    as `auth/session.test.ts:58`. `summary` says in two or three plain sentences what happened. Its
    `blocks` carry the evidence: a `test-run` block with each run's outcome, a `code` block with the
    test, a `quote` block with the failure message, a `diff` block with the fix.
-3. **Choose the state and write the fix.** A change you can show and a person can judge, such as
-   deleting a duplicate whose keeper stays or making a flaky wait deterministic, is
-   `needs_approval`, and its fix carries the `diff`. A problem whose cause or fix needs a person to
-   investigate is `needs_work`, and its fix carries the `prompt` that would start that work. Every
-   fix has a one-line `summary`.
-4. **Reply** with the `audit-sort.output.v1` JSON: `{ results: [...] }`.
+3. **Choose the state and write the fix.** Deleting a duplicate test whose named keeper stays is
+   the only change made without a person: it is `auto_fixed`, and its fix carries the `diff` that
+   deletes the test. Any other change you can show and a person can judge, such as making a flaky
+   wait deterministic, is `needs_approval`, and its fix carries the `diff`. A problem whose cause
+   or fix needs a person to investigate is `needs_work`, and its fix carries the `prompt` that
+   would start that work. Every fix has a one-line `summary`.
+4. **List the auto-fixes for the fix stage.** For each auto_fixed result, add one item to `fixes`
+   with the result's `id` and `repo`, the test's `file`, a `summary` naming the test to delete, a
+   `trigger` saying which keeper proves the same thing, and a `hint` naming the keeper's file and
+   line, which must still pass. Set `autoFix` to whether `fixes` has any item.
+5. **Reply** with the `audit-sort.output.v1` JSON: `{ results, autoFix, fixes }`.

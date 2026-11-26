@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
+import { readFileSync } from "node:fs";
 import {
   type AuditMetric,
   type AuditReport,
+  type AuditResult,
   type JsonValue,
   NonEmptyStringSchema,
   type TestAuditMetric,
@@ -154,7 +156,39 @@ const decideStatus = (metrics: readonly AuditMetric[], errors: number): AuditRep
   return errors > 0 ? "partial" : "complete";
 };
 
-export const buildReport = (input: PublishInput): AuditReport => {
+// What the fix stage did with each item, from its fix-result artifact.
+const FixResultsSchema = z.array(
+  z.object({
+    id: NonEmptyStringSchema,
+    status: z.enum(["closed", "left"]),
+    commit: NonEmptyStringSchema.optional(),
+  }),
+);
+type FixResults = z.infer<typeof FixResultsSchema>;
+
+// An auto-fix the fix stage closed carries its commit and PR; any other goes to a person.
+export const settleAutoFix = (
+  result: AuditResult,
+  fixResults: FixResults,
+  prs: ReadonlyMap<string, string>,
+): AuditResult => {
+  if (result.state !== "auto_fixed" || result.fix === null) return result;
+  const done = fixResults.find((item) => item.id === result.id);
+  if (done?.status !== "closed" || done.commit === undefined) {
+    return { ...result, state: "needs_approval" };
+  }
+  const pr = prs.get(result.repo);
+  return {
+    ...result,
+    fix: { ...result.fix, commit: done.commit, ...(pr === undefined ? {} : { pr }) },
+  };
+};
+
+export const buildReport = (
+  input: PublishInput,
+  fixResults: FixResults = [],
+  prs: ReadonlyMap<string, string> = new Map(),
+): AuditReport => {
   const repos = Object.keys(input.audit.commits).sort();
   const tests = repos.map(
     (repo) => input.tests.repos.find((found) => found.repo === repo) ?? missingTests(repo),
@@ -171,9 +205,25 @@ export const buildReport = (input: PublishInput): AuditReport => {
   return {
     status: decideStatus(metrics, errors),
     metrics,
-    results: input.sorted.results,
+    results: input.sorted.results.map((result) => settleAutoFix(result, fixResults, prs)),
   };
 };
+
+// node show keys a consumed artifact TYPE, or TYPE:NAME when its name differs; visual-pr names
+// each pull-request after its repo.
+const readFixResults = (consumed: Readonly<Record<string, string>>): FixResults => {
+  const path = Object.entries(consumed).find(([key]) => key.startsWith("fix-result"))?.[1];
+  return path === undefined ? [] : FixResultsSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+};
+
+const readPullRequests = (
+  consumed: Readonly<Record<string, string>>,
+): ReadonlyMap<string, string> =>
+  new Map(
+    Object.entries(consumed).flatMap(([key, url]) =>
+      key.startsWith("pull-request:") ? [[key.slice("pull-request:".length), url] as const] : [],
+    ),
+  );
 
 export const main = async (_argv: readonly string[]): Promise<void> => {
   const facts = NodeFactsSchema.safeParse(JSON.parse(await Bun.stdin.text()));
@@ -182,7 +232,9 @@ export const main = async (_argv: readonly string[]): Promise<void> => {
     process.exitCode = 1;
     return;
   }
-  process.stdout.write(`${JSON.stringify(buildReport(facts.data.input))}\n`);
+  const { input, consumed } = facts.data;
+  const report = buildReport(input, readFixResults(consumed), readPullRequests(consumed));
+  process.stdout.write(`${JSON.stringify(report)}\n`);
 };
 
 if (import.meta.main) {

@@ -12,6 +12,11 @@ outputs:
   description: The published audit's id and status, and how many metrics and results it holds.
   schema: audit-publish.output.v1
   module: scripts/report.ts
+consumes:
+  - artifact: fix-result
+    optional: true
+  - artifact: pull-request
+    optional: true
 protocols: []
 scopes: []
 references:

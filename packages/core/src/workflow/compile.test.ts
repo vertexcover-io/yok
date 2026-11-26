@@ -1420,6 +1420,7 @@ describe("the shipped test-audit workflow", () => {
       "run-tests",
       "test-duplicates",
       "audit-sort",
+      "autofix",
       "audit-publish",
       "audit-close",
     ]);
