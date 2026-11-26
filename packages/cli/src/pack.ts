@@ -26,11 +26,18 @@ const littleEndian = (fields: readonly Field[]): Buffer =>
     }),
   );
 
+// The local times a DOS date can hold.
+const DOS_FIRST = new Date(1980, 0, 1).getTime();
+const DOS_LAST = new Date(2107, 11, 31, 23, 59, 58).getTime();
+
 // MS-DOS packs local time into 16 bits each: seconds are stored halved, years count from 1980.
-const dosDateTime = (at: Date): readonly Field[] => [
-  [2, (at.getHours() << 11) | (at.getMinutes() << 5) | (at.getSeconds() >> 1)],
-  [2, ((at.getFullYear() - 1980) << 9) | ((at.getMonth() + 1) << 5) | at.getDate()],
-];
+const dosDateTime = (modified: Date): readonly Field[] => {
+  const at = new Date(Math.min(Math.max(modified.getTime(), DOS_FIRST), DOS_LAST));
+  return [
+    [2, (at.getHours() << 11) | (at.getMinutes() << 5) | (at.getSeconds() >> 1)],
+    [2, ((at.getFullYear() - 1980) << 9) | ((at.getMonth() + 1) << 5) | at.getDate()],
+  ];
+};
 
 const zipFiles = (files: readonly ZipFile[]): Buffer => {
   const entries = files.map((file) => {

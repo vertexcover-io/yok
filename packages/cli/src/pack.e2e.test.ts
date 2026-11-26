@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registryPath, type WorkflowRun } from "@yok/sdk";
@@ -99,6 +107,16 @@ describe("yok pack", () => {
     expect(results.filter((result) => result.code !== 0)).toEqual([]);
     expect(unzip("-Z1", join(cwd, ".yok", "fix-login.zip"))).toContain("fix-login/state.json");
   }, 60_000);
+
+  test("a file dated before 1980, which a zip cannot store, is packed as 1980-01-01", async () => {
+    const { pack, cwd } = await setup();
+    utimesSync(join(cwd, ".yok", "fix-login", "state.json"), 0, 0);
+    const zipPath = join(cwd, ".yok", "fix-login.zip");
+
+    expect(pack("fix-login").code).toBe(0);
+    expect(unzip("-t", zipPath)).toContain("No errors detected");
+    expect(unzip("-Z", "-T", zipPath, "fix-login/state.json")).toContain("19800101.000000");
+  }, 30_000);
 
   test("an unknown run name exits 1 naming the run, and writes no zip", async () => {
     const { pack, cwd } = await setup();
