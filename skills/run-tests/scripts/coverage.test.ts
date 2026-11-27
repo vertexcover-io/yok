@@ -54,6 +54,26 @@ describe("measureCoverage", () => {
     );
     expect(measured).toEqual({ coverage: 0, coverageChanged: 0, changedLines: 1 });
   });
+
+  test("SC16: a file in two lcov records keeps every line, and a line either record hit counts as hit", () => {
+    const merged = [
+      "SF:a.ts\nDA:1,1\nDA:2,0\nend_of_record",
+      "SF:b.ts\nDA:1,0\nend_of_record",
+      "SF:a.ts\nDA:2,3\nDA:3,0\nend_of_record",
+    ].join("\n");
+
+    const lines = parseLcov(merged, "/repo");
+    const measured = measureCoverage(lines, new Map());
+
+    expect(lines.get("a.ts")).toEqual(
+      new Map([
+        [1, 1],
+        [2, 3],
+        [3, 0],
+      ]),
+    );
+    expect(measured.coverage).toBe(50);
+  });
 });
 
 describe("RunTestsRepoSchema", () => {

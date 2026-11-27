@@ -63,7 +63,8 @@ export const RunTestsOutputSchema = z.strictObject({ repos: z.array(RunTestsRepo
 export type RunTestsOutput = z.infer<typeof RunTestsOutputSchema>;
 export const schemas = { "run-tests.output.v1": RunTestsOutputSchema };
 
-// lcov: SF:FILE opens a file's record and DA:LINE,HITS is one measured line.
+// lcov: SF:FILE opens a file's record and DA:LINE,HITS is one measured line. A merged report can
+// hold several records for one file, so a repeated file adds to its lines and hits add up.
 export const parseLcov = (
   text: string,
   root: string,
@@ -72,12 +73,16 @@ export const parseLcov = (
   let current: Map<number, number> | undefined;
   for (const line of text.split("\n")) {
     if (line.startsWith("SF:")) {
-      current = new Map();
-      files.set(relative(root, resolve(root, line.slice(3).trim())), current);
+      const path = relative(root, resolve(root, line.slice(3).trim()));
+      current = files.get(path) ?? new Map();
+      files.set(path, current);
       continue;
     }
     const hit = /^DA:(\d+),(\d+)/.exec(line);
-    if (hit !== null && current !== undefined) current.set(Number(hit[1]), Number(hit[2]));
+    if (hit !== null && current !== undefined) {
+      const at = Number(hit[1]);
+      current.set(at, (current.get(at) ?? 0) + Number(hit[2]));
+    }
   }
   return files;
 };
