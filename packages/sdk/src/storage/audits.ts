@@ -140,10 +140,28 @@ const replaceMetrics = (db: Db, auditRunId: string, metrics: readonly AuditMetri
   }
 };
 
+// What an apply run wrote with setFix; only setFix changes it, so a retried finish carries it over.
+const outcomeOf = (fix: AuditFix | null): Partial<AuditFix> => {
+  if (fix === null) return {};
+  const { commit, pr, error, at } = fix;
+  return Object.fromEntries(
+    Object.entries({ commit, pr, error, at }).filter(([, value]) => value !== undefined),
+  );
+};
+
 // In place, never delete and insert: a deleted result would take its events with it.
 const upsertResults = (db: Db, auditRunId: string, results: readonly AuditResult[]): void => {
   for (const result of results) {
-    const row = { ...result, auditRunId, updatedAt: now() };
+    const stored = db
+      .select({ fix: tables.auditResults.fix })
+      .from(tables.auditResults)
+      .where(eq(tables.auditResults.id, result.id))
+      .get();
+    const outcome = outcomeOf(
+      stored === undefined ? null : AuditResultSchema.shape.fix.parse(stored.fix),
+    );
+    const fix = result.fix === null ? null : { ...result.fix, ...outcome };
+    const row = { ...result, fix, auditRunId, updatedAt: now() };
     db.insert(tables.auditResults)
       .values(row)
       .onConflictDoUpdate({ target: tables.auditResults.id, set: row })
@@ -318,6 +336,14 @@ const setFixIn = (
     if (row === undefined) return { ok: false, error: `audit result ${resultId} not found` };
     const { fix } = toResult(row);
     if (fix === null) return { ok: false, error: `audit result ${resultId} has no fix` };
+    // A pr is where a commit went; pendingWork reads applied from the commit alone.
+    if (
+      !("clear" in patch) &&
+      patch.pr !== undefined &&
+      (patch.commit ?? fix.commit) === undefined
+    ) {
+      return { ok: false, error: `audit result ${resultId} has no commit for its pr` };
+    }
     const stored = tx
       .update(tables.auditResults)
       .set({ fix: patchFix(fix, patch, at) })
