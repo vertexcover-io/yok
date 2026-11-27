@@ -27,15 +27,20 @@ import { type Db, IMMEDIATE, now } from "./common.ts";
 // One spelling per instant: "…00Z" and "…00.000Z" are one period and sort as one.
 const instant = (iso: string): string => new Date(iso).toISOString();
 
-const toRun = (row: typeof tables.auditRuns.$inferSelect): AuditRun => AuditRunSchema.parse(row);
+// updatedAt is kept for whoever reads yok.db by hand; no caller reads it, so it stays out of the
+// returned shapes, as in storage/triggers.ts.
+const toRun = ({ updatedAt: _updatedAt, ...row }: typeof tables.auditRuns.$inferSelect): AuditRun =>
+  AuditRunSchema.parse(row);
 
 const toMetric = ({
   auditRunId: _auditRunId,
+  updatedAt: _updatedAt,
   ...row
 }: typeof tables.auditMetrics.$inferSelect): AuditMetric => AuditMetricSchema.parse(row);
 
 const toResult = ({
   auditRunId: _auditRunId,
+  updatedAt: _updatedAt,
   ...row
 }: typeof tables.auditResults.$inferSelect): AuditResult => AuditResultSchema.parse(row);
 
@@ -113,7 +118,9 @@ const startIn = (db: Db, start: AuditStart, at: string): Result<AuditRun> =>
       status: "running",
       createdAt: at,
     });
-    tx.insert(tables.auditRuns).values(run).run();
+    tx.insert(tables.auditRuns)
+      .values({ ...run, updatedAt: at })
+      .run();
     return { ok: true, value: run };
   }, IMMEDIATE);
 
@@ -121,7 +128,7 @@ const replaceMetrics = (db: Db, auditRunId: string, metrics: readonly AuditMetri
   db.delete(tables.auditMetrics).where(eq(tables.auditMetrics.auditRunId, auditRunId)).run();
   for (const metric of metrics) {
     db.insert(tables.auditMetrics)
-      .values({ ...metric, auditRunId })
+      .values({ ...metric, auditRunId, updatedAt: now() })
       .run();
   }
 };
@@ -129,7 +136,7 @@ const replaceMetrics = (db: Db, auditRunId: string, metrics: readonly AuditMetri
 // In place, never delete and insert: a deleted result would take its events with it.
 const upsertResults = (db: Db, auditRunId: string, results: readonly AuditResult[]): void => {
   for (const result of results) {
-    const row = { ...result, auditRunId };
+    const row = { ...result, auditRunId, updatedAt: now() };
     db.insert(tables.auditResults)
       .values(row)
       .onConflictDoUpdate({ target: tables.auditResults.id, set: row })
