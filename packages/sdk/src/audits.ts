@@ -17,7 +17,14 @@ export const AuditRunSchema = z.strictObject({
 export type AuditRun = z.infer<typeof AuditRunSchema>;
 export type AuditName = AuditRun["audit"];
 
-export const AuditStartSchema = AuditRunSchema.omit({ id: true, status: true, createdAt: true });
+export const AuditStartSchema = AuditRunSchema.omit({
+  id: true,
+  status: true,
+  createdAt: true,
+}).refine((start) => Date.parse(start.periodStart) < Date.parse(start.periodEnd), {
+  message: "periodStart must be before periodEnd",
+  path: ["periodStart"],
+});
 export type AuditStart = z.infer<typeof AuditStartSchema>;
 
 export const AuditMetricSchema = z.strictObject({

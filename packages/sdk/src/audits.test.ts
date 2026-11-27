@@ -206,6 +206,56 @@ describe("storage.audits", () => {
     expect(qa.ok).toBe(true);
   });
 
+  test("SC7230: an audit naming a project other than its run's is refused and writes nothing", async () => {
+    const storage = await seeded();
+    const added = await storage.projects.add("api", {
+      path: "/abs/api",
+      addedBy: { channel: "cli" },
+      addedAt: AT,
+    });
+    if (!added.ok) throw new Error(added.error);
+
+    const refused = await storage.audits.start(week("r-1", { project: "api" }));
+
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.error).toContain("belongs to project web");
+    expect(await storage.audits.list("api", "test")).toEqual([]);
+  });
+
+  test("SC7231: a run starting again keeps its audit's period, and is refused for another audit name", async () => {
+    const storage = await seeded();
+    const first = await startOk(storage, week("r-1"));
+
+    const again = await startOk(
+      storage,
+      week("r-1", { periodEnd: "2026-11-08T00:05:00.000Z", commits: { web: "9d1e2f0" } }),
+    );
+    const renamed = await storage.audits.start(week("r-1", { audit: "qa" }));
+
+    expect(again).toEqual(first);
+    expect(renamed.ok).toBe(false);
+    if (renamed.ok) return;
+    expect(renamed.error).toContain("already holds the test audit");
+    expect(await storage.audits.list("web", "test")).toEqual([first]);
+    expect(await storage.audits.list("web", "qa")).toEqual([]);
+  });
+
+  test("SC7232: a period that does not start before it ends is refused", async () => {
+    const storage = await seeded();
+
+    const reversed = storage.audits.start(
+      week("r-1", { periodStart: "2026-11-08T00:00:00Z", periodEnd: "2026-11-01T00:00:00Z" }),
+    );
+    const empty = storage.audits.start(
+      week("r-1", { periodStart: "2026-11-08T00:00:00Z", periodEnd: "2026-11-08T00:00:00.000Z" }),
+    );
+
+    await expect(reversed).rejects.toThrow("periodStart must be before periodEnd");
+    await expect(empty).rejects.toThrow("periodStart must be before periodEnd");
+    expect(await storage.audits.list("web", "test")).toEqual([]);
+  });
+
   test("SC7204: a finish with a result id outside its audit run, or for an unknown audit run, writes nothing", async () => {
     const storage = await seeded();
     const started = await startOk(storage, week("r-1"));
@@ -313,9 +363,8 @@ describe("storage.audits", () => {
     const storage = await seeded();
 
     await expect(storage.audits.start(week("r-missing"))).rejects.toThrow("FOREIGN KEY");
-    await expect(storage.audits.start(week("r-2", { project: "gone" }))).rejects.toThrow(
-      "FOREIGN KEY",
-    );
+    const gone = await storage.audits.start(week("r-2", { project: "gone" }));
+    expect(gone.ok).toBe(false);
 
     const started = await startOk(storage, week("r-1"));
     await storage.audits.finish(started.id, {
