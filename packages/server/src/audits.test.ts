@@ -440,6 +440,20 @@ describe("POST /audits/results/:resultId/events", () => {
     expect(response.status).toBe(409);
   });
 
+  test("SC7320: an Accept made after the apply run failed shows no apply run, so the page reads it as waiting", async () => {
+    const { app, audit, resultId } = await applying("failed");
+    const before = await getJson(app, `/audits/${audit.id}`);
+
+    await click(app, resultId, { type: "accepted" });
+    const after = await getJson(app, `/audits/${audit.id}`);
+
+    expect(before.body.results[0].applyRun).toEqual({ id: "r-apply", status: "failed" });
+    expect(after.body.results[0]).toMatchObject({
+      decision: { type: "accepted" },
+      applyRun: null,
+    });
+  });
+
   test("SC7312: Accept is taken once the result's apply run has ended", async () => {
     const { app, resultId } = await applying("failed");
 

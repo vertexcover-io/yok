@@ -65,11 +65,16 @@ const readAudit = async (auditRunId: string, deps: AuditRouteDeps) => {
   if (record === undefined) return undefined;
   const run = await storage.runs.findRun(record.run.runId);
   const state = await readStateOrNull(storage, record.run.runId);
+  // A click still owed work was made after the result's last run started, so that run is an
+  // earlier try: showing it would pin a retried Accept to the old failure until a reload.
+  const owed = new Set(
+    (await storage.audits.pendingWork(record.run.project)).map((work) => work.result.id),
+  );
   const results = await Promise.all(
     record.results.map(async (result) => ({
       ...result,
       decision: (await storage.audits.decision(result.id)) ?? null,
-      applyRun: await describeApplyRun(result.id, deps),
+      applyRun: owed.has(result.id) ? null : await describeApplyRun(result.id, deps),
     })),
   );
   return {
