@@ -270,6 +270,8 @@ describe("GET /audits", () => {
   test.each([
     "/audits/projects?audit=nope",
     "/audits?project=web&audit=test&limit=0",
+    "/audits?project=web&audit=test&limit=101",
+    `/audits?project=web&audit=test&limit=${"9".repeat(400)}`,
     "/audits/metrics?project=web&audit=test",
   ])("SC7307: a bad query string is refused at the door: %s", async (path) => {
     const app = createApi(buildDeps());
@@ -385,7 +387,7 @@ describe("POST /audits/results/:resultId/events", () => {
   test.each([
     ["accepted", 409],
     ["undone", 409],
-    ["rejected", 201],
+    ["rejected", 409],
   ])("SC7311: while the result's apply run is going, %s answers %d", async (type, status) => {
     const { app, resultId } = await applying("running");
 

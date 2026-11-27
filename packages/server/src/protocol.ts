@@ -155,7 +155,8 @@ export type RetryRunBody = z.infer<typeof RetryRunBodySchema>;
 const LimitSchema = z
   .string()
   .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
-  .transform(Number);
+  .transform(Number)
+  .pipe(z.int().max(Number.MAX_SAFE_INTEGER, "limit is too large"));
 
 // GET /runs. Query values arrive as text; status is one comma list.
 export const ListRunsQuerySchema = z
@@ -183,7 +184,8 @@ export const AuditProjectsQuerySchema = z.strictObject({ audit: AuditRunSchema.s
 // GET /audits: the run picker, newest period first
 export const AuditRunsQuerySchema = AuditProjectsQuerySchema.extend({
   project: SlugSchema,
-  limit: LimitSchema.default(12),
+  // the page asks for 12; past 100 a picker is no longer a picker
+  limit: LimitSchema.pipe(z.int().max(100, "limit must be at most 100")).default(12),
 });
 
 // GET /audits/metrics: the trend charts of one repo

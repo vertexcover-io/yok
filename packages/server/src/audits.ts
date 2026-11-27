@@ -1,5 +1,6 @@
 import type { ILogger, IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
 import {
+  type AuditAwaitingOutcome,
   type AuditPendingWork,
   type AuditResult,
   type AuditResultEvent,
@@ -116,7 +117,8 @@ const recordClick = async (
   if (record?.results.some((result) => result.id === resultId) !== true) {
     return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
   }
-  const applyRun = type === "rejected" ? undefined : await findApplyRun(resultId, deps.storage);
+  // Reject too: the run would still apply the fix, leaving a rejected result with a commit.
+  const applyRun = await findApplyRun(resultId, deps.storage);
   if (applyRun !== undefined && (await isApplyRunGoing(applyRun, deps))) {
     return errorResponse(
       c,
@@ -208,9 +210,10 @@ const readFix = async (resultId: string, storage: IStorage) => {
   return record?.results.find((entry) => entry.id === resultId)?.fix ?? null;
 };
 
-const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promise<void> => {
-  const started = await deps.storage.audits.run(result.id);
-  if (started === undefined || isOutcomeWritten(result.fix, started)) return;
+const failIfAbandoned = async (
+  { result, started }: AuditAwaitingOutcome,
+  deps: AuditTickDeps,
+): Promise<void> => {
   // a click since the run started owes the next run its work; an error now would hide it
   const clicked = await deps.storage.audits.decision(result.id);
   if (clicked !== undefined && clicked.ts > started.ts) return;
@@ -218,20 +221,18 @@ const failIfAbandoned = async (result: AuditResult, deps: AuditTickDeps): Promis
   const runId = started.startedRunId;
   const run = runId === null ? undefined : await deps.storage.runs.findRun(runId);
   if (run !== undefined && (await isApplyRunGoing(run, deps))) return;
-  // the run may have written its outcomes since the audit was read, just before it ended
+  // the run may have written its outcomes since they were listed, just before it ended
   if (isOutcomeWritten(await readFix(result.id, deps.storage), started)) return;
   await deps.storage.audits.setFix(result.id, {
     error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
   });
 };
 
-// Every test audit result of every project, each tick: cheap at today's volume, and grows with
-// every audit kept.
+// Only the results still waiting on a run, so a tick costs the same however many audits are kept.
 export const failAbandonedApplies = async (deps: AuditTickDeps): Promise<void> => {
   for (const project of Object.keys(await deps.storage.projects.list())) {
-    for (const auditRun of await deps.storage.audits.list(project, "test")) {
-      const record = await deps.storage.audits.read(auditRun.id);
-      for (const result of record?.results ?? []) await failIfAbandoned(result, deps);
+    for (const waiting of await deps.storage.audits.awaitingOutcome(project)) {
+      await failIfAbandoned(waiting, deps);
     }
   }
 };
