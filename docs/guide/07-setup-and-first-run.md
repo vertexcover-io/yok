@@ -122,9 +122,9 @@ yok-dev retry step-demo
 When the step failed waiting on a person's answer (every agent step's error is recorded that way
 when the run's `interaction` policy is off), deal with what it asked first, then pass `--answered`.
 
-You know it worked when `cat .yok/step-demo/state.json | jq .status` prints `"completed"` and `.yok/step-demo/event.jsonl` has a few dozen lines.
+You know it worked when `yok-dev orchestrate get status --run step-demo` prints `"completed"` and `yok-dev orchestrate events --run step-demo` prints a few dozen events.
 
-Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will spend on this codebase.
+Read those events once, top to bottom. It is the best ten minutes you will spend on this codebase.
 
 ## 7. Second run: every node type
 
@@ -132,7 +132,7 @@ Read that `event.jsonl` once, top to bottom. It is the best ten minutes you will
 yok-dev run demo-workflows/kitchen-sink.yaml --prompt "pick any topic" --config /tmp/yok-local.yaml
 ```
 
-This one uses agent nodes with demo stages, a loop that fails its first pass on purpose, a switch, a skipped branch, and an included workflow. The comment at the top of the YAML says what each node should do. Watch it in the viewer. When it ends, compare `state.json`'s `nodeRuns` against that comment.
+This one uses agent nodes with demo stages, a loop that fails its first pass on purpose, a switch, a skipped branch, and an included workflow. The comment at the top of the YAML says what each node should do. Watch it in the viewer. When it ends, compare what `yok-dev orchestrate get nodeRuns --run NAME` prints, NAME being the name the run took, against that comment.
 
 ## 8. The real thing
 
@@ -274,7 +274,7 @@ yok-dev server stop             # stop it; tmux sessions keep running
 yok-dev server restart          # stop it if running, start it in the background
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
-yok-dev project remove NAME     # forget one; --purge also deletes a folder yok cloned
+yok-dev project rm NAME         # forget one; --force deletes its runs and a folder yok cloned
 yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
@@ -282,6 +282,7 @@ yok-dev --remote retry NAME --project P --answered  # bring a failed run back th
 yok-dev --remote project list   # the server's projects; also doctor, trigger
 tail -f ~/.yok-dev/server.log   # what the server is doing
 yok-dev view --run-id r-…       # reopen a run's page
+yok-dev rm NAME                 # delete a finished run's record and .yok folder; frees its name
 tmux ls                         # every agent session on the machine
 yok-dev verify path/to.yaml     # compile a workflow, print the first error
 yok-dev trigger list            # every cron trigger, its next and last fire
@@ -297,9 +298,11 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 
 **The ticket-fetcher stage stops on a missing API key.** Your prompt names a ticket and the key for its platform is not set: `LINEAR_API_KEY` for Linear, `ASANA_API_KEY` for Asana, or the key a project-added provider names. Add it to `.env`, or describe the task in a plain prompt. The stage reads the key from the project's `.env`, then the environment, so on a remote server the key belongs in the project's `.env`.
 
-**Two servers, two registries.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`. A run started by one is invisible to the other. Pick one for the day.
+**Two servers, two databases.** `yok` (release) and `yok-dev` (source) keep separate homes, `~/.yok` and `~/.yok-dev`, each with its own `yok.db`. A run started by one is invisible to the other. Pick one for the day.
 
-**The agent stopped and nothing happens.** Attach and read the screen. If it is asking a question, answer it. If it ended its turn, the Stop hook should have sent it back; look for `hooks.stop.called` at the end of `event.jsonl` and read its `reason`.
+**The agent stopped and nothing happens.** Attach and read the screen. If it is asking a question, answer it. If it ended its turn, the Stop hook should have sent it back; look for `hooks.stop.called` at the end of `yok orchestrate events --run NAME` and read its `reason`.
+
+**Runs from before an update are missing.** A yok from before `yok.db` kept its records in files: `registry.json`, `users.json`, `projects.yaml`, `triggers.json` in the home, and `state.json`, `event.jsonl`, `comments.json` in each run folder. Run `yok import-files` once, with no run going. It copies them into `yok.db`, skips a run whose folder is gone, and renames each file it read with `.imported`; `users.json.imported` keeps no GitHub token, since `yok.db` now holds them. Running it again after a failure is safe: it skips what it already stored.
 
 **`bun run lint` finds no files inside `.worktrees/`.** `biome.json` excludes that path. Lint from the main checkout, or use a temporary Biome config without the exclusion.
 

@@ -1,10 +1,10 @@
 /// <reference path="./vendor-sh.d.ts" />
 import { homedir } from "node:os";
+import { dirname, join, matchesGlob, resolve } from "node:path";
 import {
   type HookDeps,
   type PreToolUseHandler,
   readPolicies,
-  registryPath,
   spawn,
   type ToolCall,
   type ToolUse,
@@ -23,59 +23,72 @@ import {
   recordRunEvent,
   recordSessionEvent,
 } from "./common.ts";
-import { expandPath, type PathBase, shellWriteTargets } from "./write-targets.ts";
-
-export type ProtectedRecord =
-  | Readonly<{ kind: "state" | "events"; runName: string; path: string }>
-  | Readonly<{ kind: "registry"; path: string }>;
+import {
+  expandPath,
+  type PathBase,
+  shellRemovedTargets,
+  shellWriteTargets,
+} from "./write-targets.ts";
 
 const ALLOW: ToolVerdict = { kind: "allow" };
-const RUN_RECORD = /[\\/]\.yok[\\/]([^\\/]+)[\\/](state\.json|event\.jsonl)$/;
+// SQLite's write-ahead log and shared-memory files are the database as much as yok.db is.
+const DATABASE_FILES = ["yok.db", "yok.db-wal", "yok.db-shm"];
 const BASH_ANTIPATTERNS_TIMEOUT_MS = 10_000;
 
-export const protectedRecordOf = (path: string, base: PathBase): ProtectedRecord | undefined => {
+const GLOB = /[*?[]/;
+
+const matchesPath = (target: string, path: string): boolean =>
+  GLOB.test(target) ? matchesGlob(path, target) : target === path;
+
+// The absolute path when PATH is one of the database's files, or a wildcard matching one.
+export const databaseFileOf = (path: string, base: PathBase): string | undefined => {
   const abs = expandPath(path, base);
   if (abs === undefined) return undefined;
-  if (abs === registryPath(base.yokHome)) return { kind: "registry", path: abs };
-  const match = RUN_RECORD.exec(abs);
-  const runName = match?.[1];
-  if (runName === undefined) return undefined;
-  return { kind: match?.[2]?.startsWith("state") ? "state" : "events", runName, path: abs };
+  const files = DATABASE_FILES.map((file) => join(base.yokHome, file));
+  return files.some((file) => matchesPath(abs, file)) ? abs : undefined;
 };
 
-const recordMessage = (record: ProtectedRecord): string => {
-  if (record.kind === "registry") {
-    return (
-      `${record.path} is the yok registry, so this call was refused. It changes only ` +
-      "through `yok orchestrate init NAME` and " +
-      "`yok orchestrate link-session --run NAME --agent AGENT --session-id ID`. " +
-      "Reading it is fine."
-    );
-  }
-  const run = record.runName;
-  return (
-    `${record.path} is written only by the orchestrate script, so this call was refused. ` +
-    `Move the run with \`yok orchestrate next --run ${run}\`, record a node with ` +
-    `\`yok orchestrate exec|done NODE_RUN_ID --run ${run}\`, and add an event with ` +
-    `\`yok orchestrate emit TYPE --run ${run} --source SKILL\`. Reading the file is fine.`
-  );
-};
+// The yok home and every folder above it: deleting or moving one takes the database with it.
+const foldersHolding = (yokHome: string): readonly string[] =>
+  dirname(yokHome) === yokHome ? [yokHome] : [yokHome, ...foldersHolding(dirname(yokHome))];
 
-const callTargets = (call: ToolCall, base: PathBase): readonly string[] => {
+const databaseRefusal = (path: string, what: string): string =>
+  `${path} ${what} yok's database, so this call was refused. Change a run only through ` +
+  "`yok orchestrate` (`next`, `exec`, `done`, `emit`, `link-session`). Reading it is fine.";
+
+type Refusal = Readonly<{ path: string; message: string }>;
+
+const writeTargets = (call: ToolCall, base: PathBase): readonly string[] => {
   if (call.kind === "file-write") return [call.path];
   return call.kind === "shell" ? shellWriteTargets(call.command, base) : [];
 };
 
-// Refuses a call that writes, moves or deletes a run's state.json or event.jsonl, or the registry.
+const fileRefusal = (call: ToolCall, base: PathBase): Refusal | undefined => {
+  const path = writeTargets(call, base)
+    .map((target) => databaseFileOf(target, base))
+    .find((found) => found !== undefined);
+  if (path === undefined) return undefined;
+  return { path, message: databaseRefusal(path, GLOB.test(path) ? "matches" : "is") };
+};
+
+const folderRefusal = (call: ToolCall, base: PathBase): Refusal | undefined => {
+  if (call.kind !== "shell") return undefined;
+  const folders = foldersHolding(resolve(base.yokHome));
+  const path = shellRemovedTargets(call.command, base, DATABASE_FILES).find((target) =>
+    folders.some((folder) => matchesPath(target, folder)),
+  );
+  if (path === undefined) return undefined;
+  const what = GLOB.test(path) ? "matches the folder that holds" : "holds";
+  return { path, message: databaseRefusal(path, what) };
+};
+
+// Refuses a call that writes, moves or deletes yok's database.
 export const recordGuard: PreToolUseHandler = {
   name: "record-guard",
   run: async (use, deps) => {
     const base = { cwd: use.cwd, home: homedir(), yokHome: yokHome(deps.env) };
-    const record = callTargets(use.call, base)
-      .map((target) => protectedRecordOf(target, base))
-      .find((found) => found !== undefined);
-    if (record === undefined) return ALLOW;
-    return { kind: "deny", message: recordMessage(record), path: record.path };
+    const refusal = fileRefusal(use.call, base) ?? folderRefusal(use.call, base);
+    return refusal === undefined ? ALLOW : { kind: "deny", ...refusal };
   },
 };
 

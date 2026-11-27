@@ -22,4 +22,11 @@ printf '%s\n' 'import { z } from "zod";' 'export const main = () => { console.lo
 answer=$("$bin" orchestrate script "$tmp/answer.ts")
 [ "$answer" = "42" ] || { echo "the binary did not run a script with its own zod" >&2; exit 1; }
 
+# yok ls starts a server in the empty home, and the server opens yok.db with its migration.
+home="$tmp/home"
+trap 'YOK_HOME="$home" "$bin" server stop >/dev/null 2>&1 || true' EXIT
+YOK_HOME="$home" "$bin" ls --json >/dev/null
+[ "$(ls -l "$home/yok.db" | cut -c1-10)" = "-rw-------" ] ||
+  { echo "the binary did not create yok.db with mode 0600" >&2; exit 1; }
+
 echo "ok: $bin $version runs without bun"

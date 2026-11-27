@@ -3,15 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createGit,
-  noopLogger,
-  type RegistryReader,
-  readState,
-  runDirOf,
-  type SavedPolicies,
-} from "@yok/sdk";
-import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { createGit, noopLogger, readState, runDirOf, type SavedPolicies } from "@yok/sdk";
+import { memoryStorage } from "@yok/sdk/internal";
 import { questionGuard, recordGuard } from "../hooks/pre-tool-use.ts";
 import { continueWorkflow } from "../hooks/stop.ts";
 import { initializeRun, nextStep } from "../runs.ts";
@@ -19,12 +12,11 @@ import { claudeAdapter } from "./claude-hooks.ts";
 import { codexAdapter, readCodexTranscript } from "./codex-hooks.ts";
 import { agentAdapters } from "./index.ts";
 
-const NO_RUNS: RegistryReader = {
-  findRun: async () => undefined,
-  findRunsByName: async () => [],
-  listRuns: async () => [],
+const deps = {
+  storage: memoryStorage(),
+  env: { YOK_RUN_ID: "r-1", YOK_HOME: "/home/u/.yok" },
+  log: noopLogger,
 };
-const deps = { registry: NO_RUNS, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
 
 const line = (type: string, payload: unknown): string =>
   JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", type, payload });
@@ -47,15 +39,15 @@ const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" 
     workflowPath,
     "name: ask\nnodes:\n  - { id: ask, type: agent, prompt: hi, input: {} }\n",
   );
-  const registry = createRegistry(
-    join(await mkdtemp(join(tmpdir(), "codex-home-")), "registry.json"),
-  );
-  await registry.addRun({
+  const storage = memoryStorage();
+  const addedAt = "2026-10-15T10:00:00Z";
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
     id: "r-1",
+    project: "repo",
     workflow: "ask",
     workflowPath,
     inputs: {},
-    cwd,
     sessions: [{ agent, sessionId: "s1" }],
     name: null,
     terminal: null,
@@ -65,7 +57,7 @@ const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" 
     ...(policies === undefined ? {} : { policies }),
   });
   const init = await initializeRun({
-    registry,
+    storage,
     runId: "r-1",
     name: "feat-x",
     git: createGit(),
@@ -74,11 +66,11 @@ const openAgentRun = async (policies?: SavedPolicies, agent: "codex" | "claude" 
   });
   if (!init.ok) throw new Error(init.error);
   const run = { id: "r-1", cwd, name: "feat-x" };
-  const opened = await nextStep(run, agentAdapters);
+  const opened = await nextStep(storage, run, agentAdapters);
   if (!opened.ok) throw new Error(opened.error);
   const runDir = runDirOf(cwd, "feat-x");
-  const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  const events = () => jsonlEventStore(runDir).read();
+  const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
+  const events = () => storage.runs.readEvents("r-1");
   return { run, runDir, deps, events };
 };
 
@@ -129,7 +121,7 @@ describe("an agent that keeps stopping with its node open", () => {
   ] as const)(
     "SC525: with interaction off, a %s agent's first stop is sent back with the policy's message, the second with next, and the node fails as needs-input with the agent's question",
     async (agent, adapter, stdin) => {
-      const { run, runDir, deps, events } = await openAgentRun(INTERACTION_OFF, agent);
+      const { run, deps, events } = await openAgentRun(INTERACTION_OFF, agent);
 
       const first = await adapter.stop?.(stdin, deps, continueWorkflow);
       const second = await adapter.stop?.(stdin, deps, continueWorkflow);
@@ -142,7 +134,7 @@ describe("an agent that keeps stopping with its node open", () => {
         decision: "block",
         reason: expect.stringContaining("yok orchestrate next --run feat-x"),
       });
-      const ask = (await readState(runDir))?.nodeRuns.ask;
+      const ask = (await readState(run, deps.storage))?.nodeRuns.ask;
       expect(ask?.status).toBe("failed");
       expect(ask?.output).toEqual({
         kind: "needs-input",
@@ -153,7 +145,7 @@ describe("an agent that keeps stopping with its node open", () => {
         { policy: "interaction", effect: "unanswered-stop", nodeId: "ask" },
       ]);
       expect(stored.map((event) => event.type)).not.toContain("agent.stuck");
-      expect(await nextStep(run, agentAdapters)).toEqual({
+      expect(await nextStep(deps.storage, run, agentAdapters)).toEqual({
         ok: true,
         value: { kind: "finished", status: "failed" },
       });
@@ -164,10 +156,10 @@ describe("an agent that keeps stopping with its node open", () => {
 describe("codexAdapter.preToolUse", () => {
   const stdin = (tool_name: string, tool_input: Record<string, unknown>) =>
     JSON.stringify({ session_id: "s1", tool_name, tool_input, cwd: "/repo" });
-  const TARGET = ".yok/x/state.json";
+  const TARGET = "/home/u/.yok/yok.db";
 
-  test("SC10: a shell write to state.json and an apply_patch on event.jsonl are denied in Codex's format", async () => {
-    const patch = `*** Begin Patch\n*** Add File: notes.md\n+hi\n*** Update File: .yok/x/event.jsonl\n@@\n+x\n*** End Patch`;
+  test("SC10: a shell write to yok.db and an apply_patch on yok.db-wal are denied in Codex's format", async () => {
+    const patch = `*** Begin Patch\n*** Add File: notes.md\n+hi\n*** Update File: ${TARGET}-wal\n@@\n+x\n*** End Patch`;
     for (const input of [
       stdin("Bash", { command: `rm ${TARGET}` }),
       stdin("exec_command", { command: `mv a ${TARGET}` }),
@@ -181,7 +173,9 @@ describe("codexAdapter.preToolUse", () => {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: expect.stringContaining("orchestrate next --run x"),
+          permissionDecisionReason: expect.stringContaining(
+            "Change a run only through `yok orchestrate`",
+          ),
         },
       });
     }

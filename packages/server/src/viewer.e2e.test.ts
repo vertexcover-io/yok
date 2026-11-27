@@ -1,18 +1,26 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { yokTerminalHost } from "@yok/core";
-import type { WorkflowRun } from "@yok/sdk";
+import type { IStorage, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger } from "@yok/sdk";
-import { createRegistry, updateUsers } from "@yok/sdk/internal";
+import { memoryStorage, openStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
 import { type Browser, chromium, type Page } from "playwright";
 import { stopDeliveries } from "./delivery.ts";
-import { claudeOver, EMPTY_BOX, fakeHost, fakePane, seedState } from "./fake-host.ts";
+import {
+  claudeOver,
+  EMPTY_BOX,
+  fakeHost,
+  fakePane,
+  seedRun,
+  seedState,
+  seedUser,
+} from "./fake-host.ts";
 import { forgetFinishedRun } from "./overview.ts";
 import { terminalRoutes } from "./terminal.ts";
 import { viewerRoutes } from "./viewer.ts";
@@ -213,12 +221,18 @@ const ARTIFACTS: Readonly<Record<string, string>> = {
   "scenarios.md": CHECKLIST,
 };
 
-// Every test starts from the seeded files, no comments and no state.
-const resetRun = (runDir: string): void => {
+// Stores the run afresh, with STATE or none: a seeded state starts at event 0, so events left
+// from another test would replay onto it.
+const storeRun = async (storage: IStorage, run: WorkflowRun, state?: State): Promise<void> => {
+  await storage.runs.removeRun(run.id);
+  await seedRun(storage, run, state);
+};
+
+// Every test starts from the seeded files, no comments and no state: removing the run row takes
+// its comments.
+const resetRun = async (storage: IStorage, run: WorkflowRun, runDir: string): Promise<void> => {
   stopDeliveries();
-  // A seeded state.json starts at event 0, so events left from other tests would replay onto it.
-  for (const name of ["comments.json", "state.json", "event.jsonl"])
-    rmSync(join(runDir, name), { force: true });
+  await storeRun(storage, run);
   for (const [name, text] of Object.entries(ARTIFACTS))
     writeFileSync(join(runDir, "artifacts", name), text);
 };
@@ -234,18 +248,23 @@ describe("viewer in a browser", () => {
   let url: string;
   const opened: { file: string; line: number | null }[] = [];
   let typed: readonly string[] = [];
+  // a file storage: the orchestrate commands this suite spawns open the same home's yok.db
+  let storage: IStorage;
+  let run: WorkflowRun;
+  const putState = (state: State) => storeRun(storage, run, state);
 
   beforeAll(async () => {
     home = tempDir();
+    storage = openStorage(home);
     cwd = tempDir();
     execFileSync("git", ["init", "-q"], { cwd });
     runDir = join(cwd, ".yok", "demo");
     mkdirSync(join(runDir, "artifacts"), { recursive: true });
     mkdirSync(join(cwd, "src"));
     writeFileSync(join(cwd, "src", "sample.ts"), `${SAMPLE.join("\n")}\n`);
-    const registry = createRegistry(join(home, "registry.json"), noopLogger);
-    const run: WorkflowRun = {
+    run = {
       id: "r1",
+      project: "demo",
       workflow: "w",
       workflowPath: "/w.yaml",
       inputs: {},
@@ -257,7 +276,6 @@ describe("viewer in a browser", () => {
       tiers: null,
       createdAt: "2026-01-01T00:00:00.000Z",
     };
-    await registry.addRun(run);
     const { host, calls } = fakeHost(EMPTY_BOX);
     typed = calls;
     const server = Bun.serve({
@@ -265,12 +283,11 @@ describe("viewer in a browser", () => {
       port: 0,
       idleTimeout: 0,
       fetch: viewerRoutes({
-        registry,
         providerFor: () => claudeOver(host),
         host,
         log: noopLogger,
         now: () => new Date(),
-        home,
+        storage,
         stopping: new AbortController().signal,
         openInEditor: (target) => {
           opened.push(target);
@@ -282,11 +299,12 @@ describe("viewer in a browser", () => {
     url = `${viewer.origin}/runs/r1`;
   });
 
-  beforeEach(() => resetRun(runDir));
+  beforeEach(() => resetRun(storage, run, runDir));
 
   afterAll(async () => {
     stopDeliveries();
     await viewer.stop();
+    await storage.close();
   });
 
   test("SC33, SC14: Comment mode gates the selection bar, Add to batch holds comments listed by place until Send 2, and both reach the agent's status", async () => {
@@ -340,7 +358,7 @@ describe("viewer in a browser", () => {
     );
   }, 60000);
 
-  test("SC34: a reply and an edit by the agent appear without a reload", async () => {
+  test("SC324 (SC34): a reply sent by the agent from another process and an edit by the agent appear without a reload", async () => {
     const anchor = {
       quote: "one file per run",
       before: "Keep ",
@@ -400,7 +418,8 @@ describe("viewer in a browser", () => {
       "[...document.querySelectorAll('#threads .group-label')].some((l) => l.textContent === 'Text no longer in the file')",
       3500,
     );
-    expect(readFileSync(join(runDir, "comments.json"), "utf8")).toContain("Simpler to review.");
+    const [c1] = await storage.comments.list("r1");
+    expect(c1?.thread.at(-1)).toMatchObject({ by: "agent", text: "Simpler to review." });
   }, 30000);
 
   test("SC35: text selected inside an HTML artifact becomes a comment with an element path", async () => {
@@ -608,7 +627,7 @@ describe("viewer in a browser", () => {
         awaitingApproval: "artifacts/design.md",
       },
     });
-    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    await putState(state);
     const typedBefore = typed.length;
     try {
       const approveHidden = "document.querySelector('#approveBtn').hidden";
@@ -629,23 +648,20 @@ describe("viewer in a browser", () => {
         "[...document.querySelectorAll('#threads .card .chip')].some((c) => c.textContent === 'Approved')",
       );
       expect(await evaluate(approveHidden)).toBe(true);
-      const after = JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
-      expect(after.nodeRuns.design).not.toHaveProperty("awaitingApproval");
+      const after = await storage.runs.readState("r1");
+      expect(after?.nodeRuns.design).not.toHaveProperty("awaitingApproval");
       const typedNow = () => typed.slice(typedBefore);
       for (let i = 0; i < 50 && !typedNow().some((t) => t.includes("approved:")); i++)
         await Bun.sleep(100);
       expect(typedNow().filter((t) => t.includes("approved: finish the stage"))).toHaveLength(1);
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
 
   test("SC531: an unattended run's page draws no Comment mode button", async () => {
-    const policies = { values: { interaction: false }, sources: { interaction: "cli" } };
-    writeFileSync(
-      join(runDir, "state.json"),
-      JSON.stringify({ ...seedState(runDir, {}), policies }),
-    );
+    const policies = { values: { interaction: false }, sources: { interaction: "cli" as const } };
+    await putState({ ...seedState(runDir, {}), policies });
     try {
       await page.goto(`${url}#artifacts/design.md`);
       await until("document.querySelector('#modeBtn').hidden === true");
@@ -653,7 +669,7 @@ describe("viewer in a browser", () => {
         "none",
       );
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
 
@@ -684,9 +700,7 @@ describe("viewer in a browser", () => {
     for (const text of ["Say how small.", "Cut the second sentence."])
       await until(`${cardWith(text)}?.querySelector('.status')?.textContent === 'With the agent'`);
     expect(await evaluate("window.sawBatch")).toBe(false);
-    const stored: { text: string; anchor?: { lines?: unknown } }[] = JSON.parse(
-      readFileSync(join(runDir, "comments.json"), "utf8"),
-    ).comments;
+    const stored = await storage.comments.list("r1");
     expect(
       stored
         .filter((c) => ["Say how small.", "Cut the second sentence."].includes(c.text))
@@ -734,7 +748,7 @@ describe("viewer in a browser", () => {
         awaitingApproval: "artifacts/design.md",
       },
     });
-    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    await putState(state);
     const approveHidden = "document.querySelector('#approveBtn').hidden";
     try {
       await page.setViewportSize({ width: 1280, height: 800 });
@@ -770,7 +784,7 @@ describe("viewer in a browser", () => {
       expect(await evaluate("document.querySelector('#toast').textContent")).toContain("disk full");
       await until(`!${approveHidden}`);
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
 
@@ -786,7 +800,7 @@ describe("viewer in a browser", () => {
     ).toEqual([false, false, true, false]);
   }, 30000);
   const box = (n: number): string => `#docRoot li.task:nth-of-type(${n}) .task-box`;
-  const awaiting = (file: string): void => {
+  const awaiting = async (file: string): Promise<void> => {
     const state = seedState(runDir, {
       gate: {
         nodeRunId: "n1",
@@ -798,7 +812,7 @@ describe("viewer in a browser", () => {
         awaitingApproval: `artifacts/${file}`,
       },
     });
-    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    await putState(state);
   };
   const openFile = async (file: string): Promise<void> => {
     await page.goto(`${url}#artifacts/${file}`);
@@ -810,18 +824,18 @@ describe("viewer in a browser", () => {
   test("SC40: a checklist's boxes can only be clicked while its file waits for approval", async () => {
     await openFile("factors.md");
     expect(await evaluate(`document.querySelector('${box(1)}').disabled`)).toBe(true);
-    awaiting("factors.md");
+    await awaiting("factors.md");
     try {
       await page.reload();
       await until("!document.querySelector('#approveBtn').hidden");
       await until(`!document.querySelector('${box(1)}').disabled`);
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
 
   test("SC41: each box changed from the file adds one draft, a box changed back removes it, and Send delivers them as one message", async () => {
-    awaiting("factors.md");
+    await awaiting("factors.md");
     try {
       await openFile("factors.md");
       await until(`!document.querySelector('${box(2)}').disabled`);
@@ -848,12 +862,12 @@ describe("viewer in a browser", () => {
       );
       expect(message).toContain('factors.md:5 on "F3 Quantity: refuses a bad cart"\n  Tick this');
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
 
   test("SC42: Approve sends the waiting drafts with the approval, in one message with the approval last", async () => {
-    awaiting("scenarios.md");
+    await awaiting("scenarios.md");
     try {
       await openFile("scenarios.md");
       await until(`!document.querySelector('${box(1)}').disabled`);
@@ -868,7 +882,7 @@ describe("viewer in a browser", () => {
       expect(message).toContain('scenarios.md:3 on "F1 Coupon: changes the total"\n  Untick this');
       expect(message.indexOf("Untick this")).toBeLessThan(message.indexOf("approved:"));
     } finally {
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
     }
   }, 30000);
   test("the file list groups files under the stage that delivered them, with folders, the rest after a divider, and a bare link opens the first stage's file", async () => {
@@ -900,7 +914,7 @@ describe("viewer in a browser", () => {
       plan: delivered("artifacts/outline.md", "artifacts/code.md"),
       review: delivered("artifacts/mock.html", "artifacts/ux/flow.md"),
     });
-    writeFileSync(join(runDir, "state.json"), JSON.stringify(state));
+    await putState(state);
     try {
       await page.goto(`${url}#artifacts/design.md`);
       await until(
@@ -931,36 +945,33 @@ describe("viewer in a browser", () => {
       );
     } finally {
       rmSync(join(runDir, "workflow.yaml"), { force: true });
-      rmSync(join(runDir, "state.json"), { force: true });
+      await storeRun(storage, run);
       rmSync(join(runDir, "artifacts", "ux"), { recursive: true, force: true });
       rmSync(join(runDir, "artifacts", "notes"), { recursive: true, force: true });
     }
   }, 30000);
 });
 
-// The runs page reads the run list from /stream, so this suite seeds a registry and users.json
+// The runs page reads the run list from /stream, so this suite seeds the runs and the users
 // and drives that page.
 describe("runs page in a browser", () => {
   let viewer: Readonly<{ origin: string; stop: () => Promise<void> }>;
-  let home: string;
+  const storage: IStorage = memoryStorage();
 
   beforeAll(async () => {
-    home = tempDir();
     const cwd = tempDir();
-    await updateUsers(home, () => ({
-      u_1: {
-        name: "ritesh-gh",
-        email: "ritesh@example.com",
-        accounts: { github: { id: 8675309, login: "ritesh-gh" } },
-      },
-      u_2: {
-        name: "Asha",
-        email: "asha@example.com",
-        accounts: { github: { id: 42, login: "asha-gh" } },
-      },
-    }));
-    const registry = createRegistry(join(home, "registry.json"), noopLogger);
+    const ritesh = await seedUser(storage, {
+      name: "ritesh-gh",
+      email: "ritesh@example.com",
+      github: { id: 8675309, login: "ritesh-gh" },
+    });
+    const asha = await seedUser(storage, {
+      name: "Asha",
+      email: "asha@example.com",
+      github: { id: 42, login: "asha-gh" },
+    });
     const base = {
+      project: "demo",
       workflow: "w",
       workflowPath: "/w.yaml",
       inputs: {},
@@ -972,16 +983,16 @@ describe("runs page in a browser", () => {
       tiers: null,
     };
     const owners = [
-      ["r-1", "u_1"],
-      ["r-2", "u_2"],
-      ["r-3", "u_1"],
+      ["r-1", ritesh],
+      ["r-2", asha],
+      ["r-3", ritesh],
       ["r-4", undefined],
     ] as const;
     for (const [n, [id, user]] of owners.entries()) {
       const createdAt = `2026-10-29T10:0${n}:00.000Z`;
-      // u_1's runs are named with no run folder, so they read missing and land in the Recent table.
-      const name = user === "u_1" ? id : null;
-      await registry.addRun({
+      // ritesh-gh's runs are named with no run folder, so they read missing and land in the Recent table.
+      const name = user === ritesh ? id : null;
+      await seedRun(storage, {
         ...base,
         id,
         name,
@@ -992,35 +1003,40 @@ describe("runs page in a browser", () => {
     const runDir = join(cwd, ".yok", "stuck");
     mkdirSync(runDir, { recursive: true });
     const blocker = {
-      reason: "question",
+      reason: "question" as const,
       node: "planning",
       since: "2026-10-29T10:06:00.000Z",
       details: { questions: [{ question: "Which store for Asha?", options: ["a", "b"] }] },
     };
-    writeFileSync(
-      join(runDir, "state.json"),
-      JSON.stringify({ ...seedState(runDir, {}), runName: "stuck", status: "blocked", blocker }),
+    const stuck = {
+      ...seedState(runDir, {}),
+      runName: "stuck",
+      status: "blocked" as const,
+      blocker,
+    };
+    await seedRun(
+      storage,
+      {
+        ...base,
+        id: "r-5",
+        name: "stuck",
+        terminal: "s1",
+        user: asha,
+        createdAt: "2026-10-29T10:05:00.000Z",
+      },
+      stuck,
     );
-    await registry.addRun({
-      ...base,
-      id: "r-5",
-      name: "stuck",
-      terminal: "s1",
-      user: "u_2",
-      createdAt: "2026-10-29T10:05:00.000Z",
-    });
     const { host } = fakeHost(EMPTY_BOX);
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       idleTimeout: 0,
       fetch: viewerRoutes({
-        registry,
         providerFor: () => claudeOver(host),
         host,
         log: noopLogger,
         now: () => new Date(),
-        home,
+        storage,
         stopping: new AbortController().signal,
         openInEditor: () => ({ ok: true, value: null }),
       }).fetch,
@@ -1038,7 +1054,7 @@ describe("runs page in a browser", () => {
   const bannerShown =
     "[...document.querySelectorAll('#list .banner')].map((b) => b.textContent.includes('Which store for Asha?'))";
 
-  test("SC41: picking ritesh-gh in Started by, or searching ritesh@, narrows All to u_1's 2 runs, and u_2's blocked run keeps its banner", async () => {
+  test("SC126 (SC41): picking ritesh-gh in Started by, or searching ritesh@, narrows All to ritesh-gh's 2 runs, and Asha's blocked run keeps its banner", async () => {
     await page.goto(viewer.origin);
     await until("document.querySelectorAll('#who option').length === 3");
     expect(
@@ -1115,7 +1131,13 @@ describe("runs page in a browser", () => {
 
   test("a starter's name that is one long word wraps inside its card on a phone, so the page never scrolls sideways", async () => {
     const rename = (name: string) =>
-      updateUsers(home, (users) => (users.u_2 ? { ...users, u_2: { ...users.u_2, name } } : users));
+      storage.users.saveGitHubUser({
+        id: 42,
+        login: "asha-gh",
+        name,
+        email: "asha@example.com",
+        token: "gho_x",
+      });
     const long = "A".repeat(80);
     await rename(long);
     try {
@@ -1188,9 +1210,10 @@ describe("terminal tab in a browser", () => {
       env: { PS1: "$ " },
     });
     if (!created.ok) throw new Error(created.error);
-    const registry = createRegistry(join(home, "registry.json"), noopLogger);
-    await registry.addRun({
+    const storage = memoryStorage();
+    await seedRun(storage, {
       id: "r1",
+      project: "demo",
       workflow: "w",
       workflowPath: "/w.yaml",
       inputs: {},
@@ -1209,17 +1232,16 @@ describe("terminal tab in a browser", () => {
       })
       .route(
         "/api/runs",
-        terminalRoutes({ registry, host, log: noopLogger, stopping: new AbortController().signal }),
+        terminalRoutes({ storage, host, log: noopLogger, stopping: new AbortController().signal }),
       )
       .route(
         "/",
         viewerRoutes({
-          registry,
           providerFor: () => claudeOver(host),
           host,
           log: noopLogger,
           now: () => new Date(),
-          home,
+          storage,
           stopping: new AbortController().signal,
           openInEditor: () => ({ ok: true, value: null }),
         }),
@@ -1513,6 +1535,8 @@ describe("terminal tab in a browser", () => {
 
 describe("resume and retry buttons in a browser", () => {
   let runDir: string;
+  const storage = memoryStorage();
+  let run: WorkflowRun;
   let viewer: Readonly<{ stop: () => Promise<void> }>;
   let url: string;
   // what the pane reports; the page's stream reads it once a second
@@ -1522,14 +1546,13 @@ describe("resume and retry buttons in a browser", () => {
   const posted: { path: string; body: unknown }[] = [];
 
   beforeAll(async () => {
-    const home = tempDir();
     const cwd = tempDir();
     execFileSync("git", ["init", "-q"], { cwd });
     runDir = join(cwd, ".yok", "demo");
     mkdirSync(join(runDir, "artifacts"), { recursive: true });
-    const registry = createRegistry(join(home, "registry.json"), noopLogger);
-    await registry.addRun({
+    run = {
       id: "r1",
+      project: "demo",
       workflow: "w",
       workflowPath: "/w.yaml",
       inputs: {},
@@ -1540,7 +1563,8 @@ describe("resume and retry buttons in a browser", () => {
       config: null,
       tiers: null,
       createdAt: "2026-01-01T00:00:00.000Z",
-    });
+    };
+    await seedRun(storage, run);
     const fake = fakeHost(EMPTY_BOX).host;
     const host = { ...fake, find: () => ({ ...fakePane("s1"), isAlive: async () => alive }) };
     // The routes phase 1's tests cover; here only what the page does with their answers.
@@ -1552,12 +1576,11 @@ describe("resume and retry buttons in a browser", () => {
         : answer();
     });
     const views = viewerRoutes({
-      registry,
       providerFor: () => claudeOver(host),
       host,
       log: noopLogger,
       now: () => new Date(),
-      home,
+      storage,
       openInEditor: () => ({ ok: true, value: null }),
       stopping: new AbortController().signal,
     });
@@ -1587,8 +1610,8 @@ describe("resume and retry buttons in a browser", () => {
   });
 
   // The server keeps a finished run's files, so a status another test wrote would stay.
-  const seedStatus = (status: string): void => {
-    writeFileSync(join(runDir, "state.json"), JSON.stringify({ ...seedState(runDir, {}), status }));
+  const seedStatus = async (status: State["status"]): Promise<void> => {
+    await storeRun(storage, run, { ...seedState(runDir, {}), status });
     forgetFinishedRun(runDir);
   };
 
@@ -1607,7 +1630,7 @@ describe("resume and retry buttons in a browser", () => {
   ] as const)(
     "SC7115: a %s run whose agent is running=%p shows Resume and Retry as %o",
     async (status, running, shown) => {
-      seedStatus(status);
+      await seedStatus(status);
       alive = running;
 
       await open();
@@ -1621,7 +1644,7 @@ describe("resume and retry buttons in a browser", () => {
   );
 
   test("SC7116: Retry reads Retrying… with both buttons disabled while the request runs, then toasts and hands over to the running agent", async () => {
-    seedStatus("failed");
+    await seedStatus("failed");
     const held = Promise.withResolvers<void>();
     answers = [
       async () => {
@@ -1650,7 +1673,7 @@ describe("resume and retry buttons in a browser", () => {
   }, 30000);
 
   test("SC7117: a resume the doctor refuses keeps the message and the failing check with its fix on the page", async () => {
-    seedStatus("blocked");
+    await seedStatus("blocked");
     const report = {
       results: [
         {
@@ -1687,7 +1710,7 @@ describe("resume and retry buttons in a browser", () => {
   }, 30000);
 
   test("SC7118: a retry refused for a step waiting on an answer offers Retry as answered, which sends answered: true", async () => {
-    seedStatus("failed");
+    await seedStatus("failed");
     const needsInput =
       "two failed needing a person's answer: Which database?\nOnce a person has dealt with it, retry with --answered";
     answers = [
@@ -1716,7 +1739,7 @@ describe("resume and retry buttons in a browser", () => {
   }, 30000);
 
   test("on a 390px phone a failed run's Resume and Retry sit on one row with the agent pill", async () => {
-    seedStatus("failed");
+    await seedStatus("failed");
     await page.setViewportSize({ width: 390, height: 844 });
     try {
       await open();
@@ -1735,7 +1758,7 @@ describe("resume and retry buttons in a browser", () => {
   }, 30000);
 
   test("a refusal naming an 80-character key wraps inside a 390px phone, so the page never scrolls sideways", async () => {
-    seedStatus("failed");
+    await seedStatus("failed");
     const key = "A_VERY_LONG_KEY_NAME_THAT_A_REAL_PROJECT_MIGHT_USE_FOR_ITS_STAGING_DATABASE_URL";
     answers = [
       () =>

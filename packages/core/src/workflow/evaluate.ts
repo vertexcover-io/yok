@@ -1,7 +1,7 @@
 import type { JsonValue, NodeRun } from "@yok/sdk";
 import { NodeFailure } from "./types.ts";
 
-// What an expression can read of a node, from its node run in state.json.
+// What an expression can read of a node, from its node run in the run's state.
 export type NodeResult = Readonly<Pick<NodeRun, "status" | "input" | "output">>;
 
 export type IterationView = Readonly<{

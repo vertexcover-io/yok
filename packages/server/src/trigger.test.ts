@@ -1,25 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Check, LaunchOptions } from "@yok/sdk";
+import type { Check, IStorage, ITriggerRepository, LaunchOptions } from "@yok/sdk";
 import { createGit, fail, noopLogger, ok } from "@yok/sdk";
-import {
-  createRegistry,
-  createTriggerStore,
-  type Trigger,
-  type TriggerDraft,
-  type TriggerStore,
-  triggerFiresPath,
-  triggersPath,
-} from "@yok/sdk/internal";
+import { memoryStorage, type Trigger, type TriggerDraft } from "@yok/sdk/internal";
 import { createApi } from "./app.ts";
 import { fakeHost, fakePane, fakeProvider, seedState } from "./fake-host.ts";
-import { findOrAddFolderProject, readProjects, writeProjects } from "./projects.ts";
 import { checkCheckoutWith } from "./server.ts";
 import {
-  adoptLegacyTriggers,
   dueSlot,
   fireTrigger,
   nextSlot,
@@ -128,7 +118,7 @@ const DIGEST = [
   "",
 ].join("\n");
 
-const saveOk = async (store: TriggerStore, draft: TriggerDraft): Promise<Trigger> => {
+const saveOk = async (store: ITriggerRepository, draft: TriggerDraft): Promise<Trigger> => {
   const result = await store.save(draft);
   if (!result.ok) throw new Error(`clashes with ${result.error.name}`);
   return result.value;
@@ -143,28 +133,32 @@ const makeRepo = (workflow: string = DIGEST): string => {
   return cwd;
 };
 
+// Saves project NAME, in place of any project of that name: a test points web at a clone.
 const registerProject = async (
-  home: string,
+  storage: IStorage,
   name: string,
   project: Readonly<{ path: string; git?: string }>,
-): Promise<void> =>
-  writeProjects(home, {
-    ...(await readProjects(home)),
-    [name]: { ...project, addedBy: { channel: "cli" }, addedAt: "2026-10-23T00:00:00.000Z" },
+): Promise<void> => {
+  await storage.projects.remove(name);
+  const added = await storage.projects.add(name, {
+    ...project,
+    addedBy: { channel: "cli" },
+    addedAt: "2026-10-23T00:00:00.000Z",
   });
+  if (!added.ok) throw new Error(added.error);
+};
 
 // A server's view of the world: a fresh home, a repo registered as project web holding the
 // workflow, and a provider that records each launch instead of starting an agent.
 const setup = async (workflow?: string) => {
   const cwd = makeRepo(workflow);
   const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
-  await registerProject(home, "web", { path: cwd });
+  const storage = memoryStorage();
+  await registerProject(storage, "web", { path: cwd });
   const launches: LaunchOptions[] = [];
-  const store = createTriggerStore(home);
-  const registry = createRegistry(join(home, "registry.json"));
+  const store = storage.triggers;
   const deps = (now: string, alive = true): TriggerDeps => ({
-    triggers: createTriggerStore(home),
-    registry,
+    storage,
     providerFor: (agent) =>
       fakeProvider(agent, (options) => {
         launches.push(options);
@@ -191,14 +185,14 @@ const setup = async (workflow?: string) => {
     timezone: "UTC",
     nextFireAt: "2026-10-23T09:00:00.000Z",
   });
-  return { cwd, home, store, registry, launches, deps, trigger };
+  return { cwd, home, store, storage, launches, deps, trigger };
 };
 
 const TIMEOUT_MS = 20_000;
 
 describe("tick", () => {
   test(
-    "a due trigger launches once in auto with its inputs and a dated run name, logs started, and moves to the next slot",
+    "SC516: a due trigger launches once in auto with its inputs and a dated run name, logs started, and moves to the next slot",
     async () => {
       const { store, launches, deps, trigger } = await setup();
 
@@ -225,7 +219,7 @@ describe("tick", () => {
     "SC3007: a firing on cloned project web pulls first, launches with the block's acceptEdits and inputs, and saves interaction false from cli",
     async () => {
       const setupEnv = await setup();
-      const { home, store, registry, deps } = setupEnv;
+      const { home, store, storage, deps } = setupEnv;
       await store.remove(setupEnv.trigger.id);
       const cwd = join(realpathSync(home), "projects", "web");
       mkdirSync(cwd, { recursive: true });
@@ -236,7 +230,7 @@ describe("tick", () => {
         join(cwd, "digest.yaml"),
         DIGEST.replace("  timezone: UTC", "  timezone: UTC\n  permissionMode: acceptEdits"),
       );
-      await registerProject(home, "web", { path: cwd, git: "https://example.test/web.git" });
+      await registerProject(storage, "web", { path: cwd, git: "https://example.test/web.git" });
       const trigger = await saveOk(store, {
         name: "digest",
         project: "web",
@@ -277,7 +271,7 @@ describe("tick", () => {
       );
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired?.status).toBe("started");
-      const run = await registry.findRun(fired?.runId ?? "");
+      const run = await storage.runs.findRun(fired?.runId ?? "");
       expect(run?.source).toBe("trigger");
       expect(run?.policies?.values.interaction).toBe(false);
       expect(run?.policies?.sources.interaction).toBe("cli");
@@ -288,14 +282,23 @@ describe("tick", () => {
   test(
     "SC3007: a firing whose pull fails logs failed, records no run, and the schedule moves on",
     async () => {
-      const setupEnv = await setup();
-      const { home, store, registry, deps, trigger } = setupEnv;
+      const { home, store, storage, deps } = await setup();
       const cwd = join(realpathSync(home), "projects", "web");
       mkdirSync(cwd, { recursive: true });
       execFileSync("git", ["init", "-q"], { cwd });
       writeFileSync(join(cwd, "orchestrate.config.json"), '{ "version": 2 }\n');
       writeFileSync(join(cwd, "digest.yaml"), DIGEST);
-      await registerProject(home, "web", { path: cwd, git: "https://example.test/web.git" });
+      // Replacing project web deletes its trigger, so it is saved again in the clone.
+      await registerProject(storage, "web", { path: cwd, git: "https://example.test/web.git" });
+      const trigger = await saveOk(store, {
+        name: "digest",
+        project: "web",
+        workflow: join(cwd, "digest.yaml"),
+        config: null,
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        nextFireAt: "2026-10-23T09:00:00.000Z",
+      });
       const base = deps("2026-10-23T09:00:10.000Z");
 
       await tick({
@@ -309,7 +312,7 @@ describe("tick", () => {
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired).toMatchObject({ status: "failed", slot: "2026-10-23T09:00:00.000Z" });
       expect(fired?.status === "failed" ? fired.reason : "").toContain("git pull");
-      expect(await registry.listRuns()).toEqual([]);
+      expect(await storage.runs.listRuns()).toEqual([]);
       expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
     },
     TIMEOUT_MS,
@@ -318,7 +321,7 @@ describe("tick", () => {
   test(
     "SC3007: a firing whose project folder is gone logs failed, records no run, and the schedule moves on",
     async () => {
-      const { cwd, store, registry, launches, deps, trigger } = await setup();
+      const { cwd, store, storage, launches, deps, trigger } = await setup();
       rmSync(cwd, { recursive: true, force: true });
 
       await tick(deps("2026-10-23T09:00:10.000Z"));
@@ -326,20 +329,31 @@ describe("tick", () => {
       const [fired] = await store.readFires(trigger.id, 20);
       expect(fired?.status).toBe("failed");
       expect(launches).toEqual([]);
-      expect(await registry.listRuns()).toEqual([]);
+      expect(await storage.runs.listRuns()).toEqual([]);
       expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
     },
     TIMEOUT_MS,
   );
 
   test(
-    "a restarted server ticking again in the same minute does not fire the slot a second time",
+    "SC517: the tick stores the next slot before firing, so a second tick in the same minute fires nothing",
     async () => {
       const { store, launches, deps, trigger } = await setup();
+      const seen: (string | undefined)[] = [];
+      const readStored: Check = {
+        name: "reads the stored trigger",
+        fix: [],
+        run: async () => {
+          seen.push((await store.find("web", "digest"))?.nextFireAt);
+          return ok("read");
+        },
+      };
+      const first = deps("2026-10-23T09:00:10.000Z");
 
-      await tick(deps("2026-10-23T09:00:10.000Z"));
+      await tick({ ...first, checkCheckout: (input) => checkCheckoutWith([readStored], input) });
       await tick(deps("2026-10-23T09:00:25.000Z"));
 
+      expect(seen).toEqual(["2026-10-24T09:00:00.000Z"]);
       expect(launches).toHaveLength(1);
       expect(await store.readFires(trigger.id, 20)).toHaveLength(1);
     },
@@ -347,9 +361,9 @@ describe("tick", () => {
   );
 
   test(
-    "a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
+    "SC521: a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
     async () => {
-      const { store, registry, launches, deps, trigger } = await setup();
+      const { store, storage, launches, deps, trigger } = await setup();
       await tick(deps("2026-10-23T09:00:10.000Z"));
 
       await fireTrigger(trigger, at("2026-10-23T09:02:10.000Z"), deps("2026-10-23T09:02:10.000Z"));
@@ -357,7 +371,7 @@ describe("tick", () => {
       expect(launches).toHaveLength(1);
       const fires = await store.readFires(trigger.id, 20);
       expect(fires[1]).toMatchObject({ status: "skipped", reason: "previous run still running" });
-      expect(await registry.listRuns()).toHaveLength(1);
+      expect(await storage.runs.listRuns()).toHaveLength(1);
     },
     TIMEOUT_MS,
   );
@@ -381,16 +395,14 @@ describe("tick", () => {
   ])(
     "SC3015: a trigger whose last run is named and %s, while its agent session stays open",
     async (_label, status, launchCount, outcome) => {
-      const { cwd, store, registry, launches, deps, trigger } = await setup();
+      const { cwd, store, storage, launches, deps, trigger } = await setup();
       await tick(deps("2026-10-23T09:00:10.000Z"));
       const [fired] = await store.readFires(trigger.id, 20);
-      await registry.initRun(fired?.runId ?? "", "digest-20261023-090000");
       const runDir = join(cwd, ".yok", "digest-20261023-090000");
       mkdirSync(runDir, { recursive: true });
-      writeFileSync(
-        join(runDir, "state.json"),
-        JSON.stringify({ ...seedState(runDir, {}), status }),
-      );
+      const state = { ...seedState(runDir, {}), status };
+      const named = await storage.runs.initRun(fired?.runId ?? "", "digest-20261023-090000", state);
+      if (!named.ok) throw new Error(named.error);
 
       await tick(deps("2026-10-24T09:00:10.000Z"));
 
@@ -425,9 +437,9 @@ describe("tick", () => {
   ])(
     "when the first trigger's workflow file %s, it logs failed and the second trigger still fires",
     async (_label, broken, reason) => {
-      const { cwd, home, store, launches, deps, trigger } = await setup();
+      const { cwd, storage, store, launches, deps, trigger } = await setup();
       const otherCwd = makeRepo();
-      await registerProject(home, "other", { path: otherCwd });
+      await registerProject(storage, "other", { path: otherCwd });
       const other = await saveOk(store, {
         ...trigger,
         project: "other",
@@ -449,7 +461,7 @@ describe("tick", () => {
   test(
     "SC3008: a firing the doctor refuses logs failed with the BLOCKED verdict line and records no run",
     async () => {
-      const { store, registry, launches, deps, trigger } = await setup();
+      const { store, storage, launches, deps, trigger } = await setup();
       const base = deps("2026-10-23T09:00:10.000Z");
       const failing: Check = {
         name: "api-key",
@@ -464,24 +476,25 @@ describe("tick", () => {
       expect(fired?.status).toBe("failed");
       expect(fired?.reason).toStartWith("BLOCKED");
       expect(fired?.reason).toContain("api-key");
-      expect(await registry.listRuns()).toEqual([]);
+      expect(await storage.runs.listRuns()).toEqual([]);
     },
     TIMEOUT_MS,
   );
 
   test.each([
-    ["removed", null],
-    ["re-added with an 18:00 cron", "0 18 * * *"],
+    ["a trigger removed", null],
+    ["SC519: a trigger re-added with an 18:00 cron", "0 18 * * *"],
   ])(
-    "a trigger %s after the tick listed it does not fire, and keeps what the change saved",
+    "%s after the tick listed it does not fire, and keeps what the change saved",
     async (_label, newCron) => {
       const { store, launches, deps, trigger } = await setup();
       if (newCron === null) await store.remove(trigger.id);
       else await store.save({ ...trigger, cron: newCron, nextFireAt: "2026-10-23T18:00:00.000Z" });
       const saved = await store.list();
       const stale = deps("2026-10-23T09:00:10.000Z");
+      const triggers = { ...stale.storage.triggers, list: async () => [trigger] };
 
-      await tick({ ...stale, triggers: { ...stale.triggers, list: async () => [trigger] } });
+      await tick({ ...stale, storage: { ...stale.storage, triggers } });
 
       expect(launches).toHaveLength(0);
       expect(await store.list()).toEqual(saved);
@@ -491,9 +504,9 @@ describe("tick", () => {
   );
 
   test(
-    "SC3009: a trigger removed while its doctor runs logs skipped removed and records no run",
+    "SC520, SC3009: a trigger removed while its doctor runs reports skipped removed, records no run and leaves no fire row",
     async () => {
-      const { store, registry, launches, deps, trigger } = await setup();
+      const { store, storage, launches, deps, trigger } = await setup();
       const base = deps("2026-10-23T09:00:10.000Z");
       const rmDuringDoctor: Check = {
         name: "rm lands here",
@@ -504,18 +517,21 @@ describe("tick", () => {
         },
       };
 
-      await tick({ ...base, checkCheckout: (input) => checkCheckoutWith([rmDuringDoctor], input) });
+      const fired = await fireTrigger(trigger, at("2026-10-23T09:00:00.000Z"), {
+        ...base,
+        checkCheckout: (input) => checkCheckoutWith([rmDuringDoctor], input),
+      });
 
-      expect(launches).toHaveLength(0);
-      const [fired] = await store.readFires(trigger.id, 20);
       expect(fired).toMatchObject({ status: "skipped", reason: "removed" });
-      expect(await registry.listRuns()).toEqual([]);
+      expect(launches).toHaveLength(0);
+      expect(await storage.runs.listRuns()).toEqual([]);
+      expect(await store.readFires(trigger.id, 20)).toEqual([]);
     },
     TIMEOUT_MS,
   );
 
   test(
-    "SC3014: after sleeping three days it logs one missed line, then fires today's slot once",
+    "SC518, SC3014: after sleeping three days it logs one skipped fire for the missed slots, then fires today's slot once",
     async () => {
       const { store, launches, deps, trigger } = await setup();
       await store.setNextFireAt(trigger, "2026-10-20T09:00:00.000Z");
@@ -634,14 +650,14 @@ describe("/triggers routes", () => {
   );
 
   test.each([
-    ["a second file whose workflow is also named digest", "copy.yaml", DIGEST],
+    ["SC523: add of a second file whose workflow is also named digest", "copy.yaml", DIGEST],
     [
-      "the same file after its workflow was renamed",
+      "add of the same file after its workflow was renamed",
       "digest.yaml",
       DIGEST.replace("digest", "brief"),
     ],
   ])(
-    "add of %s is 409 and leaves the first trigger as it was",
+    "%s is 409 and leaves the first trigger as it was",
     async (_label, file, workflow) => {
       const { cwd, store, call } = await appFor();
       await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
@@ -677,9 +693,9 @@ describe("/triggers routes", () => {
   });
 
   test(
-    "SC3005: a trigger added to project web is listed, fired in web's folder, logged and removed by project and name",
+    "SC522, SC3005: a trigger added to project web is listed, fired in web's folder, logged and removed by project and name",
     async () => {
-      const { cwd, registry, launches, call } = await appFor();
+      const { cwd, storage, launches, call } = await appFor();
 
       const added = await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
       expect(added.status).toBe(201);
@@ -695,7 +711,7 @@ describe("/triggers routes", () => {
       // to the second, so a second fire in the same minute does not reuse the run's folder
       expect(fire.runName).toMatch(/^digest-\d{8}-\d{6}$/);
       expect(launches).toHaveLength(1);
-      expect((await registry.findRun(fire.runId))?.cwd).toBe(cwd);
+      expect((await storage.runs.findRun(fire.runId))?.cwd).toBe(cwd);
 
       const listed = (await (await call("GET", "/triggers")).json()) as {
         triggers: { name: string; project: string; lastFire: { runId: string } | null }[];
@@ -733,11 +749,11 @@ describe("/triggers routes", () => {
   });
 
   test(
-    "SC3010: removing project web while it has triggers digest and nightly is 409 naming both; api and then a trigger-less web remove",
+    "SC524, SC3010: removing project web while it has triggers digest and nightly is 409 naming both; api and then a trigger-less web remove",
     async () => {
-      const { cwd, home, call } = await appFor();
+      const { cwd, storage, call } = await appFor();
       writeFileSync(join(cwd, "nightly.yaml"), DIGEST.replace("name: digest", "name: nightly"));
-      await registerProject(home, "api", { path: makeRepo() });
+      await registerProject(storage, "api", { path: makeRepo() });
       await call("POST", "/triggers", { project: "web", workflow: "digest.yaml" });
       await call("POST", "/triggers", { project: "web", workflow: "nightly.yaml" });
 
@@ -746,7 +762,7 @@ describe("/triggers routes", () => {
       const { error } = (await refused.json()) as { error: { message: string } };
       expect(error.message).toContain("digest");
       expect(error.message).toContain("nightly");
-      expect(Object.keys(await readProjects(home))).toContain("web");
+      expect(Object.keys(await storage.projects.list())).toContain("web");
 
       expect((await call("DELETE", "/projects/api")).status).toBe(200);
 
@@ -791,7 +807,7 @@ describe("/triggers routes", () => {
   });
 });
 
-describe("findOrAddFolderProject", () => {
+describe("storage.projects.findOrAddFolder", () => {
   test.each([
     ["the project already at the folder", { web: "/c/web" }, "/c/web", "web", {}],
     [
@@ -816,155 +832,20 @@ describe("findOrAddFolderProject", () => {
       { "project-2024": "/c/2024" },
     ],
     ["a missing folder, added all the same", {}, "/c/gone", "gone", { gone: "/c/gone" }],
-  ])(
-    "SC3004: findOrAddFolderProject returns %s",
-    async (_label, before, folder, expected, added) => {
-      const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
-      for (const [name, path] of Object.entries(before))
-        await registerProject(home, name, { path });
-      const original = await readProjects(home);
+  ])("SC3004: findOrAddFolder returns %s", async (_label, before, folder, expected, added) => {
+    const storage = memoryStorage();
+    for (const [name, path] of Object.entries(before))
+      await registerProject(storage, name, { path });
+    const original = await storage.projects.list();
 
-      expect(await findOrAddFolderProject(home, folder)).toBe(expected);
+    expect(await storage.projects.findOrAddFolder(folder)).toBe(expected);
 
-      const after = await readProjects(home);
-      expect(Object.keys(after).toSorted()).toEqual(
-        [...Object.keys(original), ...Object.keys(added)].toSorted(),
-      );
-      for (const [name, path] of Object.entries(added)) {
-        expect(after[name]).toMatchObject({ path, addedBy: { channel: "server" } });
-      }
-    },
-  );
-});
-
-describe("adoptLegacyTriggers", () => {
-  // A trigger as main saved it: named by its folder, with no project.
-  const legacyTrigger = (id: string, name: string, cwd: string) => ({
-    id,
-    name,
-    workflowPath: join(cwd, `${name}.yaml`),
-    cwd,
-    config: null,
-    cron: "0 9 * * *",
-    timezone: "UTC",
-    nextFireAt: "2026-10-23T09:00:00.000Z",
-    createdAt: "2026-10-01T00:00:00.000Z",
-  });
-
-  const writeLegacy = (home: string, triggers: readonly ReturnType<typeof legacyTrigger>[]) =>
-    writeFileSync(
-      triggersPath(home),
-      JSON.stringify({ version: 1, triggers: Object.fromEntries(triggers.map((t) => [t.id, t])) }),
+    const after = await storage.projects.list();
+    expect(Object.keys(after).toSorted()).toEqual(
+      [...Object.keys(original), ...Object.keys(added)].toSorted(),
     );
-
-  test(
-    "SC3011: a main-era digest trigger whose cwd is web's folder moves to web with its id, slot and fire log, and fires",
-    async () => {
-      const env = await setup();
-      await env.store.remove(env.trigger.id);
-      const legacy = legacyTrigger("t-0000aaaa", "digest", env.cwd);
-      writeLegacy(env.home, [legacy]);
-      const oldFire = {
-        triggerId: legacy.id,
-        slot: "2026-10-22T09:00:00.000Z",
-        status: "started",
-        at: "2026-10-22T09:00:01.000Z",
-      };
-      writeFileSync(triggerFiresPath(env.home), `${JSON.stringify(oldFire)}\n`);
-      const projectsBefore = await readProjects(env.home);
-
-      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
-
-      const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
-      const app = createApi({
-        ...deps,
-        pid: 1,
-        version: "0.0.0-test",
-        startedAt: 0,
-        stopping: new AbortController().signal,
-      });
-      const listed = (await (await app.request("/triggers")).json()) as { triggers: Trigger[] };
-      expect(listed.triggers).toMatchObject([
-        { id: legacy.id, name: "digest", project: "web", nextFireAt: legacy.nextFireAt },
-      ]);
-      const log = (await (await app.request("/triggers/log?project=web&name=digest")).json()) as {
-        fires: unknown[];
-      };
-      expect(log.fires).toEqual([oldFire]);
-      expect(await readProjects(env.home)).toEqual(projectsBefore);
-      const fired = await app.request("/triggers/fire", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project: "web", name: "digest" }),
-      });
-      expect(((await fired.json()) as { fire: { status: string } }).fire.status).toBe("started");
-    },
-    TIMEOUT_MS,
-  );
-
-  test("SC3012: two main-era triggers in folder Nightly_Jobs, which no project names, share one new project nightly-jobs, and a second adoption changes nothing", async () => {
-    const home = mkdtempSync(join(tmpdir(), "yok-trigger-home-"));
-    const folder = join(realpathSync(mkdtempSync(join(tmpdir(), "yok-trigger-"))), "Nightly_Jobs");
-    mkdirSync(folder);
-    writeLegacy(home, [
-      legacyTrigger("t-0000aaaa", "digest", folder),
-      legacyTrigger("t-0000bbbb", "nightly", folder),
-    ]);
-    const store = createTriggerStore(home);
-
-    await adoptLegacyTriggers(home, { triggers: store, log: noopLogger });
-
-    const projects = await readProjects(home);
-    expect(Object.keys(projects)).toEqual(["nightly-jobs"]);
-    expect(projects["nightly-jobs"]).toMatchObject({
-      path: folder,
-      addedBy: { channel: "server" },
-    });
-    expect((await store.list()).map((t) => [t.name, t.project]).toSorted()).toEqual([
-      ["digest", "nightly-jobs"],
-      ["nightly", "nightly-jobs"],
-    ]);
-    const triggersBefore = readFileSync(triggersPath(home), "utf8");
-
-    await adoptLegacyTriggers(home, { triggers: store, log: noopLogger });
-
-    expect(await readProjects(home)).toEqual(projects);
-    expect(readFileSync(triggersPath(home), "utf8")).toBe(triggersBefore);
+    for (const [name, path] of Object.entries(added)) {
+      expect(after[name]).toMatchObject({ path, addedBy: { channel: "server" } });
+    }
   });
-
-  test(
-    "one trigger that cannot move is logged by name, and the others still move and fire while it never does",
-    async () => {
-      const env = await setup();
-      await env.store.remove(env.trigger.id);
-      writeLegacy(env.home, [
-        legacyTrigger("t-0000aaaa", "broken", env.cwd),
-        legacyTrigger("t-0000bbbb", "digest", env.cwd),
-      ]);
-      const store = {
-        ...env.store,
-        adopt: (id: string, project: string) =>
-          id === "t-0000aaaa"
-            ? Promise.reject(new Error("disk full"))
-            : env.store.adopt(id, project),
-      };
-      const failures: unknown[] = [];
-      const log = { ...noopLogger, error: (fields: unknown) => failures.push(fields) };
-
-      await adoptLegacyTriggers(env.home, { triggers: store, log });
-
-      expect(failures).toEqual([expect.objectContaining({ trigger: "broken" })]);
-      expect((await env.store.list()).map((t) => t.name)).toEqual(["digest"]);
-      await tick(env.deps("2026-10-23T09:00:10.000Z"));
-      expect(env.launches).toHaveLength(1);
-      expect((await env.store.listLegacy()).map((t) => t.name)).toEqual(["broken"]);
-
-      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
-      await adoptLegacyTriggers(env.home, { triggers: env.store, log: noopLogger });
-
-      expect((await env.store.list()).map((t) => t.name).toSorted()).toEqual(["broken", "digest"]);
-      expect(await env.store.listLegacy()).toEqual([]);
-    },
-    TIMEOUT_MS,
-  );
 });

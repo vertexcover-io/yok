@@ -9,23 +9,23 @@ import {
   test,
 } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sdk from "@yok/sdk";
 import {
   emitRunEvent,
+  type IStorage,
   type NodeRun,
   noopLogger,
   type RunRef,
   readState,
-  registryPath,
   runDirOf,
   type State,
   type StopInput,
   type TranscriptEntry,
 } from "@yok/sdk";
-import { appendRunEvent, createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { appendRunEvent, memoryStorage } from "@yok/sdk/internal";
 import { orchestrateArgv } from "../stage.ts";
 import { recordGuard, runPreToolUse } from "./pre-tool-use.ts";
 import { decideStop, finishedBySession, offerLearn, runStopHook, type StopCheck } from "./stop.ts";
@@ -330,17 +330,18 @@ const setUp = async (
   agent: "claude" | "codex" = "claude",
   overrides: Partial<State> = {},
 ) => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), "hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "hooks-repo-")));
-  const registry = createRegistry(registryPath(home));
-  await registry.addRun({
+  const storage = memoryStorage();
+  const addedAt = "2026-09-26T10:00:00Z";
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
     id: "r-1",
+    project: "repo",
     workflow: "feature",
     workflowPath: join(cwd, "workflow.yaml"),
     inputs: {},
-    cwd,
     sessions: [{ agent, sessionId: "s1" }],
-    name: "feat-x",
+    name: null,
     terminal: null,
     config: null,
     tiers: null,
@@ -349,11 +350,14 @@ const setUp = async (
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
   const config = { path: null, root: cwd };
-  await writeFile(
-    join(runDir, "state.json"),
-    JSON.stringify({ ...seed, ...overrides, nodeRuns, config }),
-  );
-  return { runDir, cwd, deps: { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger } };
+  const claimed = await storage.runs.initRun("r-1", "feat-x", {
+    ...seed,
+    ...overrides,
+    nodeRuns,
+    config,
+  });
+  if (!claimed.ok) throw new Error(claimed.error);
+  return { runDir, cwd, deps: { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger } };
 };
 
 const input = (
@@ -457,7 +461,7 @@ describe("runStopHook", () => {
   });
 
   test("the transcript is read only when no node is open, and every call is logged", async () => {
-    const { deps, runDir } = await setUp(planOpen);
+    const { deps } = await setUp(planOpen);
     let reads = 0;
     const counted: StopInput = {
       ...input(orchestrateAfterPrompt),
@@ -469,7 +473,7 @@ describe("runStopHook", () => {
     await runStopHook(counted, deps);
     await runStopHook(counted, deps);
     expect(reads).toBe(0);
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({
         decision: "continue",
@@ -480,17 +484,19 @@ describe("runStopHook", () => {
       expect.objectContaining({ decision: "allow", reason: "max-blocks-reached", blockStreak: 1 }),
       { agent: "claude", sessionId: "s1" },
     ]);
-    expect((await readState(runDir))?.stopHook).toEqual({ blockStreak: 1, seq: 2 });
+    expect((await readState(RUN, deps.storage))?.stopHook).toEqual({ blockStreak: 1, seq: 2 });
   });
 
   test("a stop that gives up records agent.stuck for the session, which is not progress, so the next stop also lets the turn end", async () => {
-    const { deps, runDir } = await setUp(planOpen);
+    const { deps } = await setUp(planOpen);
 
     const kinds = [];
     for (const _ of [1, 2, 3]) kinds.push((await runStopHook(input(undefined), deps)).kind);
 
     expect(kinds).toEqual(["continue", "allow", "allow"]);
-    const stuck = (await jsonlEventStore(runDir).read()).filter((e) => e.type === "agent.stuck");
+    const stuck = (await deps.storage.runs.readEvents("r-1")).filter(
+      (e) => e.type === "agent.stuck",
+    );
     expect(stuck.map((event) => [event.source, event.payload])).toEqual([
       ["hooks", { agent: "claude", sessionId: "s1" }],
       ["hooks", { agent: "claude", sessionId: "s1" }],
@@ -498,7 +504,7 @@ describe("runStopHook", () => {
   });
 
   test("SC137, SC138: two stops with plan open while a background task runs both let the turn end as background-task, at streak 0, with no agent.stuck", async () => {
-    const { deps, runDir } = await setUp(planOpen);
+    const { deps } = await setUp(planOpen);
     const waiting = input(undefined, "claude", true);
 
     const kinds = [
@@ -507,17 +513,17 @@ describe("runStopHook", () => {
     ];
 
     expect(kinds).toEqual(["allow", "allow"]);
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
-    expect((await readState(runDir))?.status).toBe("running");
+    expect((await readState(RUN, deps.storage))?.status).toBe("running");
   });
 
   test("SC19: with inline write open and a background task running, both stops let the turn end as background-task at streak 0, with no message and no agent.stuck", async () => {
     const write = { ...nodeRun("write", "running"), mode: "inline" as const };
-    const { deps, runDir } = await setUp({ write });
+    const { deps } = await setUp({ write });
     const waiting = input(undefined, "claude", true);
 
     const first = await runStopHook(waiting, deps);
@@ -525,7 +531,7 @@ describe("runStopHook", () => {
 
     expect(first).toEqual({ kind: "allow" });
     expect(second).toEqual({ kind: "allow" });
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
@@ -534,18 +540,18 @@ describe("runStopHook", () => {
 
   test("an inline agent node open with interaction off and a background task running ends as background-task, never node-not-done or unanswered-stop", async () => {
     const create = { ...nodeRun("create", "running"), mode: "inline" as const };
-    const { deps, runDir } = await setUp({ create }, "claude", { policies: UNATTENDED });
+    const { deps } = await setUp({ create }, "claude", { policies: UNATTENDED });
     const waiting = input(undefined, "claude", true);
 
     const replies = [await runStopHook(waiting, deps), await runStopHook(waiting, deps)];
 
     expect(replies).toEqual([{ kind: "allow" }, { kind: "allow" }]);
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     expect(events.map((event) => [event.type, event.payload])).toEqual([
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
       ["hooks.stop.called", expect.objectContaining({ reason: "background-task", blockStreak: 0 })],
     ]);
-    expect((await readState(runDir))?.nodeRuns.create?.status).toBe("running");
+    expect((await readState(RUN, deps.storage))?.nodeRuns.create?.status).toBe("running");
   });
 
   test("a tool call between two stops is not progress, and any other event is", async () => {
@@ -564,12 +570,16 @@ describe("runStopHook", () => {
     expect(await runStopHook(input(undefined), deps)).toEqual({ kind: "allow" });
 
     const run = { id: "r-1", cwd, name: "feat-x" };
-    await emitRunEvent(run, { type: "custom.test.progress", source: "test", payload: {} });
+    await emitRunEvent(
+      run,
+      { type: "custom.test.progress", source: "test", payload: {} },
+      deps.storage,
+    );
     expect(await runStopHook(input(undefined), deps)).toMatchObject({ kind: "continue" });
   });
 
   test("with interaction off, any tool call since the last stop is progress, file edits included, so only a stop with no work since fails the node", async () => {
-    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const { deps } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
       { kind: "command", command: "ls" },
@@ -584,7 +594,7 @@ describe("runStopHook", () => {
     await runStopHook(input(edited), deps);
     await runStopHook(input(edited), deps);
 
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -593,7 +603,7 @@ describe("runStopHook", () => {
   });
 
   test("with interaction off, a question tried between stops is not work, so the stop after it still fails the node", async () => {
-    const { deps, runDir } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const { deps } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
       { kind: "command", command: "ls" },
@@ -602,7 +612,7 @@ describe("runStopHook", () => {
     await runStopHook(input(ran), deps);
     await runStopHook(input([...ran, { kind: "question" }]), deps);
 
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -617,17 +627,21 @@ describe("runStopHook", () => {
   });
 
   test("with interaction off, a tool call yok's guard denied between stops is not work, so the stop after it still fails the node", async () => {
-    const { deps, runDir, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const { deps, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
       { kind: "command", command: "ls" },
     ];
 
     await runStopHook(input(ran), deps);
-    await appendRunEvent({ id: "r-1", cwd, name: "feat-x" }, denied("record-guard", "Write"));
+    await appendRunEvent(
+      deps.storage,
+      { id: "r-1", cwd, name: "feat-x" },
+      denied("record-guard", "Write"),
+    );
     await runStopHook(input([...ran, { kind: "tool", name: "Write" }]), deps);
 
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -636,7 +650,7 @@ describe("runStopHook", () => {
   });
 
   test("with interaction off, a refused question is not taken off the tool calls, so a command run beside it is still work", async () => {
-    const { deps, runDir, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
+    const { deps, cwd } = await setUp(planOpen, "claude", { policies: UNATTENDED });
     const ran: TranscriptEntry[] = [
       { kind: "prompt", text: "go" },
       { kind: "command", command: "ls" },
@@ -644,6 +658,7 @@ describe("runStopHook", () => {
 
     await runStopHook(input(ran), deps);
     await appendRunEvent(
+      deps.storage,
       { id: "r-1", cwd, name: "feat-x" },
       denied("question-guard", "AskUserQuestion"),
     );
@@ -654,7 +669,7 @@ describe("runStopHook", () => {
     ];
     await runStopHook(input(asked), deps);
 
-    const events = await jsonlEventStore(runDir).read();
+    const events = await deps.storage.runs.readEvents("r-1");
     const reasons = events.flatMap((event) => {
       const stop = sdk.StopCalledEvent.safeParse(event);
       return stop.success ? [stop.data.payload.reason] : [];
@@ -663,21 +678,27 @@ describe("runStopHook", () => {
   });
 
   test("a block that cannot be logged lets the turn end, so an unsaved count can't trap the session", async () => {
-    const { deps, runDir } = await setUp(planOpen);
-    const log = join(runDir, "event.jsonl");
-    await writeFile(log, "");
-    await chmod(log, 0o444);
+    const { deps } = await setUp(planOpen);
+    const storage: IStorage = {
+      ...deps.storage,
+      runs: {
+        ...deps.storage.runs,
+        appendEvent: async () => {
+          throw new Error("yok.db is read-only");
+        },
+      },
+    };
 
-    expect(await runStopHook(input(undefined), deps)).toEqual({ kind: "allow" });
-    expect(await readFile(log, "utf8")).toBe("");
+    expect(await runStopHook(input(undefined), { ...deps, storage })).toEqual({ kind: "allow" });
+    expect(await deps.storage.runs.readEvents("r-1")).toEqual([]);
   });
 
   test("a session the run does not own is never blocked and nothing is logged", async () => {
-    const { deps, runDir } = await setUp(planOpen);
+    const { deps } = await setUp(planOpen);
     const other = { ...input(undefined), sessionId: "other" };
     expect(await runStopHook(other, deps)).toEqual({ kind: "allow" });
     expect(await runStopHook(input(undefined), { ...deps, env: {} })).toEqual({ kind: "allow" });
-    expect(await jsonlEventStore(runDir).read()).toEqual([]);
+    expect(await deps.storage.runs.readEvents("r-1")).toEqual([]);
   });
 });
 
@@ -694,7 +715,7 @@ describe("an open context node", () => {
   afterAll(() => spawn.mockRestore());
 
   test("SC22: lets the turn end, records context-node and starts the helper for that node as the program's orchestrate context", async () => {
-    const { deps, runDir, cwd } = await setUp(contextOpen);
+    const { deps, cwd } = await setUp(contextOpen);
 
     expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toEqual({ kind: "allow" });
 
@@ -706,7 +727,7 @@ describe("an open context node", () => {
         { cwd, output: "ignore" },
       ],
     ]);
-    expect((await jsonlEventStore(runDir).read()).map((e) => e.payload)).toEqual([
+    expect((await deps.storage.runs.readEvents("r-1")).map((e) => e.payload)).toEqual([
       expect.objectContaining({ decision: "allow", reason: "context-node", nodeRunId: "nr-1" }),
     ]);
   });
@@ -722,7 +743,7 @@ describe("an open context node", () => {
 
     expect(reply).toMatchObject({ kind: "continue", message: expect.stringContaining("next") });
     expect(spawn).not.toHaveBeenCalled();
-    const state = await readState(runDir);
+    const state = await readState(RUN, deps.storage);
     expect(state?.nodeRuns.fresh).toMatchObject({
       status: "completed",
       output: {
@@ -745,9 +766,21 @@ describe("an open context node", () => {
     const run = { id: "r-1", cwd, name: "feat-x" };
     const request = { node: "think", model: "opus-x" };
     const answer = { ...request, requestSeq: 1, applied: false, reason: "respawn failed" };
-    await appendRunEvent(run, { type: "workflow.model.requested", source: "t", payload: request });
-    await appendRunEvent(run, { type: "workflow.model.applied", source: "t", payload: answer });
-    await appendRunEvent(run, { type: "workflow.model.requested", source: "t", payload: request });
+    await appendRunEvent(deps.storage, run, {
+      type: "workflow.model.requested",
+      source: "t",
+      payload: request,
+    });
+    await appendRunEvent(deps.storage, run, {
+      type: "workflow.model.applied",
+      source: "t",
+      payload: answer,
+    });
+    await appendRunEvent(deps.storage, run, {
+      type: "workflow.model.requested",
+      source: "t",
+      payload: request,
+    });
 
     expect(await runStopHook(input(orchestrateAfterPrompt), deps)).toEqual({ kind: "allow" });
 
@@ -785,7 +818,7 @@ describe("the stop that ends the run's finishing turn", () => {
       spawnSync("tmux", ["-L", socket, "-f", "/dev/null", ...args]);
     tmux("new-session", "-d", "-s", "agent", "sleep", "60");
     const set = await setUp({}, agent, { status });
-    await set.deps.registry.setTerminal("r-1", "agent");
+    await set.deps.storage.runs.setTerminal("r-1", "agent");
     const deps = { ...set.deps, env: { ...set.deps.env, YOK_TMUX_SOCKET: socket } };
     const alive = () => tmux("has-session", "-t", "=agent").status === 0;
     return { ...set, deps, run: { id: "r-1", cwd: set.cwd, name: "feat-x" }, alive };
@@ -798,22 +831,26 @@ describe("the stop that ends the run's finishing turn", () => {
   ] as const)(
     "SC830: a %s session's stop after the run %s kills the run's terminal, after recording the stop",
     async (agent, status, finish) => {
-      const { deps, run, runDir, alive } = await runWithTerminal(status, agent);
-      await appendRunEvent(run, { type: finish, source: "t", payload: {} });
+      const { deps, run, alive } = await runWithTerminal(status, agent);
+      await appendRunEvent(deps.storage, run, { type: finish, source: "t", payload: {} });
       expect(alive()).toBe(true);
 
       await runStopHook(input(undefined, agent), deps);
 
       expect(alive()).toBe(false);
-      const events = await jsonlEventStore(runDir).read();
+      const events = await deps.storage.runs.readEvents("r-1");
       expect(events.map((event) => event.type)).toEqual([finish, "hooks.stop.called"]);
     },
   );
 
   test("SC831: a session resumed after the finish keeps its terminal through its stops", async () => {
     const { deps, run, alive } = await runWithTerminal("completed");
-    await appendRunEvent(run, { type: "workflow.completed", source: "t", payload: {} });
-    await appendRunEvent(run, {
+    await appendRunEvent(deps.storage, run, {
+      type: "workflow.completed",
+      source: "t",
+      payload: {},
+    });
+    await appendRunEvent(deps.storage, run, {
       type: "hooks.session-start.called",
       source: "hooks",
       payload: { agent: "claude", sessionId: "s1", source: "resume" },
@@ -852,28 +889,28 @@ describe("offerLearn", () => {
   ];
   const offer = (entries: readonly TranscriptEntry[], deps: Parameters<typeof offerLearn.run>[1]) =>
     offerLearn.run(input(entries), deps);
-  const eventTypes = async (runDir: string) =>
-    (await jsonlEventStore(runDir).read()).map((event) => event.type);
+  const eventTypes = async (storage: IStorage) =>
+    (await storage.runs.readEvents("r-1")).map((event) => event.type);
 
   test("before the PR stage completes it never offers, even after a push", async () => {
-    const { deps, runDir } = await setUp({ pr: nodeRun("pr", "running") });
+    const { deps } = await setUp({ pr: nodeRun("pr", "running") });
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
-    expect(await eventTypes(runDir)).toEqual([]);
+    expect(await eventTypes(deps.storage)).toEqual([]);
   });
 
   test("once the PR stage completed, its own push has the agent ask before running learn", async () => {
-    const { deps, runDir } = await setUpPrDone();
+    const { deps } = await setUpPrDone();
     const reply = await offer(firstPr, deps);
     expect(reply).toMatchObject({ kind: "continue" });
     expect(reply.kind === "continue" ? reply.message : "").toContain("/yok:learn");
-    expect(await eventTypes(runDir)).toEqual(["learning.offered"]);
+    expect(await eventTypes(deps.storage)).toEqual(["learning.offered"]);
   });
 
   test("it asks once per push: the stop after the user answers lets the turn end", async () => {
-    const { deps, runDir } = await setUpPrDone();
+    const { deps } = await setUpPrDone();
     await offer(firstPr, deps);
     expect(await offer(reviewPush, deps)).toMatchObject({ kind: "continue" });
-    expect(await eventTypes(runDir)).toEqual(["learning.offered", "learning.offered"]);
+    expect(await eventTypes(deps.storage)).toEqual(["learning.offered", "learning.offered"]);
     expect(await offer(reviewPush, deps)).toEqual({ kind: "allow" });
   });
 
@@ -912,9 +949,9 @@ describe("offerLearn", () => {
   });
 
   test("SC809: the turn that finished the run gets no learn offer; a session resumed after the finish still gets one", async () => {
-    const { deps, cwd, runDir } = await setUp({ pr: nodeRun("pr", "completed") });
+    const { deps, cwd } = await setUp({ pr: nodeRun("pr", "completed") });
     const run = { id: "r-1", cwd, name: "feat-x" };
-    const completed = await appendRunEvent(run, {
+    const completed = await appendRunEvent(deps.storage, run, {
       type: "workflow.completed",
       source: "t",
       payload: {},
@@ -922,9 +959,9 @@ describe("offerLearn", () => {
     if (!completed.ok) throw new Error(completed.error);
 
     expect(await offer(firstPr, deps)).toEqual({ kind: "allow" });
-    expect(await eventTypes(runDir)).toEqual(["workflow.completed"]);
+    expect(await eventTypes(deps.storage)).toEqual(["workflow.completed"]);
 
-    await appendRunEvent(run, {
+    await appendRunEvent(deps.storage, run, {
       type: "hooks.session-start.called",
       source: "hooks",
       payload: { agent: "claude", sessionId: "s1", source: "resume" },

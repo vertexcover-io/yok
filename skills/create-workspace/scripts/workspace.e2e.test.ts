@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDirOf, type WorkflowRun } from "@yok/sdk";
-import { createState, jsonlEventStore } from "@yok/sdk/internal";
+import { runDirOf, type State } from "@yok/sdk";
+import { createState, type RunDraft, withStorage } from "@yok/sdk/internal";
 
 const CLI = join(import.meta.dir, "../../../packages/cli/src/index.ts");
 const WORKSPACE = [
@@ -48,30 +48,47 @@ const makeMulti = (): string => {
 const WORKFLOW =
   'name: ok\nnodes:\n  - { id: a, type: exec, input: null, runtime: sh, script: "true" }\n';
 
-// An initialized run named feat-x in cwd, as `orchestrate init` leaves it.
-const initializedRun = (home: string, cwd: string): void => {
+// A run named feat-x in cwd, before init's first event: no state, unless config is given, when
+// init stored a state recording that config file.
+const initializedRun = async (
+  home: string,
+  cwd: string,
+  config?: State["config"],
+): Promise<void> => {
   const workflowPath = join(cwd, "ok.yaml");
   writeFileSync(workflowPath, "name: ok\nnodes: []\n");
-  const run: WorkflowRun = {
+  const runDir = runDirOf(cwd, "feat-x");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "workflow.yaml"), WORKFLOW);
+  const run: RunDraft = {
     id: "r-1",
+    project: "repo",
     workflow: "ok",
     workflowPath,
     inputs: { prompt: "hi" },
-    cwd,
     sessions: [],
-    name: "feat-x",
+    name: config === undefined ? "feat-x" : null,
     terminal: null,
     config: null,
     tiers: null,
     createdAt: new Date().toISOString(),
   };
-  mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
-  mkdirSync(runDirOf(cwd, "feat-x"), { recursive: true });
-  writeFileSync(join(runDirOf(cwd, "feat-x"), "workflow.yaml"), WORKFLOW);
+  const state =
+    config === undefined
+      ? undefined
+      : await createState({ runId: "r-1", runDir, version: "1.0.0", eventHandlers: {}, config });
+  await withStorage(home, async (storage) => {
+    const project = { path: cwd, addedBy: { channel: "cli" }, addedAt: run.createdAt };
+    const added = await storage.projects.add("repo", project);
+    if (!added.ok) throw new Error(added.error);
+    await storage.runs.addRun(run);
+    if (state === undefined) return;
+    const named = await storage.runs.initRun("r-1", "feat-x", state);
+    if (!named.ok) throw new Error(named.error);
+  });
 };
 
-const eventsOf = (cwd: string) => jsonlEventStore(runDirOf(cwd, "feat-x")).read();
+const eventsOf = (home: string) => withStorage(home, (storage) => storage.runs.readEvents("r-1"));
 
 // A run id or yok home from the shell running the tests must never reach a real registry.
 const workspace = (
@@ -92,7 +109,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
   test("WS1 — create then remove in a mono repo both exit 0, the worktree comes and goes, and the run records both", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
 
     const created = workspace(root, home, ["create", "feat-x", "--run", "feat-x"]);
     expect(created.code).toBe(0);
@@ -101,7 +118,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(removed.code).toBe(0);
     expect(existsSync(join(root, ".worktrees/feat-x"))).toBe(false);
 
-    const events = await eventsOf(root);
+    const events = await eventsOf(home);
     expect(events.map((event) => [event.type, event.runId, event.source])).toEqual([
       ["workspace.created", "r-1", "orchestrate"],
       ["workspace.removed", "r-1", "orchestrate"],
@@ -144,19 +161,18 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
   test("--run-id picks the run from outside the repo, and worktrees still go under its main checkout", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
 
     const created = workspace(tempDir(), home, ["create", "b", "--run-id", "r-1"]);
 
     expect(created.code).toBe(0);
     expect(existsSync(join(root, ".worktrees/b"))).toBe(true);
-    expect((await eventsOf(root)).map((event) => event.type)).toEqual(["workspace.created"]);
+    expect((await eventsOf(home)).map((event) => event.type)).toEqual(["workspace.created"]);
   });
 
-  test("a run whose state.json records a config file runs that file's setup, not the repo's", async () => {
+  test("a run whose state records a config file runs that file's setup, not the repo's", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
     writeFileSync(
       join(root, "orchestrate.config.json"),
       JSON.stringify({ version: 2, workspace: { setup: "echo from-repo-config" } }),
@@ -167,14 +183,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
       file,
       JSON.stringify({ version: 2, workspace: { setup: "echo from-run-config" } }),
     );
-    const runDir = runDirOf(root, "feat-x");
-    await createState({
-      runId: "r-1",
-      runDir,
-      version: "1.0.0",
-      eventHandlers: {},
-      config: { path: file, root: elsewhere },
-    });
+    await initializedRun(home, root, { path: file, root: elsewhere });
 
     const created = workspace(root, home, ["create", "b", "--run", "feat-x"]);
 
@@ -183,10 +192,10 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(created.stderr).not.toContain("from-repo-config");
   });
 
-  test("create prints the report as JSON and sends setup output to stderr", () => {
+  test("create prints the report as JSON and sends setup output to stderr", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
     writeFileSync(
       join(root, "orchestrate.config.json"),
       JSON.stringify({ version: 2, workspace: { setup: "echo installing" } }),
@@ -235,10 +244,10 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(bad.stderr).toContain('invalid upstream "bad..name"');
   });
 
-  test("a failed setup exits 1 and still prints the report", () => {
+  test("a failed setup exits 1 and still prints the report", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
     writeFileSync(
       join(root, "orchestrate.config.json"),
       JSON.stringify({ version: 2, workspace: { setup: "exit 2" } }),
@@ -250,10 +259,10 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(JSON.parse(run.stdout).repos[0].status).toBe("failed");
   });
 
-  test("a config error exits 1 with the reason and no report", () => {
+  test("a config error exits 1 with the reason and no report", async () => {
     const root = tempRepo();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
 
     const run = workspace(root, home, ["create", "b", "--repos", "api", "--run", "feat-x"]);
 
@@ -275,7 +284,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
   test("run from inside a multi workspace repo, remove finds the meta repo and its run", async () => {
     const root = makeMulti();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
     workspace(root, home, ["create", "b", "--repos", "api,web", "--run", "feat-x"]);
     expect(existsSync(join(root, ".workspaces/b/web"))).toBe(true);
 
@@ -288,7 +297,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
 
     expect(run.code).toBe(0);
     expect(existsSync(join(root, ".workspaces/b"))).toBe(false);
-    expect((await eventsOf(root)).map((event) => event.type)).toEqual([
+    expect((await eventsOf(home)).map((event) => event.type)).toEqual([
       "workspace.created",
       "workspace.removed",
     ]);
@@ -297,7 +306,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
   test("add puts a repo into an existing multi workspace and records it", async () => {
     const root = makeMulti();
     const home = tempDir();
-    initializedRun(home, root);
+    await initializedRun(home, root);
     workspace(root, home, ["create", "b", "--repos", "api", "--run", "feat-x"]);
 
     const run = workspace(root, home, ["add", "b", "--repos", "web", "--run", "feat-x"]);
@@ -305,7 +314,7 @@ describe("SC49: yok orchestrate skill run create-workspace.workspace, as workspa
     expect(run.code).toBe(0);
     expect(JSON.parse(run.stdout).repos).toMatchObject([{ name: "web", status: "ready" }]);
     expect(existsSync(join(root, ".workspaces/b/web"))).toBe(true);
-    expect((await eventsOf(root)).at(-1)?.type).toBe("workspace.repository.added");
+    expect((await eventsOf(home)).at(-1)?.type).toBe("workspace.repository.added");
   });
 
   test.each([

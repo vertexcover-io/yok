@@ -1,70 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  linkSlack,
-  ownerEnv,
-  readUsers,
-  setAccountToken,
-  updateUsers,
-  usersPath,
-} from "./users.ts";
-
-describe("users file", () => {
-  test("SC3: updateUsers creates users.json readable by its owner only, and readUsers returns the user", async () => {
-    const home = join(await mkdtemp(join(tmpdir(), "users-")), "yok-home");
-    const user = {
-      name: "Ritesh",
-      email: "ritesh@example.com",
-      accounts: { github: { id: 1, login: "ritesh-gh", token: "gho_a" } },
-    };
-
-    await updateUsers(home, (users) => ({ ...users, u_1a2b3c4d: user }));
-
-    expect((await stat(usersPath(home))).mode & 0o777).toBe(0o600);
-    expect(await readUsers(home)).toEqual({ u_1a2b3c4d: user });
-  });
-});
-
-describe("Slack link", () => {
-  test("SC9: linking Slack member U7 to user B moves it off user A, who had it", () => {
-    const person = { name: "P", email: "", accounts: {} };
-    const users = { u_a: { ...person, slack: "U7" }, u_b: person };
-
-    const linked = linkSlack(users, "u_b", "U7");
-
-    expect(linked.u_b?.slack).toBe("U7");
-    expect(linked.u_a).toEqual(person);
-  });
-});
-
-describe("account tokens", () => {
-  test("SC18: dropping the GitHub token keeps the account it belongs to, and a missing user id returns the same object", () => {
-    const github = { id: 1, login: "ritesh-gh" };
-    const users = {
-      u_a: { name: "R", email: "", accounts: { github: { ...github, token: "gho_a" } } },
-    };
-
-    const dropped = setAccountToken(users, "u_a", "github", undefined);
-
-    expect(dropped.u_a?.accounts.github).toEqual(github);
-    expect(setAccountToken(users, "u_missing", "github", undefined)).toBe(users);
-  });
-
-  test("a token goes back onto the account it was dropped from, and never onto an account the user lacks", () => {
-    const users = { u_a: { name: "R", email: "", accounts: { github: { id: 1, login: "r" } } } };
-    const none = { u_b: { name: "B", email: "", accounts: {} } };
-
-    expect(setAccountToken(users, "u_a", "github", "gho_b").u_a?.accounts.github).toEqual({
-      id: 1,
-      login: "r",
-      token: "gho_b",
-    });
-    expect(setAccountToken(none, "u_b", "github", "gho_b")).toBe(none);
-  });
-});
+import { ownerEnv } from "./users.ts";
 
 describe("ownerEnv", () => {
   const github = { id: 8675309, login: "ritesh-gh" };

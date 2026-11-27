@@ -1,8 +1,6 @@
-import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import * as z from "zod";
 import { NonEmptyStringSchema } from "./contracts.ts";
-import { readIfExists, updateJsonFile } from "./files.ts";
 
 // GitHub's permanent account id and login, and the token while yok holds access to it.
 const GitHubAccountSchema = z.strictObject({
@@ -23,69 +21,7 @@ export const UserSchema = z.strictObject({
 export type User = z.infer<typeof UserSchema>;
 export type Accounts = User["accounts"];
 
-// Keyed by yok user id, u_ and 8 hex characters.
-export const UsersFileSchema = z.record(z.string(), UserSchema);
-export type UsersFile = z.infer<typeof UsersFileSchema>;
-
-export const usersPath = (home: string): string => join(home, "users.json");
-
-const readUsersFile = async (path: string): Promise<UsersFile> => {
-  const text = await readIfExists(path);
-  return text === null ? {} : UsersFileSchema.parse(JSON.parse(text));
-};
-
-export const readUsers = (home: string): Promise<UsersFile> => readUsersFile(usersPath(home));
-
-// The file holds every connected person's GitHub token, so only this account may read it.
-export const updateUsers = async (
-  home: string,
-  change: (users: UsersFile) => UsersFile,
-): Promise<UsersFile> => {
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  const { after } = await updateJsonFile(usersPath(home), readUsersFile, change, 0o600);
-  return after;
-};
-
 export type UserEntry = readonly [id: string, user: User];
-
-export const findUserByGitHub = (users: UsersFile, githubId: number): UserEntry | undefined =>
-  Object.entries(users).find(([, user]) => user.accounts.github?.id === githubId);
-
-export const findUserBySlack = (users: UsersFile, memberId: string): UserEntry | undefined =>
-  Object.entries(users).find(([, user]) => user.slack === memberId);
-
-// One Slack member belongs to one yok user: linking it moves it off anyone who had it.
-export const linkSlack = (users: UsersFile, userId: string, memberId: string): UsersFile =>
-  Object.fromEntries(
-    Object.entries(users).map(([id, user]) => {
-      if (id === userId) return [id, { ...user, slack: memberId }];
-      if (user.slack !== memberId) return [id, user];
-      const { slack: _moved, ...rest } = user;
-      return [id, rest];
-    }),
-  );
-
-export const unlinkSlack = (users: UsersFile, userId: string): UsersFile => {
-  const user = users[userId];
-  if (user?.slack === undefined) return users;
-  const { slack: _removed, ...rest } = user;
-  return { ...users, [userId]: rest };
-};
-
-// The account stays: dropping its token ends yok's access, not who the person is.
-export const setAccountToken = (
-  users: UsersFile,
-  userId: string,
-  provider: keyof Accounts,
-  token: string | undefined,
-): UsersFile => {
-  const user = users[userId];
-  const account = user?.accounts[provider];
-  if (user === undefined || account === undefined) return users;
-  const { token: _old, ...identity } = account;
-  const next = token === undefined ? identity : { ...identity, token };
-  return { ...users, [userId]: { ...user, accounts: { ...user.accounts, [provider]: next } } };
-};
 
 const GITHUB_HTTPS = "url.https://github.com/.insteadOf";
 

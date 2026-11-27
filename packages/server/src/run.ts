@@ -23,6 +23,7 @@ import {
   type IAgentProvider,
   type IGit,
   type ILogger,
+  type IStorage,
   type ITerminalHost,
   type JsonObject,
   type JsonValue,
@@ -47,8 +48,7 @@ import {
 import {
   devPluginDir,
   foldModelSwitch,
-  jsonlEventStore,
-  type Registry,
+  type RunDraft,
   resolvePolicies,
   resolveTiers,
   selfArgv,
@@ -59,7 +59,7 @@ import { Hono } from "hono";
 import { errorResponse, jsonBody, queryParams, type Vars } from "./api.ts";
 import { isAgentAlive, readStateOrNull, scheduleDelivery } from "./delivery.ts";
 import { forgetFinishedRun, type ListedRun, listRunSummaries, ownerMatches } from "./overview.ts";
-import { addRunIfProjectKept, pickProject, readProjects, refuseBody } from "./projects.ts";
+import { deleteRun, holdsCheckout, pickProject, refuseBody } from "./projects.ts";
 import {
   type DoctorBody,
   DoctorBodySchema,
@@ -77,7 +77,7 @@ import {
 import type { CheckCheckout } from "./server.ts";
 
 export type RunDeps = Readonly<{
-  registry: Registry;
+  storage: IStorage;
   providerFor: (agent: WorkflowAgent) => IAgentProvider;
   host: ITerminalHost;
   home: string;
@@ -166,6 +166,8 @@ export type LaunchError = Readonly<{
 export type LaunchRequest = Readonly<{
   plan: WorkflowPlan;
   workflowPath: string;
+  // the project the run belongs to; cwd is that project's folder
+  project: string;
   cwd: string;
   config: string | null;
   inputs: JsonObject;
@@ -176,7 +178,7 @@ export type LaunchRequest = Readonly<{
   source: RunSource;
   // the yok user who started it, when one did
   user?: string;
-  // Adds the run to the registry unless what it starts from went away during the checks.
+  // Saves the run unless what it starts from went away during the checks.
   register: (add: () => Promise<void>) => Promise<Result<null, string>>;
 }>;
 
@@ -197,7 +199,8 @@ export const launchRun = async (
   deps: RunDeps,
   log: ILogger,
 ): Promise<Result<LaunchReply, LaunchError>> => {
-  const { plan, workflowPath, cwd, config, inputs, name, permissionMode, source, user } = request;
+  const { plan, workflowPath, project, cwd, config, inputs, name, permissionMode, source, user } =
+    request;
   const workflow = plan.name;
   const agent = plan.agent;
   const checkedInputs = checkInputs(plan, inputs);
@@ -226,12 +229,12 @@ export const launchRun = async (
   const id = `r-${randomBytes(4).toString("hex")}`;
   const runLog = log.child({ runId: id });
   // Saved before the agent starts: its first step is `orchestrate init`, which must find the run.
-  const pending: WorkflowRun = {
+  const pending: RunDraft = {
     id,
+    project,
     workflow,
     workflowPath,
     inputs,
-    cwd,
     sessions: [],
     name: null,
     terminal: null,
@@ -243,7 +246,7 @@ export const launchRun = async (
     ...(user === undefined ? {} : { user }),
     createdAt: new Date().toISOString(),
   };
-  const registered = await request.register(() => deps.registry.addRun(pending));
+  const registered = await request.register(() => deps.storage.runs.addRun(pending));
   if (!registered.ok) {
     runLog.info({ reason: registered.error }, "run not started");
     return refused(409, "conflict", registered.error);
@@ -256,7 +259,13 @@ export const launchRun = async (
       cwd,
       prompt: `${provider.skillPrefix}orchestrate --workflow ${workflowPath} --inputs ${JSON.stringify(inputs)}${nameArg}`,
       env: {
-        ...(await sessionEnv(checked.env.value, id, deps.home, writeShim(selfArgv(), deps.home))),
+        ...(await sessionEnv(
+          deps.storage,
+          checked.env.value,
+          id,
+          deps.home,
+          writeShim(selfArgv(), deps.home),
+        )),
         ...threaded,
       },
       pluginDir: devPluginDir(),
@@ -265,11 +274,11 @@ export const launchRun = async (
       ...(permissionMode === undefined ? {} : { permissionMode }),
     })
     .catch(async (error: unknown) => {
-      await deps.registry.removeRun(id);
+      await deps.storage.runs.removeRun(id);
       throw error;
     });
   if (!launched.ok) {
-    await deps.registry.removeRun(id);
+    await deps.storage.runs.removeRun(id);
     runLog.error(
       { err: String(launched.error) },
       "run not started: the agent session failed to launch",
@@ -278,8 +287,8 @@ export const launchRun = async (
   }
 
   const { terminalName, terminal } = launched.value;
-  await deps.registry.setTerminal(id, terminalName);
-  const run = (await deps.registry.findRun(id)) ?? { ...pending, terminal: terminalName };
+  await deps.storage.runs.setTerminal(id, terminalName);
+  const run = (await deps.storage.runs.findRun(id)) ?? { ...pending, cwd, terminal: terminalName };
   runLog.info({ workflow, cwd, agent, terminalName }, "run started");
   return {
     ok: true,
@@ -328,7 +337,7 @@ export const startProjectRun = async (
   log: ILogger,
   extra: StartExtra,
 ): Promise<Result<LaunchReply, LaunchError>> => {
-  const project = await pickProject(deps.home, body.project);
+  const project = await pickProject(deps.storage, deps.home, body.project);
   if (!project.ok) return refused(400, "bad-request", project.error);
   const cwd = project.value.path;
   if (project.value.cloned) {
@@ -348,6 +357,7 @@ export const startProjectRun = async (
   return launchRun(
     {
       ...compiled.value,
+      project: project.value.name,
       cwd,
       config,
       inputs: body.inputs,
@@ -361,9 +371,14 @@ export const startProjectRun = async (
         if (stillWanted !== undefined && !(await stillWanted())) {
           return { ok: false, error: "withdrawn while the run was being checked" };
         }
-        return (await addRunIfProjectKept(deps.home, project.value, add))
-          ? { ok: true, value: null }
-          : { ok: false, error: `project ${project.value.name} was removed` };
+        // The run row names its project, so the insert fails once the project is gone.
+        const failed = await add().then(
+          () => null,
+          (error: unknown) => error,
+        );
+        if (failed === null) return { ok: true, value: null };
+        if ((await deps.storage.projects.find(project.value.name)) !== undefined) throw failed;
+        return { ok: false, error: `project ${project.value.name} was removed` };
       },
     },
     deps,
@@ -393,7 +408,7 @@ const runProjectDoctor = async (
   deps: RunDeps,
   body: DoctorBody,
 ) => {
-  const project = await pickProject(deps.home, body.project);
+  const project = await pickProject(deps.storage, deps.home, body.project);
   if (!project.ok) return errorResponse(c, 400, "bad-request", project.error);
   const cwd = project.value.path;
   if (body.workflow === undefined) {
@@ -410,7 +425,7 @@ const conflict = (c: Context<{ Variables: Vars }>, message: string) =>
   errorResponse(c, 409, "conflict", message);
 
 // A context new step links its session before Claude starts on it and keeps the link when the
-// relaunch fails, so the registry's last session may never have started; the event log knows.
+// relaunch fails, so the run's last linked session may never have started; the event log knows.
 const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
   events
     .flatMap((event) => {
@@ -426,10 +441,10 @@ const lastStartedSession = (events: readonly Event[]): SessionRef | undefined =>
 // yok resume NAME does in that checkout.
 const findRunId = async (deps: RunDeps, pick: RunPick): Promise<Result<string>> => {
   if ("id" in pick) return { ok: true, value: pick.id };
-  const project = await pickProject(deps.home, pick.project);
+  const project = await pickProject(deps.storage, deps.home, pick.project);
   if (!project.ok) return project;
   const named = await resolveRun({
-    registry: deps.registry,
+    storage: deps.storage,
     root: project.value.path,
     name: pick.name,
   });
@@ -444,7 +459,7 @@ const checkRelaunch = async (
   agent: WorkflowAgent,
 ): Promise<Result<Record<string, string>, LaunchError>> => {
   const loaded = await (async () => {
-    const config = unwrap(await loadRunConfig(run));
+    const config = unwrap(await loadRunConfig(run, deps.storage));
     // the doctor and env follow the agent this session resumes on, which may not be the workflow's
     const plan = { ...(await compileRunWorkflow(run, config)), agent };
     return { config, plan, env: await loadEnv(config, plan, run.cwd) };
@@ -479,18 +494,18 @@ const relaunchRun = async (
   if (!found.ok) return errorResponse(c, 404, "not-found", found.error);
   const id = found.value;
   const log = c.get("log").child({ component: "runs", runId: id });
-  const run = await deps.registry.findRun(id);
+  const run = await deps.storage.runs.findRun(id);
   if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
   const linked = run.sessions.at(-1);
   if (run.name === null || run.terminal === null || linked === undefined) {
     return conflict(c, `run ${id} never started its agent session; start it again with yok run`);
   }
   const runDir = runDirOf(run.cwd, run.name);
-  const state = await readStateOrNull(runDir);
-  if (state === null) return conflict(c, `run ${run.name} has no readable state in ${runDir}`);
+  const state = await readStateOrNull(deps.storage, id);
+  if (state === null) return conflict(c, `run ${run.name} has no readable state`);
   const stillAlive = `run ${run.name} still has its agent session; use yok attach ${run.name}`;
   if (await isAgentAlive(run, deps.host)) return conflict(c, stillAlive);
-  const events = await jsonlEventStore(runDir).read();
+  const events = await deps.storage.runs.readEvents(id);
   const session = lastStartedSession(events) ?? linked;
   const agent = WorkflowAgentSchema.safeParse(session.agent);
   if (!agent.success) {
@@ -517,7 +532,11 @@ const relaunchRun = async (
   if (await isAgentAlive(run, deps.host)) return conflict(c, stillAlive);
 
   if (retry !== undefined) {
-    const reopened = await retryFailedSteps({ id, cwd: run.cwd, name: run.name }, retry.answered);
+    const reopened = await retryFailedSteps(
+      deps.storage,
+      { id, cwd: run.cwd, name: run.name },
+      retry.answered,
+    );
     if (!reopened.ok) return conflict(c, reopened.error);
     forgetFinishedRun(runDir);
   }
@@ -527,7 +546,13 @@ const relaunchRun = async (
   const launched = await provider.launch({
     cwd: run.cwd,
     prompt: `${provider.skillPrefix}orchestrate --resume ${run.name}`,
-    env: await sessionEnv(checked.value, id, deps.home, writeShim(selfArgv(), deps.home)),
+    env: await sessionEnv(
+      deps.storage,
+      checked.value,
+      id,
+      deps.home,
+      writeShim(selfArgv(), deps.home),
+    ),
     pluginDir: devPluginDir(),
     orchestrateArgv: orchestrateArgv(),
     continueSession: { id: session.sessionId, terminalName: run.terminal },
@@ -556,7 +581,7 @@ const relaunchRun = async (
     retry === undefined ? "run resumed" : "run retried",
   );
   // Comments posted while the session was down; delivery waits until the agent is ready for them.
-  void scheduleDelivery(id, { ...deps, log, now: () => new Date() });
+  void scheduleDelivery(id, { ...deps, log });
   return c.json(
     { run, attach: [...launched.value.terminal.attachCommand()], view: viewUrl(deps, id) },
     200,
@@ -567,15 +592,15 @@ const RUNS_SHOWN = 20;
 
 // Filters run before the cut, so total counts only the runs that match.
 const listRuns = async (c: Context<{ Variables: Vars }>, deps: RunDeps, query: RunsFilter) => {
-  const projects = Object.entries(await readProjects(deps.home));
+  const projects = Object.entries(await deps.storage.projects.list());
   if (query.project !== undefined && !projects.some(([name]) => name === query.project)) {
     return errorResponse(c, 404, "not-found", `no project named ${query.project}`);
   }
   const projectAt = (cwd: string): string | null =>
     projects.find(([, project]) => project.path === cwd)?.[0] ?? null;
-  const listed: readonly ListedRun[] = (
-    await listRunSummaries(deps.registry, deps.host, deps.home)
-  ).map((run) => ({ ...run, project: projectAt(run.cwd) }));
+  const listed: readonly ListedRun[] = (await listRunSummaries(deps.storage, deps.host)).map(
+    (run) => ({ ...run, project: projectAt(run.cwd) }),
+  );
   const matched = listed.filter(
     (run) =>
       (query.project === undefined || run.project === query.project) &&
@@ -584,6 +609,21 @@ const listRuns = async (c: Context<{ Variables: Vars }>, deps: RunDeps, query: R
   );
   const runs = query.all === "true" ? matched : matched.slice(0, query.limit ?? RUNS_SHOWN);
   return c.json({ runs, total: matched.length }, 200);
+};
+
+// yok rm: a run still going keeps everything, so its agent never loses its folder mid-step.
+const removeRun = async (c: Context<{ Variables: Vars }>, deps: RunDeps, id: string) => {
+  const run = await deps.storage.runs.findRun(id);
+  if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+  if (await holdsCheckout(deps.storage, run, deps.host)) {
+    return conflict(
+      c,
+      `run ${run.name ?? id} is still going; yok rm removes only a run that has finished or lost its session`,
+    );
+  }
+  await deleteRun(deps.storage, run, deps.host);
+  c.get("log").child({ component: "runs", runId: id }).info({ name: run.name }, "run removed");
+  return c.json({ removed: id }, 200);
 };
 
 // Mounted at /runs by app.ts. Chained, so each route's input and output types reach ApiType.
@@ -607,11 +647,12 @@ export const runRoutes = (deps: RunDeps & GitDeps) =>
     .get("/view", (c) => c.json({ view: `${deps.publicOrigin}/` }, 200))
     .get("/:id/view", async (c) => {
       const id = c.req.param("id");
-      if ((await deps.registry.findRun(id)) === undefined) {
+      if ((await deps.storage.runs.findRun(id)) === undefined) {
         return errorResponse(c, 404, "not-found", `no run with id ${id}`);
       }
       return c.json({ view: viewUrl(deps, id) }, 200);
-    });
+    })
+    .delete("/:id", (c) => removeRun(c, deps, c.req.param("id")));
 
 // Mounted at /doctor by app.ts.
 export const doctorRoutes = (deps: RunDeps) =>

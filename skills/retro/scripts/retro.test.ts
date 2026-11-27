@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Event, EventSchema, runDirOf } from "@yok/sdk";
+import { type Event, EventSchema } from "@yok/sdk";
 import { citeLines, extractMain, extractRun, findGateTime, readStages } from "./retro.ts";
 
 const at = (minute: number): string => `2026-10-03T10:${String(minute).padStart(2, "0")}:00Z`;
@@ -36,28 +36,25 @@ const user = (ts: string, content: unknown): Row => ({
 
 const jsonl = (rows: readonly Row[]): string => rows.map((row) => JSON.stringify(row)).join("\n");
 
-// A run folder holding event.jsonl beside a fake ~/.claude/projects with one transcript per id.
+// A run named run-x with these events, beside a fake ~/.claude/projects with one transcript per id.
 const fixture = (
   events: readonly Event[],
   transcripts: Readonly<Record<string, readonly Row[]>>,
-): Readonly<{ runDir: string; out: string; projectsDir: string }> => {
+): Readonly<{ name: string; events: readonly Event[]; out: string; projectsDir: string }> => {
   const base = mkdtempSync(join(tmpdir(), "retro-"));
-  const runDir = runDirOf(base, "run-x");
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, "event.jsonl"), jsonl(events));
   const projectsDir = join(base, "projects");
   const slug = join(projectsDir, "-Users-x-repo");
   mkdirSync(slug, { recursive: true });
   for (const [id, rows] of Object.entries(transcripts)) {
     writeFileSync(join(slug, `${id}.jsonl`), jsonl(rows));
   }
-  return { runDir, out: join(base, "out"), projectsDir };
+  return { name: "run-x", events, out: join(base, "out"), projectsDir };
 };
 
 const read = (dir: string, name: string): string => readFileSync(join(dir, name), "utf8");
 
 describe("a run's sessions", () => {
-  test("SC13: sessions come from workflow.started and later events in first-seen order, once each; Claude sessions get main-K folders and the Codex one is marked skipped", async () => {
+  test("SC406, SC13: sessions come from workflow.started and later events in first-seen order, once each; Claude sessions get main-K folders and the Codex one is marked skipped", async () => {
     const events = [
       started([{ agent: "claude", sessionId: "A" }]),
       stop(at(1), "claude", "A"),
@@ -65,22 +62,24 @@ describe("a run's sessions", () => {
       stop(at(3), "claude", "B"),
       stop(at(4), "codex", "C"),
     ];
-    const { runDir, out, projectsDir } = fixture(events, {
+    const run = fixture(events, {
       A: [user(at(1), "hello")],
       B: [user(at(3), "again")],
     });
-    const result = await extractRun({ runDir, out, projectsDir, zone: "UTC" });
+    const { out } = run;
+    const result = await extractRun({ ...run, zone: "UTC" });
 
     expect(result.ok).toBe(true);
     expect(existsSync(join(out, "main-1", "01-spine.txt"))).toBe(true);
     expect(existsSync(join(out, "main-2", "01-spine.txt"))).toBe(true);
     expect(existsSync(join(out, "main-3"))).toBe(false);
-    const run = read(out, "00-run.txt");
-    expect(run).toMatch(/main-1\s+claude\s+A\s+\S+A\.jsonl/);
-    expect(run).toMatch(/main-3\s+codex\s+C\s+.*codex transcripts are not read/);
+    const listed = read(out, "00-run.txt");
+    expect(listed).toContain("run-x");
+    expect(listed).toMatch(/main-1\s+claude\s+A\s+\S+A\.jsonl/);
+    expect(listed).toMatch(/main-3\s+codex\s+C\s+.*codex transcripts are not read/);
   });
 
-  test("SC14: a session whose transcript is missing is listed as skipped while the rest extract; with no transcript at all extraction fails naming the projects folder", async () => {
+  test("SC406, SC14: a session whose transcript is missing is listed as skipped while the rest extract; with no transcript at all extraction fails naming the projects folder", async () => {
     const events = [started([{ agent: "claude", sessionId: "A" }]), stop(at(1), "claude", "B")];
     const some = fixture(events, { A: [user(at(1), "hello")] });
     const result = await extractRun({ ...some, zone: "UTC" });
@@ -102,7 +101,7 @@ const nodeEvent = (kind: string, ts: string, nodeId: string, payload: Row = {}):
   event(`workflow.node.${kind}`, ts, { nodeType: "agent", ...payload }, nodeId);
 
 describe("the plan gate", () => {
-  test("SC15: a message after the planning node completed is POST-GATE in the spine, the summary counts it and prints the gate; with no planning node the gate is NOT FOUND until --gate-time sets it", async () => {
+  test("SC406, SC15: a message after the planning node completed is POST-GATE in the spine, the summary counts it and prints the gate; with no planning node the gate is NOT FOUND until --gate-time sets it", async () => {
     const planned = [
       started([{ agent: "claude", sessionId: "A" }]),
       nodeEvent("started", at(0), "planning"),

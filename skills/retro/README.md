@@ -18,7 +18,7 @@ You can also invoke it yourself with `/yok:retro` in Claude Code or `$retro` in 
 
 ## Inputs and outputs
 
-Reads nothing from earlier stages. It takes the run's `event.jsonl` and `state.json`, the session transcripts they point to, the project repo and the PR when those exist. Produces the `retro` artifact, `artifacts/retro.md`.
+Reads nothing from earlier stages. It takes the run's events and state through `yok orchestrate events` and `yok orchestrate get`, the session transcripts they point to, the project repo and the PR when those exist. Produces the `retro` artifact, `artifacts/retro.md`.
 
 ## Files
 

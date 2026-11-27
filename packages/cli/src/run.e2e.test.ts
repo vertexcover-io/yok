@@ -16,6 +16,7 @@ import { basename, dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
 import { VERSION } from "@yok/sdk/internal";
 import { readPort } from "@yok/server";
+import { savedRun, savedRuns, savedState } from "./test-runs.ts";
 
 const TIMEOUT_MS = 40_000;
 // Bun would load the repo's .env into the CLI, and from there the server and tmux, by itself.
@@ -455,7 +456,7 @@ describe("yok run", () => {
 
   test(
     "SC307: a folder name another checkout already holds is refused with the way out, and no run starts",
-    () => {
+    async () => {
       const inFolder = (): string => {
         const parent = realpathSync(mkdtempSync(join(tmpdir(), "yok-run-e2e-clash-")));
         const dir = join(parent, "repo");
@@ -476,7 +477,7 @@ describe("yok run", () => {
         "add this checkout under another name with yok project add NAME, then pass --project NAME",
       );
       expect(readLines(fakeOut).some(isLaunch)).toBe(false);
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
+      expect(await savedRuns(home)).toEqual([]);
 
       stopServer(held, env);
     },
@@ -541,19 +542,18 @@ describe("yok run", () => {
 
     test(
       "SC6: the run starts with no session, its terminal is the launched tmux name, and a SessionStart hook call links the session",
-      () => {
+      async () => {
         const runId = run.stdout.trim().split("\n")[0] ?? "";
         expect(launch?.argv).not.toContain("--session-id");
 
-        const registryFile = join(testEnv.home, "registry.json");
-        const saved = () => JSON.parse(readFileSync(registryFile, "utf8")).runs[runId];
-        expect(saved().sessions).toEqual([]);
+        const saved = () => savedRun(testEnv.home, runId);
+        expect((await saved())?.sessions).toEqual([]);
         const tmuxNames = spawnSync(
           "tmux",
           ["-L", testEnv.socket, "list-sessions", "-F", "#{session_name}"],
           { encoding: "utf8" },
         ).stdout.split("\n");
-        expect(tmuxNames).toContain(saved().terminal);
+        expect(tmuxNames).toContain((await saved())?.terminal ?? "");
 
         const hook = spawnSync(
           "bun",
@@ -578,7 +578,9 @@ describe("yok run", () => {
           },
         );
         expect(hook.status).toBe(0);
-        expect(saved().sessions).toEqual([{ agent: "claude", sessionId: "claude-chose-this" }]);
+        expect((await saved())?.sessions).toEqual([
+          { agent: "claude", sessionId: "claude-chose-this" },
+        ]);
       },
       TIMEOUT_MS,
     );
@@ -614,7 +616,7 @@ describe("yok run", () => {
 
   test(
     "SC309: a workflow's env check for an unset key blocks the run before any agent launches",
-    () => {
+    async () => {
       const repo = makeRepo();
       const { env, home, fakeOut } = makeEnv();
       const doctor = [
@@ -631,7 +633,7 @@ describe("yok run", () => {
       expect(run.stderr).toContain("BLOCKED env:YOK_E2E_UNSET_KEY");
       const launches = readLines(fakeOut).filter((record) => isLaunch(record));
       expect(launches).toEqual([]);
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
+      expect(await savedRuns(home)).toEqual([]);
     },
     TIMEOUT_MS,
   );
@@ -664,7 +666,7 @@ describe("yok run", () => {
 
   test(
     "--config FILE, resolved against the current folder, is saved on the run and recorded by init, even with no config in the repo",
-    () => {
+    async () => {
       const repo = makeRepo();
       rmSync(join(repo, "orchestrate.config.json"));
       mkdirSync(join(repo, "configs"));
@@ -685,8 +687,7 @@ describe("yok run", () => {
       expect(run.stderr).not.toContain("BLOCKED");
       expect(run.code).toBe(0);
       const runId = run.stdout.trim().split("\n")[0] ?? "";
-      const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8"));
-      expect(registry.runs[runId].config).toBe(file);
+      expect((await savedRun(home, runId))?.config).toBe(file);
       waitFor(() => readLines(fakeOut).some(isLaunch));
       const launch = readLines(fakeOut).find(isLaunch);
       const init = spawnSync("bun", [...ORCHESTRATE, "init", "fix-login"], {
@@ -695,8 +696,8 @@ describe("yok run", () => {
         encoding: "utf8",
       });
       expect(init.status).toBe(0);
-      const state = JSON.parse(readFileSync(join(repo, ".yok", "fix-login", "state.json"), "utf8"));
-      expect(state.config).toEqual({ path: file, root: join(repo, "configs") });
+      const state = await savedState(home, runId);
+      expect(state?.config).toEqual({ path: file, root: join(repo, "configs") });
 
       stopServer(repo, env);
     },
@@ -708,7 +709,7 @@ describe("yok run", () => {
     ["a workflow file with interaction: false", ["unattended.yaml"], "workflow"],
   ] as const)(
     "SC510: %s is saved on the run as interaction false, with where it came from",
-    (_case, args, source) => {
+    async (_case, args, source) => {
       const repo = makeRepo();
       writeFileSync(
         join(repo, "unattended.yaml"),
@@ -721,8 +722,7 @@ describe("yok run", () => {
       expect(run.stderr).not.toContain("BLOCKED");
       expect(run.code).toBe(0);
       const runId = run.stdout.trim().split("\n")[0] ?? "";
-      const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8"));
-      expect(registry.runs[runId].policies).toEqual({
+      expect((await savedRun(home, runId))?.policies).toEqual({
         values: { interaction: false },
         sources: { interaction: source },
       });
@@ -734,7 +734,7 @@ describe("yok run", () => {
 
   test(
     "--config naming a missing file stops yok run before any run or session starts",
-    () => {
+    async () => {
       const repo = makeRepo();
       const file = join(repo, "custom.json");
       const { env, home, fakeOut } = makeEnv();
@@ -744,14 +744,14 @@ describe("yok run", () => {
       expect(run.code).toBe(1);
       expect(run.stderr).toContain(file);
       expect(readLines(fakeOut).some(isLaunch)).toBe(false);
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
+      expect(await savedRuns(home)).toEqual([]);
     },
     TIMEOUT_MS,
   );
 
   test(
     "SC13: a cyclic workflow fails to compile on the server and records no run",
-    () => {
+    async () => {
       const repo = makeRepo();
       const { env, home } = makeEnv();
 
@@ -759,7 +759,7 @@ describe("yok run", () => {
       expect(run.code).toBe(1);
       expect(run.stderr).toContain("cycle: dependency cycle among");
       expect(run.stderr).not.toContain("    at ");
-      expect(existsSync(join(home, "registry.json"))).toBe(false);
+      expect(await savedRuns(home)).toEqual([]);
 
       stopServer(repo, env);
     },
@@ -810,10 +810,7 @@ describe("yok run", () => {
       const idB = b.stdout.trim().split("\n")[0];
       expect(idA).not.toBe(idB);
 
-      const registry = JSON.parse(readFileSync(join(home, "registry.json"), "utf8")) as {
-        runs: Record<string, unknown>;
-      };
-      expect(Object.keys(registry.runs).sort()).toEqual(
+      expect((await savedRuns(home)).map((saved) => saved.id).sort()).toEqual(
         [idA, idB].filter((id) => id !== undefined).sort(),
       );
       expect(serverPids(home)).toHaveLength(1);
@@ -952,10 +949,9 @@ describe("yok run", () => {
       for (const [index, side] of sides.entries()) {
         const other = sides[1 - index]?.home ?? "";
         expect((await ask(side.home, "/api/health")).status).toBe(200);
-        const registry = JSON.parse(readFileSync(join(side.home, "registry.json"), "utf8")) as {
-          runs: Record<string, unknown>;
-        };
-        expect(Object.keys(registry.runs)).toEqual([runIds[index] ?? ""]);
+        expect((await savedRuns(side.home)).map((saved) => saved.id)).toEqual([
+          runIds[index] ?? "",
+        ]);
         expect((await ask(other, `/api/runs/${runIds[index]}/view`)).status).toBe(404);
         waitFor(() => readLines(side.fakeOut).some(isLaunch));
         const launched = readLines(side.fakeOut).find(isLaunch)?.env as Record<string, string>;
@@ -1672,12 +1668,12 @@ describe("yok --remote", () => {
       stdout: /^added web {2}\/srv\/yok\/projects\/web\n$/,
     },
     {
-      args: ["project", "remove", "web", "--purge"],
+      args: ["project", "remove", "web"],
       answers: {
         "DELETE /api/projects/web": () =>
-          Response.json({ removed: "web", purged: true, note: null }),
+          Response.json({ removed: "web", runs: [], purged: false, note: null }),
       },
-      request: { request: "DELETE /api/projects/web?purge=true", body: null },
+      request: { request: "DELETE /api/projects/web?force=false", body: null },
       stdout: /^removed web\n$/,
     },
   ])(
@@ -1690,6 +1686,25 @@ describe("yok --remote", () => {
       expect(result.stderr).toBe("");
       expect(routeCalls(server.seen)).toEqual([request]);
       expect(result.stdout).toMatch(stdout);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC619: yok --remote project rm web --force asks for the forced removal and prints removed web and its runs r-1, r-2",
+    async () => {
+      const server = fakeRemote({
+        "DELETE /api/projects/web": () =>
+          Response.json({ removed: "web", runs: ["r-1", "r-2"], purged: false, note: null }),
+      });
+
+      const result = await remoteYok(server.url, ["project", "rm", "web", "--force"]);
+
+      expect(result.stderr).toBe("");
+      expect(routeCalls(server.seen)).toEqual([
+        { request: "DELETE /api/projects/web?force=true", body: null },
+      ]);
+      expect(result.stdout).toBe("removed web and its runs r-1, r-2\n");
     },
     TIMEOUT_MS,
   );
@@ -1947,8 +1962,7 @@ describe("yok --remote beside a local server", () => {
       expect(remote.code).toBe(0);
       const [runId = "", view = ""] = remote.stdout.trim().split("\n");
       expect(view).toStartWith("view: http://localhost:");
-      const registry = JSON.parse(readFileSync(join(server.home, "registry.json"), "utf8"));
-      expect(registry.runs[runId].policies).toEqual({
+      expect((await savedRun(server.home, runId))?.policies).toEqual({
         values: { interaction: false },
         sources: { interaction: "cli" },
       });

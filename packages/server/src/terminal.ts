@@ -1,5 +1,10 @@
-import { findRunPane, type ILogger, type ITerminalHost, type Result } from "@yok/sdk";
-import type { Registry } from "@yok/sdk/internal";
+import {
+  findRunPane,
+  type ILogger,
+  type IStorage,
+  type ITerminalHost,
+  type Result,
+} from "@yok/sdk";
 import type { Subprocess } from "bun";
 import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
@@ -7,7 +12,7 @@ import type { WSContext } from "hono/ws";
 import * as z from "zod";
 
 export type TerminalDeps = Readonly<{
-  registry: Registry;
+  storage: IStorage;
   host: ITerminalHost;
   log: ILogger;
   stopping: AbortSignal;
@@ -49,9 +54,9 @@ const parseMessage = (raw: unknown): ClientMessage | null => {
 };
 
 const attachArgv = async (deps: TerminalDeps, id: string): Promise<Result<readonly string[]>> => {
-  const run = await deps.registry.findRun(id);
+  const run = await deps.storage.runs.findRun(id);
   if (run === undefined) return { ok: false, error: `run ${id} not found` };
-  const pane = await findRunPane(deps.host, run);
+  const pane = await findRunPane(deps.host, run, deps.storage);
   return pane.ok ? { ok: true, value: pane.value.attachCommand() } : pane;
 };
 

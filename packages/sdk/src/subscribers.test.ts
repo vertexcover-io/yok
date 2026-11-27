@@ -4,11 +4,12 @@ import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Event, JsonValue, State, SubscriberRef, SubscriberRefs } from "./contracts.ts";
-import { jsonlEventStore } from "./event-store.ts";
-import { emitEvent, type RunRef, runDirOf } from "./events.ts";
+import { buildEvent, type RunRef, runDirOf } from "./events.ts";
 import { runLockPath } from "./files.ts";
 import { spawn } from "./process.ts";
-import { appendRunEvent, createState, readState } from "./state.ts";
+import type { IStorage } from "./repositories.ts";
+import { appendRunEvent, createState } from "./state.ts";
+import { openStorage } from "./storage.ts";
 import { callSubscriber, runInBackground, selectSubscribers } from "./subscribers.ts";
 
 const state: State = {
@@ -235,10 +236,37 @@ const runWithSubscribers = async (specs: Readonly<Record<string, readonly Spec[]
   const runDir = runDirOf(cwd, run.name);
   await mkdir(runDir, { recursive: true });
   await writeFile(join(runDir, "workflow.yaml"), "name: demo\nnodes: []\n");
-  await createState({ runId: run.id, runDir, version: "2.0.0", eventHandlers: {}, subscribers });
+  const home = await realpath(await mkdtemp(join(tmpdir(), "subscribers-home-")));
+  // the subscriber processes this test starts inherit it and open the same yok.db
+  process.env.YOK_HOME = home;
+  const storage = openStorage(home);
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
+  await storage.runs.addRun({
+    id: run.id,
+    project: "repo",
+    workflow: "demo",
+    workflowPath: join(runDir, "workflow.yaml"),
+    inputs: {},
+    sessions: [],
+    name: null,
+    terminal: null,
+    config: null,
+    tiers: null,
+    createdAt: addedAt,
+  });
+  const state = await createState({
+    runId: run.id,
+    runDir,
+    version: "2.0.0",
+    eventHandlers: {},
+    subscribers,
+  });
+  const claimed = await storage.runs.initRun(run.id, run.name, state);
+  if (!claimed.ok) throw new Error(claimed.error);
   const calls = async () =>
-    (await jsonlEventStore(runDir).read()).filter((stored) => stored.type === "subscriber.called");
-  return { run, runDir, cwd, calls };
+    (await storage.runs.readEvents(run.id)).filter((stored) => stored.type === "subscriber.called");
+  return { run, runDir, cwd, calls, storage, home };
 };
 
 const ping = (id?: string) => ({
@@ -247,6 +275,20 @@ const ping = (id?: string) => ({
   payload: null,
   ...(id === undefined ? {} : { id }),
 });
+
+// Stores a ping as given, with no state and so no subscriber call, as a run's other process might.
+const storePing = async (storage: IStorage, run: RunRef): Promise<Event> => {
+  const seq = (await storage.runs.readEvents(run.id)).length + 1;
+  const event = buildEvent(run.id, { ...ping(), id: crypto.randomUUID() }, seq);
+  if (!event.ok) throw new Error(event.error);
+  const appended = await storage.runs.appendEvent(run.id, {
+    event: event.value,
+    state: null,
+    expectedSeq: seq - 1,
+  });
+  if (appended.kind !== "stored") throw new Error(`ping not stored: ${appended.kind}`);
+  return event.value;
+};
 
 const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> => {
   const deadline = Date.now() + 5000;
@@ -259,14 +301,14 @@ const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean): Pr
 
 describe("appendRunEvent with subscribers", () => {
   test("SC110, SC27: blocking subscribers run in order and are recorded before the append returns", async () => {
-    const { run, calls } = await runWithSubscribers({
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [
         { name: "a", handler: "seen" },
         { name: "b", command: printInput("type") },
       ],
     });
 
-    const appended = await appendRunEvent(run, ping());
+    const appended = await appendRunEvent(storage, run, ping());
 
     if (!appended.ok) throw new Error(appended.error);
     const stored = appended.value.event;
@@ -288,30 +330,35 @@ describe("appendRunEvent with subscribers", () => {
     ]);
   });
 
-  test("SC111: storing the same event id again runs no subscriber again", async () => {
-    const { run, calls } = await runWithSubscribers({
+  test("SC111, SC202: storing the same event id again returns the first event and runs neither the module nor the command subscriber again", async () => {
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [
         { name: "a", handler: "seen" },
         { name: "b", command: printInput("type") },
       ],
     });
-    const first = await appendRunEvent(run, ping("ping-1"));
+    const first = await appendRunEvent(storage, run, ping("ping-1"));
 
-    const again = await appendRunEvent(run, ping("ping-1"));
+    const again = await appendRunEvent(storage, run, ping("ping-1"));
 
-    expect(again.ok && first.ok && again.value.event).toEqual(first.ok && first.value.event);
-    expect(await calls()).toHaveLength(2);
+    if (!first.ok) throw new Error(first.error);
+    expect(again.ok && again.value.event).toEqual(first.value.event);
+    const recorded = await calls();
+    expect(recorded.map((call) => call.payload)).toMatchObject([
+      { subscriber: "a", eventId: first.value.event.id },
+      { subscriber: "b", eventId: first.value.event.id },
+    ]);
   });
 
   test("SC112, SC27: a blocking module subscriber that throws is recorded like a failed command and does not stop the next subscriber or the append", async () => {
-    const { run, runDir, calls } = await runWithSubscribers({
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [
         { name: "bad", handler: "throws" },
         { name: "good", handler: "fine" },
       ],
     });
 
-    const appended = await appendRunEvent(run, ping());
+    const appended = await appendRunEvent(storage, run, ping());
 
     expect(appended.ok).toBe(true);
     expect((await calls()).map((call) => call.payload)).toMatchObject([
@@ -322,12 +369,12 @@ describe("appendRunEvent with subscribers", () => {
       },
       { subscriber: "good", status: "ok", output: "fine" },
     ]);
-    expect((await readState(runDir))?.status).toBe("running");
+    expect((await storage.runs.readState(run.id))?.status).toBe("running");
   });
 
   test("SC114: one subscriber's non-blocking calls never overlap", async () => {
     const seq = printInput("seq");
-    const { run, cwd, calls } = await runWithSubscribers({
+    const { run, cwd, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [
         {
           name: "order",
@@ -337,8 +384,8 @@ describe("appendRunEvent with subscribers", () => {
       ],
     });
 
-    await appendRunEvent(run, ping());
-    await appendRunEvent(run, ping());
+    await appendRunEvent(storage, run, ping());
+    await appendRunEvent(storage, run, ping());
     await until(calls, (found) => found.length === 2);
 
     const lines = (await readFile(join(cwd, "order.txt"), "utf8")).trim().split("\n");
@@ -348,11 +395,12 @@ describe("appendRunEvent with subscribers", () => {
   }, 10_000);
 
   test("SC27: a blocking module subscriber that holds a timer past its 1s timeout lets the appending process exit, recorded as a timeout", async () => {
-    const { run, calls } = await runWithSubscribers({
+    const { run, calls, home } = await runWithSubscribers({
       "custom.demo.ping": [{ name: "tick", handler: "ticking", timeoutSeconds: 1 }],
     });
     const append = `import { appendRunEvent } from "${STATE_MODULE}";
-await appendRunEvent(${JSON.stringify(run)}, { type: "custom.demo.ping", source: "test", payload: null });`;
+import { openStorage } from "${join(import.meta.dir, "storage.ts")}";
+await appendRunEvent(openStorage(${JSON.stringify(home)}), ${JSON.stringify(run)}, { type: "custom.demo.ping", source: "test", payload: null });`;
 
     const started = Date.now();
     const result = await spawn(process.execPath, ["-e", append], {
@@ -371,16 +419,16 @@ await appendRunEvent(${JSON.stringify(run)}, { type: "custom.demo.ping", source:
     ]);
   }, 15_000);
 
-  test("SC115: a blocking subscriber may store an event of its own, which fires its own subscribers", async () => {
-    const { run, runDir, calls } = await runWithSubscribers({
+  test("SC115, SC219: a blocking module subscriber stores an event of its own through the home's database, which fires its own subscribers", async () => {
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [{ name: "ponger", handler: "pong" }],
       "custom.demo.pong": [{ name: "listener", command: "true" }],
     });
 
-    const appended = await appendRunEvent(run, ping());
+    const appended = await appendRunEvent(storage, run, ping());
 
     expect(appended.ok).toBe(true);
-    const types = (await jsonlEventStore(runDir).read()).map((stored) => stored.type);
+    const types = (await storage.runs.readEvents(run.id)).map((stored) => stored.type);
     expect(types).toContain("custom.demo.pong");
     expect((await calls()).map((call) => call.payload)).toMatchObject([
       { subscriber: "listener", eventType: "custom.demo.pong", status: "ok" },
@@ -389,38 +437,35 @@ await appendRunEvent(${JSON.stringify(run)}, { type: "custom.demo.ping", source:
   });
 
   test("a runner for the second event first fires the subscriber's unrecorded call for the first event, in seq order", async () => {
-    const { run, runDir, calls } = await runWithSubscribers({
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [{ name: "late", blocking: false, command: printInput("seq") }],
     });
-    const store = jsonlEventStore(runDir);
-    const first = await emitEvent(store, run.id, ping());
-    const second = await emitEvent(store, run.id, ping());
-    if (!first.ok || !second.ok) throw new Error("events not stored");
+    const first = await storePing(storage, run);
+    const second = await storePing(storage, run);
 
-    await runInBackground(run, second.value.id, "late");
+    await runInBackground(storage, run, second.id, "late");
 
     expect((await calls()).map((call) => call.payload)).toMatchObject([
-      { subscriber: "late", eventId: first.value.id, output: 1 },
-      { subscriber: "late", eventId: second.value.id, output: 2 },
+      { subscriber: "late", eventId: first.id, output: 1 },
+      { subscriber: "late", eventId: second.id, output: 2 },
     ]);
   });
 
   test("a runner facing a stale lock from a dead process records a failed call of kind lock for its event", async () => {
-    const { run, runDir, calls } = await runWithSubscribers({
+    const { run, runDir, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [{ name: "late", blocking: false, command: "true" }],
     });
-    const stored = await emitEvent(jsonlEventStore(runDir), run.id, ping());
-    if (!stored.ok) throw new Error(stored.error);
+    const stored = await storePing(storage, run);
     const lockDir = runLockPath(runDir, "subscriber-late");
     await mkdir(lockDir, { recursive: true });
     await writeFile(join(lockDir, "owner"), String(Bun.spawnSync(["true"]).pid));
 
-    await runInBackground(run, stored.value.id, "late");
+    await runInBackground(storage, run, stored.id, "late");
 
     expect((await calls()).map((call) => call.payload)).toMatchObject([
       {
         subscriber: "late",
-        eventId: stored.value.id,
+        eventId: stored.id,
         status: "failed",
         error: { kind: "lock", message: expect.stringContaining("Stale lock") },
       },
@@ -428,12 +473,12 @@ await appendRunEvent(${JSON.stringify(run)}, { type: "custom.demo.ping", source:
   });
 
   test("SC28: a non-blocking module subscriber records after the append returns, and its second call reads the value its first call stored with custom.state.updated", async () => {
-    const { run, calls } = await runWithSubscribers({
+    const { run, calls, storage } = await runWithSubscribers({
       "custom.demo.ping": [{ name: "thread", blocking: false, handler: "thread" }],
     });
 
-    await appendRunEvent(run, ping());
-    await appendRunEvent(run, ping());
+    await appendRunEvent(storage, run, ping());
+    await appendRunEvent(storage, run, ping());
     expect(await calls()).toEqual([]);
     const recorded = await until(calls, (found) => found.length === 2);
 

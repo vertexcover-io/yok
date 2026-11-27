@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   type AgentAdapter,
@@ -17,6 +17,7 @@ import {
   type IAgentProvider,
   type IGit,
   type ILogger,
+  type IStorage,
   type ITerminal,
   type JsonObject,
   type JsonValue,
@@ -32,7 +33,6 @@ import {
   type Result,
   type RunRef,
   readPolicies,
-  readState,
   runDirOf,
   type SessionRef,
   SessionRefSchema,
@@ -55,9 +55,7 @@ import {
   findRunningLeaf as findRunningNode,
   foldModelSwitch,
   isRunLive,
-  jsonlEventStore,
   nodePath,
-  type Registry,
   type StepOutcome,
   type StepReport,
   syncState,
@@ -111,7 +109,7 @@ import {
 import { artifactPaths, issuesOf, resolveArtifacts, runVerifiers } from "./workflow/verifiers.ts";
 
 export type InitOptions = Readonly<{
-  registry: Registry;
+  storage: IStorage;
   runId: string;
   name: string;
   git: IGit;
@@ -146,7 +144,7 @@ const firstAgent = (run: WorkflowRun): AgentType => run.sessions[0]?.agent ?? "c
 
 // A failed rename is only logged: the run works, its tmux session just keeps the old name.
 const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<void> => {
-  const { terminal, registry, name, log } = options;
+  const { terminal, storage, name, log } = options;
   if (terminal === undefined) return;
   const sessionName = terminalName(firstAgent(run), name, run.id);
   try {
@@ -155,7 +153,7 @@ const renameTerminal = async (run: WorkflowRun, options: InitOptions): Promise<v
       log.warn({ runId: run.id, err: renamed.error }, "tmux session not renamed");
       return;
     }
-    await registry.setTerminal(run.id, sessionName);
+    await storage.runs.setTerminal(run.id, sessionName);
   } catch (error) {
     log.warn({ runId: run.id, err: error }, "tmux session not renamed");
   }
@@ -256,13 +254,12 @@ const frozenHandlers = (config: Config, root: string): EventHandlerRefs =>
     ]),
   );
 
+// The run's folder and first state. Nothing is stored yet, so a failure here leaves no run.
 const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<State> => {
   const { run, eventHandlers, subscribers, config } = checked;
-  const { name } = options;
-  const dir = runDirOf(run.cwd, name);
-  const ref = { id: run.id, cwd: run.cwd, name };
+  const dir = runDirOf(run.cwd, options.name);
   await copyFile(run.workflowPath, join(dir, "workflow.yaml"));
-  await createState({
+  return createState({
     runId: run.id,
     runDir: dir,
     version: VERSION,
@@ -272,25 +269,31 @@ const fillRunDir = async (checked: CheckedInit, options: InitOptions): Promise<S
     tiers: run.tiers,
     ...(run.policies === undefined ? {} : { policies: run.policies }),
   });
+};
+
+// The run's first events, stored once initRun has saved its name and first state.
+const recordRunStart = async (run: WorkflowRun, options: InitOptions): Promise<State> => {
+  const { storage, name } = options;
+  const ref = { id: run.id, cwd: run.cwd, name };
   // Before workflow.started, whose notice is the notifier's first post: it finds the thread set.
   if (options.notifyThread !== undefined) {
-    const seeded = await appendRunEvent(ref, {
+    const seeded = await appendRunEvent(storage, ref, {
       type: "notification.thread.started",
       source: "orchestrate",
       payload: { provider: "slack", ...options.notifyThread },
     });
     if (!seeded.ok) throw new Error(seeded.error);
   }
-  const appended = await appendRunEvent(ref, {
+  const appended = await appendRunEvent(storage, ref, {
     id: "workflow-started",
     type: "workflow.started",
     source: "orchestrate",
     payload: { workflow: run.workflow, inputs: run.inputs, activeSessions: run.sessions },
   });
   if (!appended.ok) throw new Error(appended.error);
-  const state = await syncState(dir);
-  if (state === null) throw new Error(`${dir}/state.json disappeared during init`);
-  options.log.debug({ dir, lastEventSeq: state.lastEventSeq }, "run folder written");
+  const { state } = appended.value;
+  if (state === null) throw new Error(`run ${run.id} has no state after init`);
+  options.log.debug({ runId: run.id, lastEventSeq: state.lastEventSeq }, "run started");
   return state;
 };
 
@@ -340,8 +343,12 @@ const checkNodeTiers = async (
   return { ok: false, error: `${[...unmapped].join(", ")}; the ${plan.agent} tiers are ${names}` };
 };
 
-const takenNameMessage = async (dir: string, name: string): Promise<string> => {
-  const state = await readState(dir).catch(() => null);
+const takenNameMessage = async (
+  storage: IStorage,
+  taken: WorkflowRun,
+  name: string,
+): Promise<string> => {
+  const state = await storage.runs.readState(taken.id).catch(() => null);
   if (state === null) return `run ${name} already exists`;
   const node = findRunningNode(state.nodeRuns)?.path;
   const at = node === undefined ? "" : `, at ${node}`;
@@ -352,21 +359,22 @@ const takenNameMessage = async (dir: string, name: string): Promise<string> => {
 };
 
 const checkInit = async (options: InitOptions): Promise<Result<CheckedInit>> => {
-  const { registry, runId, name, git } = options;
+  const { storage, runId, name, git } = options;
   const parsed = SlugSchema.safeParse(name);
   if (!parsed.success) {
     return { ok: false, error: `invalid run name "${name}": ${z.prettifyError(parsed.error)}` };
   }
-  const run = await registry.findRun(runId);
+  const run = await storage.runs.findRun(runId);
   if (run === undefined) return { ok: false, error: `run ${runId} not found` };
   if (run.name !== null) {
     return { ok: false, error: `run ${runId} is already initialized as ${run.name}` };
   }
-  const taken = await access(runDirOf(run.cwd, name)).then(
-    () => true,
-    () => false,
+  // A name stays taken while a run of the same project holds it, whether or not its folder is left.
+  const taken = (await storage.runs.findRunsByName(name)).find(
+    (other) => other.project === run.project,
   );
-  if (taken) return { ok: false, error: await takenNameMessage(runDirOf(run.cwd, name), name) };
+  if (taken !== undefined)
+    return { ok: false, error: await takenNameMessage(storage, taken, name) };
   if ((await git.repoRoot(run.cwd)) === null) {
     return { ok: false, error: `${run.cwd} is not inside a git repository` };
   }
@@ -395,30 +403,50 @@ export const initializeRun = async (
   if (!checked.ok) return checked;
   const { run } = checked.value;
   const dir = runDirOf(run.cwd, options.name);
-  await mkdir(dir, { recursive: true });
-  try {
-    const state = await fillRunDir(checked.value, options);
-    await options.registry.initRun(run.id, options.name);
-    await renameTerminal(run, options);
-    await nameSession(run, options);
-    options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
-    return { ok: true, value: { dir, state } };
-  } catch (error) {
-    // A half-built folder would make every retry find its name taken.
+  // done checks a step's output against artifacts/, which no state.json write makes any more
+  await mkdir(join(dir, "artifacts"), { recursive: true });
+  const first = await fillRunDir(checked.value, options).catch(async (error: unknown) => {
+    // A half-built folder would hold a workflow.yaml no run owns.
     await rm(dir, { recursive: true, force: true });
     throw error;
-  }
+  });
+  // The project-and-name key decides a race the check lost. The folder may be the winner's, so
+  // it stays.
+  const claimed = await options.storage.runs.initRun(run.id, options.name, first);
+  if (!claimed.ok) return claimed;
+  const state = await recordRunStart(run, options).catch(async (error: unknown) => {
+    // A named run with no start event could neither init again nor be removed.
+    await options.storage.runs.releaseRun(run.id);
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  });
+  await renameTerminal(run, options);
+  await nameSession(run, options);
+  options.log.info({ runId: run.id, name: options.name, dir }, "run initialized");
+  return { ok: true, value: { dir, state } };
 };
 
 export const linkRunSession = async (
-  options: Readonly<{ registry: Registry; run: RunRef; agent: string; sessionId: string }>,
+  options: Readonly<{ storage: IStorage; run: RunRef; agent: string; sessionId: string }>,
 ): Promise<Result<readonly SessionRef[]>> => {
-  const { registry, run, agent, sessionId } = options;
+  const { storage, run, agent, sessionId } = options;
   const session = SessionRefSchema.safeParse({ agent, sessionId });
   if (!session.success) return { ok: false, error: z.prettifyError(session.error) };
-  await registry.linkSession(run.id, session.data);
-  const linked = await registry.findRun(run.id);
+  await storage.runs.linkSession(run.id, session.data);
+  const linked = await storage.runs.findRun(run.id);
   return { ok: true, value: linked?.sessions ?? [session.data] };
+};
+
+// Only an object's own keys are followed, so a path never reads into a string, an array or a
+// prototype.
+export const readStateKey = (state: State, key: string): Result<JsonValue> => {
+  const found = key.split(".").reduce<JsonValue | undefined>((value, part) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    return Object.hasOwn(value, part) ? value[part] : undefined;
+  }, z.json().parse(state));
+  return found === undefined
+    ? { ok: false, error: `run ${state.runName} has no ${key} in its state` }
+    : { ok: true, value: found };
 };
 
 type LeafReply =
@@ -489,6 +517,7 @@ const doneStatusOf = (outcome: Result<StepReport, DoneError> | Error): DoneStatu
 
 // Logged even when the call threw, so the log shows every step the skill took.
 const logCall = async <T, E extends string | DoneError = string>(
+  storage: IStorage,
   run: RunRef,
   call: Call,
   pending: Promise<Result<T, E>>,
@@ -498,7 +527,7 @@ const logCall = async <T, E extends string | DoneError = string>(
     error instanceof Error ? error : new Error(String(error)),
   );
   const status = statusOf === undefined ? {} : { status: statusOf(outcome) };
-  const logged = await appendRunEvent(run, {
+  const logged = await appendRunEvent(storage, run, {
     type: `orchestrate.${call.command}`,
     source: "orchestrate",
     payload: { input: call.input, output: replyOf(outcome), ...status },
@@ -545,10 +574,9 @@ export const DoneErrorSchema = z.discriminatedUnion("kind", [
 
 export type DoneError = z.infer<typeof DoneErrorSchema>;
 
-const readRunState = async (runDir: string): Promise<State> => {
-  const state = await syncState(runDir);
-  if (state === null)
-    throw new Error(`${runDir}/state.json is missing; run orchestrate init first`);
+const readRunState = async (storage: IStorage, run: RunRef): Promise<State> => {
+  const state = await syncState(storage, run.id);
+  if (state === null) throw new Error(`run ${run.name} has no state; run orchestrate init first`);
   return state;
 };
 
@@ -572,10 +600,11 @@ export const loadStartEnv = async (
 
 // Read afresh, so a session started mid-run sees the same files the first one did, edits included.
 export const loadSessionEnv = async (
+  storage: IStorage,
   run: RunRef,
   agent: AgentType,
 ): Promise<Result<Record<string, string>>> => {
-  const config = await loadRunConfig(run);
+  const config = await loadRunConfig(run, storage);
   if (!config.ok) return config;
   const plan = await compileRunWorkflow(run, config.value);
   return loadEnv(config.value, { ...plan, agent }, run.cwd);
@@ -658,18 +687,21 @@ export type AgentAbilities = Readonly<
 >;
 
 const walkToNextStep = async (
+  storage: IStorage,
   run: RunRef,
   abilities: AgentAbilities,
 ): Promise<Result<StepReply>> => {
-  const runDir = runDirOf(run.cwd, run.name);
-  const [state, events] = await Promise.all([readRunState(runDir), jsonlEventStore(runDir).read()]);
+  const [state, events] = await Promise.all([
+    readRunState(storage, run),
+    storage.runs.readEvents(run.id),
+  ]);
   const config = await loadRecordedConfig(state.config, run.cwd);
   if (!config.ok) return config;
   const plan = await compileRunWorkflow(run, config.value);
   const emit: Emit = async (_state, event) => {
-    const appended = await appendRunEvent(run, event);
+    const appended = await appendRunEvent(storage, run, event);
     if (!appended.ok) throw new Error(`${event.type} was not stored: ${appended.error}`);
-    if (appended.value.state === null) throw new Error(`${runDir}/state.json is missing`);
+    if (appended.value.state === null) throw new Error(`run ${run.name} has no state`);
     return appended.value.state;
   };
   const { contextSteps, subagents, parallelSteps } = abilities[plan.agent];
@@ -681,8 +713,12 @@ const walkToNextStep = async (
   return { ok: true, value: buildReply(decision, run, config.value, policies) };
 };
 
-export const nextStep = (run: RunRef, abilities: AgentAbilities): Promise<Result<StepReply>> =>
-  logCall(run, { command: "next", input: {} }, walkToNextStep(run, abilities));
+export const nextStep = (
+  storage: IStorage,
+  run: RunRef,
+  abilities: AgentAbilities,
+): Promise<Result<StepReply>> =>
+  logCall(storage, run, { command: "next", input: {} }, walkToNextStep(storage, run, abilities));
 
 export type ResumeReport = Readonly<{
   interrupted: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
@@ -690,11 +726,12 @@ export type ResumeReport = Readonly<{
 
 // Ends the step as interrupted unless it ended meanwhile; false when it had.
 const interruptStep = async (
+  storage: IStorage,
   run: RunRef,
   { node, nodeRun }: RunningLeaf,
 ): Promise<Result<boolean>> => {
   const { nodeRunId } = nodeRun;
-  return appendStepEnd(run, nodeRunId, {
+  return appendStepEnd(storage, run, nodeRunId, {
     type: "workflow.node.interrupted",
     source: "workflow",
     nodeId: node.id,
@@ -705,8 +742,11 @@ const interruptStep = async (
 
 // A step left open by a session that died stays running forever; interrupting it lets next hand it
 // out again. An open context step is left alone: yok completes it once the new session starts.
-const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> => {
-  const state = await readRunState(runDirOf(run.cwd, run.name));
+const interruptOpenLeaves = async (
+  storage: IStorage,
+  run: RunRef,
+): Promise<Result<ResumeReport>> => {
+  const state = await readRunState(storage, run);
   const plan = await loadRunPlan(run, state);
   if (!plan.ok) return plan;
   const open = findRunningLeaves(plan.value.nodes, state.nodeRuns).filter(
@@ -714,7 +754,7 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
   );
   let interrupted: ResumeReport["interrupted"] = [];
   for (const leaf of open) {
-    const stored = await interruptStep(run, leaf);
+    const stored = await interruptStep(storage, run, leaf);
     if (!stored.ok) return stored;
     if (stored.value) {
       interrupted = [...interrupted, { nodeRunId: leaf.nodeRun.nodeRunId, nodeId: leaf.node.id }];
@@ -723,8 +763,8 @@ const interruptOpenLeaves = async (run: RunRef): Promise<Result<ResumeReport>> =
   return { ok: true, value: { interrupted } };
 };
 
-export const interruptOpenSteps = (run: RunRef): Promise<Result<ResumeReport>> =>
-  logCall(run, { command: "resume", input: {} }, interruptOpenLeaves(run));
+export const interruptOpenSteps = (storage: IStorage, run: RunRef): Promise<Result<ResumeReport>> =>
+  logCall(storage, run, { command: "resume", input: {} }, interruptOpenLeaves(storage, run));
 
 export type RetryReport = Readonly<{
   retried: readonly Readonly<{ nodeRunId: string; nodeId: string }>[];
@@ -781,9 +821,12 @@ const findRetryRefusal = ({
   return `${asking.node.id} failed needing a person's answer: ${message}\nOnce a person has dealt with it, retry with --answered`;
 };
 
-const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result<RetryReport>> => {
-  const runDir = runDirOf(run.cwd, run.name);
-  const state = await readRunState(runDir);
+const reopenFailedSteps = async (
+  storage: IStorage,
+  run: RunRef,
+  answered: boolean,
+): Promise<Result<RetryReport>> => {
+  const state = await readRunState(storage, run);
   if (state.status !== "failed") {
     return {
       ok: false,
@@ -796,7 +839,7 @@ const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result
   const stuck = findStuckContainer(plan.value.nodes, state.nodeRuns);
   const refusal = findRetryRefusal({ name: run.name, targets, stuck, answered });
   if (refusal !== undefined) return { ok: false, error: refusal };
-  const events = await jsonlEventStore(runDir).read();
+  const events = await storage.runs.readEvents(run.id);
   // The run's status changes only on the last event, so every event checks it is still failed:
   // a retry racing another stops at the first event the other already stored.
   const isFailed = (current: State | null): boolean => current?.status === "failed";
@@ -807,7 +850,7 @@ const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result
     { type: "workflow.resumed", source: "workflow", payload: {} },
   ];
   for (const event of reopenEvents) {
-    const stored = await appendRunEventIf(run, event, isFailed);
+    const stored = await appendRunEventIf(storage, run, event, isFailed);
     if (!stored.ok) return { ok: false, error: `run ${run.name} was not retried: ${stored.error}` };
   }
   const retried = targets
@@ -816,15 +859,25 @@ const reopenFailedSteps = async (run: RunRef, answered: boolean): Promise<Result
   return { ok: true, value: { retried } };
 };
 
-export const retryFailedSteps = (run: RunRef, answered: boolean): Promise<Result<RetryReport>> =>
-  logCall(run, { command: "retry", input: { answered } }, reopenFailedSteps(run, answered));
+export const retryFailedSteps = (
+  storage: IStorage,
+  run: RunRef,
+  answered: boolean,
+): Promise<Result<RetryReport>> =>
+  logCall(
+    storage,
+    run,
+    { command: "retry", input: { answered } },
+    reopenFailedSteps(storage, run, answered),
+  );
 
 // The running step, with the run's policies read from the same state.
 const loadRunningLeaf = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
 ): Promise<Result<RunningLeaf & Readonly<{ policies: Policies }>>> => {
-  const state = await readRunState(runDirOf(run.cwd, run.name));
+  const state = await readRunState(storage, run);
   const plan = await loadRunPlan(run, state);
   if (!plan.ok) return plan;
   const step = findRunningLeaf(plan.value.nodes, state.nodeRuns, nodeRunId);
@@ -872,7 +925,7 @@ const buildReport = (step: RunningLeaf, record: NodeRecord): StepReport => ({
   nodeId: step.node.id,
   status: record.status,
   attempts: record.attempts,
-  // The stack stays in event.jsonl; the agent reading this report only needs what went wrong.
+  // The stack stays in the run's events; the agent reading this report only needs what went wrong.
   ...(record.error === undefined
     ? {}
     : { error: { kind: record.error.kind, message: record.error.message } }),
@@ -895,8 +948,12 @@ const fillSummary = (
   }
 };
 
-const runExecStep = async (run: RunRef, nodeRunId: string): Promise<Result<StepReport>> => {
-  const step = await loadRunningLeaf(run, nodeRunId);
+const runExecStep = async (
+  storage: IStorage,
+  run: RunRef,
+  nodeRunId: string,
+): Promise<Result<StepReport>> => {
+  const step = await loadRunningLeaf(storage, run, nodeRunId);
   if (!step.ok) return step;
   const { node } = step.value;
   if (node.type !== "exec" && node.type !== "wait") {
@@ -909,21 +966,36 @@ const runExecStep = async (run: RunRef, nodeRunId: string): Promise<Result<StepR
   const scriptDir = join(runDirOf(run.cwd, run.name), "scripts");
   const ran = await runStepLeaf(node, input, { cwd: run.cwd, path: nodeRunId, scriptDir });
   const record = node.type === "exec" ? fillSummary(node.id, node.summary, ran) : ran;
-  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(step.value, record));
+  const stored = await appendStepEnd(
+    storage,
+    run,
+    nodeRunId,
+    buildStepEndEvent(step.value, record),
+  );
   if (!stored.ok) return stored;
   if (!stored.value) return { ok: false, error: `${nodeRunId} is no longer running` };
   return { ok: true, value: buildReport(step.value, record) };
 };
 
-export const execStep = (run: RunRef, nodeRunId: string): Promise<Result<StepReport>> =>
-  logCall(run, { command: "exec", input: { nodeRunId } }, runExecStep(run, nodeRunId));
+export const execStep = (
+  storage: IStorage,
+  run: RunRef,
+  nodeRunId: string,
+): Promise<Result<StepReport>> =>
+  logCall(
+    storage,
+    run,
+    { command: "exec", input: { nodeRunId } },
+    runExecStep(storage, run, nodeRunId),
+  );
 
 export const requestApproval = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   path: string,
 ): Promise<Result<Readonly<{ nodeRunId: string; path: string; autoApproved?: true }>>> => {
-  const step = await loadRunningLeaf(run, nodeRunId);
+  const step = await loadRunningLeaf(storage, run, nodeRunId);
   if (!step.ok) return step;
   // The plan page is generated, never edited: build it from the markdown each time it is shown.
   if (path === PLAN_PAGE_PATH) {
@@ -939,7 +1011,7 @@ export const requestApproval = async (
   // No one reviews in this run: the file counts as approved, and nothing waits.
   if (!step.value.policies.interaction) {
     const nodeId = step.value.node.id;
-    const applied = await appendRunEvent(run, {
+    const applied = await appendRunEvent(storage, run, {
       type: "policy.applied",
       source: "orchestrate",
       nodeId,
@@ -948,7 +1020,7 @@ export const requestApproval = async (
     });
     return applied.ok ? { ok: true, value: { nodeRunId, path, autoApproved: true } } : applied;
   }
-  const stored = await appendRunEvent(run, {
+  const stored = await appendRunEvent(storage, run, {
     type: "artifact.approval.requested",
     source: "orchestrate",
     nodeId: step.value.node.id,
@@ -960,8 +1032,12 @@ export const requestApproval = async (
 
 type ContextLeaf = RunningLeaf & Readonly<{ node: PlanContextNode }>;
 
-const loadContextLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<ContextLeaf>> => {
-  const step = await loadRunningLeaf(run, nodeRunId);
+const loadContextLeaf = async (
+  storage: IStorage,
+  run: RunRef,
+  nodeRunId: string,
+): Promise<Result<ContextLeaf>> => {
+  const step = await loadRunningLeaf(storage, run, nodeRunId);
   if (!step.ok) return step;
   const { node, nodeRun } = step.value;
   if (node.type !== "context") {
@@ -971,21 +1047,23 @@ const loadContextLeaf = async (run: RunRef, nodeRunId: string): Promise<Result<C
 };
 
 export const findContextPlanNode = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
 ): Promise<Result<PlanContextNode>> => {
-  const leaf = await loadContextLeaf(run, nodeRunId);
+  const leaf = await loadContextLeaf(storage, run, nodeRunId);
   return leaf.ok ? { ok: true, value: leaf.value.node } : leaf;
 };
 
 // A context node always completes: if the new session or compact didn't happen, the agent just
 // keeps its context, which is no reason to skip later steps. The output says whether it applied.
 export const completeContextStep = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   output: ContextOutput,
 ): Promise<Result<StepReport>> => {
-  const leaf = await loadContextLeaf(run, nodeRunId);
+  const leaf = await loadContextLeaf(storage, run, nodeRunId);
   if (!leaf.ok) return leaf;
   const record: NodeRecord = {
     path: nodeRunId,
@@ -994,7 +1072,12 @@ export const completeContextStep = async (
     attempts: 1,
     output,
   };
-  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(leaf.value, record));
+  const stored = await appendStepEnd(
+    storage,
+    run,
+    nodeRunId,
+    buildStepEndEvent(leaf.value, record),
+  );
   if (!stored.ok) return stored;
   if (!stored.value) return { ok: false, error: `${nodeRunId} is no longer running` };
   return { ok: true, value: buildReport(leaf.value, record) };
@@ -1010,11 +1093,13 @@ const isRunningNodeRun = (runs: Readonly<Record<string, NodeRun>>, nodeRunId: st
 // Stores how a step ended only while its node run is still open, so a late ending (a script that
 // outlived a resume, a second done) never replaces the run started after it. false: it had ended.
 const appendStepEnd = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   event: EmitInput,
 ): Promise<Result<boolean>> => {
   const stored = await appendRunEventIf(
+    storage,
     run,
     event,
     (state) => state !== null && isRunningNodeRun(state.nodeRuns, nodeRunId),
@@ -1024,13 +1109,14 @@ const appendStepEnd = async (
 };
 
 const recordStepEnd = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   outcome: StepOutcome,
   artifacts: readonly ArtifactRef[],
 ): Promise<Result<StepReport, DoneError>> => {
   try {
-    return await finishStepChecked(run, nodeRunId, outcome, artifacts);
+    return await finishStepChecked(storage, run, nodeRunId, outcome, artifacts);
   } catch (error) {
     if (error instanceof WorkflowError) {
       return {
@@ -1056,12 +1142,13 @@ const recordStepEnd = async (
 };
 
 const finishStepChecked = async (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   outcome: StepOutcome,
   artifacts: readonly ArtifactRef[],
 ): Promise<Result<StepReport, DoneError>> => {
-  const step = await loadRunningLeaf(run, nodeRunId);
+  const step = await loadRunningLeaf(storage, run, nodeRunId);
   if (!step.ok) {
     return {
       ok: false,
@@ -1093,16 +1180,17 @@ const finishStepChecked = async (
       attempts: 1,
       error,
     };
-    return storeStepEnd(run, step.value, record, []);
+    return storeStepEnd(storage, run, step.value, record, []);
   }
   const { output, issues, rejected } = await checkCompletion(
+    storage,
     run,
     node,
     step.value.nodeRun,
     outcome,
     artifacts,
   );
-  if (issues.length > 0) return rejectDone(run, step.value, issues, rejected);
+  if (issues.length > 0) return rejectDone(storage, run, step.value, issues, rejected);
   const record: NodeRecord = {
     path: nodeRunId,
     type: node.type,
@@ -1111,17 +1199,23 @@ const finishStepChecked = async (
     output,
     ...(outcome.summary === undefined ? {} : { summary: outcome.summary }),
   };
-  return storeStepEnd(run, step.value, record, artifacts);
+  return storeStepEnd(storage, run, step.value, record, artifacts);
 };
 
 const storeStepEnd = async (
+  storage: IStorage,
   run: RunRef,
   step: RunningLeaf,
   record: NodeRecord,
   artifacts: readonly ArtifactRef[],
 ): Promise<Result<StepReport, DoneError>> => {
   const nodeRunId = step.nodeRun.nodeRunId;
-  const stored = await appendStepEnd(run, nodeRunId, buildStepEndEvent(step, record, artifacts));
+  const stored = await appendStepEnd(
+    storage,
+    run,
+    nodeRunId,
+    buildStepEndEvent(step, record, artifacts),
+  );
   if (!stored.ok) {
     return { ok: false, error: { kind: "storage", retryable: false, message: stored.error } };
   }
@@ -1141,6 +1235,7 @@ const storeStepEnd = async (
 
 // The log is read only when this done could be rejected.
 const checkCompletion = async (
+  storage: IStorage,
   run: RunRef,
   node: PlanAgentNode,
   nodeRun: NodeRun,
@@ -1161,7 +1256,7 @@ const checkCompletion = async (
   ];
   const verifiers = node.stage?.verifiers ?? [];
   if (defaults.length === 0 && verifiers.length === 0) return { output, issues: [], rejected: 0 };
-  const rejected = await countRejectedDones(run, nodeRunId);
+  const rejected = await countRejectedDones(storage, run.id, nodeRunId);
   if (defaults.length > 0) return { output, issues: defaults, rejected };
   const input = {
     run: run.name,
@@ -1171,18 +1266,19 @@ const checkCompletion = async (
     nodeInput: nodeRun.input ?? null,
   };
   const runs = await runVerifiers(verifiers, input, run.cwd, rejected + 1);
-  await logVerifierRuns(run, node, nodeRunId, runs);
+  await logVerifierRuns(storage, run, node, nodeRunId, runs);
   return { output, issues: issuesOf(runs), rejected };
 };
 
 const logVerifierRuns = async (
+  storage: IStorage,
   run: RunRef,
   node: PlanAgentNode,
   nodeRunId: string,
   runs: readonly VerifierRun[],
 ): Promise<void> => {
   for (const verifierRun of runs) {
-    const logged = await appendRunEvent(run, {
+    const logged = await appendRunEvent(storage, run, {
       type: "orchestrate.verifier",
       source: "orchestrate",
       nodeId: node.id,
@@ -1231,8 +1327,12 @@ const findAttemptRuns = (events: readonly Event[], nodeRunId: string): ReadonlyS
   return new Set([nodeRunId, ...chain.map((start) => start.id)]);
 };
 
-const countRejectedDones = async (run: RunDirRef, nodeRunId: string): Promise<number> => {
-  const events = await jsonlEventStore(runDirOf(run.cwd, run.name)).read();
+const countRejectedDones = async (
+  storage: IStorage,
+  runId: string,
+  nodeRunId: string,
+): Promise<number> => {
+  const events = await storage.runs.readEvents(runId);
   const attempt = findAttemptRuns(events, nodeRunId);
   return events.filter((event) => {
     const parsed = RejectedDoneEventSchema.safeParse(event);
@@ -1241,6 +1341,7 @@ const countRejectedDones = async (run: RunDirRef, nodeRunId: string): Promise<nu
 };
 
 const rejectDone = async (
+  storage: IStorage,
   run: RunRef,
   step: RunningLeaf,
   issues: readonly CompletionIssue[],
@@ -1261,7 +1362,7 @@ const rejectDone = async (
     attempts: MAX_REJECTED_DONES,
     error: { kind: "exhausted", message },
   };
-  const stored = await storeStepEnd(run, step, record, []);
+  const stored = await storeStepEnd(storage, run, step, record, []);
   if (!stored.ok) return stored;
   return {
     ok: false,
@@ -1277,32 +1378,31 @@ const loggedOutcome = (outcome: StepOutcome): JsonObject => {
 };
 
 export const finishStep = (
+  storage: IStorage,
   run: RunRef,
   nodeRunId: string,
   outcome: StepOutcome,
   artifacts: readonly ArtifactRef[],
 ): Promise<Result<StepReport, DoneError>> =>
   logCall(
+    storage,
     run,
     {
       command: "done",
       input: { nodeRunId, ...loggedOutcome(outcome), artifacts: [...artifacts] },
     },
-    recordStepEnd(run, nodeRunId, outcome, artifacts),
+    recordStepEnd(storage, run, nodeRunId, outcome, artifacts),
     doneStatusOf,
   );
 
-// A verifier finds its run by name and by the folder it started in: context.cwd for a function,
-// the working directory for a script.
-
-export const getNodeFacts = async (run: string, nodeRunId: string, cwd: string) => {
-  const ref = { cwd, name: run };
-  const runDir = runDirOf(cwd, run);
+// What `orchestrate node show` prints for a verifier script, about the run it names.
+export const getNodeFacts = async (storage: IStorage, run: RunRef, nodeRunId: string) => {
+  const runDir = runDirOf(run.cwd, run.name);
   const [state, rejected] = await Promise.all([
-    readRunState(runDir),
-    countRejectedDones(ref, nodeRunId),
+    readRunState(storage, run),
+    countRejectedDones(storage, run.id, nodeRunId),
   ]);
-  const plan = await loadRunPlan(ref, state);
+  const plan = await loadRunPlan(run, state);
   if (!plan.ok) throw new Error(plan.error);
   const step = findRunningLeaf(plan.value.nodes, state.nodeRuns, nodeRunId);
   if (step === undefined) throw new Error(`${nodeRunId} is not the step this run is running`);

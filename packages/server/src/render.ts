@@ -104,7 +104,7 @@ export const renderRuns = (list: RunList, flags: RunFlags, terminal: boolean): s
 
 export const projectTable = (projects: readonly ProjectView[]): Table => ({
   headers: ["NAME", "STATUS", "PATH", "ADDED BY"],
-  rows: projects.map((p) => [p.name, p.status, p.path, p.addedBy.name ?? p.addedBy.channel]),
+  rows: projects.map((p) => [p.name, p.status, p.path, p.addedBy.channel]),
 });
 
 export const renderProjects = (projects: readonly ProjectView[]): string =>

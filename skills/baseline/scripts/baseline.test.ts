@@ -10,50 +10,90 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, noopLogger, type RunRef, runDirOf } from "@yok/sdk";
-import { createState, jsonlEventStore } from "@yok/sdk/internal";
+import { ConfigSchema, noopLogger, type RunRef, runDirOf, type State } from "@yok/sdk";
+import { createState, withStorage } from "@yok/sdk/internal";
 import { type Baseline, captureBaseline } from "./baseline.ts";
 
 const tempDir = (): string => realpathSync(mkdtempSync(join(tmpdir(), "baseline-")));
 
-type Setup = Readonly<{ root: string; run: RunRef; runDir: string }>;
+type Setup = Readonly<{ root: string; home: string; run: RunRef; runDir: string }>;
 
-const setup = async (config: object, { state = true } = {}): Promise<Setup> => {
+// The run as init leaves it in HOME/yok.db, after its project's row.
+const seedRun = (home: string, run: RunRef, state: State): Promise<void> =>
+  withStorage(home, async (storage) => {
+    const project = { path: run.cwd, addedBy: { channel: "cli" }, addedAt: state.startedAt };
+    const added = await storage.projects.add("repo", project);
+    if (!added.ok) throw new Error(added.error);
+    await storage.runs.addRun({
+      id: run.id,
+      project: "repo",
+      workflow: "task",
+      workflowPath: join(run.cwd, "task.yaml"),
+      inputs: {},
+      sessions: [],
+      name: null,
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt: state.startedAt,
+    });
+    const named = await storage.runs.initRun(run.id, run.name, state);
+    if (!named.ok) throw new Error(named.error);
+  });
+
+// workspace: the path the run's state records, in place of the repo root.
+const setup = async (
+  config: object,
+  { state = true, workspace }: Readonly<{ state?: boolean; workspace?: string }> = {},
+): Promise<Setup> => {
   const root = tempDir();
+  const home = tempDir();
   writeFileSync(join(root, "orchestrate.config.json"), JSON.stringify({ version: 2, ...config }));
   const run = { id: "r-1", cwd: root, name: "feat-x" };
   const runDir = runDirOf(root, run.name);
   mkdirSync(runDir, { recursive: true });
-  if (!state) return { root, run, runDir };
+  if (!state) return { root, home, run, runDir };
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root });
   git("init", "-q", "-b", "main");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
   writeFileSync(join(runDir, "workflow.yaml"), "name: task\nnodes: []\n");
-  await createState({ runId: run.id, runDir, version: "1.0.0", eventHandlers: {} });
-  return { root, run, runDir };
+  const first = await createState({ runId: run.id, runDir, version: "1.0.0", eventHandlers: {} });
+  const recorded =
+    workspace === undefined
+      ? first
+      : { ...first, workspace: { ...first.workspace, path: workspace } };
+  await seedRun(home, run, recorded);
+  return { root, home, run, runDir };
 };
 
-const capture = (
-  { root, run }: Setup,
+// captureBaseline reads the run's state from YOK_HOME, as `yok orchestrate skill run` sets it.
+const capture = async (
+  { root, home, run }: Setup,
   options: { packages?: readonly string[]; dir?: string } = {},
   log = noopLogger,
-) =>
-  captureBaseline({
-    config: ConfigSchema.parse(
-      JSON.parse(readFileSync(join(root, "orchestrate.config.json"), "utf8")),
-    ),
-    run,
-    packages: options.packages ?? [],
-    dir: options.dir,
-    log,
-  });
+) => {
+  const before = process.env.YOK_HOME;
+  process.env.YOK_HOME = home;
+  try {
+    return await captureBaseline({
+      config: ConfigSchema.parse(
+        JSON.parse(readFileSync(join(root, "orchestrate.config.json"), "utf8")),
+      ),
+      run,
+      packages: options.packages ?? [],
+      dir: options.dir,
+      log,
+    });
+  } finally {
+    if (before === undefined) Reflect.deleteProperty(process.env, "YOK_HOME");
+    else process.env.YOK_HOME = before;
+  }
+};
 
 const baselineOf = (runDir: string): Baseline =>
   JSON.parse(readFileSync(join(runDir, "artifacts", "baseline.json"), "utf8"));
 
-const stateOf = (runDir: string) => JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
-
-const eventsIn = async (runDir: string) => jsonlEventStore(runDir).read();
+const eventsIn = (home: string) => withStorage(home, (storage) => storage.runs.readEvents("r-1"));
 
 const pkg = (baseline: string | object | null | undefined, path = ".") => ({
   path,
@@ -78,7 +118,7 @@ describe("captureBaseline", () => {
       value: { path: join(run.runDir, "artifacts", "baseline.json"), baseline: expected },
     });
     expect(baselineOf(run.runDir)).toEqual(expected);
-    expect(await eventsIn(run.runDir)).toEqual([]);
+    expect(await eventsIn(run.home)).toEqual([]);
   });
 
   test("CMD3: a baseline object runs in its cwd, relative to the workspace folder", async () => {
@@ -214,7 +254,7 @@ describe("captureBaseline", () => {
     expect(existsSync(join(run.runDir, "artifacts", "baseline.json"))).toBe(false);
   });
 
-  test("BL9: --dir wins over state.json's workspace.path", async () => {
+  test("BL9: --dir wins over the recorded workspace.path", async () => {
     const run = await setup({
       baseline: "pwd > where",
       packages: { core: pkg("pwd > where-core") },
@@ -229,7 +269,7 @@ describe("captureBaseline", () => {
     expect(existsSync(join(run.root, "where"))).toBe(false);
   });
 
-  test("BL9: with no --dir and no state.json, it stops with STATE_MISSING", async () => {
+  test("BL9: with no --dir and no stored state, it stops with STATE_MISSING", async () => {
     const run = await setup({ baseline: "echo hi" }, { state: false });
 
     const result = await capture(run);
@@ -250,20 +290,16 @@ describe("captureBaseline", () => {
       false,
     ],
     [
-      "a state.json workspace.path that no longer exists",
+      "a recorded workspace.path that no longer exists",
       (dir: string) => join(dir, "removed"),
       true,
     ],
   ])("BL9: %s stops with WORKTREE_MISSING naming it", async (_label, missing, inState) => {
-    const run = await setup({ packages: { core: pkg("echo core") } });
     const gone = missing(tempDir());
-    if (inState) {
-      const state = stateOf(run.runDir);
-      writeFileSync(
-        join(run.runDir, "state.json"),
-        JSON.stringify({ ...state, workspace: { ...state.workspace, path: gone } }),
-      );
-    }
+    const run = await setup(
+      { packages: { core: pkg("echo core") } },
+      inState ? { workspace: gone } : {},
+    );
 
     const result = await capture(run, inState ? {} : { dir: gone });
 

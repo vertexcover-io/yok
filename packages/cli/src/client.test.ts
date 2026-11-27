@@ -141,4 +141,16 @@ describe("checkRemoteFlag", () => {
   ])("SC4025: %s with remote=%p is refused with its own line", (path, remote, message) => {
     expect(() => checkRemoteFlag(remote, path)).toThrow(message);
   });
+
+  test("SC601: yok rm with --remote is refused, as it works only on this machine", () => {
+    expect(() => checkRemoteFlag(true, "rm")).toThrow(
+      "yok rm works only on this machine: run it as yok rm, without --remote",
+    );
+  });
+
+  test("SC701: yok import-files with --remote is refused before anything is read, as it opens this machine's yok.db", () => {
+    expect(() => checkRemoteFlag(true, "import-files")).toThrow(
+      "yok import-files works only on this machine: run it as yok import-files, without --remote",
+    );
+  });
 });

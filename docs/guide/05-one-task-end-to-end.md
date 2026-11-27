@@ -30,18 +30,18 @@ sequenceDiagram
     participant Server as yok server
     participant Agent as Claude in tmux
     participant Orch as yok orchestrate
-    participant Disk as .yok/RUN_NAME/
+    participant Disk as yok.db
 
     You->>CLI: yok run task --prompt "…"
     CLI->>Server: POST /runs { project, workflow, inputs }
     Server->>Server: compile workflow, load env, run doctor
-    Server->>Disk: registry.json gets run r-1a2b3c4d
+    Server->>Disk: add run r-1a2b3c4d
     Server->>Agent: tmux new-session claude "/yok:orchestrate --workflow … --inputs …"
     Server-->>CLI: run id, attach command, view URL
     CLI-->>You: prints them, opens the browser
 
     Agent->>Orch: init add-json-flag-to-doctor
-    Orch->>Disk: create folder, state.json, event #1 workflow.started
+    Orch->>Disk: name, first state, event #1 workflow.started
     loop until finished
         Agent->>Orch: next --run add-json-flag-to-doctor
         Orch->>Disk: read state + events, decide, write node.started
@@ -120,7 +120,7 @@ Then it sends one request: `POST /runs { project, workflow, inputs }`. A workflo
 Then:
 
 1. It mints a run id, `r-` plus eight hex characters, for example `r-1a2b3c4d`.
-2. It writes the run into `registry.json` at [run.ts:108](../../packages/server/src/run.ts#L108). The name is still `null`. The agent will pick one.
+2. It adds the run to `yok.db` in [run.ts](../../packages/server/src/run.ts). The name is still `null`. The agent will pick one.
 3. It builds the session's environment at [run.ts:116](../../packages/server/src/run.ts#L116): `YOK_RUN_ID=r-1a2b3c4d`, `YOK_HOME`, and a `PATH` whose first entry is a shim folder, so that plain `yok` inside the session means the same program that launched it. That is [ADR 0012](../adr/0012-skills-call-plain-yok-a-per-program-path-shim-picks-the-program.md).
 4. It launches Claude in a new tmux session. The launch args, built by [claudeArgs](../../packages/core/src/agents/claude.ts#L122), carry a `--settings` JSON that registers Yok's hooks: SessionStart, Stop, StopFailure, PreToolUse, PostToolUse, and the status line. Every hook is just `yok orchestrate hook …` run as a subprocess.
 5. The first message to Claude is the orchestrate skill with its arguments, from [run.ts:115](../../packages/server/src/run.ts#L115):
@@ -155,9 +155,9 @@ yok orchestrate init add-json-flag-to-doctor
 
 - Create `.yok/add-json-flag-to-doctor/` in your repo.
 - Copy `task.yaml` in as `workflow.yaml`. The run keeps its own copy, so editing the shipped file later cannot change a run in flight.
-- Write the first `state.json`, with the tiers the server resolved and the config file it was started with.
-- Append event number one, `workflow.started`, to `event.jsonl`.
-- Record the name in `registry.json` and rename the tmux window to `claude-add-json-flag-to-doctor-3c4d`.
+- Store the name and the run's first state in `yok.db` in one write, with the tiers the server resolved and the config file it was started with.
+- Store event number one, `workflow.started`.
+- Rename the tmux window to `claude-add-json-flag-to-doctor-3c4d`.
 
 It prints `{"runId":"r-1a2b3c4d","dir":"/…/.yok/add-json-flag-to-doctor"}`. The agent tells you the folder and moves to Step 2.
 
@@ -173,7 +173,7 @@ yok orchestrate next --run add-json-flag-to-doctor
 
 This is the heart of the engine, so slow down here.
 
-[walkToNextStep](../../packages/core/src/runs.ts#L592) reads `state.json` and `event.jsonl`, recompiles `workflow.yaml`, and hands all of it to [decideNext](../../packages/core/src/workflow/next.ts#L706). `decideNext` walks the nodes top to bottom. For each one, [decideStart](../../packages/core/src/workflow/next.ts#L299) asks three questions:
+[walkToNextStep](../../packages/core/src/runs.ts#L592) reads the run's state and events from `yok.db`, recompiles `workflow.yaml`, and hands all of it to [decideNext](../../packages/core/src/workflow/next.ts#L706). `decideNext` walks the nodes top to bottom. For each one, [decideStart](../../packages/core/src/workflow/next.ts#L299) asks three questions:
 
 1. Has every node it waits for (its `dependsOn`, or with none the node before it) ended?
 2. Is its `when:` expression true, or absent?
@@ -241,9 +241,9 @@ The agent logs `✓ ticket-fetcher completed` and goes back to `next`.
 
 ## Hop 6. How data moves between stages
 
-There is no message bus. Nodes talk through two things, both on disk.
+There is no message bus. Nodes talk through two things: outputs in the run's state, and artifact files.
 
-**Outputs.** The second node's input is `request: "{{ nodes.ticket-fetcher.output.task }}"`. When `next` reaches `create-workspace`, it reads the ticket-fetcher node run from `state.json`, takes `.output.task`, and puts the string into the new card. Later nodes do the same with `{{ nodes.create-workspace.output }}`, which is the whole workspace object: layout, branch, folder, and repos.
+**Outputs.** The second node's input is `request: "{{ nodes.ticket-fetcher.output.task }}"`. When `next` reaches `create-workspace`, it reads the ticket-fetcher node run from the run's state, takes `.output.task`, and puts the string into the new card. Later nodes do the same with `{{ nodes.create-workspace.output }}`, which is the whole workspace object: layout, branch, folder, and repos.
 
 **Artifacts.** Larger things go in files. The `design` stage writes `artifacts/design.md` and passes `--artifact design=artifacts/design.md` to `done`. The `planning` stage declares `consumes: [design]`. Before `planning` can start, `decideStart` checks that some completed node listed an artifact named `design`. [findConsumedArtifacts](../../packages/core/src/workflow/done.ts#L169) picks the newest one when several did. If none did, `next` replies `{"kind": "blocked", "stage": "planning", "missing": ["design"]}` and the agent stops and tells you.
 
@@ -308,7 +308,7 @@ Every time Claude tries to end its turn, [runStopHook](../../packages/core/src/h
 
 It sends the agent back at most once in a row by default. If the agent stops again at the same spot with no progress, the hook records `agent.stuck` and lets the turn end, so a confused agent cannot loop forever. A turn that ends while a background task runs is never sent back and never records `agent.stuck`, even with an inline node open, since ending the turn is how the agent waits for a slow command. Claude lists those tasks in the Stop hook's `background_tasks` input; with Codex, or a Claude Code too old to send it, the hook behaves as if none were running. Every kind of task counts, so an agent that stops mid-step while a job that never ends, such as a dev server, runs in the background is never marked stuck. yok accepts that miss so an agent waiting on a background test run or build is never marked stuck. Every hook call is itself an event, `hooks.stop.called`, so you can read later why a turn was or was not allowed to end.
 
-A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L61) is a PreToolUse hook that refuses any tool call writing to `state.json`, `event.jsonl`, or `registry.json`. The agent may read them. Only `next`, `exec`, and `done` may write them. Beside it on the same Bash and file-write calls, [recordResumed](../../packages/core/src/hooks/pre-tool-use.ts#L75) records `agent.resumed` when the main agent makes such a call on a blocked run, which puts the run back to `running`. A sub-agent's call never does, since a sub-agent can keep working while the main agent waits on the person.
+A second hook guards the records. [recordGuard](../../packages/core/src/hooks/pre-tool-use.ts#L62) is a PreToolUse hook that refuses the tool calls that write, move or delete `yok.db` or its `-wal` and `-shm` files by path: a file write, or a shell command such as `rm`, `mv`, `cp` or a redirect onto it. It does not read the SQL a client such as `sqlite3` runs. The agent reads a run through `yok orchestrate get`, `sessions`, and `events`. Only the orchestrate commands and the hooks write it. Beside it on the same Bash and file-write calls, [recordResumed](../../packages/core/src/hooks/pre-tool-use.ts#L75) records `agent.resumed` when the main agent makes such a call on a blocked run, which puts the run back to `running`. A sub-agent's call never does, since a sub-agent can keep working while the main agent waits on the person.
 
 ## Hop 10. The end
 
@@ -327,9 +327,6 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
   .yok/
     add-json-flag-to-doctor/
       workflow.yaml        the run's own copy of task.yaml
-      event.jsonl          every event, one JSON line each, in order
-      state.json           the current picture, rebuilt from the events
-      comments.json        comments left in the viewer
       artifacts/
         baseline.json
         design.md
@@ -342,10 +339,9 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
     add-json-flag-to-doctor/   the git worktree the code was written in
 
 ~/.yok-dev/                    or ~/.yok for the release binary
-  registry.json                every run on this machine, with its sessions and tmux name
+  yok.db                       every run with its events, state and comments; users, projects, triggers
   server.port                  the port the server listens on at 127.0.0.1
   .env                         SERVER_DOMAIN, the domain a proxy in front of yok answers on
-  projects.yaml                the projects: a name for each checkout the server runs on
   server.log
   shims/HASH/yok               the PATH shim from hop 2
 ```
@@ -354,7 +350,7 @@ The agent tells you the run finished and stops. The Stop hook sees status `compl
 
 Everything above wrote events: `workflow.started`, `workflow.node.started`, `orchestrate.next`, `workflow.node.completed`, `hooks.stop.called`, and so on. The full list is in [events.ts](../../packages/sdk/src/events.ts#L463). Each event has a sequence number, a timestamp, a type, a source, and a payload.
 
-`state.json` is never written by hand. [appendRunEvent](../../packages/sdk/src/state.ts#L297) takes a file lock, appends the event, then folds it into the state with [applyEvent](../../packages/sdk/src/state.ts#L33) and writes `state.json` atomically. Delete `state.json` and the engine can rebuild it from `event.jsonl`. The reverse is not true.
+The run's state is never written by hand. [appendRunEvent](../../packages/sdk/src/state.ts) reads the state, folds the event into it with `applyEvent`, then stores the event and the new state in one `yok.db` transaction. The transaction lands only if no other process stored an event since the read; otherwise it reads again and retries. Fold the events again and you get the same state. The reverse is not true.
 
 Right after an event is stored, its **subscribers** run. A subscriber is a function or shell command your config or workflow attaches to an event type. The built-in Slack notifier is one. Subscribers only observe. None of them can stop or change the run. That is [ADR 0005](../adr/0005-a-subscriber-is-a-module-export-or-shell-command-from-config-and-workflow.md) and [ADR 0006](../adr/0006-the-sdk-calls-an-events-subscribers-right-after-storing-it.md).
 

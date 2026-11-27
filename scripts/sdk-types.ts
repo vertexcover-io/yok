@@ -38,11 +38,27 @@ const readDeclarations = (out: string): Record<string, string> =>
       .map((name) => [name, readFileSync(join(out, name), "utf8").replace(TS_SPECIFIER, "$1$2.js$3")]),
   )
 
+const RELATIVE_IMPORT = /(?:from|import\()\s*["']\.\/([^"']+)\.js["']/g
+
+// tsc also emits files the entry only runs, such as the SQLite store; a project sees only those
+// index.d.ts reaches by type, so only those ship.
+const reachableFromIndex = (files: Readonly<Record<string, string>>): Record<string, string> => {
+  const reached = new Set<string>()
+  const visit = (name: string): void => {
+    const text = files[name]
+    if (text === undefined || reached.has(name)) return
+    reached.add(name)
+    for (const [, base] of text.matchAll(RELATIVE_IMPORT)) visit(`${base}.d.ts`)
+  }
+  visit("index.d.ts")
+  return Object.fromEntries(Object.entries(files).filter(([name]) => reached.has(name)))
+}
+
 export const buildSdkTypes = (): SdkTypes => {
   const out = mkdtempSync(join(tmpdir(), "sdk-types-"))
   try {
     emitDeclarations(out)
-    return { zodVersion: zodVersion(), files: readDeclarations(out) }
+    return { zodVersion: zodVersion(), files: reachableFromIndex(readDeclarations(out)) }
   } finally {
     rmSync(out, { recursive: true, force: true })
   }

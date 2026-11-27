@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import {
   answers,
   type Call,
+  collectEventSessions,
   type Event,
   findTranscript,
   humanMessages,
@@ -13,9 +14,8 @@ import {
   parseTime,
   type Rec,
   type Result,
-  readEvents,
-  readRunSessions,
-  runDirOf,
+  readRunEvents,
+  requireRun,
   type SessionRef,
 } from "@yok/sdk";
 import {
@@ -405,7 +405,8 @@ const writeOut = (dir: string, name: string, text: string): void =>
   writeFileSync(join(dir, name), maskSecrets(text));
 
 export type ExtractRunOptions = Readonly<{
-  runDir: string;
+  name: string;
+  events: readonly Event[];
   out: string;
   projectsDir: string;
   zone: string | undefined;
@@ -414,14 +415,11 @@ export type ExtractRunOptions = Readonly<{
 
 // Extracts every Claude session of a run into `out`, and returns the printed summary.
 export const extractRun = async (options: ExtractRunOptions): Promise<Result<string>> => {
-  const { runDir, out, projectsDir, zone } = options;
-  const eventsPath = join(runDir, "event.jsonl");
-  if (!existsSync(eventsPath)) return { ok: false, error: `no event.jsonl in ${runDir}` };
-  const events = readEvents(eventsPath);
+  const { name, events, out, projectsDir, zone } = options;
   const gate = options.gateTime ?? findGateTime(events);
-  const located = readRunSessions(events).map((s, i) => locate(s, i, projectsDir));
+  const located = collectEventSessions(events).map((s, i) => locate(s, i, projectsDir));
   mkdirSync(out, { recursive: true });
-  const run = runText(basename(runDir), gate, located);
+  const run = runText(name, gate, located);
   writeOut(out, "00-run.txt", `${run}\n`);
   writeOut(out, "09-stages.txt", `${stagesText(readStages(events), zone)}\n`);
   const found = located.flatMap((l) => ("main" in l ? [{ label: l.label, main: l.main }] : []));
@@ -576,9 +574,12 @@ const runExtract = async (values: Values, rest: readonly string[]): Promise<Resu
   }
   const shared = { out: values.out, zone: values.tz, gateTime: values["gate-time"] };
   if (values.run) {
+    const run = await requireRun({ name: values.run, env: process.env, cwd: process.cwd() });
+    if (!run.ok) return run;
     return extractRun({
       ...shared,
-      runDir: runDirOf(process.cwd(), values.run),
+      name: run.value.name,
+      events: await readRunEvents(run.value),
       projectsDir: values.projects ?? join(homedir(), ".claude", "projects"),
     });
   }

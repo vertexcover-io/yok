@@ -4,7 +4,6 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   type Config,
-  createRegistryReader,
   type ILogger,
   jsonLogger,
   LogLevelSchema,
@@ -15,7 +14,6 @@ import {
   type Result,
   type RunRef,
   readState,
-  registryPath,
   requireRun,
   runDirOf,
   type SpawnResult,
@@ -80,16 +78,16 @@ const failure = (code: BaselineError["code"], message: string): Result<never, Ba
 const isFolder = (path: string): boolean =>
   statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
 
-// state.json keeps the workspace path after the workspace is removed, and spawning in a missing
-// folder exits 127 like a command that can't start, so the folder is checked first.
+// The run's state keeps the workspace path after the workspace is removed, and spawning in a
+// missing folder exits 127 like a command that can't start, so the folder is checked first.
 const resolveWorkspace = async (
   options: BaselineOptions,
 ): Promise<Result<string, BaselineError>> => {
   const { run, dir } = options;
-  const state = dir === undefined ? await readState(runDirOf(run.cwd, run.name)) : null;
+  const state = dir === undefined ? await readState(run) : null;
   const workspace = dir ?? state?.workspace.path;
   if (workspace === undefined) {
-    return failure("STATE_MISSING", `no state.json for run ${run.name}: pass --dir`);
+    return failure("STATE_MISSING", `no state for run ${run.name}: pass --dir`);
   }
   if (!isFolder(workspace)) return failure("WORKTREE_MISSING", `no run folder at ${workspace}`);
   return { ok: true, value: workspace };
@@ -246,7 +244,7 @@ const log = jsonLogger({ level: LogLevelSchema.catch("warn").parse(process.env.L
 
 const USAGE = `usage: baseline.ts [--run NAME | --run-id ID] [--packages A,B] [--dir DIR]
 
-Runs the run's config's baseline scripts in its workspace (--dir, else state.json's
+Runs the run's config's baseline scripts in its workspace (--dir, else the run's recorded
 workspace.path), writes artifacts/baseline.json and prints { path, workspace, packages }.
 With neither --run nor --run-id, the run is $YOK_RUN_ID.
 `;
@@ -274,7 +272,6 @@ export const main = async (argv: readonly string[]): Promise<void> => {
   // parseArgs throws on an unknown flag; main's caller prints that error.
   const flags = parseArgs({ args: [...argv], options: FLAGS }).values;
   const run = await requireRun({
-    registry: createRegistryReader(registryPath()),
     name: flags.run,
     id: flags["run-id"],
     env: process.env,

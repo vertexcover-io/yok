@@ -11,7 +11,7 @@ test.each([
   expect(folderSlug(folder)).toBe(name);
 });
 
-test("SC42 (regression): two projects print under NAME  STATUS  PATH  ADDED BY, padded to the widest cell, with the adder's name else its channel", () => {
+test("SC42 (regression): two projects print under NAME  STATUS  PATH  ADDED BY, padded to the widest cell, with the channel that added each", () => {
   const project = { addedAt: "2026-01-01T00:00:00.000Z" };
   const text = renderProjects([
     { ...project, name: "web", status: "ready", path: "/srv/web", addedBy: { channel: "cli" } },
@@ -20,14 +20,14 @@ test("SC42 (regression): two projects print under NAME  STATUS  PATH  ADDED BY, 
       name: "api-server",
       status: "missing",
       path: "/srv/api",
-      addedBy: { channel: "slack", name: "ritesh" },
+      addedBy: { channel: "slack" },
     },
   ]);
   expect(text).toBe(
     [
       "NAME        STATUS   PATH      ADDED BY",
       "web         ready    /srv/web  cli",
-      "api-server  missing  /srv/api  ritesh",
+      "api-server  missing  /srv/api  slack",
     ].join("\n"),
   );
 });

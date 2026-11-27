@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openStorage } from "@yok/sdk/internal";
 
 const TIMEOUT_MS = 40_000;
 const NO_DOTENV = "--env-file=/dev/null";
@@ -152,34 +153,46 @@ describe("yok trigger", () => {
   );
 
   test(
-    "SC3017: a server started over a main-era triggers.json moves its due trigger to the checkout's project, fires it, and refuses to remove that project",
-    () => {
+    "SC525: a server started over a yok.db holding a due trigger fires it, leaves an old triggers.json alone, and refuses to remove that project",
+    async () => {
       const repo = makeRepo("nightly");
       const { env, home, fakeOut, socket } = makeEnv();
       expect(yok(repo, env, "project", "add").code).toBe(0);
       yok(repo, env, "server", "stop");
-      const legacy = {
-        id: "t-0000aaaa",
+      const storage = openStorage(home);
+      const saved = await storage.triggers.save({
         name: "digest",
-        workflowPath: join(repo, "digest.yaml"),
-        cwd: repo,
+        project: "nightly",
+        workflow: join(repo, "digest.yaml"),
         config: null,
         cron: "0 9 * * *",
         timezone: "UTC",
         nextFireAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      await storage.close();
+      expect(saved.ok).toBe(true);
+      const legacy = {
+        id: "t-0000aaaa",
+        name: "weekly",
+        workflowPath: join(repo, "digest.yaml"),
+        cwd: repo,
+        config: null,
+        cron: "0 9 * * 1",
+        timezone: "UTC",
+        nextFireAt: new Date(Date.now() - 60_000).toISOString(),
         createdAt: "2026-10-01T00:00:00.000Z",
       };
-      writeFileSync(
-        join(home, "triggers.json"),
-        JSON.stringify({ version: 1, triggers: { [legacy.id]: legacy } }),
-      );
+      const oldFile = JSON.stringify({ version: 1, triggers: { [legacy.id]: legacy } });
+      writeFileSync(join(home, "triggers.json"), oldFile);
 
       const listed = yok(repo, env, "trigger", "list");
       expect(listed.code).toBe(0);
       expect(listed.stdout).toContain("digest  nightly");
+      expect(listed.stdout).not.toContain("weekly");
 
       waitFor(() => launches(fakeOut).length === 1);
       waitFor(() => yok(repo, env, "trigger", "log", "digest").stdout.includes("started"));
+      expect(readFileSync(join(home, "triggers.json"), "utf8")).toBe(oldFile);
 
       // The run's session ends first, so the trigger is all that holds the project.
       spawnSync("tmux", ["-L", socket, "kill-server"]);

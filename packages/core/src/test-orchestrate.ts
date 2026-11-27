@@ -1,10 +1,10 @@
 import { expect } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runDirOf, type WorkflowRun } from "@yok/sdk";
-import { jsonlEventStore, RegistryFileSchema } from "@yok/sdk/internal";
+import { runDirOf, type State, type WorkflowRun } from "@yok/sdk";
+import { withStorage } from "@yok/sdk/internal";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./workflow/test-stages.ts";
 
 const CLI = join(import.meta.dir, "..", "..", "cli", "src", "index.ts");
@@ -35,6 +35,7 @@ export const savedRun = (cwd: string, overrides: Partial<WorkflowRun> = {}): Wor
   );
   return {
     id: "r-1",
+    project: "repo",
     workflow: "ok",
     workflowPath,
     inputs: { prompt: "hi" },
@@ -49,25 +50,56 @@ export const savedRun = (cwd: string, overrides: Partial<WorkflowRun> = {}): Wor
   };
 };
 
-export const writeRegistry = (home: string, runs: readonly WorkflowRun[]): void => {
-  mkdirSync(home, { recursive: true });
-  const file = { version: 1, runs: Object.fromEntries(runs.map((run) => [run.id, run])) };
-  writeFileSync(join(home, "registry.json"), JSON.stringify(file));
-};
+// Saves RUNS in HOME/yok.db as `yok run` leaves them, each after a project row holding its cwd.
+export const seedRuns = (home: string, runs: readonly WorkflowRun[]): Promise<void> =>
+  withStorage(home, async (storage) => {
+    for (const { cwd, ...run } of runs) {
+      const addedAt = new Date().toISOString();
+      if ((await storage.projects.find(run.project)) === undefined) {
+        await storage.projects.add(run.project, {
+          path: cwd,
+          addedBy: { channel: "cli" },
+          addedAt,
+        });
+      }
+      await storage.runs.addRun(run);
+    }
+  });
 
-export const readRegistry = (home: string) =>
-  RegistryFileSchema.parse(JSON.parse(readFileSync(join(home, "registry.json"), "utf8")));
+export const readRuns = (home: string): Promise<Readonly<Record<string, WorkflowRun>>> =>
+  withStorage(home, async (storage) =>
+    Object.fromEntries((await storage.runs.listRuns()).map((run) => [run.id, run])),
+  );
 
-// An initialized run named NAME in cwd, as `orchestrate init` leaves it.
-export const initializedRun = (home: string, cwd: string, name = "feat-x"): WorkflowRun => {
+// A run named NAME in cwd with its folder, as `orchestrate init` leaves the run row; its state
+// stays empty until a test seeds one with seedState.
+export const initializedRun = async (
+  home: string,
+  cwd: string,
+  name = "feat-x",
+): Promise<WorkflowRun> => {
   const run = savedRun(cwd, { name });
-  writeRegistry(home, [run]);
+  await seedRuns(home, [run]);
   mkdirSync(runDirOf(cwd, name), { recursive: true });
   return run;
 };
 
-export const eventsOf = (cwd: string, name = "feat-x") =>
-  jsonlEventStore(runDirOf(cwd, name)).read();
+// Names a seeded, unnamed run and stores STATE as its first state, as init does.
+export const seedState = (home: string, runId: string, name: string, state: State) =>
+  withStorage(home, (storage) => storage.runs.initRun(runId, name, state));
+
+export const eventsOf = (home: string, runId = "r-1") =>
+  withStorage(home, (storage) => storage.runs.readEvents(runId));
+
+export const stateOf = (home: string, runId = "r-1") =>
+  withStorage(home, (storage) => storage.runs.readState(runId));
+
+// The run's stored state, for a test that reads one only after init stored it.
+export const stateIn = async (home: string, runId = "r-1"): Promise<State> => {
+  const state = await stateOf(home, runId);
+  if (state === null) throw new Error(`run ${runId} has no state`);
+  return state;
+};
 
 // The one step a `next` reply hands out, or the reply itself when it hands out none.
 export const parseStep = (stdout: string) => {
@@ -130,9 +162,12 @@ export const orchestrateAsync = async (
   return { code, stdout, stderr };
 };
 
-export const waitFor = async (condition: () => boolean, timeoutMs = 10_000): Promise<void> => {
+export const waitFor = async (
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 10_000,
+): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() > deadline) throw new Error("timed out waiting");
     await Bun.sleep(50);
   }
@@ -148,7 +183,7 @@ export const configuredRepo = (config: object): string => {
 // init compiles the workflow, so env must name the skills folder its stages come from, stages
 // holds the project stages it names under stages/ and files what else it reads (schema modules,
 // included workflows, extensions), by path in the repo.
-export const startedRun = (
+export const startedRun = async (
   source: string,
   config?: object,
   overrides: Partial<WorkflowRun> = {},
@@ -161,7 +196,7 @@ export const startedRun = (
     files?: Readonly<Record<string, string>>;
     stages?: Readonly<Record<string, DemoStage>>;
   }> = {},
-): Readonly<{ repo: string; home: string }> => {
+): Promise<Readonly<{ repo: string; home: string }>> => {
   const repo = config === undefined ? tempRepo() : configuredRepo(config);
   const home = tempDir();
   const workflowPath = join(repo, "steps.yaml");
@@ -171,7 +206,7 @@ export const startedRun = (
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   }
-  writeRegistry(home, [savedRun(repo, { workflowPath, ...overrides })]);
+  await seedRuns(home, [savedRun(repo, { workflowPath, ...overrides })]);
   const init = orchestrate(repo, home, ["init", "feat-x", "--run-id", "r-1"], env);
   if (init.code !== 0) throw new Error(init.stderr);
   return { repo, home };

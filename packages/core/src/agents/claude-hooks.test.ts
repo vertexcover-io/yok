@@ -3,12 +3,11 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type IStorage,
   noopLogger,
   type PostToolUseHandler,
   type PostToolUseInput,
   type PreToolUseHandler,
-  type RegistryReader,
-  registryPath,
   runDirOf,
   type StopFailureInput,
   type StopHandler,
@@ -16,7 +15,7 @@ import {
   type ToolCall,
   type ToolUse,
 } from "@yok/sdk";
-import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { memoryStorage } from "@yok/sdk/internal";
 import { answerNotice } from "../hooks/post-tool-use.ts";
 import { preToolUseHandlers, questionNotice, recordGuard } from "../hooks/pre-tool-use.ts";
 import { continueWorkflow, stopHandlers } from "../hooks/stop.ts";
@@ -29,11 +28,7 @@ import CLAUDE_POST_TOOL_USE_ASK from "./fixtures/claude-post-tool-use-ask.synthe
 const claudeStop = claudeAdapter.stop;
 const claudePreToolUse = claudeAdapter.preToolUse;
 
-const NO_RUNS: RegistryReader = {
-  findRun: async () => undefined,
-  findRunsByName: async () => [],
-  listRuns: async () => [],
-};
+const NO_RUNS: IStorage = memoryStorage();
 
 const line = (value: unknown): string => JSON.stringify(value);
 const user = (content: unknown, extra: Record<string, unknown> = {}) =>
@@ -88,15 +83,18 @@ describe("readClaudeTranscript", () => {
 describe("claudeAdapter.stop", () => {
   test("SC16 — input Claude's hook cannot read lets the turn end without looking up a run", async () => {
     let lookups = 0;
-    const registry: RegistryReader = {
-      findRun: async () => {
-        lookups += 1;
-        throw new Error("findRun must not be called");
+    const store = memoryStorage();
+    const storage: IStorage = {
+      ...store,
+      runs: {
+        ...store.runs,
+        findRun: async () => {
+          lookups += 1;
+          throw new Error("findRun must not be called");
+        },
       },
-      findRunsByName: async () => [],
-      listRuns: async () => [],
     };
-    const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
+    const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
 
     expect(await claudeStop?.("not json", deps, continueWorkflow)).toBe("");
     expect(await claudeStop?.("{}", deps, continueWorkflow)).toBe("");
@@ -105,7 +103,7 @@ describe("claudeAdapter.stop", () => {
 });
 
 describe("claudeAdapter.stop background_tasks", () => {
-  const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
+  const deps = { storage: NO_RUNS, env: {}, log: noopLogger };
   const waitingOnBackground = async (backgroundTasks: unknown): Promise<boolean | undefined> => {
     const seen: StopInput[] = [];
     const spy: StopHandler = {
@@ -194,10 +192,14 @@ describe("claudeSettings", () => {
 });
 
 describe("claudeAdapter.preToolUse", () => {
-  const deps = { registry: NO_RUNS, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
+  const deps = {
+    storage: NO_RUNS,
+    env: { YOK_RUN_ID: "r-1", YOK_HOME: "/home/u/.yok" },
+    log: noopLogger,
+  };
   const stdin = (tool_name: string, tool_input: Record<string, unknown>) =>
     JSON.stringify({ session_id: "s1", tool_name, tool_input, cwd: "/repo" });
-  const TARGET = ".yok/x/state.json";
+  const TARGET = "$YOK_HOME/yok.db";
 
   test("SC14 — Claude's tool shapes map to the guard and deny in Claude's format", async () => {
     const inputs = [
@@ -214,7 +216,9 @@ describe("claudeAdapter.preToolUse", () => {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: expect.stringContaining("yok orchestrate next --run x"),
+          permissionDecisionReason: expect.stringContaining(
+            "Change a run only through `yok orchestrate`",
+          ),
         },
       });
     }
@@ -297,7 +301,7 @@ describe("claudeAdapter.preToolUse", () => {
 });
 
 describe("claudeAdapter.postToolUse", () => {
-  const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
+  const deps = { storage: NO_RUNS, env: {}, log: noopLogger };
   const ask = (toolInput: Record<string, unknown>, toolResponse: Record<string, unknown> = {}) => ({
     session_id: "s1",
     hook_event_name: "PostToolUse",
@@ -424,7 +428,7 @@ describe("claudeAdapter.postToolUse", () => {
 });
 
 describe("claudeAdapter.stopFailure", () => {
-  const deps = { registry: NO_RUNS, env: {}, log: noopLogger };
+  const deps = { storage: NO_RUNS, env: {}, log: noopLogger };
   test.each([
     ["server_error", false, true],
     ["unknown", false, true],
@@ -503,17 +507,21 @@ describe("claudeSettings handlers", () => {
   });
 });
 
-// A registry run r-1 named feat-x in a temp repo, owned by Claude session s-1.
+// A run r-1 named feat-x in a temp repo, owned by Claude session s-1.
 const linkedRun = async () => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), "claude-hooks-home-")));
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "claude-hooks-repo-")));
-  const registry = createRegistry(registryPath(home));
-  await registry.addRun({
+  const storage = memoryStorage();
+  await storage.projects.add("repo", {
+    path: cwd,
+    addedBy: { channel: "cli" },
+    addedAt: new Date().toISOString(),
+  });
+  await storage.runs.addRun({
     id: "r-1",
+    project: "repo",
     workflow: "feature",
     workflowPath: join(cwd, "workflow.yaml"),
     inputs: {},
-    cwd,
     sessions: [{ agent: "claude", sessionId: "s-1" }],
     name: "feat-x",
     terminal: null,
@@ -523,8 +531,8 @@ const linkedRun = async () => {
   });
   const runDir = runDirOf(cwd, "feat-x");
   await mkdir(runDir, { recursive: true });
-  const deps = { registry, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
-  return { deps, events: () => jsonlEventStore(runDir).read() };
+  const deps = { storage, env: { YOK_RUN_ID: "r-1" }, log: noopLogger };
+  return { deps, events: () => storage.runs.readEvents("r-1") };
 };
 
 describe("Claude's question hooks in a run", () => {

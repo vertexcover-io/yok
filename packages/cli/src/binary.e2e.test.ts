@@ -15,8 +15,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DoctorJsonSchema } from "@yok/core";
-import { runDirOf, type WorkflowRun } from "@yok/sdk";
-import { jsonlEventStore, VERSION } from "@yok/sdk/internal";
+import type { WorkflowRun } from "@yok/sdk";
+import { VERSION } from "@yok/sdk/internal";
+import { savedEvents, savedState, seedRuns } from "./test-runs.ts";
 
 const ENTRY = join(import.meta.dir, "index.ts");
 const TOOLS = ["git", "jq", "sh", "tmux"] as const;
@@ -97,6 +98,7 @@ const tempRepo = (files: Readonly<Record<string, string>> = {}): string => {
 
 const savedRun = (cwd: string, workflowPath: string): WorkflowRun => ({
   id: "r-1",
+  project: "repo",
   workflow: "alone",
   workflowPath,
   inputs: { prompt: "hi" },
@@ -108,12 +110,6 @@ const savedRun = (cwd: string, workflowPath: string): WorkflowRun => ({
   tiers: null,
   createdAt: new Date().toISOString(),
 });
-
-const writeRegistry = (home: string, runs: readonly WorkflowRun[]): void => {
-  mkdirSync(home, { recursive: true });
-  const file = { version: 1, runs: Object.fromEntries(runs.map((run) => [run.id, run])) };
-  writeFileSync(join(home, "registry.json"), JSON.stringify(file));
-};
 
 const stageFiles = (outModule: string): Record<string, string> => ({
   "SKILL.md": [
@@ -175,10 +171,10 @@ export const record = ({ run }) => {
 type RunOptions = Readonly<{ nodes: string; outModule?: string; files?: Record<string, string> }>;
 
 // A registered run named feat-x whose stage comes only from the plugin folder.
-const registerRun = (options: RunOptions) => {
+const registerRun = async (options: RunOptions) => {
   const repo = tempRepo({ "alone.yaml": workflow(options.nodes), ...options.files });
   const home = temp("yok-home-");
-  writeRegistry(home, [savedRun(repo, join(repo, "alone.yaml"))]);
+  await seedRuns(home, [savedRun(repo, join(repo, "alone.yaml"))]);
   const env = {
     YOK_HOME: home,
     YOK_RUN_ID: "",
@@ -192,15 +188,12 @@ const registerRun = (options: RunOptions) => {
   return { repo, home, env, step };
 };
 
-const startRun = (options: RunOptions) => {
-  const run = registerRun(options);
+const startRun = async (options: RunOptions) => {
+  const run = await registerRun(options);
   const init = run.step(["init", "feat-x", "--run-id", "r-1"]);
   if (init.code !== 0) throw new Error(`init failed: ${init.stderr}`);
   return run;
 };
-
-const stateOf = (repo: string) =>
-  JSON.parse(readFileSync(join(runDirOf(repo, "feat-x"), "state.json"), "utf8"));
 
 beforeAll(() => {
   if (process.env.YOK_BIN) {
@@ -286,8 +279,8 @@ describe("the compiled yok binary", () => {
     expect([verified.code, verified.stderr]).toEqual([0, ""]);
   }, 60_000);
 
-  test("SC91: drives a workflow whose stage comes from the plugin folder and whose schema module imports the SDK", () => {
-    const { repo, step } = startRun({
+  test("SC91: drives a workflow whose stage comes from the plugin folder and whose schema module imports the SDK", async () => {
+    const { home, step } = await startRun({
       nodes: `${BUN_NODE}${AGENT_NODE("\n    dependsOn: [count]")}`,
     });
 
@@ -296,7 +289,7 @@ describe("the compiled yok binary", () => {
     const [count] = first.steps;
     const exec = step(["exec", count.nodeRunId]);
     expect(exec.stderr).toBe("");
-    expect(stateOf(repo).nodeRuns.count.output).toEqual({ n: 3 });
+    expect((await savedState(home, "r-1"))?.nodeRuns.count?.output).toEqual({ n: 3 });
 
     const next = step(["next"]);
     expect(next.stderr).toBe("");
@@ -340,7 +333,7 @@ describe("the compiled yok binary", () => {
       },
       notifier: { enabled: true, type: "slack" },
     };
-    const { repo, step } = startRun({
+    const { repo, home, step } = await startRun({
       nodes: AGENT_NODE(""),
       files: {
         "subscribers/probe.ts": SUBSCRIBER_MODULE,
@@ -362,9 +355,8 @@ describe("the compiled yok binary", () => {
     const subscriber = JSON.parse(readFileSync(join(repo, "subscriber.json"), "utf8"));
     expect(subscriber.parsed).toBe("x");
     expect(JSON.parse(subscriber.self)).toEqual([realpathSync(BIN)]);
-    const store = jsonlEventStore(runDirOf(repo, "feat-x"));
     const notifierCall = async () =>
-      (await store.read()).find(
+      (await savedEvents(home, "r-1")).find(
         (event) =>
           event.type === "subscriber.called" &&
           JSON.stringify(event.payload).includes('"subscriber":"notifier"'),
@@ -383,8 +375,8 @@ describe("the compiled yok binary", () => {
     expect(JSON.stringify(call?.payload)).not.toContain("module not found");
   }, 60_000);
 
-  test("SC93: refuses a module importing @yok/sdk/internal", () => {
-    const { step } = registerRun({
+  test("SC93: refuses a module importing @yok/sdk/internal", async () => {
+    const { step } = await registerRun({
       nodes: AGENT_NODE(""),
       outModule: `import { VERSION } from "@yok/sdk/internal";\nexport const schemas = { "alone.output.v1": VERSION };\n`,
     });
@@ -397,7 +389,7 @@ describe("the compiled yok binary", () => {
   }, 60_000);
 
   test("SC94: yok view serves the run page and its script", async () => {
-    const { repo, env } = startRun({ nodes: AGENT_NODE("") });
+    const { repo, env } = await startRun({ nodes: AGENT_NODE("") });
     try {
       const view = runBinary(["view", "feat-x", "--print"], { cwd: repo, env });
       expect([view.code, view.stderr]).toEqual([0, ""]);

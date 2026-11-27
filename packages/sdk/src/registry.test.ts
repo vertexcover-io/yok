@@ -1,33 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import {
-  createRegistry,
-  createRegistryReader,
-  RegistryFileSchema,
-  type WorkflowRun,
-  yokHome,
-} from "./registry.ts";
-
-const run = (id: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
-  id,
-  workflow: "demo",
-  workflowPath: "/abs/workflow.yaml",
-  inputs: {},
-  cwd: "/abs/repo",
-  sessions: [],
-  name: null,
-  terminal: null,
-  config: null,
-  tiers: null,
-  createdAt: new Date().toISOString(),
-  ...overrides,
-});
-
-const tempRegistryPath = (): string =>
-  join(mkdtempSync(join(tmpdir(), "yok-registry-")), "registry.json");
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { yokHome } from "./registry.ts";
 
 // Split so the sweep for the old product name (SC10) does not flag this test.
 const OLD_NAME = ["har", "ness"].join("");
@@ -46,98 +20,5 @@ describe("yokHome", () => {
     ],
   ])("%s", (_label, env, compiled, expected) => {
     expect(yokHome(env, compiled)).toBe(expected);
-  });
-});
-
-describe("createRegistry", () => {
-  test("SC8: two update calls started together both land on disk and parse", async () => {
-    const path = tempRegistryPath();
-    const registry = createRegistry(path);
-
-    const p1 = registry.addRun(run("r-1"));
-    const p2 = registry.addRun(run("r-2"));
-    await Promise.all([p1, p2]);
-
-    const parsed = RegistryFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
-    expect(Object.keys(parsed.runs).sort()).toEqual(["r-1", "r-2"]);
-  });
-
-  test("a failed write rejects only its own update, and later updates still land", async () => {
-    const path = tempRegistryPath();
-    const registry = createRegistry(path);
-
-    chmodSync(dirname(path), 0o500);
-    const failed = registry.addRun(run("r-lost")).catch(() => "rejected");
-    expect(await failed).toBe("rejected");
-    chmodSync(dirname(path), 0o700);
-
-    await registry.addRun(run("r-kept"));
-
-    const parsed = RegistryFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
-    expect(Object.keys(parsed.runs)).toEqual(["r-kept"]);
-    expect(await registry.findRun("r-lost")).toBeUndefined();
-    expect((await registry.findRun("r-kept"))?.id).toBe("r-kept");
-  });
-
-  test("a change that changes nothing writes nothing", async () => {
-    const path = tempRegistryPath();
-    const registry = createRegistry(path);
-
-    await registry.initRun("r-missing", "t");
-
-    expect(existsSync(path)).toBe(false);
-  });
-
-  test("linkSession adds a session once, however often it is linked", async () => {
-    const registry = createRegistry(tempRegistryPath());
-    await registry.addRun(run("r-1"));
-    const session = { agent: "codex", sessionId: "s1" } as const;
-
-    await registry.linkSession("r-1", session);
-    await registry.linkSession("r-1", session);
-    expect((await registry.findRun("r-1"))?.sessions).toEqual([session]);
-  });
-
-  test("findRunsByName lists every run with that name, newest first", async () => {
-    const registry = createRegistry(tempRegistryPath());
-    await registry.addRun(run("r-old", { name: "fix", createdAt: "2026-09-01T00:00:00.000Z" }));
-    await registry.addRun(run("r-new", { name: "fix", createdAt: "2026-09-02T00:00:00.000Z" }));
-    await registry.addRun(run("r-unnamed"));
-
-    expect((await registry.findRunsByName("fix")).map((found) => found.id)).toEqual([
-      "r-new",
-      "r-old",
-    ]);
-    expect(await registry.findRunsByName("missing")).toEqual([]);
-  });
-});
-
-describe("records written before a field existed", () => {
-  test("SC2: a record without config and terminal loads with both null, and setTerminal stores a name", async () => {
-    const path = tempRegistryPath();
-    const { config: _config, terminal: _terminal, ...legacy } = run("r-old");
-    await writeFile(path, JSON.stringify({ version: 1, runs: { "r-old": legacy } }));
-    const registry = createRegistry(path);
-
-    expect(await registry.findRun("r-old")).toMatchObject({ config: null, terminal: null });
-    await registry.setTerminal("r-old", "claude-fix-login-r-old");
-
-    expect((await createRegistry(path).findRun("r-old"))?.terminal).toBe("claude-fix-login-r-old");
-  });
-});
-
-describe("createRegistryReader", () => {
-  test("SC10: finds what the registry wrote and exposes no write methods", async () => {
-    const path = tempRegistryPath();
-    const registry = createRegistry(path);
-    await registry.addRun(run("r-10"));
-    await registry.initRun("r-10", "spec");
-
-    const reader = createRegistryReader(path);
-
-    expect((await reader.findRun("r-10"))?.name).toBe("spec");
-    expect((await reader.findRunsByName("spec")).map((found) => found.id)).toEqual(["r-10"]);
-    expect((await reader.listRuns()).map((found) => found.id)).toEqual(["r-10"]);
-    expect(Object.keys(reader).sort()).toEqual(["findRun", "findRunsByName", "listRuns"]);
   });
 });

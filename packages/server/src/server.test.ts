@@ -10,12 +10,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addComments, agentBinary, readComments, summarize } from "@yok/core";
+import { agentBinary, summarize } from "@yok/core";
 import type { WorkflowRun } from "@yok/sdk";
-import { noopLogger, registryPath, runDirOf } from "@yok/sdk";
-import { createRegistry, VERSION } from "@yok/sdk/internal";
+import { runDirOf } from "@yok/sdk";
+import { VERSION, withStorage } from "@yok/sdk/internal";
 import { createYokClient } from "./client.ts";
-import { claudeOver, EMPTY_BOX, fakeHost } from "./fake-host.ts";
+import { claudeOver, EMPTY_BOX, fakeHost, seedRun } from "./fake-host.ts";
 import { publicOrigin, readPort, serverDomain, updateHomeEnv } from "./protocol.ts";
 import { type CheckCheckout, runtimeChecks, startServer } from "./server.ts";
 
@@ -85,11 +85,12 @@ test("updateHomeEnv calls made at once each keep their key", async () => {
   ]);
 });
 
-test("SC26: a restarted server types the comments an earlier one left behind, with no viewer request", async () => {
+test("SC314 (SC26): a restarted server types the comments an earlier one left behind, with no viewer request", async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-cwd-")));
   const run: WorkflowRun = {
     id: "r-1",
+    project: "demo",
     workflow: "w",
     workflowPath: "/w.yaml",
     inputs: {},
@@ -101,10 +102,11 @@ test("SC26: a restarted server types the comments an earlier one left behind, wi
     tiers: null,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
-  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
-  const runDir = runDirOf(cwd, "demo");
-  mkdirSync(runDir, { recursive: true });
-  await addComments(runDir, [{ file: "artifacts/a.md", kind: "global", text: "hi" }], new Date());
+  mkdirSync(runDirOf(cwd, "demo"), { recursive: true });
+  await withStorage(home, async (storage) => {
+    await seedRun(storage, run);
+    await storage.comments.add("r-1", [{ file: "artifacts/a.md", kind: "global", text: "hi" }]);
+  });
   const { host, calls } = fakeHost(EMPTY_BOX);
 
   const server = await startServer({
@@ -112,10 +114,11 @@ test("SC26: a restarted server types the comments an earlier one left behind, wi
     runtime: { host, providerFor: () => claudeOver(host), checkCheckout: readyCheckout },
   });
 
-  const delivered = async (): Promise<boolean> => {
-    const read = await readComments(runDir);
-    return read.ok && read.value.comments[0]?.status === "delivered";
-  };
+  const delivered = (): Promise<boolean> =>
+    withStorage(
+      home,
+      async (storage) => (await storage.comments.list("r-1"))[0]?.status === "delivered",
+    );
   for (let i = 0; i < 50 && !(await delivered()); i++) await Bun.sleep(100);
   await server.stop();
   expect(await delivered()).toBe(true);
@@ -184,7 +187,7 @@ test("SC106: a stopping server leaves server.pid alone once a newer server has w
   expect(existsSync(join(home, "server.pid"))).toBe(false);
 });
 
-test("a first start creates the home readable by this user alone", async () => {
+test("SC128: a first start creates the home readable by this user alone, with yok.db at 0600 and no users.json", async () => {
   const home = join(realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-"))), "home");
   const { host } = fakeHost(EMPTY_BOX);
 
@@ -195,6 +198,8 @@ test("a first start creates the home readable by this user alone", async () => {
   await server.stop();
 
   expect(statSync(home).mode & 0o777).toBe(0o700);
+  expect(statSync(join(home, "yok.db")).mode & 0o777).toBe(0o600);
+  expect(existsSync(join(home, "users.json"))).toBe(false);
 });
 
 const fakeRuntime = () => {
@@ -204,6 +209,7 @@ const fakeRuntime = () => {
 
 const namedRun = (id: string): WorkflowRun => ({
   id,
+  project: "nowhere",
   workflow: "w",
   workflowPath: "/w.yaml",
   inputs: {},
@@ -220,7 +226,7 @@ const namedRun = (id: string): WorkflowRun => ({
 const startedServer = async (env?: string) => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-srv-")));
   if (env !== undefined) writeFileSync(join(home, ".env"), env);
-  await createRegistry(registryPath(home), noopLogger).addRun(namedRun("r-1"));
+  await withStorage(home, (storage) => seedRun(storage, namedRun("r-1")));
   const server = await startServer({ home, runtime: fakeRuntime() });
   const port = Number(readFileSync(join(home, "server.port"), "utf8"));
   return { home, server, port, origin: `http://127.0.0.1:${port}` };
@@ -312,7 +318,7 @@ test("SC1011: a dashboard /stream connection stays open through 11 idle seconds 
 
     // Bun checks its 10-second idle limit in coarse ticks and cuts at about 12 seconds.
     await Bun.sleep(13_000);
-    await createRegistry(registryPath(home), noopLogger).addRun(namedRun("r-2"));
+    await withStorage(home, (storage) => seedRun(storage, namedRun("r-2")));
 
     const next = await Promise.race([nextRunsEvent(reader), Bun.sleep(3_000).then(() => null)]);
     expect(next?.runs.map((run) => run.id).sort()).toEqual(["r-1", "r-2"]);

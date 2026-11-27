@@ -6,9 +6,10 @@ import type { EnvLayer } from "./config.ts";
 import type { Result } from "./contracts.ts";
 import { readIfExists, readText } from "./files.ts";
 import { prependPath } from "./process.ts";
-import { createRegistryReader, registryPath, yokHome } from "./registry.ts";
+import { yokHome } from "./registry.ts";
+import type { IStorage } from "./repositories.ts";
 import { type CheckoutConfig, findConfigRoot, findRoot } from "./runs.ts";
-import { ownerEnv, readUsers } from "./users.ts";
+import { ownerEnv } from "./users.ts";
 
 // The checkout's own .env if it has one, else the main checkout's; the two are never merged.
 // A repo inside a meta repo looks in the folder findConfigRoot picks.
@@ -91,26 +92,27 @@ export const loadEnv = async (
 // A Slack run gets its starter's GitHub env, read afresh so a token connected mid-run is used, or
 // none when no yok user started it. A run started any other way keeps the server's own login.
 const runEnv = async (
+  storage: IStorage,
   env: Readonly<Record<string, string>>,
   runId: string,
   home: string,
 ): Promise<Readonly<Record<string, string>>> => {
-  const run = await createRegistryReader(registryPath(home)).findRun(runId);
+  const run = await storage.runs.findRun(runId);
   if (run?.source !== "slack") return env;
-  if (run.user === undefined) return ownerEnv(env, home, undefined);
-  const users = await readUsers(home);
-  return ownerEnv(env, home, users[run.user]);
+  const owner = run.user === undefined ? undefined : await storage.users.find(run.user);
+  return ownerEnv(env, home, owner);
 };
 
 // What a run's agent session starts with: the run's env, under yok's own variables, with the
 // shim folder first on PATH so the session's `yok` is the program that started the run.
 export const sessionEnv = async (
+  storage: IStorage,
   env: Readonly<Record<string, string>>,
   runId: string,
   home: string,
   shimDir: string,
 ): Promise<Record<string, string>> => ({
-  ...(await runEnv(env, runId, home)),
+  ...(await runEnv(storage, env, runId, home)),
   PATH: prependPath(shimDir, env.PATH ?? process.env.PATH),
   YOK_RUN_ID: runId,
   YOK_HOME: home,

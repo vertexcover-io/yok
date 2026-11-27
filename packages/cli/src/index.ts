@@ -7,11 +7,13 @@ import { attachCommand } from "./attach.ts";
 import { buildPlanCommand } from "./build-plan.ts";
 import { checkRemoteFlag, commandPath, fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
+import { importFilesCommand } from "./import-files.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { loginCommand } from "./login.ts";
 import { lsCommand } from "./ls.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
+import { rmCommand } from "./rm.ts";
 import { resumeCommand, retryCommand, runCommand } from "./run.ts";
 import { serveModules } from "./serve.ts";
 import { serverCommand } from "./server.ts";
@@ -56,6 +58,7 @@ await new Command()
   .addCommand(runCommand())
   .addCommand(resumeCommand())
   .addCommand(retryCommand())
+  .addCommand(rmCommand())
   .addCommand(serverCommand())
   .addCommand(triggerCommand())
   .addCommand(typesCommand())
@@ -63,5 +66,6 @@ await new Command()
   .addCommand(updateCommand())
   .addCommand(verifyCommand())
   .addCommand(viewCommand())
+  .addCommand(importFilesCommand(), { hidden: true })
   .parseAsync(argv)
   .catch((error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));

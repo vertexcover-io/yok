@@ -8,7 +8,6 @@ import {
   type SubscriberRef,
   SubscriberRefSchema,
 } from "./contracts.ts";
-import { jsonlEventStore } from "./event-store.ts";
 import {
   buildSubscriberCallId,
   type EmitInput,
@@ -20,7 +19,8 @@ import {
 } from "./events.ts";
 import { loadFunction, runLockPath, withLock } from "./files.ts";
 import { selfArgv, spawn, spawnDetached } from "./process.ts";
-import { appendRunEvent, readState, syncState } from "./state.ts";
+import type { IStorage } from "./repositories.ts";
+import { appendRunEvent, syncState } from "./state.ts";
 
 export type Call =
   | Readonly<{ status: "ok"; output?: JsonValue }>
@@ -50,12 +50,13 @@ const runSubscriberArgv = (mode: "call" | "run"): readonly [string, ...string[]]
 // Calls an event's subscribers in order: a blocking subscriber is awaited and recorded before the next; a
 // non-blocking one is left to a background runner, which records its own call.
 export const triggerSubscribers = async (
+  storage: IStorage,
   run: RunRef,
   event: Event,
   state: State,
 ): Promise<void> => {
   for (const subscriber of selectSubscribers(state, event)) {
-    if (subscriber.blocking) await callAndRecord(run, event, subscriber, state);
+    if (subscriber.blocking) await callAndRecord(storage, run, event, subscriber, state);
     else startBackgroundRunner(run, event, subscriber);
   }
 };
@@ -72,6 +73,7 @@ export const selectSubscribers = (state: State, event: Event): readonly Subscrib
 
 // A call whose record fails to store is dropped: a subscriber never breaks the run.
 const callAndRecord = async (
+  storage: IStorage,
   run: RunRef,
   event: Event,
   subscriber: SubscriberRef,
@@ -79,7 +81,8 @@ const callAndRecord = async (
 ): Promise<void> => {
   const started = Date.now();
   const call = await callSubscriber(subscriber, { event, state, run });
-  await appendRunEvent(run, buildCallRecord(event, subscriber, call, Date.now() - started));
+  const record = buildCallRecord(event, subscriber, call, Date.now() - started);
+  await appendRunEvent(storage, run, record);
 };
 
 const buildCallRecord = (
@@ -226,15 +229,16 @@ const findBackgroundSubscriber = (
 // one subscriber's calls thus never overlap, run in seq order, and each reads the state the one before
 // it left.
 export const runInBackground = async (
+  storage: IStorage,
   run: RunRef,
   eventId: string,
   subscriberName: string,
 ): Promise<void> => {
   const runDir = runDirOf(run.cwd, run.name);
   await withLock(runLockPath(runDir, `subscriber-${subscriberName}`), async () => {
-    const events = await jsonlEventStore(runDir).read();
+    const events = await storage.runs.readEvents(run.id);
     const target = events.find((stored) => stored.id === eventId);
-    const frozen = await syncState(runDir);
+    const frozen = await syncState(storage, run.id);
     if (target === undefined || frozen === null) return;
     const recorded = new Set(events.map((event) => event.id));
     const waiting = events.filter(
@@ -244,28 +248,29 @@ export const runInBackground = async (
         !recorded.has(buildSubscriberCallId(event.id, subscriberName)),
     );
     for (const event of waiting) {
-      const state = (await syncState(runDir)) ?? frozen;
+      const state = (await syncState(storage, run.id)) ?? frozen;
       const subscriber = findBackgroundSubscriber(state, event, subscriberName);
-      if (subscriber !== undefined) await callAndRecord(run, event, subscriber, state);
+      if (subscriber !== undefined) await callAndRecord(storage, run, event, subscriber, state);
     }
-  }).catch((error: unknown) => recordLockFailure(run, eventId, subscriberName, error));
+  }).catch((error: unknown) => recordLockFailure(storage, run, eventId, subscriberName, error));
 };
 
 // A runner that cannot take the subscriber's lock, such as one a killed runner left, says so in the
 // call's record instead of leaving no trace.
 const recordLockFailure = async (
+  storage: IStorage,
   run: RunRef,
   eventId: string,
   subscriberName: string,
   error: unknown,
 ): Promise<void> => {
-  const runDir = runDirOf(run.cwd, run.name);
-  const event = (await jsonlEventStore(runDir).read()).find((stored) => stored.id === eventId);
-  const state = await readState(runDir);
+  const event = await storage.runs.readEvent(run.id, eventId);
+  const state = await storage.runs.readState(run.id);
   if (event === undefined || state === null) return;
   const subscriber = findBackgroundSubscriber(state, event, subscriberName);
   if (subscriber === undefined) return;
-  await appendRunEvent(run, buildCallRecord(event, subscriber, failWithError("lock", error), 0));
+  const record = buildCallRecord(event, subscriber, failWithError("lock", error), 0);
+  await appendRunEvent(storage, run, record);
 };
 
 // 4. Entries for `yok orchestrate run-subscriber call|run`.
@@ -294,17 +299,20 @@ export const callMode = async (): Promise<number> => {
 };
 
 // Runs and records one non-blocking subscriber for one stored event.
-export const runMode = async ({
-  eventId,
-  subscriber,
-  ...run
-}: Readonly<{
-  cwd: string;
-  name: string;
-  id: string;
-  eventId: string;
-  subscriber: string;
-}>): Promise<number> => {
-  await runInBackground(run, eventId, subscriber).catch(() => undefined);
+export const runMode = async (
+  storage: IStorage,
+  {
+    eventId,
+    subscriber,
+    ...run
+  }: Readonly<{
+    cwd: string;
+    name: string;
+    id: string;
+    eventId: string;
+    subscriber: string;
+  }>,
+): Promise<number> => {
+  await runInBackground(storage, run, eventId, subscriber).catch(() => undefined);
   return 0;
 };

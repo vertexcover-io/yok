@@ -3,17 +3,16 @@ import { Command, type CommandUnknownOpts } from "@commander-js/extra-typings";
 import { isWorkflowFile } from "@yok/core";
 import {
   createGit,
-  createRegistryReader,
   type ILogger,
   type JsonObject,
   POLICY_NAMES,
   PoliciesSchema,
   type Result,
-  registryPath,
   requireRun,
   spawnInteractive,
+  yokHome,
 } from "@yok/sdk";
-import { isCompiled, parsePolicyFlags, VERSION } from "@yok/sdk/internal";
+import { isCompiled, parsePolicyFlags, VERSION, withStorage } from "@yok/sdk/internal";
 import { folderSlug, type RunPick, startError } from "@yok/server";
 import type { YokClient } from "@yok/server/client";
 import {
@@ -103,13 +102,9 @@ export const runPick = (
 // A bare name is looked up among this checkout's runs, as yok view does; with an id as well, a
 // pair naming different runs is refused.
 const localPick = async (name: string, id: string | undefined): Promise<Result<RunPick>> => {
-  const run = await requireRun({
-    registry: createRegistryReader(registryPath()),
-    name,
-    id,
-    env: process.env,
-    cwd: process.cwd(),
-  });
+  const run = await withStorage(yokHome(), (storage) =>
+    requireRun({ storage, name, id, env: process.env, cwd: process.cwd() }),
+  );
   return run.ok ? { ok: true, value: { id: run.value.id } } : run;
 };
 

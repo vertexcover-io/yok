@@ -5,11 +5,11 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { summarize, yokTerminalHost } from "@yok/core";
-import { noopLogger, registryPath, type WorkflowRun } from "@yok/sdk";
-import { createRegistry } from "@yok/sdk/internal";
+import { noopLogger, type WorkflowRun } from "@yok/sdk";
+import { openStorage, withStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import { websocket } from "hono/bun";
-import { claudeOver } from "./fake-host.ts";
+import { claudeOver, seedRun } from "./fake-host.ts";
 import { readPort } from "./protocol.ts";
 import { startServer } from "./server.ts";
 import { DETACHED, REFUSED, terminalRoutes } from "./terminal.ts";
@@ -25,6 +25,7 @@ afterEach(async () => {
 
 const savedRun = (id: string, cwd: string, terminal: string | null): WorkflowRun => ({
   id,
+  project: "demo",
   workflow: "demo",
   workflowPath: join(cwd, "demo.yaml"),
   inputs: {},
@@ -37,7 +38,7 @@ const savedRun = (id: string, cwd: string, terminal: string | null): WorkflowRun
   createdAt: new Date().toISOString(),
 });
 
-// A home whose registry holds r-1, attached to a session that runs sh on its own tmux server,
+// A home whose yok.db holds r-1, attached to a session that runs sh on its own tmux server,
 // and r-2, with no session yet.
 const seedHome = async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "yok-term-")));
@@ -51,9 +52,10 @@ const seedHome = async () => {
     env: { PS1: "$ " },
   });
   if (!pane.ok) throw new Error(pane.error);
-  const registry = createRegistry(registryPath(home));
-  await registry.addRun(savedRun("r-1", cwd, SESSION));
-  await registry.addRun(savedRun("r-2", cwd, null));
+  await withStorage(home, async (storage) => {
+    await seedRun(storage, savedRun("r-1", cwd, SESSION));
+    await seedRun(storage, savedRun("r-2", cwd, null));
+  });
   return { home, host, socket };
 };
 
@@ -295,26 +297,25 @@ describe("a server stopped by a signal", () => {
 
   test("a terminal socket still looking up its run when the server stops is closed with 1001, and the stop finishes", async () => {
     const { home, host, socket } = await seedHome();
-    const registry = createRegistry(registryPath(home));
+    const storage = openStorage(home);
     const stopping = new AbortController();
     const lookup = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const slowRegistry = {
-      ...registry,
-      findRun: async (id: string) => {
-        lookup.resolve();
-        await release.promise;
-        return registry.findRun(id);
-      },
+    const slowFindRun = async (id: string) => {
+      lookup.resolve();
+      await release.promise;
+      return storage.runs.findRun(id);
     };
+    const slowStorage = { ...storage, runs: { ...storage.runs, findRun: slowFindRun } };
     const app = new Hono().route(
       "/api/runs",
-      terminalRoutes({ registry: slowRegistry, host, log: noopLogger, stopping: stopping.signal }),
+      terminalRoutes({ storage: slowStorage, host, log: noopLogger, stopping: stopping.signal }),
     );
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch, websocket });
     cleanups.push(async () => {
       spawnSync("tmux", ["-L", socket, "kill-server"]);
       await server.stop(true);
+      await storage.close();
     });
     const client = connect(server.port as number, "r-1");
     await lookup.promise;

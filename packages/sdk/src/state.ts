@@ -1,11 +1,10 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import * as z from "zod";
 import {
   type Event,
   type EventHandlerRef,
   type EventHandlerRefs,
-  EventSchema,
   type GitState,
   type Result,
   SlugSchema,
@@ -13,10 +12,12 @@ import {
   StateSchema,
   type SubscriberRefs,
 } from "./contracts.ts";
-import { type IEventStore, jsonlEventStore } from "./event-store.ts";
-import { builtInHandlers, type EmitInput, emitEvent, type RunRef, runDirOf } from "./events.ts";
-import { loadFunction, parseYaml, readIfExists, readText, runLockPath, withLock } from "./files.ts";
+import { buildEvent, builtInHandlers, type EmitInput, type RunRef } from "./events.ts";
+import { loadFunction, parseYaml, readText } from "./files.ts";
 import { createGit } from "./git.ts";
+import type { SessionRef } from "./registry.ts";
+import type { IRunRepository, IStorage } from "./repositories.ts";
+import { useStorage } from "./storage.ts";
 import { triggerSubscribers } from "./subscribers.ts";
 
 export type EventHandler = (state: State, event: Event) => State;
@@ -48,20 +49,21 @@ export const projectEvents = (projection: Projection): State =>
     projection.state,
   );
 
-export const readState = async (runDir: string): Promise<State | null> => {
-  const text = await readIfExists(join(runDir, "state.json"));
-  return text === null ? null : StateSchema.parse(JSON.parse(text));
-};
+// The run's stored state; null before init.
+export const readState = (run: RunRef, storage?: IStorage): Promise<State | null> =>
+  useStorage(storage, process.env, (opened) => opened.runs.readState(run.id));
 
-const writeStateAtomically = async (runDir: string, state: State): Promise<void> => {
-  const artifactsDir = join(runDir, "artifacts");
-  const tempPath = join(artifactsDir, `.state.${process.pid}.${crypto.randomUUID()}.tmp`);
-  await mkdir(artifactsDir, { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`);
-  await rename(tempPath, join(runDir, "state.json"));
-};
+// Oldest first.
+export const readRunEvents = (run: RunRef, storage?: IStorage): Promise<readonly Event[]> =>
+  useStorage(storage, process.env, (opened) => opened.runs.readEvents(run.id));
 
-const lockOf = (runDir: string): string => runLockPath(runDir, "state");
+// First linked first; the last is the session working on the run now.
+export const readRunSessions = (run: RunRef, storage?: IStorage): Promise<readonly SessionRef[]> =>
+  useStorage(
+    storage,
+    process.env,
+    async (opened) => (await opened.runs.findRun(run.id))?.sessions ?? [],
+  );
 
 const git = createGit();
 
@@ -79,7 +81,7 @@ export const readGit = async (cwd: string): Promise<GitState> => {
   };
 };
 
-// Repository keys in state.json are slugs, but package names are camelCase and mono repos use their folder name.
+// Repository keys in the run's state are slugs, but package names are camelCase and mono repos use their folder name.
 export const toRepoId = (name: string): string => {
   const slug = name
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
@@ -98,8 +100,9 @@ const workflowNameOf = async (runDir: string): Promise<string> => {
   return z.object({ name: SlugSchema }).parse(yaml.value).name;
 };
 
-// Writes a run's first state.json from the run folder: a run folder is CWD/.yok/NAME,
-// holding the workflow.yaml init copied in. Events then fill in the rest (inputs, startedAt).
+// A run's first state, built from the run folder: a run folder is CWD/.yok/NAME, holding the
+// workflow.yaml init copied in. Writes nothing; init stores it with the run's name. Events then
+// fill in the rest (inputs, startedAt).
 export const createState = async ({
   runId,
   runDir,
@@ -146,7 +149,6 @@ export const createState = async ({
     subscribers: subscribers ?? {},
     ...(config === undefined ? {} : { config }),
   };
-  await withLock(lockOf(runDir), () => writeStateAtomically(runDir, state));
   return state;
 };
 
@@ -174,134 +176,129 @@ const loadEventHandlers = async (refs: EventHandlerRefs): Promise<Result<Extensi
   return { ok: true, value: Object.fromEntries(handlers) };
 };
 
-const projectLog = async (
-  runDir: string,
-  store: IEventStore,
-  current: State,
-  extensions: ExtensionHandlers,
-): Promise<State> => {
-  const events = await store.read();
-  const next = projectEvents({ state: current, events, handlers: builtInHandlers, extensions });
-  if (next.lastEventSeq === current.lastEventSeq) return next;
-  await writeStateAtomically(runDir, next);
-  return next;
-};
-
-// Applies the log's new events to state.json with the built-in handlers, then the run's own
-// handlers listed in state.json, under the state lock. A folder with no state.json yet is left
-// alone and gives null: only createState writes the first.
-export const syncState = (
-  runDir: string,
-  store: IEventStore = jsonlEventStore(runDir),
-): Promise<State | null> =>
-  withLock(lockOf(runDir), async () => {
-    const current = await readState(runDir);
-    if (current === null) return null;
-    const extensions = await loadEventHandlers(current.eventHandlers);
-    if (!extensions.ok) throw new Error(extensions.error);
-    return projectLog(runDir, store, current, extensions.value);
-  });
-
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-// A stored event that a handler cannot apply would stall state.json for good, since every later
-// sync replays it; so the event is applied to a copy of the state before it is stored.
-const tryEvent = async (
-  store: IEventStore,
-  runId: string,
-  draft: EmitInput & { id: string },
-  current: State,
+const fold = (
+  state: State | null,
+  events: readonly Event[],
   extensions: ExtensionHandlers,
-): Promise<Result<void>> => {
-  const events = await store.read();
-  if (events.some((event) => event.id === draft.id)) return { ok: true, value: undefined };
-  const ts = new Date().toISOString();
-  const seq = events.length + 1;
-  const candidate = EventSchema.safeParse({ schemaVersion: 1, seq, runId, ts, ...draft });
-  if (!candidate.success) return { ok: true, value: undefined };
+): Result<State | null> => {
+  if (state === null) return { ok: true, value: null };
   try {
-    projectEvents({
-      state: current,
-      events: [...events, candidate.data],
-      handlers: builtInHandlers,
-      extensions,
-    });
-    return { ok: true, value: undefined };
-  } catch (error) {
     return {
-      ok: false,
-      error: `event not stored, a handler could not apply it: ${errorMessage(error)}`,
+      ok: true,
+      value: projectEvents({ state, events, handlers: builtInHandlers, extensions }),
     };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
   }
 };
 
-type Appended = Readonly<{ event: Event; state: State | null; fresh: boolean }>;
+export const loadRunHandlers = (state: State | null): Promise<Result<ExtensionHandlers>> =>
+  state === null
+    ? Promise.resolve({ ok: true, value: {} })
+    : loadEventHandlers(state.eventHandlers);
 
-// Stores the event and brings state.json up to date under the state lock, so the event is checked
-// against the same state it is then applied to. fresh: the event was not already in the log.
-const appendUnderLock = (
-  run: RunRef,
-  input: EmitInput,
-  allowed: (state: State | null) => boolean,
-): Promise<Result<Appended>> => {
-  const runDir = runDirOf(run.cwd, run.name);
-  const store = jsonlEventStore(runDir);
-  return withLock(lockOf(runDir), async () => {
-    const current = await readState(runDir);
-    if (current === null) {
-      if (!allowed(null)) return { ok: false, error: "condition-failed" };
-      const stored = await emitEvent(store, run.id, input);
-      return stored.ok
-        ? { ok: true, value: { event: stored.value, state: null, fresh: true } }
-        : stored;
-    }
-    const extensions = await loadEventHandlers(current.eventHandlers);
-    if (!extensions.ok) return extensions;
-    const latest = await projectLog(runDir, store, current, extensions.value).catch(
-      (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
-    );
-    if (latest instanceof Error) {
-      return { ok: false, error: `state.json not synchronized: ${latest.message}` };
-    }
-    if (!allowed(latest)) return { ok: false, error: "condition-failed" };
-    const draft = { ...input, id: input.id ?? crypto.randomUUID() };
-    const tried = await tryEvent(store, run.id, draft, latest, extensions.value);
-    if (!tried.ok) return tried;
-    const stored = await emitEvent(store, run.id, draft);
-    if (!stored.ok) return stored;
-    const synced = await projectLog(runDir, store, latest, extensions.value).catch(
-      (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
-    );
-    if (synced instanceof Error) {
-      return { ok: false, error: `event stored, but state.json not updated: ${synced.message}` };
-    }
-    const fresh = stored.value.seq > latest.lastEventSeq;
-    return { ok: true, value: { event: stored.value, state: synced, fresh } };
-  });
+// The run's stored state with any stored event it lags folded in, by the built-in handlers and
+// then the run's own; null before init. Writes nothing: every event's write carries its state.
+export const syncState = async (storage: IStorage, runId: string): Promise<State | null> => {
+  const [current, events] = await Promise.all([
+    storage.runs.readState(runId),
+    storage.runs.readEvents(runId),
+  ]);
+  const extensions = await loadRunHandlers(current);
+  if (!extensions.ok) throw new Error(extensions.error);
+  const latest = fold(current, events, extensions.value);
+  if (!latest.ok) throw new Error(latest.error);
+  return latest.value;
 };
 
-// Stores an event in a run's own folder, CWD/.yok/NAME/event.jsonl, brings its state.json up
-// to date, then calls the subscribers that listen to it, outside the lock. It hands back the state.json
-// it wrote (null when the folder has none yet), so a caller storing many events need not read
-// the log again after each one.
+type Saved = Readonly<{ event: Event; state: State | null; fresh: boolean }>;
+
+// Each lost race means another writer stored an event, so many short tries let a dozen or more
+// writers on one run all land without one waiting long.
+const MAX_TRIES = 40;
+const RETRY_PAUSE_MS = 10;
+const MAX_PAUSE_GROWTH = 5;
+
+// One try against the run as it reads now. "conflict": another writer stored an event since the
+// read, so nothing was written. fresh: this try stored the event, rather than finding it stored.
+const tryAppend = async (
+  runs: IRunRepository,
+  runId: string,
+  draft: EmitInput & Readonly<{ id: string }>,
+  allowed: (state: State | null) => boolean,
+): Promise<Result<Saved> | "conflict"> => {
+  const [current, events] = await Promise.all([runs.readState(runId), runs.readEvents(runId)]);
+  const extensions = await loadRunHandlers(current);
+  if (!extensions.ok) return extensions;
+  const latest = fold(current, events, extensions.value);
+  if (!latest.ok) return { ok: false, error: `state not synchronized: ${latest.error}` };
+  if (!allowed(latest.value)) return { ok: false, error: "condition-failed" };
+  const stored = events.find((event) => event.id === draft.id);
+  if (stored !== undefined) {
+    return { ok: true, value: { event: stored, state: latest.value, fresh: false } };
+  }
+  const event = buildEvent(runId, draft, events.length + 1);
+  if (!event.ok) return event;
+  // A stored event no handler can apply would stall the run's state for good.
+  const next = fold(latest.value, [event.value], extensions.value);
+  if (!next.ok) {
+    return { ok: false, error: `event not stored, a handler could not apply it: ${next.error}` };
+  }
+  const appended = await runs.appendEvent(runId, {
+    event: event.value,
+    state: next.value,
+    expectedSeq: events.length,
+  });
+  if (appended.kind !== "stored") return "conflict";
+  return { ok: true, value: { event: event.value, state: next.value, fresh: true } };
+};
+
+const appendWithRetries = async (
+  runs: IRunRepository,
+  runId: string,
+  draft: EmitInput & Readonly<{ id: string }>,
+  allowed: (state: State | null) => boolean,
+  tries = 1,
+): Promise<Result<Saved>> => {
+  const tried = await tryAppend(runs, runId, draft, allowed);
+  if (tried !== "conflict") return tried;
+  if (tries === MAX_TRIES) {
+    return { ok: false, error: `event not stored: run ${runId} changed during ${MAX_TRIES} tries` };
+  }
+  // A random pause, longer each try, so writers that lost the same race do not race again in step.
+  await sleep(Math.random() * RETRY_PAUSE_MS * Math.min(tries, MAX_PAUSE_GROWTH));
+  return appendWithRetries(runs, runId, draft, allowed, tries + 1);
+};
+
+// Stores an event on the run with the state it leads to, then calls the subscribers that listen
+// to it once the write has landed. It hands back that state (null before init), so a caller
+// storing many events need not read the run again after each one.
 export const appendRunEventIf = async (
+  storage: IStorage,
   run: RunRef,
   input: EmitInput,
   allowed: (state: State | null) => boolean,
 ): Promise<Result<Readonly<{ event: Event; state: State | null }>>> => {
-  const appended = await appendUnderLock(run, input, allowed);
-  if (!appended.ok) return appended;
-  const { event, state, fresh } = appended.value;
-  if (fresh && state !== null) await triggerSubscribers(run, event, state);
+  // The id is fixed before the first try, so a retry finds the event a lost race stored.
+  const draft = { ...input, id: input.id ?? crypto.randomUUID() };
+  const saved = await appendWithRetries(storage.runs, run.id, draft, allowed).catch(
+    (error: unknown) => ({ ok: false as const, error: `event not stored: ${errorMessage(error)}` }),
+  );
+  if (!saved.ok) return saved;
+  const { event, state, fresh } = saved.value;
+  if (fresh && state !== null) await triggerSubscribers(storage, run, event, state);
   return { ok: true, value: { event, state } };
 };
 
 export const appendRunEvent = (
+  storage: IStorage,
   run: RunRef,
   input: EmitInput,
 ): Promise<Result<Readonly<{ event: Event; state: State | null }>>> =>
-  appendRunEventIf(run, input, () => true);
+  appendRunEventIf(storage, run, input, () => true);
 
 // The event families the engine writes and then trusts: workflow.* moves the run's nodes,
 // orchestrate.done counts a node's rejected attempts, and a context node completes on
@@ -314,9 +311,15 @@ const ENGINE_OWNED: readonly (readonly [prefix: string, reason: string])[] = [
   ["policy.", "is written only by the engine and the agent's hooks, as a policy applies"],
 ];
 
-export const emitRunEvent = async (run: RunRef, input: EmitInput): Promise<Result<Event>> => {
+export const emitRunEvent = async (
+  run: RunRef,
+  input: EmitInput,
+  storage?: IStorage,
+): Promise<Result<Event>> => {
   const owned = ENGINE_OWNED.find(([prefix]) => input.type.startsWith(prefix));
   if (owned !== undefined) return { ok: false, error: `${input.type} ${owned[1]}` };
-  const appended = await appendRunEvent(run, input);
+  const appended = await useStorage(storage, process.env, (opened) =>
+    appendRunEvent(opened, run, input),
+  );
   return appended.ok ? { ok: true, value: appended.value.event } : appended;
 };

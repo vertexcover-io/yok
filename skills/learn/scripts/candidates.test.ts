@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Event, EventSchema, type Rec, runDirOf } from "@yok/sdk";
+import { withStorage } from "@yok/sdk/internal";
+import { seedEvents } from "../../../packages/cli/src/test-runs.ts";
 import { exchanges, lastReviewedAt, listRun, main } from "./candidates.ts";
 
 const at = (minute: number): string => `2026-10-12T10:${String(minute).padStart(2, "0")}:00Z`;
@@ -63,42 +65,47 @@ const recs = (rows: readonly Row[]): readonly Rec[] =>
 const jsonl = (rows: readonly unknown[]): string =>
   rows.map((row) => JSON.stringify(row)).join("\n");
 
-// A repo with one run folder, beside a fake ~/.claude/projects holding the given transcripts.
+// A repo with one run folder and the run's events, beside a fake ~/.claude/projects holding the
+// given transcripts.
 const fixture = (
   events: readonly Event[],
   transcripts: Readonly<Record<string, readonly Row[]>>,
-): Readonly<{ runDir: string; projectsDir: string }> => {
+): Readonly<{ runDir: string; events: readonly Event[]; projectsDir: string }> => {
   const base = mkdtempSync(join(tmpdir(), "learn-"));
   const runDir = runDirOf(base, "run-x");
   mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, "event.jsonl"), jsonl(events));
   const projectsDir = join(base, "projects");
   const slug = join(projectsDir, "-Users-x-repo");
   mkdirSync(slug, { recursive: true });
   for (const [id, rows] of Object.entries(transcripts)) {
     writeFileSync(join(slug, `${id}.jsonl`), jsonl(rows));
   }
-  return { runDir, projectsDir };
+  return { runDir, events, projectsDir };
 };
 
-// A registry in a fresh yok home naming the fixture's run, and $YOK_RUN_ID set to it.
-const inRun = (runDir: string): void => {
+// The fixture's run and its events in a fresh yok home's yok.db, and $YOK_RUN_ID set to it.
+const inRun = async (runDir: string, events: readonly Event[]): Promise<void> => {
   const home = mkdtempSync(join(tmpdir(), "learn-home-"));
   const cwd = join(runDir, "..", "..");
-  const run = {
-    id: "r-1",
-    workflow: "task",
-    workflowPath: join(cwd, "task.yaml"),
-    inputs: {},
-    cwd,
-    sessions: [],
-    name: "run-x",
-    terminal: null,
-    config: null,
-    tiers: null,
-    createdAt: at(0),
-  };
-  writeFileSync(join(home, "registry.json"), JSON.stringify({ version: 1, runs: { "r-1": run } }));
+  await withStorage(home, async (storage) => {
+    const project = { path: cwd, addedBy: { channel: "cli" }, addedAt: at(0) };
+    const added = await storage.projects.add("repo", project);
+    if (!added.ok) throw new Error(added.error);
+    await storage.runs.addRun({
+      id: "r-1",
+      project: "repo",
+      workflow: "task",
+      workflowPath: join(cwd, "task.yaml"),
+      inputs: {},
+      sessions: [],
+      name: "run-x",
+      terminal: null,
+      config: null,
+      tiers: null,
+      createdAt: at(0),
+    });
+  });
+  await seedEvents(home, "r-1", events);
   process.env.YOK_HOME = home;
   process.env.YOK_RUN_ID = "r-1";
 };
@@ -174,17 +181,16 @@ describe("exchanges", () => {
 });
 
 describe("listing a run", () => {
-  test("prints the session id and every exchange since the last pass", () => {
-    const { runDir, projectsDir } = fixture([started("A"), reviewed(at(4))], {
-      A: [
-        user(at(1), "before the pass"),
-        agent(at(5), "Added the helper to src/utils."),
-        user(at(6), "helpers go in src/lib"),
-      ],
-    });
-    const listed = listRun({ runDir, projectsDir });
-    expect(listed.ok).toBe(true);
-    const text = listed.ok ? listed.value : "";
+  test("SC405: prints session A and every exchange after the 10:04 pass, not the one before it", () => {
+    const text = listRun(
+      fixture([started("A"), reviewed(at(4))], {
+        A: [
+          user(at(1), "before the pass"),
+          agent(at(5), "Added the helper to src/utils."),
+          user(at(6), "helpers go in src/lib"),
+        ],
+      }),
+    );
     expect(text).toContain(`since ${at(4)}`);
     expect(text).toContain("session A");
     expect(text).toContain("helpers go in src/lib");
@@ -192,35 +198,27 @@ describe("listing a run", () => {
     expect(text).not.toContain("before the pass");
   });
 
-  test("reads every session the run used, such as one a context step started", () => {
+  test("SC405: reads sessions A and B when a context step replaced A with B", () => {
     const replaced = event("workflow.session.replaced", at(3), {
       agent: "claude",
       previousSessionId: "A",
       sessionId: "B",
     });
-    const { runDir, projectsDir } = fixture([started("A"), replaced], {
-      A: [user(at(1), "first session correction")],
-      B: [user(at(4), "second session correction")],
-    });
-    const listed = listRun({ runDir, projectsDir });
-    const text = listed.ok ? listed.value : "";
+    const text = listRun(
+      fixture([started("A"), replaced], {
+        A: [user(at(1), "first session correction")],
+        B: [user(at(4), "second session correction")],
+      }),
+    );
     expect(text).toContain("session A");
     expect(text).toContain("first session correction");
     expect(text).toContain("session B");
     expect(text).toContain("second session correction");
   });
 
-  test("says so when nothing new was said", () => {
-    const { runDir, projectsDir } = fixture([started("A"), reviewed(at(9))], {
-      A: [user(at(1), "old")],
-    });
-    const listed = listRun({ runDir, projectsDir });
-    expect(listed.ok && listed.value).toContain("nothing new");
-  });
-
-  test("fails without an event log", () => {
-    const listed = listRun({ runDir: "/nonexistent", projectsDir: "/nonexistent" });
-    expect(listed.ok).toBe(false);
+  test("SC405: says nothing new when the last pass came after the last message", () => {
+    const text = listRun(fixture([started("A"), reviewed(at(9))], { A: [user(at(1), "old")] }));
+    expect(text).toContain("nothing new");
   });
 });
 
@@ -233,11 +231,11 @@ describe("choosing what to list", () => {
     }
   });
 
-  test("in a run, lists the run's sessions from the last pass", async () => {
-    const { runDir, projectsDir } = fixture([started("A"), reviewed(at(4))], {
+  test("SC414: in a run whose stored events hold a 10:04 pass, lists the 10:06 message and not the 10:01 one", async () => {
+    const { runDir, events, projectsDir } = fixture([started("A"), reviewed(at(4))], {
       A: [user(at(1), "before the pass"), user(at(6), "after the pass")],
     });
-    inRun(runDir);
+    await inRun(runDir, events);
     const log = spyOn(console, "log").mockImplementation(() => {});
     const code = await main(["--projects", projectsDir]);
     const printed = log.mock.calls.flat().join("\n");

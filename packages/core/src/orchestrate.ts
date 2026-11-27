@@ -12,15 +12,17 @@ import {
   emitRunEvent,
   type HookDeps,
   type ILogger,
+  type IStorage,
   type JsonValue,
   loadRunConfig,
   type PickRunInput,
   pickRun,
   type Result,
   type RunRef,
+  readRunEvents,
+  readRunSessions,
   readState,
   readText,
-  registryPath,
   requireRun,
   runDirOf,
   spawnInteractive,
@@ -32,10 +34,11 @@ import {
 import {
   AgentStatusSchema,
   callMode,
-  createRegistry,
+  commentRepliedEvent,
   devPluginDir,
   foldModelSwitch,
-  jsonlEventStore,
+  isOpen,
+  openStorage,
   runMode,
   runScriptFile,
   type StepOutcome,
@@ -43,7 +46,6 @@ import {
 import { agentAdapters, agentProvider, findSessionAgent, HOOK_AGENTS } from "./agents/index.ts";
 import { currentTerminal, yokTerminalHost } from "./agents/tmux.ts";
 import { runAutoResume } from "./auto-resume.ts";
-import { commentRepliedEvent, isOpen, readComments, replyToComment } from "./comments.ts";
 import { runContextStep, runModelStep } from "./context-step.ts";
 import { findEnvRun } from "./hooks/common.ts";
 import { postToolUseHandlers } from "./hooks/post-tool-use.ts";
@@ -63,6 +65,7 @@ import {
   linkRunSession,
   nextStep,
   notifyThreadFromEnv,
+  readStateKey,
   requestApproval,
   retryFailedSteps,
 } from "./runs.ts";
@@ -131,7 +134,13 @@ const printJson = (value: unknown): void => {
 const printResult = (result: Result<unknown>): void =>
   result.ok ? printJson(result.value) : fail(result.error);
 
-const registry = () => createRegistry(registryPath(), log);
+let opened: IStorage | undefined;
+
+// Each orchestrate command is a process of its own; it opens yok.db on first use and keeps it.
+const storage = (): IStorage => {
+  opened ??= openStorage(yokHome());
+  return opened;
+};
 
 // The agents the yok can restart in their pane, which is how a session switches models.
 const MODEL_SWITCH_AGENTS: ReadonlySet<AgentType> = new Set(
@@ -155,9 +164,9 @@ const initCommand = () =>
       const runId = opts.runId ?? process.env.YOK_RUN_ID;
       if (!runId) return fail("no run: pass --run-id or run inside a yok session");
       await runWorkflowCommand(async () => {
-        const linked = await registry().findRun(runId);
+        const linked = await storage().runs.findRun(runId);
         const result = await initializeRun({
-          registry: registry(),
+          storage: storage(),
           runId,
           name,
           git: createGit(),
@@ -174,7 +183,7 @@ const initCommand = () =>
 type RunFlags = Readonly<{ run?: string | undefined; runId?: string | undefined }>;
 
 const runInputFromFlags = (flags: RunFlags): PickRunInput => ({
-  registry: registry(),
+  storage: storage(),
   name: flags.run,
   id: flags.runId,
   env: process.env,
@@ -196,7 +205,7 @@ const linkSessionCommand = () =>
       const run = await requireRun(runInputFromFlags(opts));
       if (!run.ok) return fail(run.error);
       const { agent, sessionId } = opts;
-      printResult(await linkRunSession({ registry: registry(), run: run.value, agent, sessionId }));
+      printResult(await linkRunSession({ storage: storage(), run: run.value, agent, sessionId }));
     });
 
 const emitCommand = () =>
@@ -218,7 +227,7 @@ const emitCommand = () =>
       if (!run.ok) return fail(run.error);
       const { source, id, nodeId, nodeRunId, stage } = opts;
       const input = { type, payload: payload.value, source, id, nodeId, nodeRunId, stage };
-      printResult(await emitRunEvent(run.value, input));
+      printResult(await emitRunEvent(run.value, input, storage()));
     });
 
 const nextCommand = () =>
@@ -230,7 +239,7 @@ const nextCommand = () =>
       runWorkflowCommand(async () => {
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        printResult(await nextStep(run.value, agentAdapters));
+        printResult(await nextStep(storage(), run.value, agentAdapters));
       }),
     );
 
@@ -245,7 +254,7 @@ const resumeCommand = () =>
       runWorkflowCommand(async () => {
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        printResult(await interruptOpenSteps(run.value));
+        printResult(await interruptOpenSteps(storage(), run.value));
       }),
     );
 
@@ -262,7 +271,7 @@ const retryCommand = () =>
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
         // The run's own agent must not reopen the step it failed: that would reset its done cap.
-        const terminal = (await registry().findRun(run.value.id))?.terminal ?? null;
+        const terminal = (await storage().runs.findRun(run.value.id))?.terminal ?? null;
         if (
           terminal !== null &&
           (await yokTerminalHost(process.env, log).find(terminal).isAlive())
@@ -270,7 +279,7 @@ const retryCommand = () =>
           const { name } = run.value;
           return fail(`run ${name} still has its agent session; use yok attach ${name}`);
         }
-        printResult(await retryFailedSteps(run.value, opts.answered === true));
+        printResult(await retryFailedSteps(storage(), run.value, opts.answered === true));
       }),
     );
 
@@ -285,7 +294,7 @@ const execCommand = () =>
         if (nodeRunId === "") return fail(EMPTY_NODE_RUN_ID);
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        const report = await execStep(run.value, nodeRunId);
+        const report = await execStep(storage(), run.value, nodeRunId);
         printResult(report);
         if (report.ok && report.value.status !== "completed") process.exitCode = 1;
       }),
@@ -306,7 +315,7 @@ const awaitApprovalCommand = () =>
         if (nodeRunId === "") return fail(EMPTY_NODE_RUN_ID);
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        printResult(await requestApproval(run.value, nodeRunId, opts.file));
+        printResult(await requestApproval(storage(), run.value, nodeRunId, opts.file));
       }),
     );
 
@@ -401,7 +410,13 @@ const doneCommand = () =>
           path: opts.runId ?? opts.run ?? (process.env.YOK_RUN_ID || ""),
           message: run.error,
         });
-      const report = await finishStep(run.value, nodeRunId, outcome.value, artifacts.value);
+      const report = await finishStep(
+        storage(),
+        run.value,
+        nodeRunId,
+        outcome.value,
+        artifacts.value,
+      );
       if (!report.ok) return failDone(report.error);
       printJson(report.value);
       if (report.ok && report.value.status !== "completed") process.exitCode = 1;
@@ -421,8 +436,7 @@ const nodeCommand = () => {
         if (nodeRunId === "") return fail(EMPTY_NODE_RUN_ID);
         const run = await requireRun(runInputFromFlags(opts));
         if (!run.ok) return fail(run.error);
-        const { cwd, name } = run.value;
-        printJson(await getNodeFacts(name, nodeRunId, cwd));
+        printJson(await getNodeFacts(storage(), run.value, nodeRunId));
       }).catch((error: unknown) => fail(error instanceof Error ? error.message : String(error))),
     );
   return node;
@@ -437,7 +451,7 @@ const skillScope = async (flags: RunFlags): Promise<Result<SkillScope>> => {
       ? { ok: true, value: { root: config.value.root, config: config.value } }
       : config;
   }
-  const config = await loadRunConfig(run.value);
+  const config = await loadRunConfig(run.value, storage());
   if (!config.ok) return config;
   const stages = await runStageDirs(run.value, config.value);
   return {
@@ -602,8 +616,15 @@ const addHookCommand = <H>(hook: Command, spec: HookSpec<H>): void => {
         ? spec.handlers[opts.handler]
         : undefined;
       if (answer === undefined || handler === undefined) return;
-      const deps = { registry: registry(), env: process.env, log };
-      process.stdout.write(await answer(await Bun.stdin.text(), deps, handler));
+      const stdin = await Bun.stdin.text();
+      // A yok.db that cannot open, like any other failure here, must not trap the session.
+      const reply = await Promise.resolve()
+        .then(() => answer(stdin, { storage: storage(), env: process.env, log }, handler))
+        .catch((error: unknown) => {
+          log.error({ err: error }, `hook ${spec.name} failed`);
+          return "";
+        });
+      process.stdout.write(reply);
     });
 };
 
@@ -644,6 +665,12 @@ const hookCommand = () => {
   return hook;
 };
 
+const renderRunStatusline = async (runId: string, stdin: string): Promise<string> => {
+  const deps = { storage: storage(), env: { ...process.env, YOK_RUN_ID: runId }, log };
+  const found = await findEnvRun(deps);
+  return renderStatusline(deps.storage, stdin, found?.ref);
+};
+
 // Always exits 0: Claude shows whatever this prints, and a failure here must not reach the run.
 const statuslineCommand = () =>
   new Command("statusline")
@@ -653,13 +680,10 @@ const statuslineCommand = () =>
       const runId = options.runId ?? process.env.YOK_RUN_ID;
       if (!runId) return;
       const stdin = options.runId === undefined ? await Bun.stdin.text().catch(() => "") : "";
-      const deps = { registry: registry(), env: { ...process.env, YOK_RUN_ID: runId }, log };
-      const line = await findEnvRun(deps)
-        .then((found) => renderStatusline(stdin, found?.ref))
-        .catch((error: unknown) => {
-          log.error({ err: error }, "statusline failed");
-          return "yok · starting";
-        });
+      const line = await renderRunStatusline(runId, stdin).catch((error: unknown) => {
+        log.error({ err: error }, "statusline failed");
+        return "yok · starting";
+      });
       process.stdout.write(`${line}\n`);
     });
 
@@ -688,7 +712,7 @@ const loadHelperRun = async (
   }
   const run = picked.value;
   const log = helperLogger(run, service, file);
-  const linked = await registry().findRun(run.id);
+  const linked = await storage().runs.findRun(run.id);
   const provider = sessionProvider(linked, flags.sessionId, log);
   if (provider === undefined) {
     log.error({ sessionId: flags.sessionId }, "no provider for the session's agent");
@@ -711,10 +735,9 @@ const contextCommand = () =>
       const helper = await loadHelperRun(opts, "yok-context", "context.log");
       if (helper === undefined) return;
       const { run, log, provider, modeLaunch } = helper;
-      const runDir = runDirOf(run.cwd, run.name);
       const [state, events] = await Promise.all([
-        readState(runDir),
-        jsonlEventStore(runDir).read(),
+        storage().runs.readState(run.id),
+        storage().runs.readEvents(run.id),
       ]);
       const { current } = foldModelSwitch(events, state?.tiers ?? null);
       await runContextStep({
@@ -722,7 +745,7 @@ const contextCommand = () =>
         nodeRunId,
         oldSessionId: opts.sessionId,
         terminal: currentTerminal(process.env, log),
-        registry: registry(),
+        storage: storage(),
         provider,
         launch: {
           cwd: run.cwd,
@@ -762,6 +785,7 @@ const modelCommand = () =>
           pluginDir: devPluginDir(),
           ...modeLaunch,
         },
+        storage: storage(),
         home: yokHome(),
         log,
       });
@@ -790,9 +814,10 @@ const autoResumeCommand = () =>
       if (!picked.ok) return fail(picked.error);
       const run = picked.value;
       const log = helperLogger(run, "yok-auto-resume", "auto-resume.log");
-      const linked = await registry().findRun(run.id);
+      const linked = await storage().runs.findRun(run.id);
       const provider = sessionProvider(linked, opts.sessionId, log);
       await runAutoResume({
+        storage: storage(),
         run,
         sessionId: opts.sessionId,
         eventId,
@@ -814,10 +839,8 @@ const commentsCommand = () => {
     .action(async (opts) => {
       const run = await requireRun(runInputFromFlags(opts));
       if (!run.ok) return fail(run.error);
-      const { cwd, name } = run.value;
-      const read = await readComments(runDirOf(cwd, name));
-      if (!read.ok) return fail(read.error);
-      printJson({ comments: read.value.comments.filter((c) => opts.all || isOpen(c)) });
+      const comments = await storage().comments.list(run.value.id);
+      printJson({ comments: comments.filter((c) => opts.all || isOpen(c)) });
     });
   comments
     .command("reply")
@@ -836,19 +859,61 @@ const commentsCommand = () => {
       if (!picked.ok) return fail(picked.error);
       const run = picked.value;
       const text = await readValue(opts.text);
-      const replied = await replyToComment(
-        runDirOf(run.cwd, run.name),
-        opts.id,
-        { status: opts.status, text },
-        new Date(),
-      );
+      const replied = await storage().comments.reply(run.id, opts.id, {
+        status: opts.status,
+        text,
+      });
       if (!replied.ok) return fail(replied.error);
-      const logged = await emitRunEvent(run, commentRepliedEvent("orchestrate", replied.value));
+      const logged = await emitRunEvent(
+        run,
+        commentRepliedEvent("orchestrate", replied.value),
+        storage(),
+      );
       if (!logged.ok) return fail(logged.error);
       printJson(replied.value);
     });
   return comments;
 };
+
+const getCommand = () =>
+  new Command("get")
+    .description(
+      "Print one value of the run's state as JSON, by dotted path such as workspace.path; with no key, the whole state",
+    )
+    .argument("[key]", "dotted path into the run's state")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (key, opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      const state = await readState(run.value, storage());
+      if (state === null) return fail(`run ${run.value.name} has no state; run orchestrate init`);
+      printResult(key === undefined ? { ok: true, value: state } : readStateKey(state, key));
+    });
+
+const sessionsCommand = () =>
+  new Command("sessions")
+    .description(
+      "Print the agent sessions linked to the run, first linked first, as a JSON list of { agent, sessionId }",
+    )
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      printJson(await readRunSessions(run.value, storage()));
+    });
+
+const eventsCommand = () =>
+  new Command("events")
+    .description("Print the run's events, oldest first, as one JSON list")
+    .option("--run <name>", RUN_HELP)
+    .option("--run-id <id>", RUN_ID_HELP)
+    .action(async (opts) => {
+      const run = await requireRun(runInputFromFlags(opts));
+      if (!run.ok) return fail(run.error);
+      printJson(await readRunEvents(run.value, storage()));
+    });
 
 const exitWith = (work: Promise<number>): Promise<never> =>
   work.then(
@@ -879,7 +944,7 @@ const runSubscriberCommand = () => {
     .argument("<eventId>")
     .argument("<subscriber>")
     .action((cwd, name, runId, eventId, subscriber) =>
-      exitWith(runMode({ cwd, name, id: runId, eventId, subscriber })),
+      exitWith(runMode(storage(), { cwd, name, id: runId, eventId, subscriber })),
     );
   return runSubscriber;
 };
@@ -954,5 +1019,8 @@ export const orchestrateCommand = () =>
     .addCommand(modelCommand())
     .addCommand(autoResumeCommand())
     .addCommand(commentsCommand())
+    .addCommand(getCommand())
+    .addCommand(sessionsCommand())
+    .addCommand(eventsCommand())
     .addCommand(workflowsCommand())
     .addCommand(runSubscriberCommand(), { hidden: true });

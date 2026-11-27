@@ -4,12 +4,12 @@ import {
   type Event,
   type IAgentProvider,
   type ILogger,
+  type IStorage,
   type ITerminal,
   type LimitWaitingEvent,
   type RunRef,
-  runDirOf,
 } from "@yok/sdk";
-import { appendRunEvent, jsonlEventStore } from "@yok/sdk/internal";
+import { appendRunEvent } from "@yok/sdk/internal";
 import * as z from "zod";
 import { spawnOrchestrateHelper } from "./stage.ts";
 
@@ -28,6 +28,7 @@ const LIMIT_REACHED = "agent.limit.reached";
 const ERROR_REACHED = "agent.error.reached";
 
 export type AutoResumeOptions = Readonly<{
+  storage: IStorage;
   run: RunRef;
   sessionId: string;
   // the agent.limit.reached or agent.error.reached event this wait answers
@@ -134,9 +135,8 @@ const planErrorRetry = (
 // Started detached when an agent hits a usage limit or an API error that may pass: waits, then has
 // the agent continue in its terminal. When it cannot, it records agent.stopped so a person is told.
 export const runAutoResume = async (options: AutoResumeOptions): Promise<void> => {
-  const { run, sessionId, eventId, terminal, log } = options;
-  const store = jsonlEventStore(runDirOf(run.cwd, run.name));
-  const activity = sessionActivity(await store.read(), sessionId);
+  const { storage, run, sessionId, eventId, terminal, log } = options;
+  const activity = sessionActivity(await storage.runs.readEvents(run.id), sessionId);
   const event = activity.find((each) => each.id === eventId);
   // Both kinds of event carry the stop; an API error adds what its hook read of progress.
   const reached = ApiErrorReachedEvent.safeParse(event);
@@ -151,7 +151,7 @@ export const runAutoResume = async (options: AutoResumeOptions): Promise<void> =
   const stopPayload = { ...stop, ...(message === undefined ? {} : { message }) };
   const stopped = { type: "agent.stopped", source: "orchestrate", payload: stopPayload } as const;
   if (terminal === undefined || agent === undefined || inARow > max) {
-    await appendRunEvent(run, stopped);
+    await appendRunEvent(storage, run, stopped);
     return log.warn(
       { sessionId, hasTerminal: terminal !== undefined, hasAgent: agent !== undefined, inARow },
       "auto-resume: gave up and recorded agent.stopped",
@@ -161,19 +161,19 @@ export const runAutoResume = async (options: AutoResumeOptions): Promise<void> =
   const retry = isError
     ? planErrorRetry(payload.error, inARow, start)
     : await planLimitRetry(agent, terminal, payload.message ?? "", start);
-  await appendRunEvent(run, { ...retry.waiting, source: "orchestrate" });
+  await appendRunEvent(storage, run, { ...retry.waiting, source: "orchestrate" });
   log.info({ sessionId, waiting: retry.waiting }, "auto-resume started");
-  const hasMovedOn = async () => movedOn(await store.read(), sessionId, eventId);
+  const hasMovedOn = async () => movedOn(await storage.runs.readEvents(run.id), sessionId, eventId);
   if (!(await sleepUnlessMovedOn(start.now.getTime() + retry.ms, hasMovedOn)))
     return log.info({ sessionId }, "auto-resume: the session moved on");
   const prompted = await agent.promptWhenReady(terminal, CONTINUE);
   if (!prompted.ok || prompted.value === "not-ready") {
-    await appendRunEvent(run, stopped);
+    await appendRunEvent(storage, run, stopped);
     return log.warn(
       { sessionId, prompted },
       "auto-resume: continue not typed; recorded agent.stopped",
     );
   }
-  await appendRunEvent(run, { ...retry.resumed, source: "orchestrate" });
+  await appendRunEvent(storage, run, { ...retry.resumed, source: "orchestrate" });
   log.info({ sessionId }, "auto-resume: continue typed");
 };

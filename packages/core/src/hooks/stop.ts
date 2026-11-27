@@ -4,12 +4,11 @@ import {
   type Event,
   type HookDeps,
   type HookReply,
+  type IStorage,
   type NodeRun,
   PreToolUseCalledEvent,
   type RunRef,
   readPolicies,
-  readState,
-  runDirOf,
   SessionStartCalledEvent,
   type State,
   StopCalledEvent,
@@ -23,7 +22,6 @@ import {
   findRunningLeaf,
   foldModelSwitch,
   isRunLive,
-  jsonlEventStore,
   type ModelSwitch,
 } from "@yok/sdk/internal";
 import * as z from "zod";
@@ -55,7 +53,7 @@ export const finishedBySession = (events: readonly Event[], sessionId: string): 
 // turn is over, and whatever is on screen after it, a dialog included, goes with the terminal. The
 // kill is the one every agent provider's stop does.
 const closeRunTerminal = async (run: RunRef, agent: AgentType, deps: HookDeps): Promise<void> => {
-  const terminalName = (await deps.registry.findRun(run.id))?.terminal ?? null;
+  const terminalName = (await deps.storage.runs.findRun(run.id))?.terminal ?? null;
   if (terminalName === null) return;
   await stopTerminal(agent, yokTerminalHost(deps.env, deps.log).find(terminalName), deps.log);
 };
@@ -326,12 +324,16 @@ const workedSince = (
 };
 
 // An agent without context steps: the node ends as not applied and the session goes on to `next`.
-const decideForAgent = async (input: StopInput, check: StopCheck): Promise<StopDecision> => {
+const decideForAgent = async (
+  storage: IStorage,
+  input: StopInput,
+  check: StopCheck,
+): Promise<StopDecision> => {
   const decision = decideStop(check);
   if (decision.reason !== "context-node" || input.contextSteps) return decision;
-  const planNode = await findContextPlanNode(check.run, decision.nodeRunId);
+  const planNode = await findContextPlanNode(storage, check.run, decision.nodeRunId);
   if (!planNode.ok) throw new Error(planNode.error);
-  const completed = await completeContextStep(check.run, decision.nodeRunId, {
+  const completed = await completeContextStep(storage, check.run, decision.nodeRunId, {
     action: planNode.value.action,
     applied: false,
     reason: `context steps are not supported on ${input.agent}`,
@@ -354,7 +356,7 @@ const failUnansweredNode = async (
 ): Promise<void> => {
   const said = lastMessage?.trim() || "(the agent's last message was not available)";
   const error = `The agent stopped without finishing, and no one will answer. It last said: ${said}`;
-  const failed = await finishStep(run, nodeRunId, { error }, []);
+  const failed = await finishStep(deps.storage, run, nodeRunId, { error }, []);
   if (!failed.ok) {
     deps.log.warn({ error: failed.error }, "the unanswered node was not failed");
     return;
@@ -372,12 +374,11 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       deps.log.debug({ sessionId: input.sessionId }, "stop allowed: not a yok run session");
       return ALLOW;
     }
-    const runDir = runDirOf(run.cwd, run.name);
-    const state = await readState(runDir);
+    const state = await deps.storage.runs.readState(run.id);
     if (state === null) return ALLOW;
     const [{ touchedRun, toolCalls }, events] = await Promise.all([
       readTranscriptFacts(input, state),
-      jsonlEventStore(runDir).read(),
+      deps.storage.runs.readEvents(run.id),
     ]);
     const seq = state.stopHook?.seq;
     const check = {
@@ -389,8 +390,12 @@ export const runStopHook = async (input: StopInput, deps: HookDeps): Promise<Hoo
       waitingOnBackground: input.waitingOnBackground,
       pendingSwitch: foldModelSwitch(events, state.tiers).pending,
     };
-    const decision = await decideForAgent(input, check);
-    const stored = await appendRunEvent(run, stopCalledEvent(input, check, decision, toolCalls));
+    const decision = await decideForAgent(deps.storage, input, check);
+    const stored = await appendRunEvent(
+      deps.storage,
+      run,
+      stopCalledEvent(input, check, decision, toolCalls),
+    );
     if (!stored.ok) {
       // An unrecorded block would reset the count, so it could block forever.
       deps.log.warn({ error: stored.error }, "stop allowed: the hook call was not recorded");
@@ -468,11 +473,10 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
   try {
     const run = await findSessionRun(input, deps);
     if (run === undefined) return ALLOW;
-    const runDir = runDirOf(run.cwd, run.name);
-    const state = await readState(runDir);
+    const state = await deps.storage.runs.readState(run.id);
     if (state?.nodeRuns.pr?.status !== "completed") return ALLOW;
     const [events, entries] = await Promise.all([
-      jsonlEventStore(runDir).read(),
+      deps.storage.runs.readEvents(run.id),
       input.readTranscript(),
     ]);
     // The stop that ends the run's finishing turn closes its session, so an offer there would be
@@ -482,7 +486,7 @@ const runLearnOffer = async (input: StopInput, deps: HookDeps): Promise<HookRepl
     }
     const offer = decideLearnOffer(events, entries);
     if (offer.kind === "allow") return ALLOW;
-    const stored = await appendRunEvent(run, {
+    const stored = await appendRunEvent(deps.storage, run, {
       type: "learning.offered",
       source: "hooks",
       payload: { prompts: offer.prompts },

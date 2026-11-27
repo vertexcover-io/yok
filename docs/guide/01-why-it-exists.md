@@ -42,7 +42,7 @@ Yok is Archon's workflow file, AIDLC's step loop, and the skills we already had,
 
 **A workflow you can shape.** Skip a stage for one ticket. Add a stage for one project. Loop QA until it passes. Clear the context between stages. Put one stage on a different model. All of that is a line in a YAML file now, not a change to a skill.
 
-**A record you can read.** Every start, finish, rejection, and hook call is an event. When a run does something odd, the answer is in `event.jsonl`, not in a transcript you have to scroll.
+**A record you can read.** Every start, finish, rejection, and hook call is an event. When a run does something odd, the answer is in its events (`yok orchestrate events`), not in a transcript you have to scroll.
 
 **A system a project can extend without forking.** A project adds a Jira reference to the ticket fetcher, replaces one script, or reacts to events with its own subscribers. The shipped skills stay shared.
 

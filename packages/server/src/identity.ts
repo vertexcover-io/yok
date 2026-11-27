@@ -1,16 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { notifierHooks } from "@yok/core";
-import type { ILogger, Result } from "@yok/sdk";
-import {
-  type Accounts,
-  findUserByGitHub,
-  linkSlack,
-  readUsers,
-  setAccountToken,
-  type UserEntry,
-  unlinkSlack,
-  updateUsers,
-} from "@yok/sdk/internal";
+import type { ILogger, IStorage, Result } from "@yok/sdk";
+import type { Accounts, GitHubSignIn, UserEntry } from "@yok/sdk/internal";
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
@@ -29,6 +20,7 @@ const GITHUB_SCOPE = "repo workflow read:user user:email";
 
 export type IdentityDeps = Readonly<{
   home: string;
+  storage: IStorage;
   // https://SERVER_DOMAIN, else http://localhost:PORT; GitHub sends the browser back here
   publicOrigin: string;
   now: () => Date;
@@ -143,7 +135,7 @@ const EmailsSchema = z.array(
   z.looseObject({ email: z.string(), primary: z.boolean(), verified: z.boolean() }),
 );
 
-export type GitHubIdentity = Readonly<{ id: number; login: string; name: string; email: string }>;
+export type GitHubIdentity = Omit<GitHubSignIn, "token">;
 
 export const fetchIdentity = async (
   deps: IdentityDeps,
@@ -178,33 +170,12 @@ export const tokenAlive = async (deps: IdentityDeps, token: string): Promise<boo
   return res?.status !== 401;
 };
 
-const newUserId = (): string => `u_${randomBytes(4).toString("hex")}`;
-
-// The same GitHub account always maps to the same yok user; its name, email and login follow
-// GitHub's on every sign-in, and the sign-in's token becomes its GitHub connector.
-export const signInUser = async (
-  home: string,
-  identity: GitHubIdentity,
-  token: string,
-): Promise<string> => {
-  const after = await updateUsers(home, (users) => {
-    const id = findUserByGitHub(users, identity.id)?.[0] ?? newUserId();
-    const current = users[id];
-    return {
-      ...users,
-      [id]: {
-        ...current,
-        name: identity.name,
-        email: identity.email,
-        accounts: {
-          ...current?.accounts,
-          github: { id: identity.id, login: identity.login, token },
-        },
-      },
-    };
-  });
-  // the callback above put this GitHub account in the file, so it is always found
-  return findUserByGitHub(after, identity.id)?.[0] ?? "";
+// The account stays: dropping its token ends yok's access, not who the person is.
+export const dropGitHubToken = async (storage: IStorage, [userId, user]: UserEntry) => {
+  const github = user.accounts.github;
+  if (github === undefined) return;
+  const account = { provider: "github", providerId: String(github.id), username: github.login };
+  await storage.users.addUserAccount(userId, account);
 };
 
 export const sessionUser = async (c: Context, deps: IdentityDeps): Promise<UserEntry | null> => {
@@ -212,7 +183,7 @@ export const sessionUser = async (c: Context, deps: IdentityDeps): Promise<UserE
   if (cookie === undefined) return null;
   const session = verifyValue(await sessionSecret(deps.home), cookie, "session", deps.now());
   if (session === null) return null;
-  const user = (await readUsers(deps.home))[session.sub];
+  const user = await deps.storage.users.find(session.sub);
   return user === undefined ? null : [session.sub, user];
 };
 
@@ -337,7 +308,7 @@ const finishLogin = async (
     );
     return failed(c, identity.error, 502);
   }
-  const userId = await signInUser(deps.home, identity.value, token);
+  const [userId] = await deps.storage.users.saveGitHubUser({ ...identity.value, token });
   await startSession(c, deps, userId);
   deps.log.info({ userId, login: identity.value.login }, "signed in");
   return c.redirect(safeNext(next));
@@ -410,7 +381,7 @@ const linkSlackPage = async (c: Context, deps: IdentityDeps, state: string, conf
       ),
     );
   }
-  await updateUsers(deps.home, (users) => linkSlack(users, userId, signed.sub));
+  await deps.storage.users.addUserAccount(userId, { provider: "slack", providerId: signed.sub });
   deps.log.info({ userId, member: signed.sub }, "Slack linked");
   return c.html(
     page(
@@ -472,7 +443,7 @@ export const identityRoutes = (deps: IdentityDeps) =>
     .post("/settings/slack/unlink", async (c) => {
       const signedIn = await sessionUser(c, deps);
       if (signedIn === null) return c.redirect(loginRedirect("/settings"));
-      await updateUsers(deps.home, (users) => unlinkSlack(users, signedIn[0]));
+      await deps.storage.users.removeUserAccount(signedIn[0], "slack");
       return c.redirect("/settings");
     })
     // Revoked now, not when the person's runs end: a run holding the token fails its next push,
@@ -480,7 +451,7 @@ export const identityRoutes = (deps: IdentityDeps) =>
     .post("/settings/github/disconnect", async (c) => {
       const signedIn = await sessionUser(c, deps);
       if (signedIn === null) return c.redirect(loginRedirect("/settings"));
-      const [userId, user] = signedIn;
+      const [, user] = signedIn;
       const app = oauthApp(deps.home);
       const token = user.accounts.github?.token;
       if (app !== null && token !== undefined) {
@@ -488,6 +459,6 @@ export const identityRoutes = (deps: IdentityDeps) =>
           deps.log.warn({ err: error }, "GitHub could not be reached to revoke the token"),
         );
       }
-      await updateUsers(deps.home, (users) => setAccountToken(users, userId, "github", undefined));
+      await dropGitHubToken(deps.storage, signedIn);
       return c.redirect("/settings");
     });

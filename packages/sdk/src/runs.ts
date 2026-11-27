@@ -11,8 +11,9 @@ import {
 import { isRunLive, type Result, type State } from "./contracts.ts";
 import { type RunRef, runDirOf } from "./events.ts";
 import { createGit } from "./git.ts";
-import type { RegistryReader, WorkflowRun } from "./registry.ts";
-import { readState } from "./state.ts";
+import type { WorkflowRun } from "./registry.ts";
+import type { IStorage } from "./repositories.ts";
+import { useStorage } from "./storage.ts";
 
 const git = createGit();
 
@@ -70,12 +71,14 @@ export const loadStartConfig = (
 ): Promise<Result<CheckoutConfig>> =>
   config === null ? loadCheckoutConfig(cwd) : loadNamedConfig(config);
 
-// The config init recorded in state.json. A recorded file that is gone is an error, never a
-// fallback, since reading another config would hide the mistake.
-export const loadRunConfig = async (run: RunRef): Promise<Result<CheckoutConfig>> =>
-  loadRecordedConfig((await readState(runDirOf(run.cwd, run.name)))?.config, run.cwd);
+// The config init recorded in the run's state. A recorded file that is gone is an error, never
+// a fallback, since reading another config would hide the mistake.
+export const loadRunConfig = (run: RunRef, storage?: IStorage): Promise<Result<CheckoutConfig>> =>
+  useStorage(storage, process.env, async (opened) =>
+    loadRecordedConfig((await opened.runs.readState(run.id))?.config, run.cwd),
+  );
 
-// A state.json written before init recorded its config has none, so its checkout is searched.
+// A state written before init recorded its config has none, so its checkout is searched.
 export const loadRecordedConfig = async (
   recorded: State["config"],
   cwd: string,
@@ -87,7 +90,7 @@ export const loadRecordedConfig = async (
   return loadConfigWithRoot(recorded.path, recorded.root);
 };
 
-export type RunLookup = Readonly<{ registry: RegistryReader; root: string; name: string }>;
+export type RunLookup = Readonly<{ storage?: IStorage; root: string; name: string }>;
 
 // The folder must still exist, since writing to it would recreate a run folder with no
 // workflow.started.
@@ -99,14 +102,18 @@ const toRunRef = (run: WorkflowRun, name: string): Result<RunRef> => {
 
 // yok run saves the folder it started in, which can be a linked worktree or a multi-layout
 // sub-repo, so a run belongs to the root its own folder resolves to.
-const belongsTo = async (run: WorkflowRun, root: string): Promise<boolean> => {
+export const belongsTo = async (run: WorkflowRun, root: string): Promise<boolean> => {
   if (run.cwd === root) return true;
   const runRoot = await findRoot(run.cwd);
   return runRoot.ok && runRoot.value === root;
 };
 
-export const resolveRun = async ({ registry, root, name }: RunLookup): Promise<Result<RunRef>> => {
-  const named = await registry.findRunsByName(name);
+const resolveRunIn = async (
+  storage: IStorage,
+  root: string,
+  name: string,
+): Promise<Result<RunRef>> => {
+  const named = await storage.runs.findRunsByName(name);
   const owned = await Promise.all(named.map((candidate) => belongsTo(candidate, root)));
   const run = named.find((_, index) => owned[index]);
   if (run === undefined) {
@@ -118,21 +125,18 @@ export const resolveRun = async ({ registry, root, name }: RunLookup): Promise<R
   return toRunRef(run, name);
 };
 
-const findRunById = async (
-  registry: RegistryReader,
-  runId: string,
-): Promise<Result<WorkflowRun>> => {
-  const run = await registry.findRun(runId);
+export const resolveRun = ({ storage, root, name }: RunLookup): Promise<Result<RunRef>> =>
+  useStorage(storage, process.env, (opened) => resolveRunIn(opened, root, name));
+
+const findRunById = async (storage: IStorage, runId: string): Promise<Result<WorkflowRun>> => {
+  const run = await storage.runs.findRun(runId);
   return run === undefined
     ? { ok: false, error: `run ${runId} not found` }
     : { ok: true, value: run };
 };
 
-const findInitializedRun = async (
-  registry: RegistryReader,
-  runId: string,
-): Promise<Result<RunRef>> => {
-  const run = await findRunById(registry, runId);
+const findInitializedRun = async (storage: IStorage, runId: string): Promise<Result<RunRef>> => {
+  const run = await findRunById(storage, runId);
   if (!run.ok) return run;
   const { name } = run.value;
   if (name === null) {
@@ -142,16 +146,16 @@ const findInitializedRun = async (
 };
 
 const findRunByName = async (
-  registry: RegistryReader,
+  storage: IStorage,
   name: string,
   cwd: string,
 ): Promise<Result<RunRef>> => {
   const root = await findRoot(cwd);
-  return root.ok ? resolveRun({ registry, root: root.value, name }) : root;
+  return root.ok ? resolveRunIn(storage, root.value, name) : root;
 };
 
 export type PickRunInput = Readonly<{
-  registry: RegistryReader;
+  storage?: IStorage;
   name?: string | undefined;
   id?: string | undefined;
   env: Readonly<Record<string, string | undefined>>;
@@ -159,21 +163,27 @@ export type PickRunInput = Readonly<{
   cwd: string;
 }>;
 
-// --run-id, else --run, else $YOK_RUN_ID: a flag always wins over the session's environment.
-// Nothing naming a run picks none, for the commands that can go on without one.
-export const pickRun = async (input: PickRunInput): Promise<Result<RunRef | undefined>> => {
-  const { registry, name, cwd } = input;
+const pickRunIn = async (
+  storage: IStorage,
+  input: PickRunInput,
+): Promise<Result<RunRef | undefined>> => {
+  const { name, cwd } = input;
   const id = input.id ?? (name === undefined ? input.env.YOK_RUN_ID || undefined : undefined);
   if (id === undefined) {
-    return name === undefined ? { ok: true, value: undefined } : findRunByName(registry, name, cwd);
+    return name === undefined ? { ok: true, value: undefined } : findRunByName(storage, name, cwd);
   }
-  const run = await findInitializedRun(registry, id);
+  const run = await findInitializedRun(storage, id);
   if (!run.ok || name === undefined || run.value.name === name) return run;
   return {
     ok: false,
     error: `--run ${name} and --run-id ${id} name different runs; ${id} is ${run.value.name}`,
   };
 };
+
+// --run-id, else --run, else $YOK_RUN_ID: a flag always wins over the session's environment.
+// Nothing naming a run picks none, for the commands that can go on without one.
+export const pickRun = (input: PickRunInput): Promise<Result<RunRef | undefined>> =>
+  useStorage(input.storage, input.env, (opened) => pickRunIn(opened, input));
 
 export const requireRun = async (input: PickRunInput): Promise<Result<RunRef>> => {
   const picked = await pickRun(input);
@@ -194,11 +204,10 @@ export const closingLine = (
     : `Run ${name} ${status}. Resume it with: yok resume ${name}`;
 
 // The session is gone: a finished run says how it ended, any other run how to bring it back.
-// readState throws on a broken state.json; that run is treated as one still going.
-const goneMessage = async (run: WorkflowRun): Promise<string> => {
+// A state that does not parse throws; that run is treated as one still going.
+const goneMessage = async (storage: IStorage, run: WorkflowRun): Promise<string> => {
   const name = run.name ?? run.id;
-  const state =
-    run.name === null ? null : await readState(runDirOf(run.cwd, run.name)).catch(() => null);
+  const state = await storage.runs.readState(run.id).catch(() => null);
   if (state !== null && !isRunLive(state.status)) return closingLine(name, state.status);
   return `Run ${name} has no running session. Resume it with: yok resume ${name}`;
 };
@@ -208,15 +217,18 @@ const goneMessage = async (run: WorkflowRun): Promise<string> => {
 export const findRunPane = async (
   host: ITerminalHost,
   run: WorkflowRun,
+  storage?: IStorage,
 ): Promise<Result<ITerminal>> => {
   if (run.terminal === null) return { ok: false, error: `run ${run.id} has no terminal yet` };
   const pane = host.find(run.terminal);
   if (await pane.isAlive()) return { ok: true, value: pane };
-  return { ok: false, error: await goneMessage(run) };
+  const gone = await useStorage(storage, process.env, (opened) => goneMessage(opened, run));
+  return { ok: false, error: gone };
 };
 
 export const loadPickedConfig = (
   run: RunRef | undefined,
   cwd: string,
+  storage?: IStorage,
 ): Promise<Result<CheckoutConfig>> =>
-  run === undefined ? loadCheckoutConfig(cwd) : loadRunConfig(run);
+  run === undefined ? loadCheckoutConfig(cwd) : loadRunConfig(run, storage);

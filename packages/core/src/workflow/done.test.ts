@@ -15,13 +15,14 @@ import { join } from "node:path";
 import {
   type ArtifactRef,
   createGit,
+  type IStorage,
   type NodeRun,
   noopLogger,
   type RunRef,
   runDirOf,
   type WorkflowRun,
 } from "@yok/sdk";
-import { createRegistry, jsonlEventStore } from "@yok/sdk/internal";
+import { memoryStorage } from "@yok/sdk/internal";
 import { agentAdapters } from "../agents/index.ts";
 import { finishStep, initializeRun, interruptOpenSteps, nextStep } from "../runs.ts";
 import { VerifierSchema } from "../stage.ts";
@@ -385,6 +386,9 @@ const makeRepo = (): string => {
   return cwd;
 };
 
+// a run and the storage it is kept in
+type StoredRun = RunRef & Readonly<{ storage: IStorage }>;
+
 // A run of NODES initialized in a fresh repo, with the demo stages and STAGES under stages/.
 const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoStage>> = {}) => {
   const cwd = makeRepo();
@@ -393,9 +397,12 @@ const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoSta
   writeFileSync(workflowPath, `name: t\nnodes:\n${nodes}`);
   const config = join(cwd, "orchestrate.config.json");
   writeFileSync(config, '{ "version": 2 }\n');
-  const registry = createRegistry(join(tempDir(), "registry.json"));
+  const storage = memoryStorage();
+  const addedAt = new Date().toISOString();
+  await storage.projects.add("repo", { path: cwd, addedBy: { channel: "cli" }, addedAt });
   const run: WorkflowRun = {
     id: "r-1",
+    project: "repo",
     workflow: "t",
     workflowPath,
     inputs: {},
@@ -407,9 +414,9 @@ const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoSta
     tiers: null,
     createdAt: new Date().toISOString(),
   };
-  await registry.addRun(run);
+  await storage.runs.addRun(run);
   const init = await initializeRun({
-    registry,
+    storage,
     runId: run.id,
     name: "feat-x",
     git: createGit(),
@@ -417,11 +424,11 @@ const startedRun = async (nodes: string, stages: Readonly<Record<string, DemoSta
     modelSwitchAgents: new Set(),
   });
   if (!init.ok) throw new Error(init.error);
-  return { id: run.id, cwd, name: "feat-x" } satisfies RunRef;
+  return { id: run.id, cwd, name: "feat-x", storage } satisfies StoredRun;
 };
 
-const nextNodeRunId = async (run: RunRef): Promise<string> => {
-  const reply = await nextStep(run, agentAdapters);
+const nextNodeRunId = async (run: StoredRun): Promise<string> => {
+  const reply = await nextStep(run.storage, run, agentAdapters);
   if (!reply.ok || reply.value.kind !== "steps") throw new Error(JSON.stringify(reply));
   const [step] = reply.value.steps;
   if (step === undefined) throw new Error(JSON.stringify(reply));
@@ -429,13 +436,13 @@ const nextNodeRunId = async (run: RunRef): Promise<string> => {
 };
 
 const finish = (
-  run: RunRef,
+  run: StoredRun,
   nodeRunId: string,
   output = '{"ok":true}',
   artifacts: ArtifactRef[] = [],
-) => finishStep(run, nodeRunId, { output, summary: "Did the work." }, artifacts);
+) => finishStep(run.storage, run, nodeRunId, { output, summary: "Did the work." }, artifacts);
 
-const eventsOf = (run: RunRef) => jsonlEventStore(runDirOf(run.cwd, run.name)).read();
+const eventsOf = (run: StoredRun) => run.storage.runs.readEvents(run.id);
 
 const CHECKED = "  - { id: use, type: agent, stage: stages/checked, input: {} }\n";
 const checked = (verifiers: string) => ({ checked: { verifiers } });
@@ -513,7 +520,7 @@ describe("finishStep", () => {
       expect(await finish(run, first)).toMatchObject({ ok: false, error: { retryable: true } });
     }
 
-    expect(await interruptOpenSteps(run)).toMatchObject({ ok: true });
+    expect(await interruptOpenSteps(run.storage, run)).toMatchObject({ ok: true });
     const again = await nextNodeRunId(run);
     const last = await finish(run, again);
 

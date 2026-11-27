@@ -45,9 +45,10 @@ Gather before Step 0:
   path instead of RUN.
 - The timezone, only when the user named one. Without it the extractor prints times in the
   machine's zone, and the report names that zone.
-- The project repo: the `create-workspace` node's `workspaceDir` in `.yok/RUN/state.json`,
-  when that node ran.
-- The PR URL: the `pr` node's output in the same file, when that node ran.
+- The project repo: what `yok orchestrate get nodeRuns.create-workspace.output.workspaceDir
+  --run RUN` prints, when that node ran.
+- The PR URL: in what `yok orchestrate get nodeRuns.pr.output --run RUN` prints, when that
+  node ran.
 
 Run this skill's `retro` script as the `retro` reference, the way you were told to run a
 skill's scripts.

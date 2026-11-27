@@ -4,19 +4,6 @@ export { unwrap } from "./agents/common.ts";
 export { type AgentProviderOptions, agentBinary, agentProvider } from "./agents/index.ts";
 export { yokTerminalHost } from "./agents/tmux.ts";
 export { answerClaudeDialogs } from "./agents/trust.ts";
-export {
-  addComments,
-  addUserReply,
-  type Comment,
-  commentRepliedEvent,
-  commentsAddedEvent,
-  commentsPath,
-  deliveryMessage,
-  isOpen,
-  markDelivered,
-  readComments,
-  replyToComment,
-} from "./comments.ts";
 export { clearDeadSwitchLocks, findOpenContextRun } from "./context-step.ts";
 export {
   buildNotifierCheck,

@@ -53,6 +53,7 @@ describe("StateSchema", () => {
   test("SC505: a state.json and a registry entry saved before policies parse, and read as interaction true", () => {
     const state = StateSchema.parse(validState);
     const run = WorkflowRunSchema.parse({
+      project: "repo",
       id: "r-test",
       workflow: "feature",
       workflowPath: "/work/workflow.yaml",
