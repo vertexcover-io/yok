@@ -225,6 +225,7 @@ export const auditRuns = sqliteTable(
     // running, complete, partial or failed
     status: text("status").notNull(),
     createdAt: createdAt(),
+    updatedAt: updatedAt(),
   },
   (t) => [
     unique().on(t.project, t.audit, t.periodStart, t.periodEnd),
@@ -248,6 +249,7 @@ export const auditMetrics = sqliteTable(
     reason: text("reason"),
     value: real("value"),
     how: json("how").notNull(),
+    updatedAt: updatedAt(),
   },
   (t) => [
     primaryKey({ columns: [t.auditRunId, t.repo, t.metric, t.scope] }),
@@ -269,6 +271,7 @@ export const auditResults = sqliteTable(
     title: text("title").notNull(),
     proof: json("proof").notNull(),
     fix: json("fix"),
+    updatedAt: updatedAt(),
   },
   (t) => [
     index("audit_results_by_audit_run").on(t.auditRunId),
