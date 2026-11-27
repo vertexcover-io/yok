@@ -65,13 +65,39 @@ const findHolder = (db: Db, start: AuditStart) =>
     )
     .get();
 
+// A run starting again (a retried audit-start) gets back the audit it first opened, period and
+// commits unchanged: its start step reads the clock, so a retry names a slightly later periodEnd,
+// and moving the row would carry its clicked results into another period. Only a different
+// project or audit name is refused, since that is a different audit.
+const restartIn = (
+  db: Db,
+  own: typeof tables.auditRuns.$inferSelect,
+  start: AuditStart,
+): Result<AuditRun> => {
+  if (own.project !== start.project || own.audit !== start.audit) {
+    return {
+      ok: false,
+      error: `run ${start.runId} already holds the ${own.audit} audit of ${own.project}; it cannot also start the ${start.audit} audit of ${start.project}`,
+    };
+  }
+  db.update(tables.auditRuns)
+    .set({ status: "running" })
+    .where(eq(tables.auditRuns.id, own.id))
+    .run();
+  return { ok: true, value: toRun({ ...own, status: "running" }) };
+};
+
 const startIn = (db: Db, start: AuditStart, at: string): Result<AuditRun> =>
   db.transaction((tx): Result<AuditRun> => {
-    const holder = findHolder(tx, start);
-    if (holder !== undefined && holder.runId !== start.runId) {
+    const owner = tx
+      .select({ project: tables.runs.project })
+      .from(tables.runs)
+      .where(eq(tables.runs.id, start.runId))
+      .get();
+    if (owner !== undefined && owner.project !== start.project) {
       return {
         ok: false,
-        error: `the ${start.audit} audit of ${start.project} for ${start.periodStart} to ${start.periodEnd} is held by run ${holder.runName ?? holder.runId}`,
+        error: `run ${start.runId} belongs to project ${owner.project}, not ${start.project}`,
       };
     }
     const own = tx
@@ -79,17 +105,21 @@ const startIn = (db: Db, start: AuditStart, at: string): Result<AuditRun> =>
       .from(tables.auditRuns)
       .where(eq(tables.auditRuns.runId, start.runId))
       .get();
+    if (own !== undefined) return restartIn(tx, own, start);
+    const holder = findHolder(tx, start);
+    if (holder !== undefined) {
+      return {
+        ok: false,
+        error: `the ${start.audit} audit of ${start.project} for ${start.periodStart} to ${start.periodEnd} is held by run ${holder.runName ?? holder.runId}`,
+      };
+    }
     const run = AuditRunSchema.parse({
       ...start,
-      id: own?.id ?? `a-${randomBytes(4).toString("hex")}`,
+      id: `a-${randomBytes(4).toString("hex")}`,
       status: "running",
-      createdAt: own?.createdAt ?? at,
+      createdAt: at,
     });
-    if (own === undefined) {
-      tx.insert(tables.auditRuns).values(run).run();
-    } else {
-      tx.update(tables.auditRuns).set(run).where(eq(tables.auditRuns.id, run.id)).run();
-    }
+    tx.insert(tables.auditRuns).values(run).run();
     return { ok: true, value: run };
   }, IMMEDIATE);
 
