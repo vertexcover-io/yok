@@ -141,9 +141,7 @@ describe("startAudit", () => {
           status,
         });
         const audit = await startAudit(storage, createGit(), run, workspaceOf(repo), NOW);
-        expect(audit.ok || audit.error).toBe(
-          allowed || "audit start: run r-2 is still auditing repo",
-        );
+        expect(audit.ok || audit.error).toBe(allowed || "run other is still auditing repo");
       });
     },
   );

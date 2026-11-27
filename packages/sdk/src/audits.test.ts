@@ -57,6 +57,7 @@ const addRun = async (
   id: string,
   name: string,
   project = "web",
+  status: State["status"] = "running",
 ): Promise<void> => {
   await storage.runs.addRun({
     id,
@@ -71,7 +72,7 @@ const addRun = async (
     tiers: null,
     createdAt: AT,
   });
-  const named = await storage.runs.initRun(id, name, runState(id, name));
+  const named = await storage.runs.initRun(id, name, { ...runState(id, name), status });
   if (!named.ok) throw new Error(named.error);
 };
 
@@ -129,6 +130,18 @@ const startOk = async (storage: IStorage, start: AuditStart): Promise<AuditRun> 
   const started = await storage.audits.start(start);
   if (!started.ok) throw new Error(started.error);
   return started.value;
+};
+
+// A past week's audit: started and published, so it no longer blocks the next start.
+const startClosed = async (storage: IStorage, start: AuditStart): Promise<AuditRun> => {
+  const started = await startOk(storage, start);
+  const closed = await storage.audits.finish(started.id, {
+    status: "complete",
+    metrics: [],
+    results: [],
+  });
+  if (!closed.ok) throw new Error(closed.error);
+  return closed.value;
 };
 
 describe("test-audit names", () => {
@@ -315,6 +328,30 @@ describe("storage.audits", () => {
     expect(await storage.audits.list("web", "test")).toEqual([]);
   });
 
+  test.each([
+    ["running", false],
+    ["blocked", false],
+    ["cancelled", true],
+  ] as const)(
+    "SC7237: while another run's audit of the project is open and that run is %s, starting another period is allowed: %p",
+    async (status, allowed) => {
+      const storage = await seeded();
+      await addRun(storage, "r-9", "weekly-r-9", "web", status);
+      const other = await startOk(storage, week("r-9"));
+
+      const started = await storage.audits.start(
+        week("r-2", {
+          periodStart: "2026-11-01T00:00:00.000Z",
+          periodEnd: "2026-11-08T00:00:00.007Z",
+        }),
+      );
+
+      expect(started.ok || started.error).toBe(allowed || "run weekly-r-9 is still auditing web");
+      const runIds = (await storage.audits.list("web", "test")).map((audit) => audit.runId);
+      expect(runIds).toEqual(allowed ? ["r-2", other.runId] : [other.runId]);
+    },
+  );
+
   test("SC7204: a finish with a result id outside its audit run, or for an unknown audit run, writes nothing", async () => {
     const storage = await seeded();
     const started = await startOk(storage, week("r-1"));
@@ -400,8 +437,8 @@ describe("storage.audits", () => {
       ["2026-11-15T00:00:00.000Z", "2026-11-22T00:00:00.000Z"],
     ] as const;
     const [first, second, third] = [
-      await startOk(storage, week("r-1", { periodStart: weeks[0][0], periodEnd: weeks[0][1] })),
-      await startOk(storage, week("r-2", { periodStart: weeks[1][0], periodEnd: weeks[1][1] })),
+      await startClosed(storage, week("r-1", { periodStart: weeks[0][0], periodEnd: weeks[0][1] })),
+      await startClosed(storage, week("r-2", { periodStart: weeks[1][0], periodEnd: weeks[1][1] })),
       await startOk(storage, week("r-3", { periodStart: weeks[2][0], periodEnd: weeks[2][1] })),
     ];
     await startOk(
@@ -930,6 +967,8 @@ describe("storage.audits pending work", () => {
   test("SC7228: pending work spans the project's audit runs and lists the oldest click first", async () => {
     const storage = await seeded();
     const first = await startOk(storage, week("r-1"));
+    const older = result(first.id, "one", { fix: instruction });
+    await storage.audits.finish(first.id, { status: "complete", metrics: [], results: [older] });
     const second = await startOk(
       storage,
       week("r-2", {
@@ -937,11 +976,7 @@ describe("storage.audits pending work", () => {
         periodEnd: "2026-11-15T00:00:00.000Z",
       }),
     );
-    const [older, newer] = [
-      result(first.id, "one", { fix: instruction }),
-      result(second.id, "one", { fix: instruction }),
-    ];
-    await storage.audits.finish(first.id, { status: "complete", metrics: [], results: [older] });
+    const newer = result(second.id, "one", { fix: instruction });
     await storage.audits.finish(second.id, { status: "complete", metrics: [], results: [newer] });
 
     const newerAccepted = await click(storage, newer.id, "accepted");
