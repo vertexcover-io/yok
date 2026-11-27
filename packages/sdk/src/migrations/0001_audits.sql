@@ -7,6 +7,7 @@ CREATE TABLE `audit_metrics` (
 	`reason` text,
 	`value` real,
 	`how` text NOT NULL,
+	`updated_at` text NOT NULL,
 	PRIMARY KEY(`audit_run_id`, `repo`, `metric`, `scope`),
 	FOREIGN KEY (`audit_run_id`) REFERENCES `audit_runs`(`id`) ON UPDATE no action ON DELETE cascade,
 	CONSTRAINT "audit_metrics_how_json" CHECK(json_valid("audit_metrics"."how"))
@@ -35,6 +36,7 @@ CREATE TABLE `audit_results` (
 	`title` text NOT NULL,
 	`proof` text NOT NULL,
 	`fix` text,
+	`updated_at` text NOT NULL,
 	FOREIGN KEY (`audit_run_id`) REFERENCES `audit_runs`(`id`) ON UPDATE no action ON DELETE cascade,
 	CONSTRAINT "audit_results_proof_json" CHECK(json_valid("audit_results"."proof")),
 	CONSTRAINT "audit_results_fix_json" CHECK(json_valid("audit_results"."fix"))
@@ -51,6 +53,7 @@ CREATE TABLE `audit_runs` (
 	`commits` text NOT NULL,
 	`status` text NOT NULL,
 	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
 	FOREIGN KEY (`run_id`) REFERENCES `runs`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`project`) REFERENCES `projects`(`name`) ON UPDATE no action ON DELETE restrict,
 	CONSTRAINT "audit_runs_commits_json" CHECK(json_valid("audit_runs"."commits"))

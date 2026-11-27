@@ -81,11 +81,11 @@ describe("schema checks", () => {
     const { db, insertRun } = seeded();
     insertRun("r-1", "{}");
     db.run(
-      "INSERT INTO audit_runs (id, run_id, project, audit, period_start, period_end, commits, status, created_at) VALUES ('a-1', 'r-1', 'web', 'test', 's', 'e', '{}', 'running', 'x')",
+      "INSERT INTO audit_runs (id, run_id, project, audit, period_start, period_end, commits, status, created_at, updated_at) VALUES ('a-1', 'r-1', 'web', 'test', 's', 'e', '{}', 'running', 'x', 'x')",
     );
     const insertMetric = (auditRunId: string, how: string) =>
       db.run(
-        "INSERT INTO audit_metrics (audit_run_id, repo, metric, scope, status, how) VALUES (?, 'web', 'coverage', '', 'measured', ?)",
+        "INSERT INTO audit_metrics (audit_run_id, repo, metric, scope, status, how, updated_at) VALUES (?, 'web', 'coverage', '', 'measured', ?, 'x')",
         [auditRunId, how],
       );
     expect(() => insertMetric("a-1", "not json")).toThrow("audit_metrics_how_json");
