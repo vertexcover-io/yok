@@ -12,7 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IStorage, ITerminalHost, NodeRun, State, WorkflowRun } from "@yok/sdk";
 import { noopLogger, StateSchema } from "@yok/sdk";
-import { memoryStorage, VERSION } from "@yok/sdk/internal";
+import {
+  type AuditFix,
+  type AuditMetric,
+  type AuditResult,
+  type AuditResultEvent,
+  memoryStorage,
+  TEST_AUDIT_METRICS,
+  VERSION,
+} from "@yok/sdk/internal";
 import { stopDeliveries } from "./delivery.ts";
 import {
   claudeOver,
@@ -23,6 +31,23 @@ import {
   seedState,
   seedUser,
 } from "./fake-host.ts";
+import {
+  type AuditApplyRun,
+  type AuditMetricsPoint,
+  autoFixedPr,
+  formatChange,
+  formatMetric,
+  meetsLimit,
+  metricChange,
+  metricSeries,
+  newestWins,
+  prLabel,
+  rejectBody,
+  resultActions,
+  resultPageState,
+  stoppedRunHelp,
+  trendRange,
+} from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
 import { editorCommand, listArtifacts, resolveArtifactPath, viewerRoutes } from "./viewer.ts";
 
@@ -190,6 +215,19 @@ describe("viewer routes", () => {
     const page = await (await get("/")).text();
     expect(page).toMatch(
       /<header class="bar">[\s\S]*<a class="nav" href="\/settings">Settings<\/a>[\s\S]*<\/header>/,
+    );
+  });
+
+  test("SC8006: /audits serves the Audits page with the running version, and the runs page's bar links to it", async () => {
+    const { get } = await setup();
+    const res = await get("/audits");
+    expect(res.status).toBe(200);
+    const page = await res.text();
+    expect(page).toContain("<title>yok audits</title>");
+    expect(page).toContain(`yok v${VERSION}`);
+    const runs = await (await get("/")).text();
+    expect(runs).toMatch(
+      /<header class="bar">[\s\S]*<a class="nav" href="\/audits">Audits<\/a>[\s\S]*<\/header>/,
     );
   });
 
@@ -808,7 +846,7 @@ describe("shared page script", () => {
     const res = await get("/assets/shared.js");
     expect(res.headers.get("content-type")).toContain("text/javascript");
     const shared = (await import(
-      `data:text/javascript;base64,${btoa(await res.text())}`
+      `data:text/javascript;base64,${Buffer.from(await res.text()).toString("base64")}`
     )) as typeof import("./page-shared.ts");
     expect([shared.RUN_STATUS_WORDS.blocked, shared.RUN_STATUS_WORDS.gone]).toEqual([
       "needs you",
@@ -875,6 +913,302 @@ describe("shared page script", () => {
       await shared.checkSignedIn();
       expect(signedIn.assigned).toEqual([]);
     });
+  });
+
+  test("SC8007: the served shared script formats an audit metric and imports no @yok/sdk package", async () => {
+    const { get } = await setup();
+    const text = await (await get("/assets/shared.js")).text();
+    expect(text).not.toContain("@yok/sdk");
+    const shared = (await import(
+      `data:text/javascript;base64,${Buffer.from(text).toString("base64")}`
+    )) as typeof import("./page-shared.ts");
+    expect(shared.formatMetric("percent", 80)).toBe("80%");
+  });
+});
+
+describe("audit page rules", () => {
+  test("SC8001: formatMetric shows percent 81.46 as 81.5%, 222 seconds as 3m 42s and count 1268 as 1,268", () => {
+    expect([
+      formatMetric("percent", 81.46),
+      formatMetric("seconds", 222),
+      formatMetric("count", 1268),
+    ]).toEqual(["81.5%", "3m 42s", "1,268"]);
+  });
+
+  test("SC8002: formatChange shows +2 percent as +2 pts, -35 seconds as −35s and -3 count as −3", () => {
+    expect([
+      formatChange("percent", 2),
+      formatChange("seconds", -35),
+      formatChange("count", -3),
+    ]).toEqual(["+2 pts", "−35s", "−3"]);
+  });
+
+  test("SC8003: metricChange calls a rise better when higher is better, worse when lower is, same at no change, and null with no value before", () => {
+    const series = [70, 72, null, 72];
+    expect(metricChange("higher", series, 1)).toEqual({ delta: 2, verdict: "better" });
+    expect(metricChange("lower", series, 1)).toEqual({ delta: 2, verdict: "worse" });
+    expect(metricChange("higher", [72, 72], 1)).toEqual({ delta: 0, verdict: "same" });
+    expect([0, 3, -1].map((index) => metricChange("higher", series, index))).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  test("SC8004: meetsLimit holds coverage at or above 80 and test time at or below 240, and has no answer for a metric with no limit", () => {
+    const { coverage, testTime, testCount } = TEST_AUDIT_METRICS;
+    expect([meetsLimit(coverage, 80), meetsLimit(coverage, 79.9)]).toEqual([true, false]);
+    expect([meetsLimit(testTime, 240), meetsLimit(testTime, 241)]).toEqual([true, false]);
+    expect(meetsLimit(testCount, 10)).toBeNull();
+  });
+
+  test("SC8005: metricSeries reads one repo's metric at one scope in each run, null where a run has none, never another repo's value", () => {
+    const measured = (
+      repo: string,
+      metric: AuditMetric["metric"],
+      scope: string,
+      value: number,
+    ) => ({
+      repo,
+      metric,
+      scope,
+      status: "measured" as const,
+      reason: null,
+      value,
+      how: {},
+    });
+    const points: readonly AuditMetricsPoint[] = [
+      {
+        auditRunId: "a1",
+        periodEnd: "2026-11-01T00:00:00.000Z",
+        metrics: [measured("yok", "coverage", "", 70), measured("web", "coverage", "", 90)],
+      },
+      { auditRunId: "a2", periodEnd: "2026-11-08T00:00:00.000Z", metrics: [] },
+      {
+        auditRunId: "a3",
+        periodEnd: "2026-11-15T00:00:00.000Z",
+        metrics: [measured("yok", "coverage", "", 75), measured("yok", "testCount", "unit", 10)],
+      },
+    ];
+    expect(metricSeries(points, "yok", "coverage", "")).toEqual([70, null, 75]);
+    expect(metricSeries(points, "yok", "testCount", "unit")).toEqual([null, null, 10]);
+  });
+
+  test.each([
+    ["https://github.com/acme/web/pull/112", "PR #112"],
+    ["112", "PR #112"],
+    ["#112", "PR #112"],
+    ["draft", "draft"],
+    ["https://example.com/v2", "https://example.com/v2"],
+  ])("SC8010: prLabel reads %p as %p", (pr, label) => {
+    expect(prLabel(pr)).toBe(label);
+  });
+});
+
+describe("result buttons", () => {
+  test.each([
+    [{ kind: "open" }, true, ["accept", "reject"]],
+    [{ kind: "needs-work" }, true, ["copy-prompt"]],
+    [{ kind: "needs-work" }, false, []],
+    [{ kind: "auto-fixed" }, false, []],
+    [{ kind: "applying", runId: "r-9" }, false, []],
+    [{ kind: "stopped", runId: "r-9" }, false, []],
+    [{ kind: "waiting", action: "apply" }, false, ["undo"]],
+    [{ kind: "run-failed", runId: "r-9" }, false, ["undo"]],
+    [{ kind: "applied", commit: "abc1234", pr: null }, false, ["undo"]],
+    [{ kind: "failed", reason: "tests failed" }, false, ["undo"]],
+    [{ kind: "rejected", feedback: null }, false, ["undo"]],
+  ] as const)("a result in state %o (prompt %p) offers %p", (state, hasPrompt, actions) => {
+    expect(resultActions(state, hasPrompt)).toEqual(actions);
+  });
+
+  test("a reject with blank feedback sends no feedback; one with text sends it trimmed", () => {
+    expect([rejectBody("  \n"), rejectBody("  keeps the fixture ")]).toEqual([
+      { type: "rejected" },
+      { type: "rejected", feedback: "keeps the fixture" },
+    ]);
+  });
+});
+
+describe("audit page fixes", () => {
+  const fixOf = (pr?: string) => ({ summary: "delete it", ...(pr === undefined ? {} : { pr }) });
+
+  test("SC8021: the auto-fixed column names the PR its auto-fixed results share, and none when no PR was made", () => {
+    const results = [
+      { state: "needs_approval", fix: fixOf("https://github.com/o/web/pull/9") },
+      { state: "auto_fixed", fix: fixOf() },
+      { state: "auto_fixed", fix: fixOf("https://github.com/o/web/pull/112") },
+    ] as const;
+
+    expect(autoFixedPr(results)).toBe("https://github.com/o/web/pull/112");
+    expect(autoFixedPr(results.slice(0, 2))).toBeNull();
+  });
+
+  test("SC8022: a stopped apply run says how to resume it or remove it, by the run's id", () => {
+    expect(stoppedRunHelp("r-1f36b94f")).toBe(
+      "resume it with yok resume --run-id r-1f36b94f, or remove it with yok rm r-1f36b94f",
+    );
+  });
+
+  test("SC8023: of two loads, an older one that ends last is dropped and leaves the state alone", async () => {
+    const load = newestWins<{ runId: string }>();
+    const state = { runId: "a" };
+    let finishA = (): void => {};
+    const slowA = load(state, async (draft) => {
+      await new Promise<void>((resolve) => {
+        finishA = resolve;
+      });
+      draft.runId = "A";
+    });
+    const fastB = load(state, async (draft) => {
+      draft.runId = "B";
+    });
+
+    expect(await fastB).toEqual({ runId: "B" });
+    finishA();
+    expect(await slowA).toBeNull();
+    expect(state).toEqual({ runId: "a" });
+  });
+});
+
+describe("trendRange", () => {
+  // oldest first by period end, as the page orders the list route's runs; b is a longer period overlapping a
+  const runs = [
+    { id: "a", periodStart: "2026-11-01T00:00:00.000Z", periodEnd: "2026-11-08T00:00:00.000Z" },
+    { id: "b", periodStart: "2026-10-01T00:00:00.000Z", periodEnd: "2026-11-15T00:00:00.000Z" },
+    { id: "c", periodStart: "2026-11-15T00:00:00.000Z", periodEnd: "2026-11-22T00:00:00.000Z" },
+  ];
+
+  test("a range opening at a short run reaches back to a longer run's earlier start, so the route returns every run in the range", () => {
+    expect(trendRange(runs, "a", "c")).toEqual({
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-11-22T00:00:00.000Z",
+      runIds: ["a", "b", "c"],
+    });
+  });
+
+  test("a range from b to c keeps a out of its run ids, though a lies inside b's wider window", () => {
+    expect(trendRange(runs, "b", "c").runIds).toEqual(["b", "c"]);
+  });
+});
+
+describe("resultPageState", () => {
+  const result = (
+    fix: Partial<AuditFix> | null = null,
+    state: AuditResult["state"] = "needs_approval",
+  ) => ({
+    state,
+    fix: fix === null ? null : { summary: "Remove the copy", ...fix },
+  });
+  const click = (
+    type: "accepted" | "rejected" | "undone",
+    ts = "2026-11-20T10:00:00.000Z",
+    payload: { feedback: string } | Record<string, never> = {},
+  ): AuditResultEvent => ({
+    id: crypto.randomUUID(),
+    ts,
+    resultId: "a1:yok:duplicates:x",
+    type,
+    who: "local",
+    startedRunId: null,
+    payload,
+  });
+  const run = (status: AuditApplyRun["status"]): AuditApplyRun => ({ id: "r-9", status });
+
+  test("SC8012: with no decision, a needs-approval result is open, an auto-fixed one auto-fixed and a needs-work one needs-work", () => {
+    expect(
+      (["needs_approval", "auto_fixed", "needs_work"] as const).map(
+        (state) => resultPageState(result(null, state), null, null).kind,
+      ),
+    ).toEqual(["open", "auto-fixed", "needs-work"]);
+  });
+
+  test("SC8013: an accepted result with no commit, no error and no apply run yet is waiting", () => {
+    expect(resultPageState(result({}), click("accepted"), null)).toEqual({
+      kind: "waiting",
+      action: "apply",
+    });
+  });
+
+  test("SC8014: a starting, running or blocked apply run is applying after an accept or an undo, never open", () => {
+    const states = (["starting", "running", "blocked"] as const).flatMap((status) =>
+      (["accepted", "undone"] as const).map((type) =>
+        resultPageState(result({}), click(type), run(status)),
+      ),
+    );
+    expect(states).toEqual(Array(6).fill({ kind: "applying", runId: "r-9" }));
+  });
+
+  test("SC8015: an accepted result with a commit is applied with its PR, or with pr null when it has none", () => {
+    const pr = "https://github.com/acme/yok/pull/7";
+    expect(
+      resultPageState(result({ commit: "abc1234", pr }), click("accepted"), run("completed")),
+    ).toEqual({
+      kind: "applied",
+      commit: "abc1234",
+      pr,
+    });
+    expect(
+      resultPageState(result({ commit: "abc1234" }), click("accepted"), run("completed")),
+    ).toEqual({
+      kind: "applied",
+      commit: "abc1234",
+      pr: null,
+    });
+  });
+
+  test("SC8016: an error written after the newest click fails the result; one written before it leaves the result waiting", () => {
+    const decision = click("accepted", "2026-11-20T10:00:00.000Z");
+    const failed = (at: string) => result({ error: "tests failed", at });
+    expect(resultPageState(failed("2026-11-20T10:05:00.000Z"), decision, null)).toEqual({
+      kind: "failed",
+      reason: "tests failed",
+    });
+    expect(resultPageState(failed("2026-11-20T09:00:00.000Z"), decision, null)).toEqual({
+      kind: "waiting",
+      action: "apply",
+    });
+  });
+
+  test("SC8017: a failed or cancelled apply run with no error written is run-failed, but waiting when a stale error is there", () => {
+    expect(
+      (["failed", "cancelled"] as const).map((status) =>
+        resultPageState(result({}), click("accepted"), run(status)),
+      ),
+    ).toEqual(Array(2).fill({ kind: "run-failed", runId: "r-9" }));
+    const stale = result({ error: "tests failed", at: "2026-11-20T09:00:00.000Z" });
+    expect(resultPageState(stale, click("accepted"), run("failed"))).toEqual({
+      kind: "waiting",
+      action: "apply",
+    });
+  });
+
+  test("an apply run whose agent is gone reads stopped after an accept or an undo, not run-failed, so its run can be resumed or cancelled", () => {
+    expect(
+      (["accepted", "undone"] as const).map((type) =>
+        resultPageState(result({}), click(type), run("gone")),
+      ),
+    ).toEqual(Array(2).fill({ kind: "stopped", runId: "r-9" }));
+  });
+
+  test("SC8018: a rejected result carries the person's feedback, or null feedback when they gave none", () => {
+    const withFeedback = click("rejected", undefined, { feedback: "keeps the fixture" });
+    expect(resultPageState(result({}), withFeedback, null)).toEqual({
+      kind: "rejected",
+      feedback: "keeps the fixture",
+    });
+    expect(resultPageState(result({}), click("rejected"), null)).toEqual({
+      kind: "rejected",
+      feedback: null,
+    });
+  });
+
+  test("SC8019: an undo waits for the revert of an applied commit, and reopens a result that was never applied", () => {
+    expect(resultPageState(result({ commit: "abc1234" }), click("undone"), null)).toEqual({
+      kind: "waiting",
+      action: "revert",
+    });
+    expect(resultPageState(result({}), click("undone"), null)).toEqual({ kind: "open" });
   });
 });
 

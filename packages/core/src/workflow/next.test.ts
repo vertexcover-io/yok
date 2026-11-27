@@ -2312,3 +2312,75 @@ describe("the shipped pr-fix workflow", () => {
     expect(stepIds(after.stop)).toEqual(["pr-reply"]);
   });
 });
+
+describe("the shipped test-audit workflow", () => {
+  const TEST_AUDIT = join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit.yaml");
+  const sorted = (autoFix: boolean): JsonObject => ({
+    results: [],
+    autoFix,
+    fixes: autoFix ? [{ id: "a-1:yok:duplicates:copy" }] : [],
+  });
+
+  // The ids `next` hands out, one at a time, until audit-publish; every node completes.
+  const walkToPublish = async (autoFix: boolean): Promise<readonly string[]> => {
+    const plan = await compileWorkflow(TEST_AUDIT);
+    let state = start();
+    const ids: string[] = [];
+    for (let guard = 0; guard < 12; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      ids.push(leaf.node.id);
+      if (leaf.node.id === "audit-publish") break;
+      const output = leaf.node.id === "audit-sort" ? sorted(autoFix) : {};
+      state = end(next.state, leaf.nodeRunId, "completed", { nodeType: leaf.node.type, output });
+    }
+    return ids;
+  };
+
+  test("SC31: audit-publish runs after no-fixes when nothing was auto-fixed, and after fix and visual-pr when something was", async () => {
+    const before = [
+      "create-workspace",
+      "audit-start",
+      "run-tests",
+      "test-duplicates",
+      "audit-sort",
+    ];
+    expect(await walkToPublish(false)).toEqual([...before, "no-fixes", "audit-publish"]);
+    expect(await walkToPublish(true)).toEqual([...before, "fix", "visual-pr", "audit-publish"]);
+  });
+});
+
+describe("the shipped test-audit-apply workflow", () => {
+  const APPLY = join(import.meta.dir, "..", "..", "..", "..", "workflows", "test-audit-apply.yaml");
+
+  test("with the audit PR open, create-workspace starts from its branch with the fixes' repos, then fix, visual-pr and audit-record run", async () => {
+    const plan = await compileWorkflow(APPLY);
+    const work = {
+      fixes: [{ id: "a-1:yok:flaky:f1", repo: "yok", summary: "s", trigger: "t", hint: "h" }],
+      repos: ["yok"],
+      pr: "https://github.com/o/yok/pull/7",
+      upstream: "audit-b",
+      onPr: true,
+    };
+    let state = start({ project: "yok", results: [{ id: "a-1:yok:flaky:f1", action: "apply" }] });
+    const handed: { id: string; input: unknown }[] = [];
+    for (let guard = 0; guard < 8; guard++) {
+      const next = await advance(plan, state);
+      const [leaf] = expectSteps(next.stop);
+      if (leaf === undefined) throw new Error("no step handed out");
+      handed.push({ id: leaf.node.id, input: leaf.input });
+      if (leaf.node.id === "audit-record") break;
+      const output = leaf.node.id === "audit-work" ? work : {};
+      state = end(next.state, leaf.nodeRunId, "completed", { nodeType: leaf.node.type, output });
+    }
+    expect(handed.map(({ id }) => id)).toEqual([
+      "audit-work",
+      "create-workspace",
+      "fix",
+      "visual-pr",
+      "audit-record",
+    ]);
+    expect(handed[1]?.input).toMatchObject({ upstream: "audit-b", repos: ["yok"] });
+  });
+});

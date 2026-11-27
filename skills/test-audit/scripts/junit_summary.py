@@ -1,12 +1,13 @@
 """Summarise an audit's JUnit reports per layer: failing, flaky and slowest tests and files.
 
-Usage: python3 junit_summary.py AUDIT_DIR [--top N]
+Usage: python3 junit_summary.py AUDIT_DIR [--top N] [--json]
 AUDIT_DIR holds one folder per layer, each holding one folder per run: AUDIT_DIR/LAYER/runN/*.xml.
 A run folder may hold any number of reports. Every copy of a test counts, so a run made with a
 repeat flag works too: a test some of whose copies failed and some passed is flaky.
 """
 
 import argparse
+import json
 import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -109,30 +110,45 @@ def seconds_per_pass(cases: list[Case]) -> dict[Key, float]:
     return {key: totals[key] / copies[key] for key in totals}
 
 
-def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
+@dataclass(frozen=True)
+class Layer:
+    always: list[Key]
+    flaky: list[Key]
+    # seconds per pass of each test, and of each file slowest first
+    tests: dict[Key, float]
+    files: list[tuple[str, float]]
+    total: float
+    warning: str | None
+
+
+def measure_layer(runs: list[list[Case]]) -> Layer:
     cases = [case for run in runs for case in run]
     always, flaky = classify(cases)
     tests = seconds_per_pass(cases)
     files: dict[str, float] = defaultdict(float)
     for (file, _), seconds in tests.items():
         files[file] += seconds
-    total = sum(files.values()) or 1.0
     slow_files = sorted(files.items(), key=lambda item: -item[1])
+    return Layer(always, flaky, tests, slow_files, sum(files.values()), mismatch_warning(runs))
+
+
+def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
+    layer = measure_layer(runs)
+    total = layer.total or 1.0
     shown_files = [
-        item for rank, item in enumerate(slow_files) if rank < top or item[1] / total >= SLOW_FILE_SHARE
+        item for rank, item in enumerate(layer.files) if rank < top or item[1] / total >= SLOW_FILE_SHARE
     ]
-    warning = mismatch_warning(runs)
     lines = [
-        f"# Layer {name}: {len(runs)} run(s), {len(tests)} tests, {total:.1f}s of test time per pass",
+        f"# Layer {name}: {len(runs)} run(s), {len(layer.tests)} tests, {total:.1f}s of test time per pass",
         "Results per run (compare run 1 with the count the runner printed): "
         + ", ".join(str(len(run)) for run in runs),
-        *([warning] if warning else []),
+        *([layer.warning] if layer.warning else []),
         "",
-        f"## Failing every time ({len(always)})",
-        *[f"- {file} :: {test}" for file, test in always],
+        f"## Failing every time ({len(layer.always)})",
+        *[f"- {file} :: {test}" for file, test in layer.always],
         "",
-        f"## Flaky: some copies failed, some passed ({len(flaky)})",
-        *[f"- {file} :: {test}" for file, test in flaky],
+        f"## Flaky: some copies failed, some passed ({len(layer.flaky)})",
+        *[f"- {file} :: {test}" for file, test in layer.flaky],
         "",
         f"## Slowest files (seconds per pass, share of the layer; every file at {SLOW_FILE_SHARE:.0%} or more is listed)",
         *[f"- {seconds:.2f}s  {seconds / total:.0%}  {file}" for file, seconds in shown_files],
@@ -140,7 +156,7 @@ def render_layer(name: str, runs: list[list[Case]], top: int) -> str:
         "## Slowest tests",
         *[
             f"- {seconds:.2f}s  {file} :: {test}"
-            for (file, test), seconds in sorted(tests.items(), key=lambda item: -item[1])[:top]
+            for (file, test), seconds in sorted(layer.tests.items(), key=lambda item: -item[1])[:top]
         ],
     ]
     return "\n".join(lines)
@@ -151,16 +167,52 @@ Two table rows with the same name in the same file count as copies of one test, 
 and the other fails they show as flaky; check the test's rows before calling it flaky."""
 
 
+
+def run_outcome(run: list[Case], key: Key) -> str:
+    found = {case.outcome for case in run if (case.file, case.name) == key}
+    if "fail" in found:
+        return "fail"
+    if "pass" in found:
+        return "pass"
+    return "skip" if found else "missing"
+
+
+def summarize_layer(runs: list[list[Case]]) -> dict[str, object]:
+    layer = measure_layer(runs)
+    total = layer.total or 1.0
+    return {
+        "runs": len(runs),
+        "tests": len(layer.tests),
+        "seconds": round(layer.total, 3),
+        "failing": [{"file": file, "name": name} for file, name in layer.always],
+        "flaky": [
+            {"file": file, "name": name, "runs": [run_outcome(run, (file, name)) for run in runs]}
+            for file, name in layer.flaky
+        ],
+        # Only files over the share: the top-N rule of the text report would flag a fast suite.
+        "slow": [
+            {"file": file, "seconds": round(seconds, 3), "share": round(seconds / total, 4)}
+            for file, seconds in layer.files
+            if seconds / total >= SLOW_FILE_SHARE
+        ],
+        "warning": layer.warning,
+    }
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("audit_dir", help="AUDIT_DIR/LAYER/runN/*.xml")
     parser.add_argument("--top", type=int, default=10, help="how many files and tests to list")
+    parser.add_argument("--json", action="store_true", help="print one JSON object of layers")
     args = parser.parse_args(argv)
     try:
         tree = load_tree(Path(args.audit_dir))
     except (OSError, ET.ParseError) as error:
         print(f"junit_summary: cannot read the audit folder: {error}", file=sys.stderr)
         return 1
+    if args.json:
+        print(json.dumps({name: summarize_layer(runs) for name, runs in tree.items()}))
+        return 0
     print("\n\n".join([*(render_layer(name, runs, args.top) for name, runs in tree.items()), NOTES]))
     return 0
 

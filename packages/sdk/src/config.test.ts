@@ -169,6 +169,14 @@ describe("ConfigSchema", () => {
     });
   });
 
+  test("SC14: a package may mark its integration and e2e test files with testTypes globs, and no other type", () => {
+    const withTypes = (testTypes: unknown) =>
+      ({ version: 2, packages: { web: { path: "web", testTypes } } }) as const;
+    const e2e = { e2e: ["**/*.e2e.test.ts"] };
+    expect(ConfigSchema.parse(withTypes(e2e)).packages.web?.testTypes).toEqual(e2e);
+    expect(errorOf(withTypes({ smoke: ["x"] }))).toContain("smoke");
+  });
+
   test("workflowPath names the folder of the project's own workflows", () => {
     expect(ConfigSchema.parse({ version: 2, workflowPath: "flows" }).workflowPath).toBe("flows");
   });

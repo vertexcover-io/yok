@@ -85,7 +85,7 @@ A skill's scripts live beside it, declared as references, and run through `yok o
 
 ### `workflows/`: the shipped graphs
 
-`task.yaml` is the full pipeline; `quick.yaml`, `regression.yaml`, `skill.yaml` and `pr-fix.yaml` are the others, and `pr-fix.yaml` works on an open pull request's own branch. `demo-workflows/` holds smaller ones used by tests and for trying things: `step-demo` runs only exec nodes, `kitchen-sink` uses every node type, `context-demo` exercises session resets.
+`task.yaml` is the full pipeline; `quick.yaml`, `regression.yaml`, `skill.yaml`, `pr-fix.yaml`, `test-audit.yaml` and `test-audit-apply.yaml` are the others: `pr-fix.yaml` works on an open pull request's own branch, `test-audit.yaml` audits the test suite every Saturday on a cron trigger, and `test-audit-apply.yaml` applies the audit fixes people accept. `demo-workflows/` holds smaller ones used by tests and for trying things: `step-demo` runs only exec nodes, `kitchen-sink` uses every node type, `context-demo` exercises session resets.
 
 ## The processes at run time
 
@@ -139,7 +139,7 @@ The release binary and the dev build never share a home, so they never share a s
 | change how the agent is launched or hooked | `packages/core/src/agents/claude.ts`, `claude-hooks.ts` |
 | change what a hook decides | `packages/core/src/hooks/*.ts` |
 | change what the doctor checks | `packages/core/src/doctor.ts` |
-| change the browser page | `packages/server/src/viewer.ts`, `viewer.html`, `overview.ts`, `runs.html` |
+| change the browser page | `packages/server/src/viewer.ts`, `viewer.html`, `overview.ts`, `runs.html`, `audits.html`, `page-shared.ts` |
 | change how markdown renders, in the viewer and in plan.html | `packages/core/src/markdown.ts`, `doc.css`, `plan-page.ts`, `plan-page.html` |
 
 Next: [One task, end to end](05-one-task-end-to-end.md).

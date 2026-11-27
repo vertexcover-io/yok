@@ -16,6 +16,18 @@ export {
   type TerminalSpec,
 } from "./agent.ts";
 export {
+  type AuditMetric,
+  AuditMetricSchema,
+  type AuditReport,
+  type AuditResult,
+  AuditResultSchema,
+  TEST_AUDIT_METRIC_NAMES,
+  TEST_AUDIT_METRICS,
+  TEST_AUDIT_PROBLEM_TYPES,
+  type TestAuditMetric,
+  type TestAuditProblemType,
+} from "./audits.ts";
+export {
   type Check,
   type CheckContext,
   type CheckStatus,
@@ -80,6 +92,9 @@ export {
   FileArtifactSchema,
   type FixRequest,
   FixRequestSchema,
+  type FixResult,
+  FixResultSchema,
+  FixResultsSchema,
   type GitState,
   GitStateSchema,
   isNormalizedRelativePath,
@@ -253,6 +268,7 @@ export {
   yokHome,
 } from "./registry.ts";
 export type {
+  IAuditRepository,
   ICommentRepository,
   IProjectRepository,
   IRunRepository,

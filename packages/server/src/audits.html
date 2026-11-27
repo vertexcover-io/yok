@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yok audits</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Tokens match runs.html so the audits page reads as the same product. */
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --panel-2: #edf1ef; --line: #d9e0dc;
+  --fg: #18211d; --muted: #5a6862; --accent: #1d6b62; --accent-fg: #ffffff; --accent-soft: #d9eeea;
+  --del: #b2362d; --del-soft: #fbe2df;
+  --ok: #2d7a32; --ok-soft: #e0f1e1; --info: #2b5ca4; --info-soft: #e0eaf8; --warn: #915f00; --warn-soft: #faeed3;
+  --ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+    --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+    --del: #f07f75; --del-soft: #3b1d1a;
+    --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1412; --panel: #161d1a; --panel-2: #1c2521; --line: #29342f;
+  --fg: #e1eae6; --muted: #92a29b; --accent: #5cc0b2; --accent-fg: #0c1714; --accent-soft: #173330;
+  --del: #f07f75; --del-soft: #3b1d1a;
+  --ok: #79c97d; --ok-soft: #1a321e; --info: #8bb2f2; --info-soft: #1a2740; --warn: #e7b65c; --warn-soft: #3a2d12;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--ui); }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+.top { position: sticky; top: 0; z-index: 2; }
+.bar { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: .01em; }
+.brand-mark { width: 18px; height: 18px; border-radius: 4px; background: var(--accent); position: relative; }
+.brand-mark::after { content: ""; position: absolute; inset: 5px 4px; border-top: 2px solid var(--accent-fg); border-bottom: 2px solid var(--accent-fg); }
+.nav { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.nav:hover { color: var(--fg); }
+.bar .right { margin-left: auto; display: flex; gap: 16px; }
+.pick { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--bg); font-size: 13px; }
+.sub { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--muted); }
+.range { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.drawer-range { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.btn { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 3px 10px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.foot { padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-align: right; }
+
+main { flex: 1; width: 100%; max-width: 1120px; margin: 0 auto; padding: 16px 16px 48px; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0; }
+.empty { color: var(--muted); padding: 32px 0; text-align: center; }
+.dim { color: var(--muted); }
+
+.area { margin-bottom: 24px; }
+.area h2 { font-size: 15px; margin: 0; }
+.area .q { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.tile { display: flex; flex-direction: column; gap: 4px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px; }
+.tile.later { background: transparent; border-style: dashed; color: var(--muted); }
+.tile .name { font-size: 13px; font-weight: 600; }
+.tile .big { font-family: var(--mono); font-size: 24px; font-weight: 500; }
+.tile .cap { font-size: 12px; color: var(--muted); }
+.tile .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.chip { display: inline-block; border-radius: 999px; padding: 0 8px; font-size: 11.5px; font-weight: 500; background: var(--panel-2); color: var(--muted); }
+.chip[data-tone="ok"] { background: var(--ok-soft); color: var(--ok); }
+.chip[data-tone="del"] { background: var(--del-soft); color: var(--del); }
+.change[data-verdict="better"] { color: var(--ok); }
+.change[data-verdict="worse"] { color: var(--del); }
+.change[data-verdict="same"] { color: var(--muted); }
+.spark { width: 100%; height: 28px; }
+svg text { fill: var(--muted); font: 11px var(--ui); }
+button.tile:hover { border-color: var(--muted); }
+
+.scrim { position: fixed; inset: 0; z-index: 3; background: rgb(0 0 0 / .35); }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 4; width: min(680px, 100%); overflow-y: auto; overflow-wrap: anywhere; background: var(--panel); border-left: 1px solid var(--line); padding: 16px 20px 32px; }
+.drawer h2 { font-size: 18px; margin: 0 40px 4px 0; }
+.drawer .close { position: absolute; top: 12px; right: 12px; }
+.sect { margin-top: 18px; }
+.chartbox { margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.chartbox .title { font-size: 12.5px; font-weight: 600; }
+.chart { width: 100%; height: auto; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+dl.how { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0 0; font-size: 12.5px; }
+dl.how dt { color: var(--muted); }
+dl.how dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+
+.board-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 8px 0 10px; }
+.board-head h2 { font-size: 15px; margin: 0; }
+.board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 8px; border-radius: 8px; background: var(--panel-2); padding: 10px; }
+.col .t { font-size: 13px; font-weight: 600; }
+.cnt { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--panel); font-family: var(--mono); font-size: 11px; }
+.card { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 10px; }
+.card .open { border: 0; background: none; padding: 0; text-align: left; font-weight: 600; overflow-wrap: anywhere; }
+.card .open:hover { text-decoration: underline; }
+.meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+pre.block { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--panel-2); font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; }
+pre.block .add { color: var(--ok); }
+pre.block .del { color: var(--del); }
+blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.decide { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; font-size: 12.5px; }
+.decide .state { color: var(--muted); }
+.reject { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.reject textarea { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 6px 8px; font-size: 13px; }
+.notice { flex-basis: 100%; margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+@media (max-width: 800px) {
+  .board { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .bar .right, .range { margin-left: 0; }
+}
+</style>
+
+<div class="top">
+<header class="bar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>yok audits</div>
+  <select class="pick" id="project" aria-label="Project"></select>
+  <select class="pick" id="repo" aria-label="Repo" hidden></select>
+  <select class="pick" id="run" aria-label="Audit run"></select>
+  <span class="right"><a class="nav" href="/">Runs</a><a class="nav" href="/settings">Settings</a></span>
+</header>
+<div class="sub">
+  <span id="ran"></span>
+  <span class="range">Trend
+    <label>from <select class="pick" id="from"></select></label>
+    <label>to <select class="pick" id="to"></select></label>
+    <button class="btn" type="button" id="all-runs">All runs</button>
+    <button class="btn" type="button" id="last-4">Last 4</button>
+  </span>
+</div>
+</div>
+<main>
+  <p class="empty" id="status" role="status">Loading audits…</p>
+  <div id="areas"></div>
+  <section id="board"></section>
+</main>
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <button class="btn close" type="button" id="close" aria-label="Close">×</button>
+  <div id="drawer-body"></div>
+</aside>
+<footer class="foot">yok v{{VERSION}}</footer>
+
+<script type="module">
+import { autoFixedPr, formatChange, formatMetric, meetsLimit, metricChange, metricSeries, newestWins, prLabel, rejectBody, resultActions, resultPageState, stoppedRunHelp, trendRange } from "/assets/shared.js";
+
+// A year of weekly audits, for the run picker and the trend range.
+const LIST_LIMIT = 52;
+const LAST_N = 4;
+const POLL_MS = 5000;
+
+// metric: the stored metric a tile reads. later: greyed until yok measures it. unmeasured: listed, never measured yet.
+const TILES = {
+  coverage: { name: "Coverage", metric: "coverage", caption: "of all code runs in a test" },
+  health: { name: "Health", unmeasured: true },
+  bugsMissed: { name: "Bugs missed by tests", later: true },
+  fakeTests: { name: "Fake tests", later: true },
+  plantedBugs: { name: "Planted bugs caught", later: true },
+  plannedCases: { name: "Planned cases not tested", later: true },
+  e2eCoverage: { name: "E2E coverage", later: true },
+  speed: { name: "Speed", metric: "testTime", caption: "the whole suite, run alone" },
+  flakiness: { name: "Flakiness", metric: "flakyTests", caption: "tests that failed at least once in 3 runs" },
+  redundancy: { name: "Redundancy", metric: "duplicates", caption: "duplicate tests found" },
+};
+const AREAS = [
+  { name: "Effectiveness", question: "Can the tests catch what goes wrong?", tiles: ["coverage", "health", "bugsMissed", "fakeTests", "plantedBugs", "plannedCases", "e2eCoverage"] },
+  { name: "Efficiency", question: "The suite itself", tiles: ["speed", "flakiness", "redundancy"] },
+];
+
+const view = { projects: [], project: null, runs: [], runId: null, repo: null, detail: null, points: [], from: null, to: null, open: null, timer: null, notices: new Map() };
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+};
+const span = (className, text) => el("span", { className, textContent: text ?? "" });
+const chip = (text, tone) => {
+  const node = span("chip", text);
+  node.dataset.tone = tone;
+  return node;
+};
+const svg = (tag, attrs, children = []) => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  node.append(...children);
+  return node;
+};
+
+const getJson = async (path) => {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`);
+  return res.json();
+};
+const query = (fields) => new URLSearchParams(Object.entries(fields).filter(([, value]) => value !== null)).toString();
+const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+const showStatus = (text) => {
+  $("status").textContent = text ?? "";
+  $("status").hidden = text === null;
+};
+const guarded = (work) => work().catch((error) => showStatus(`Could not load the audit: ${error.message}`));
+
+// The list route answers newest first; the trend range reads oldest to newest.
+const oldestFirst = (state = view) => [...state.runs].reverse();
+const metricOf = (metric, scope = "") =>
+  view.detail.metrics.find((m) => m.repo === view.repo && m.metric === metric && m.scope === scope);
+const seriesOf = (metric, scope = "") => metricSeries(view.points, view.repo, metric, scope);
+const shownIndex = () => view.points.findIndex((point) => point.auditRunId === view.runId);
+
+// startedAt is null once the audit's yok run is removed; the audit run's own createdAt stands in.
+const ranText = ({ run }) => {
+  const started = run.startedAt ?? run.createdAt;
+  const minutes = (end) => Math.max(1, Math.round((Date.parse(end) - Date.parse(started)) / 60000));
+  const took = run.endedAt === null ? "still running" : `took ${minutes(run.endedAt)} min`;
+  return `Ran ${clock(started)} · ${took} · ${view.repo} @ ${run.commits[view.repo].slice(0, 7)}`;
+};
+
+const sparkline = (values) => {
+  const known = values.flatMap((value, index) => (value === null ? [] : [[index, value]]));
+  const box = { class: "spark", viewBox: "0 0 100 28", preserveAspectRatio: "none", "aria-hidden": "true" };
+  if (known.length < 2) return svg("svg", box);
+  const lo = Math.min(...known.map(([, value]) => value));
+  const hi = Math.max(...known.map(([, value]) => value));
+  const x = (index) => (index / (values.length - 1)) * 100;
+  const y = (value) => (hi === lo ? 14 : 26 - ((value - lo) / (hi - lo)) * 24);
+  const points = known.map(([index, value]) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
+  return svg("svg", box, [
+    svg("polyline", { points, fill: "none", style: "stroke: var(--accent); stroke-width: 1.5", "vector-effect": "non-scaling-stroke" }),
+  ]);
+};
+
+const limitChip = (info, value) => {
+  const ok = meetsLimit(info, value);
+  if (ok === null) return null;
+  const sign = info.better === "higher" ? "≥" : "≤";
+  return chip(`limit ${sign} ${formatMetric(info.unit, info.limit)}`, ok ? "ok" : "del");
+};
+
+const changeText = (info, series) => {
+  const change = metricChange(info.better, series, shownIndex());
+  if (change === null) return span("change dim", "no earlier run in range");
+  const text = change.verdict === "same" ? "no change" : `${formatChange(info.unit, change.delta)} ${change.verdict}`;
+  const node = span("change", text);
+  node.dataset.verdict = change.verdict;
+  return node;
+};
+
+const tileCaption = (tile) => {
+  const share = metricOf("duplicatesPct");
+  if (tile.metric !== "duplicates" || share?.status !== "measured") return tile.caption;
+  return `${tile.caption} · ${formatMetric("percent", share.value)} of all tests`;
+};
+
+const tileBody = (tile) => {
+  const stored = metricOf(tile.metric);
+  if (stored === undefined || stored.status === "not_measured") {
+    return [span("name", tile.name), span("big dim", "not measured"), span("cap", stored?.reason ?? "this audit did not measure it")];
+  }
+  const info = view.detail.limits[tile.metric];
+  const series = seriesOf(tile.metric);
+  return [
+    span("name", tile.name),
+    span("big", formatMetric(info.unit, stored.value)),
+    span("cap", tileCaption(tile)),
+    el("span", { className: "line" }, [changeText(info, series), limitChip(info, stored.value)].filter((node) => node !== null)),
+    sparkline(series),
+  ];
+};
+
+const laterTile = (tile, words) => el("div", { className: "tile later" }, [span("name", tile.name), span("cap", words)]);
+const tileNode = (key) => {
+  const tile = TILES[key];
+  if (tile.later) return laterTile(tile, "coming later");
+  if (tile.unmeasured) return laterTile(tile, "not measured yet");
+  return el("button", { type: "button", className: "tile", onclick: () => openTile(key) }, tileBody(tile));
+};
+
+const renderAreas = () => {
+  $("areas").replaceChildren(...AREAS.map((area) => el("section", { className: "area" }, [
+    el("h2", { textContent: area.name }),
+    el("p", { className: "q", textContent: area.question }),
+    el("div", { className: "tiles" }, area.tiles.map(tileNode)),
+  ])));
+};
+
+const COLORS = ["var(--accent)", "var(--info)", "var(--warn)"];
+const CHART = { width: 600, height: 180, left: 56, right: 28, top: 10, bottom: 24 };
+const plotY = (value, lo, hi) => CHART.top + (1 - (value - lo) / (hi - lo || 1)) * (CHART.height - CHART.top - CHART.bottom);
+// At most about 8 dates under a chart, always the newest, so a year of runs stays readable.
+const shownLabel = (index, count) => index === count - 1 || index % Math.ceil(count / 8) === 0;
+const tickText = (unit, tick) => formatMetric(unit, unit === "count" ? Math.round(tick) : Math.round(tick * 10) / 10);
+
+const axes = (lo, hi, unit, labels, xAt) => [
+  ...[0, 1, 2, 3, 4].map((step) => lo + ((hi - lo) * step) / 4).flatMap((tick) => [
+    svg("line", { x1: CHART.left, x2: CHART.width - CHART.right, y1: plotY(tick, lo, hi), y2: plotY(tick, lo, hi), style: "stroke: var(--line)" }),
+    svg("text", { x: CHART.left - 6, y: plotY(tick, lo, hi) + 4, "text-anchor": "end" }, [tickText(unit, tick)]),
+  ]),
+  ...labels.flatMap((label, index) => (shownLabel(index, labels.length) ? [svg("text", { x: xAt(index), y: CHART.height - 6, "text-anchor": "middle" }, [label])] : [])),
+];
+
+const swatch = (color) => {
+  const node = span("sw");
+  node.style.background = color;
+  return node;
+};
+const chartBox = (title, series, marks) => el("div", { className: "chartbox" }, [
+  span("title", title),
+  svg("svg", { class: "chart", viewBox: `0 0 ${CHART.width} ${CHART.height}`, role: "img", "aria-label": title }, marks),
+  el("div", { className: "legend" }, series.length < 2 ? [] : series.map((s, k) => el("span", {}, [swatch(COLORS[k]), s.name]))),
+]);
+
+// The y range pads the values and the limit by a tenth, and never goes below 0 or, for a percent, above 100.
+const lineChart = ({ title, unit, labels, series, limit }) => {
+  const values = series.flatMap((s) => s.values).filter((value) => value !== null);
+  if (values.length === 0) return el("p", { className: "dim", textContent: `${title}: no measurements in this range.` });
+  const known = limit === null ? values : [...values, limit];
+  const pad = (Math.max(...known) - Math.min(...known)) / 10 || 1;
+  const lo = Math.max(0, Math.min(...known) - pad);
+  const hi = unit === "percent" ? Math.min(100, Math.max(...known) + pad) : Math.max(...known) + pad;
+  const x = (index) => CHART.left + (labels.length === 1 ? 0.5 : index / (labels.length - 1)) * (CHART.width - CHART.left - CHART.right);
+  const limitLine = limit === null ? [] : [
+    svg("line", { x1: CHART.left, x2: CHART.width - CHART.right, y1: plotY(limit, lo, hi), y2: plotY(limit, lo, hi), style: "stroke: var(--del); stroke-dasharray: 4 4" }),
+  ];
+  const lines = series.flatMap((s, k) => {
+    const points = s.values.flatMap((value, index) => (value === null ? [] : [[index, value]]));
+    return [
+      svg("polyline", { points: points.map(([index, value]) => `${x(index)},${plotY(value, lo, hi)}`).join(" "), fill: "none", style: `stroke: ${COLORS[k]}; stroke-width: 2` }),
+      ...points.map(([index, value]) => svg("circle", { cx: x(index), cy: plotY(value, lo, hi), r: 3.5, style: `fill: ${COLORS[k]}` }, [
+        svg("title", {}, [`${labels[index]} · ${s.name}: ${formatMetric(unit, value)}`]),
+      ])),
+    ];
+  });
+  return chartBox(title, series, [...axes(lo, hi, unit, labels, x), ...limitLine, ...lines]);
+};
+
+// Bars count tests, so the top rounds up to a multiple of 4 and the 4 grid steps stay whole numbers.
+const barChart = ({ title, unit, labels, series }) => {
+  if (series.every((s) => s.values.every((value) => value === null))) {
+    return el("p", { className: "dim", textContent: `${title}: no measurements in this range.` });
+  }
+  const totals = labels.map((_, index) => series.reduce((sum, s) => sum + (s.values[index] ?? 0), 0));
+  const hi = Math.ceil(Math.max(1, ...totals) / 4) * 4;
+  const slot = (CHART.width - CHART.left - CHART.right) / labels.length;
+  const x = (index) => CHART.left + (index + 0.5) * slot;
+  const bars = labels.flatMap((label, index) => series.map((s, k) => {
+    const below = series.slice(0, k).reduce((sum, t) => sum + (t.values[index] ?? 0), 0);
+    const value = s.values[index] ?? 0;
+    const top = plotY(below + value, 0, hi);
+    return svg("rect", { x: x(index) - slot * 0.3, width: slot * 0.6, y: top, height: plotY(below, 0, hi) - top, style: `fill: ${COLORS[k]}` }, [
+      svg("title", {}, [`${label} · ${s.name}: ${formatMetric(unit, value)}`]),
+    ]);
+  }));
+  return chartBox(title, series, [...axes(0, hi, unit, labels, x), ...bars]);
+};
+
+const STATE_WORDS = { auto_fixed: "Auto-fixed", needs_approval: "Needs your approval", needs_work: "Needs more work" };
+const TESTS_BY_TYPE = [["unit", "Unit"], ["integration", "Integration"], ["e2e", "E2E"]];
+// charts: each one's kind, title and metric; scopes, when present, stack the per-type values instead of the whole suite.
+const DRAWERS = {
+  coverage: {
+    problemType: null,
+    how: "We run the whole suite with coverage on and count the lines at least one test runs. Code changed this period is the same count for the lines changed since the last audit. Coverage says a line ran, not that a test checked it.",
+    charts: [
+      { kind: "line", title: "% of all code covered", metric: "coverage" },
+      { kind: "bar", title: "Number of tests", metric: "testCount", scopes: TESTS_BY_TYPE },
+    ],
+  },
+  speed: {
+    problemType: "slow",
+    how: "We run the whole suite once on its own and time it from start to end.",
+    charts: [{ kind: "line", title: "Time to run the whole suite", metric: "testTime" }],
+  },
+  flakiness: {
+    problemType: "flaky",
+    how: "We run the whole suite 3 times with retries turned off. A test that fails at least once is counted.",
+    charts: [{ kind: "bar", title: "Flaky tests", metric: "flakyTests" }],
+  },
+  redundancy: {
+    problemType: "duplicates",
+    how: "We compare what each test sets up, calls and checks. A test is a duplicate when another test already proves the same thing, and each one names the test that still covers it.",
+    charts: [
+      { kind: "bar", title: "Duplicate tests found", metric: "duplicates" },
+      { kind: "line", title: "Duplicates, % of all tests", metric: "duplicatesPct" },
+    ],
+  },
+};
+
+const chartNode = (chart) => {
+  const info = view.detail.limits[chart.metric];
+  const labels = view.points.map((point) => day(point.periodEnd));
+  const series = (chart.scopes ?? [["", chart.title]]).map(([scope, name]) => ({ name, values: seriesOf(chart.metric, scope) }));
+  if (chart.kind === "line") return lineChart({ title: chart.title, unit: info.unit, labels, series, limit: info.limit });
+  return barChart({ title: chart.title, unit: info.unit, labels, series });
+};
+
+const howList = (how) => el("dl", { className: "how" }, Object.entries(how).flatMap(([key, value]) => [
+  el("dt", { textContent: key }),
+  el("dd", { textContent: typeof value === "string" ? value : JSON.stringify(value) }),
+]));
+
+const changedLine = () => {
+  const changed = metricOf("coverageChanged");
+  const value = changed?.status === "measured" ? formatMetric("percent", changed.value) : "not measured";
+  return el("p", { className: "sect", textContent: `Code changed this period: ${value}` });
+};
+
+const relatedItem = (result) => el("li", {}, [resultCard(result)]);
+const relatedSection = (problemType) => {
+  const related = view.detail.results.filter((r) => r.repo === view.repo && r.problemType === problemType);
+  return el("section", { className: "sect" }, [
+    el("div", { className: "label", textContent: "Related results" }),
+    related.length === 0
+      ? el("p", { className: "dim", textContent: "No results of this kind in this run." })
+      : el("ul", { className: "list" }, related.map(relatedItem)),
+  ]);
+};
+
+// The drawer covers the header's range, so it carries its own, set through the same setRange.
+const rangeSelect = (label, selected, pick) => {
+  const select = el("select", { className: "pick" });
+  fillSelect(select, rangeOptions(), selected);
+  select.addEventListener("change", () => guarded(() => pick(select.value)));
+  return el("label", {}, [`${label} `, select]);
+};
+const drawerRange = () => el("p", { className: "sect drawer-range" }, [
+  "Over time",
+  rangeSelect("from", view.from, (id) => setRange(id, view.to)),
+  rangeSelect("to", view.to, (id) => setRange(view.from, id)),
+]);
+
+const tileDrawer = (key) => {
+  const tile = TILES[key];
+  const drawer = DRAWERS[key];
+  const stored = metricOf(tile.metric);
+  return [
+    el("h2", { id: "drawer-title", textContent: tile.name }),
+    el("p", { className: "dim", textContent: tile.caption }),
+    ...(key === "coverage" ? [changedLine()] : []),
+    drawerRange(),
+    ...drawer.charts.map(chartNode),
+    el("section", { className: "sect" }, [
+      el("div", { className: "label", textContent: "How it is measured" }),
+      el("p", { textContent: drawer.how }),
+      ...(stored === undefined ? [] : [howList(stored.how)]),
+    ]),
+    ...(drawer.problemType === null ? [] : [relatedSection(drawer.problemType)]),
+  ];
+};
+
+// Each kind of drawer builds its content from view.open; null means what it showed is gone, and the drawer closes.
+const DRAWER_CONTENT = {
+  tile: (open) => tileDrawer(open.key),
+  result: (open) => {
+    const result = repoResults().find((r) => r.id === open.id);
+    return result === undefined ? null : resultDrawer(result);
+  },
+  group: (open) => {
+    const results = repoResults().filter((r) => r.state === "auto_fixed" && r.problemType === open.problemType);
+    return results.length === 0 ? null : groupDrawer(open.problemType, results);
+  },
+};
+
+const closeDrawer = () => {
+  view.open = null;
+  $("drawer").hidden = true;
+  $("scrim").hidden = true;
+};
+const renderDrawer = () => {
+  if (view.open === null) return;
+  const content = DRAWER_CONTENT[view.open.kind](view.open);
+  if (content === null) return closeDrawer();
+  $("drawer-body").replaceChildren(...content);
+  $("drawer").hidden = false;
+  $("scrim").hidden = false;
+};
+const openDrawer = (open) => {
+  view.open = open;
+  renderDrawer();
+  $("close").focus();
+};
+const openTile = (key) => openDrawer({ kind: "tile", key });
+
+const COLUMNS = [
+  ["auto_fixed", "yok fixed these on its own."],
+  ["needs_approval", "The fix is known. Accept it and yok applies it in a pull request."],
+  ["needs_work", "No safe fix yet. Copy the prompt to work on it."],
+];
+// Auto-fixed results of one problem type share a card: "Removed 15 duplicate tests".
+const FIXED_WORDS = { duplicates: ["Removed", "duplicate test"], flaky: ["Fixed", "flaky test"], slow: ["Sped up", "slow test"], failing: ["Fixed", "failing test"] };
+const fixedTitle = (problemType, count) => {
+  const [verb, noun] = FIXED_WORDS[problemType];
+  return `${verb} ${count} ${noun}${count === 1 ? "" : "s"}`;
+};
+const repoResults = () => view.detail.results.filter((r) => r.repo === view.repo);
+const resultMeta = (result) => `${result.problemType} · ${result.proof.where ?? result.repo}`;
+
+const openButton = (text, onclick) => el("button", { type: "button", className: "open", textContent: text, onclick });
+const resultCard = (result) => el("div", { className: "card" }, [
+  openButton(result.title, () => openDrawer({ kind: "result", id: result.id })),
+  span("meta", resultMeta(result)),
+  decisionNode(result),
+]);
+const groupCard = ([problemType, results]) => el("div", { className: "card" }, [
+  openButton(fixedTitle(problemType, results.length), () => openDrawer({ kind: "group", problemType })),
+  span("meta", results.length === 1 ? resultMeta(results[0]) : `${problemType} · ${results.length} places`),
+]);
+
+const columnNode = ([state, note], results) => {
+  const inColumn = results.filter((r) => r.state === state);
+  const cards = state === "auto_fixed"
+    ? [...new Set(inColumn.map((r) => r.problemType))].map((type) => groupCard([type, inColumn.filter((r) => r.problemType === type)]))
+    : inColumn.map(resultCard);
+  // every auto-fixed result of the repo shares the one PR the fix stage opened
+  const pr = state === "auto_fixed" ? autoFixedPr(inColumn) : null;
+  return el("section", { className: "col" }, [
+    el("div", { className: "t" }, [STATE_WORDS[state], span("cnt", String(inColumn.length))]),
+    pr === null ? span("meta", note) : el("span", { className: "meta" }, ["Fixed in ", safeLink(pr, prLabel(pr)), "."]),
+    ...(cards.length === 0 ? [span("meta", "Nothing here.")] : cards),
+  ]);
+};
+
+const renderBoard = () => {
+  const results = repoResults();
+  $("board").replaceChildren(
+    el("div", { className: "board-head" }, [el("h2", { textContent: "Results" }), span("dim", `From the ${day(view.detail.run.periodEnd)} run`)]),
+    el("div", { className: "board" }, COLUMNS.map((column) => columnNode(column, results))),
+  );
+};
+
+// Only http(s) links: proof is written by an agent, and a javascript: link would run on click.
+const safeLink = (href, text) =>
+  /^https?:\/\//.test(href) ? el("a", { href, textContent: text, target: "_blank", rel: "noreferrer" }) : span("", text);
+const diffLineClass = (line) => {
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "";
+};
+const diffBlock = (diff) => el("pre", { className: "block" }, diff.split("\n").map((line) => span(diffLineClass(line), `${line}\n`)));
+
+const blockBody = ({ kind, content }) => {
+  if (kind === "code" || kind === "test-run") return el("pre", { className: "block", textContent: content });
+  if (kind === "diff") return diffBlock(content);
+  if (kind === "quote") return el("blockquote", { textContent: content });
+  if (kind === "link") return el("p", {}, [safeLink(content, content)]);
+  return el("p", { textContent: content });
+};
+const labelled = (label, children) => el("section", { className: "sect" }, [el("div", { className: "label", textContent: label }), ...children]);
+
+const fixSection = (fix) => labelled("The fix", [
+  el("p", { textContent: fix.summary }),
+  ...(fix.diff === undefined ? [] : [diffBlock(fix.diff)]),
+  ...(fix.pr === undefined ? [] : [el("p", {}, [safeLink(fix.pr, prLabel(fix.pr))])]),
+  ...(fix.prompt === undefined ? [] : [el("pre", { className: "block", textContent: fix.prompt })]),
+]);
+
+const resultDrawer = (result) => [
+  el("h2", { id: "drawer-title", textContent: result.title }),
+  el("p", { className: "dim", textContent: `${STATE_WORDS[result.state]} · ${resultMeta(result)}` }),
+  decisionNode(result),
+  labelled("What happened", [el("p", { textContent: result.proof.summary ?? "" })]),
+  ...(result.proof.blocks ?? []).map((block) => labelled(block.title, [blockBody(block)])),
+  ...(result.fix === null ? [] : [fixSection(result.fix)]),
+];
+
+const groupDrawer = (problemType, results) => [
+  el("h2", { id: "drawer-title", textContent: fixedTitle(problemType, results.length) }),
+  el("ul", { className: "list" }, results.map((result) => el("li", {}, [resultCard(result)]))),
+];
+
+const pageState = (result) => resultPageState(result, result.decision, result.applyRun);
+const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(runId)}`, textContent: text });
+// The words for each state that has some; "open", "auto-fixed" and "needs-work" show buttons only.
+const STATE_LINE = {
+  waiting: (state) => [`waiting for yok to ${state.action} it`],
+  applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
+  stopped: (state) => [`apply run stopped: ${stoppedRunHelp(state.runId)} · `, runLink(state.runId, "see the run")],
+  "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
+  applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
+  failed: (state) => [`couldn't apply: ${state.reason}`],
+  rejected: (state) => [state.feedback === null ? "rejected" : `rejected: ${state.feedback}`],
+};
+
+const signInLink = () => el("a", { href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`, textContent: "Sign in" });
+
+// Why a click was refused, { signIn } or { message }; null when it was saved.
+const postEvent = async (result, body) => {
+  const res = await fetch(`/api/audits/results/${encodeURIComponent(result.id)}/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return null;
+  if (res.status === 401) return { signIn: true };
+  const reply = await res.json().catch(() => null);
+  return { message: reply?.error?.message ?? `The server answered ${res.status}.` };
+};
+const noticeNode = (refused) =>
+  el("p", { className: "notice", role: "alert" }, refused.signIn ? [signInLink(), " to accept, reject or undo a fix."] : [refused.message]);
+
+// The notice goes beside the clicked button: a click made in the drawer would hide one placed on the page.
+// view.notices keeps it through re-renders until the next click or a change in the result's state.
+const decide = async (result, body, button) => {
+  button.disabled = true;
+  view.notices.delete(result.id);
+  try {
+    const refused = await postEvent(result, body);
+    if (refused === null) return await refresh();
+    view.notices.set(result.id, { kind: pageState(result).kind, refused });
+    // in place rather than by render, which would wipe a reject box's feedback
+    const row = button.closest(".decide");
+    row.querySelector(".notice")?.remove();
+    row.append(noticeNode(refused));
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const actionButton = (result, text, body, className = "btn") => {
+  const button = el("button", { type: "button", className, textContent: text });
+  button.addEventListener("click", () => guarded(() => decide(result, body, button)));
+  return button;
+};
+const rejectForm = (result) => {
+  const feedback = el("textarea", { rows: 2, placeholder: "Why not? (optional)" });
+  feedback.setAttribute("aria-label", "Why reject this fix");
+  const send = el("button", { type: "submit", className: "btn", textContent: "Reject" });
+  const form = el("form", { className: "reject" }, [feedback, el("div", {}, [send])]);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    guarded(() => decide(result, rejectBody(feedback.value), send));
+  });
+  return form;
+};
+const rejectButton = (result) => {
+  const button = el("button", { type: "button", className: "btn", textContent: "Reject" });
+  button.addEventListener("click", () => {
+    const form = rejectForm(result);
+    button.replaceWith(form);
+    form.querySelector("textarea").focus();
+  });
+  return button;
+};
+const copyButton = (prompt) => {
+  const button = el("button", { type: "button", className: "btn", textContent: "Copy prompt" });
+  button.addEventListener("click", async () => {
+    const copied = await (navigator.clipboard?.writeText(prompt) ?? Promise.reject()).then(() => true, () => false);
+    // On failure the prompt is still in the result's drawer to copy by hand.
+    button.textContent = copied ? "Copied" : "Copy failed";
+  });
+  return button;
+};
+
+const ACTION_BUTTON = {
+  accept: (result) => actionButton(result, "Accept", { type: "accepted" }, "btn pri"),
+  reject: rejectButton,
+  undo: (result) => actionButton(result, "Undo", { type: "undone" }),
+  "copy-prompt": (result) => copyButton(result.fix.prompt),
+};
+const actionsFor = (result, state) =>
+  resultActions(state, result.fix?.prompt !== undefined).map((action) => ACTION_BUTTON[action](result));
+const decisionNode = (result) => {
+  const state = pageState(result);
+  const line = STATE_LINE[state.kind];
+  const notice = view.notices.get(result.id);
+  return el("div", { className: "decide" }, [
+    ...(line === undefined ? [] : [el("span", { className: "state" }, line(state))]),
+    ...actionsFor(result, state),
+    ...(notice?.kind === state.kind ? [noticeNode(notice.refused)] : []),
+  ]);
+};
+
+// Every load below fills a copy of view, and only the newest one is shown: switching runs while
+// a slower read is in flight would otherwise put one run's results under the other's name.
+const loadNewest = newestWins();
+// Only the fields the load set are copied back, so a drawer opened meanwhile stays open.
+const show = async (load) => {
+  const before = { ...view };
+  const loaded = await loadNewest(view, load);
+  if (loaded === null) return;
+  for (const [key, value] of Object.entries(loaded)) {
+    if (value !== before[key]) view[key] = value;
+  }
+  render();
+};
+
+const refresh = () => show((draft) => loadDetail(draft));
+// Keeps re-reading while yok has work in hand, so "waiting" turns into "applying" and then "applied" without a reload.
+// It skips a beat while a reject box is open, since a re-render would wipe what the person is typing.
+const scheduleRefresh = () => {
+  clearTimeout(view.timer);
+  const busy = view.detail.results.some((r) => ["waiting", "applying"].includes(pageState(r).kind));
+  const tick = () => {
+    if (document.querySelector("form.reject") !== null) return scheduleRefresh();
+    // render re-arms the timer after a good re-read; a failed one, such as during a server restart, re-arms it here
+    return guarded(() => refresh().catch((error) => {
+      scheduleRefresh();
+      throw error;
+    }));
+  };
+  view.timer = busy ? setTimeout(tick, POLL_MS) : null;
+};
+
+const fillSelect = (select, options, selected) => {
+  select.replaceChildren(...options.map(([value, label]) => el("option", { value, textContent: label, selected: value === selected })));
+};
+const rangeOptions = () => oldestFirst().map((run) => [run.id, day(run.periodEnd)]);
+const runLabel = (run) => `${day(run.periodEnd)}${run.status === "complete" ? "" : ` (${run.status})`}`;
+
+const renderHeader = () => {
+  const repos = Object.keys(view.detail.run.commits).sort();
+  fillSelect($("project"), view.projects.map((name) => [name, name]), view.project);
+  fillSelect($("run"), view.runs.map((run) => [run.id, runLabel(run)]), view.runId);
+  fillSelect($("repo"), repos.map((repo) => [repo, repo]), view.repo);
+  $("repo").hidden = repos.length < 2;
+  $("ran").textContent = ranText(view.detail);
+  fillSelect($("from"), rangeOptions(), view.from);
+  fillSelect($("to"), rangeOptions(), view.to);
+};
+
+const render = () => {
+  history.replaceState(null, "", `/audits?${query({ project: view.project, run: view.runId, repo: view.repo })}`);
+  showStatus(null);
+  renderHeader();
+  renderAreas();
+  renderBoard();
+  renderDrawer();
+  scheduleRefresh();
+};
+
+const loadPoints = async (draft) => {
+  const { from, to, runIds } = trendRange(oldestFirst(draft), draft.from, draft.to);
+  const { points } = await getJson(`/api/audits/metrics?${query({ project: draft.project, audit: "test", repo: draft.repo, from, to })}`);
+  draft.points = points.filter((point) => runIds.includes(point.auditRunId));
+};
+
+// A repo the run did not audit, from the URL or the last run shown, falls back to the run's first repo.
+const loadDetail = async (draft) => {
+  draft.detail = await getJson(`/api/audits/${encodeURIComponent(draft.runId)}`);
+  const repos = Object.keys(draft.detail.run.commits).sort();
+  if (!repos.includes(draft.repo)) draft.repo = repos[0];
+};
+
+const loadRun = async (draft, runId) => {
+  draft.runId = runId;
+  await loadDetail(draft);
+  await loadPoints(draft);
+};
+
+const loadProject = async (draft, project, askedRun) => {
+  draft.project = project;
+  draft.runs = (await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`)).runs;
+  const runs = oldestFirst(draft);
+  draft.from = runs[0].id;
+  draft.to = runs[runs.length - 1].id;
+  await loadRun(draft, draft.runs.some((run) => run.id === askedRun) ? askedRun : draft.runs[0].id);
+};
+
+const setRange = (fromId, toId) => show(async (draft) => {
+  const ids = oldestFirst(draft).map((run) => run.id);
+  const inOrder = ids.indexOf(fromId) <= ids.indexOf(toId);
+  draft.from = inOrder ? fromId : toId;
+  draft.to = inOrder ? toId : fromId;
+  await loadPoints(draft);
+});
+
+const start = async () => {
+  view.projects = (await getJson("/api/audits/projects?audit=test")).projects;
+  if (view.projects.length === 0) {
+    showStatus("No test audit has run yet. A project's first test-audit run shows here.");
+    return;
+  }
+  const params = new URLSearchParams(location.search);
+  const asked = params.get("project");
+  view.repo = params.get("repo");
+  await show((draft) => loadProject(draft, view.projects.includes(asked) ? asked : view.projects[0], params.get("run")));
+};
+
+$("project").addEventListener("change", (event) => guarded(() => show((draft) => loadProject(draft, event.target.value, null))));
+$("run").addEventListener("change", (event) => guarded(() => show((draft) => loadRun(draft, event.target.value))));
+$("repo").addEventListener("change", (event) => guarded(() => show(async (draft) => {
+  draft.repo = event.target.value;
+  await loadPoints(draft);
+})));
+$("from").addEventListener("change", (event) => guarded(() => setRange(event.target.value, view.to)));
+$("to").addEventListener("change", (event) => guarded(() => setRange(view.from, event.target.value)));
+$("all-runs").addEventListener("click", () => {
+  const ids = oldestFirst().map((run) => run.id);
+  guarded(() => setRange(ids[0], ids[ids.length - 1]));
+});
+$("last-4").addEventListener("click", () => {
+  const ids = oldestFirst().map((run) => run.id);
+  guarded(() => setRange(ids[Math.max(0, ids.length - LAST_N)], ids[ids.length - 1]));
+});
+$("close").addEventListener("click", closeDrawer);
+$("scrim").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawer();
+});
+guarded(start);
+</script>
+</html>

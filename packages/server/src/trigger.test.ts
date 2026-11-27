@@ -361,7 +361,7 @@ describe("tick", () => {
   );
 
   test(
-    "SC521: a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
+    "SC521, SC7314: a fire 2 minutes after a launch whose agent has not named its run yet logs skipped and launches nothing",
     async () => {
       const { store, storage, launches, deps, trigger } = await setup();
       await tick(deps("2026-10-23T09:00:10.000Z"));
@@ -566,6 +566,27 @@ describe("tick", () => {
     },
     TIMEOUT_MS,
   );
+
+  test.each([
+    ["SC7323: a test-audit trigger fires once", "test-audit", 1, "started"],
+    ["SC7324: a digest trigger is still skipped", "digest", 0, "skipped"],
+  ] as const)(
+    "%s when its slot is 10 hours old",
+    async (_label, name, launchCount, outcome) => {
+      const { store, launches, deps, trigger } = await setup();
+      await store.remove(trigger.id);
+      const saved = await saveOk(store, { ...trigger, name });
+
+      await tick(deps("2026-10-23T19:00:10.000Z"));
+
+      expect(launches).toHaveLength(launchCount);
+      const last = (await store.readFires(saved.id, 20)).at(-1);
+      expect(last).toMatchObject({ status: outcome, slot: "2026-10-23T09:00:00.000Z" });
+      if (outcome === "skipped") expect(last?.reason).toBe("too late: more than 6h past its slot");
+      expect((await store.list())[0]?.nextFireAt).toBe("2026-10-24T09:00:00.000Z");
+    },
+    TIMEOUT_MS,
+  );
 });
 
 describe("scheduler", () => {
@@ -575,9 +596,8 @@ describe("scheduler", () => {
       const { store, launches, deps, trigger } = await setup();
       const now = new Date();
       await store.save({ ...trigger, cron: "* * * * *", nextFireAt: now.toISOString() });
-      const { now: _now, ...scheduled } = deps(now.toISOString());
       const app = createApi({
-        ...scheduled,
+        ...deps(now.toISOString()),
         pid: 1,
         version: "0.0.0-test",
         startedAt: 0,
@@ -603,9 +623,8 @@ describe("/triggers routes", () => {
   const appFor = async (workflow?: string) => {
     const env = await setup(workflow);
     await env.store.remove(env.trigger.id);
-    const { now: _now, ...deps } = env.deps("2026-10-23T09:00:10.000Z");
     const app = createApi({
-      ...deps,
+      ...env.deps("2026-10-23T09:00:10.000Z"),
       pid: 1,
       version: "0.0.0-test",
       startedAt: 0,
