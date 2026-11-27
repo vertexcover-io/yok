@@ -157,7 +157,7 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <footer class="foot">yok v{{VERSION}}</footer>
 
 <script type="module">
-import { formatChange, formatMetric, meetsLimit, metricChange, metricSeries, prLabel, rejectBody, resultActions, resultPageState, trendRange } from "/assets/shared.js";
+import { autoFixedPr, formatChange, formatMetric, meetsLimit, metricChange, metricSeries, newestWins, prLabel, rejectBody, resultActions, resultPageState, stoppedRunHelp, trendRange } from "/assets/shared.js";
 
 // A year of weekly audits, for the run picker and the trend range.
 const LIST_LIMIT = 52;
@@ -217,7 +217,7 @@ const showStatus = (text) => {
 const guarded = (work) => work().catch((error) => showStatus(`Could not load the audit: ${error.message}`));
 
 // The list route answers newest first; the trend range reads oldest to newest.
-const oldestFirst = () => [...view.runs].reverse();
+const oldestFirst = (state = view) => [...state.runs].reverse();
 const metricOf = (metric, scope = "") =>
   view.detail.metrics.find((m) => m.repo === view.repo && m.metric === metric && m.scope === scope);
 const seriesOf = (metric, scope = "") => metricSeries(view.points, view.repo, metric, scope);
@@ -526,9 +526,11 @@ const columnNode = ([state, note], results) => {
   const cards = state === "auto_fixed"
     ? [...new Set(inColumn.map((r) => r.problemType))].map((type) => groupCard([type, inColumn.filter((r) => r.problemType === type)]))
     : inColumn.map(resultCard);
+  // every auto-fixed result of the repo shares the one PR the fix stage opened
+  const pr = state === "auto_fixed" ? autoFixedPr(inColumn) : null;
   return el("section", { className: "col" }, [
     el("div", { className: "t" }, [STATE_WORDS[state], span("cnt", String(inColumn.length))]),
-    span("meta", note),
+    pr === null ? span("meta", note) : el("span", { className: "meta" }, ["Fixed in ", safeLink(pr, prLabel(pr)), "."]),
     ...(cards.length === 0 ? [span("meta", "Nothing here.")] : cards),
   ]);
 };
@@ -587,7 +589,7 @@ const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(run
 const STATE_LINE = {
   waiting: (state) => [`waiting for yok to ${state.action} it`],
   applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
-  stopped: (state) => ["apply run stopped: ", runLink(state.runId, "open it to resume or cancel")],
+  stopped: (state) => [`apply run stopped: ${stoppedRunHelp(state.runId)} · `, runLink(state.runId, "see the run")],
   "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
   applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
   failed: (state) => [`couldn't apply: ${state.reason}`],
@@ -683,10 +685,21 @@ const decisionNode = (result) => {
   ]);
 };
 
-const refresh = async () => {
-  await loadDetail();
+// Every load below fills a copy of view, and only the newest one is shown: switching runs while
+// a slower read is in flight would otherwise put one run's results under the other's name.
+const loadNewest = newestWins();
+// Only the fields the load set are copied back, so a drawer opened meanwhile stays open.
+const show = async (load) => {
+  const before = { ...view };
+  const loaded = await loadNewest(view, load);
+  if (loaded === null) return;
+  for (const [key, value] of Object.entries(loaded)) {
+    if (value !== before[key]) view[key] = value;
+  }
   render();
 };
+
+const refresh = () => show((draft) => loadDetail(draft));
 // Keeps re-reading while yok has work in hand, so "waiting" turns into "applying" and then "applied" without a reload.
 // It skips a beat while a reject box is open, since a re-render would wipe what the person is typing.
 const scheduleRefresh = () => {
@@ -730,43 +743,41 @@ const render = () => {
   scheduleRefresh();
 };
 
-const loadPoints = async () => {
-  const { from, to, runIds } = trendRange(oldestFirst(), view.from, view.to);
-  const { points } = await getJson(`/api/audits/metrics?${query({ project: view.project, audit: "test", repo: view.repo, from, to })}`);
-  view.points = points.filter((point) => runIds.includes(point.auditRunId));
+const loadPoints = async (draft) => {
+  const { from, to, runIds } = trendRange(oldestFirst(draft), draft.from, draft.to);
+  const { points } = await getJson(`/api/audits/metrics?${query({ project: draft.project, audit: "test", repo: draft.repo, from, to })}`);
+  draft.points = points.filter((point) => runIds.includes(point.auditRunId));
 };
 
 // A repo the run did not audit, from the URL or the last run shown, falls back to the run's first repo.
-const loadDetail = async () => {
-  view.detail = await getJson(`/api/audits/${encodeURIComponent(view.runId)}`);
-  const repos = Object.keys(view.detail.run.commits).sort();
-  if (!repos.includes(view.repo)) view.repo = repos[0];
+const loadDetail = async (draft) => {
+  draft.detail = await getJson(`/api/audits/${encodeURIComponent(draft.runId)}`);
+  const repos = Object.keys(draft.detail.run.commits).sort();
+  if (!repos.includes(draft.repo)) draft.repo = repos[0];
 };
 
-const showRun = async (runId) => {
-  view.runId = runId;
-  await loadDetail();
-  await loadPoints();
-  render();
+const loadRun = async (draft, runId) => {
+  draft.runId = runId;
+  await loadDetail(draft);
+  await loadPoints(draft);
 };
 
-const showProject = async (project, askedRun) => {
-  view.project = project;
-  view.runs = (await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`)).runs;
-  const runs = oldestFirst();
-  view.from = runs[0].id;
-  view.to = runs[runs.length - 1].id;
-  await showRun(view.runs.some((run) => run.id === askedRun) ? askedRun : view.runs[0].id);
+const loadProject = async (draft, project, askedRun) => {
+  draft.project = project;
+  draft.runs = (await getJson(`/api/audits?${query({ project, audit: "test", limit: LIST_LIMIT })}`)).runs;
+  const runs = oldestFirst(draft);
+  draft.from = runs[0].id;
+  draft.to = runs[runs.length - 1].id;
+  await loadRun(draft, draft.runs.some((run) => run.id === askedRun) ? askedRun : draft.runs[0].id);
 };
 
-const setRange = async (fromId, toId) => {
-  const ids = oldestFirst().map((run) => run.id);
+const setRange = (fromId, toId) => show(async (draft) => {
+  const ids = oldestFirst(draft).map((run) => run.id);
   const inOrder = ids.indexOf(fromId) <= ids.indexOf(toId);
-  view.from = inOrder ? fromId : toId;
-  view.to = inOrder ? toId : fromId;
-  await loadPoints();
-  render();
-};
+  draft.from = inOrder ? fromId : toId;
+  draft.to = inOrder ? toId : fromId;
+  await loadPoints(draft);
+});
 
 const start = async () => {
   view.projects = (await getJson("/api/audits/projects?audit=test")).projects;
@@ -777,16 +788,15 @@ const start = async () => {
   const params = new URLSearchParams(location.search);
   const asked = params.get("project");
   view.repo = params.get("repo");
-  await showProject(view.projects.includes(asked) ? asked : view.projects[0], params.get("run"));
+  await show((draft) => loadProject(draft, view.projects.includes(asked) ? asked : view.projects[0], params.get("run")));
 };
 
-$("project").addEventListener("change", (event) => guarded(() => showProject(event.target.value, null)));
-$("run").addEventListener("change", (event) => guarded(() => showRun(event.target.value)));
-$("repo").addEventListener("change", (event) => guarded(async () => {
-  view.repo = event.target.value;
-  await loadPoints();
-  render();
-}));
+$("project").addEventListener("change", (event) => guarded(() => show((draft) => loadProject(draft, event.target.value, null))));
+$("run").addEventListener("change", (event) => guarded(() => show((draft) => loadRun(draft, event.target.value))));
+$("repo").addEventListener("change", (event) => guarded(() => show(async (draft) => {
+  draft.repo = event.target.value;
+  await loadPoints(draft);
+})));
 $("from").addEventListener("change", (event) => guarded(() => setRange(event.target.value, view.to)));
 $("to").addEventListener("change", (event) => guarded(() => setRange(view.from, event.target.value)));
 $("all-runs").addEventListener("click", () => {

@@ -34,15 +34,18 @@ import {
 import {
   type AuditApplyRun,
   type AuditMetricsPoint,
+  autoFixedPr,
   formatChange,
   formatMetric,
   meetsLimit,
   metricChange,
   metricSeries,
+  newestWins,
   prLabel,
   rejectBody,
   resultActions,
   resultPageState,
+  stoppedRunHelp,
   trendRange,
 } from "./page-shared.ts";
 import { folderSlug } from "./protocol.ts";
@@ -968,6 +971,47 @@ describe("result buttons", () => {
       { type: "rejected" },
       { type: "rejected", feedback: "keeps the fixture" },
     ]);
+  });
+});
+
+describe("audit page fixes", () => {
+  const fixOf = (pr?: string) => ({ summary: "delete it", ...(pr === undefined ? {} : { pr }) });
+
+  test("SC8021: the auto-fixed column names the PR its auto-fixed results share, and none when no PR was made", () => {
+    const results = [
+      { state: "needs_approval", fix: fixOf("https://github.com/o/web/pull/9") },
+      { state: "auto_fixed", fix: fixOf() },
+      { state: "auto_fixed", fix: fixOf("https://github.com/o/web/pull/112") },
+    ] as const;
+
+    expect(autoFixedPr(results)).toBe("https://github.com/o/web/pull/112");
+    expect(autoFixedPr(results.slice(0, 2))).toBeNull();
+  });
+
+  test("SC8022: a stopped apply run says how to resume it or remove it, by the run's id", () => {
+    expect(stoppedRunHelp("r-1f36b94f")).toBe(
+      "resume it with yok resume --run-id r-1f36b94f, or remove it with yok rm r-1f36b94f",
+    );
+  });
+
+  test("SC8023: of two loads, an older one that ends last is dropped and leaves the state alone", async () => {
+    const load = newestWins<{ runId: string }>();
+    const state = { runId: "a" };
+    let finishA = (): void => {};
+    const slowA = load(state, async (draft) => {
+      await new Promise<void>((resolve) => {
+        finishA = resolve;
+      });
+      draft.runId = "A";
+    });
+    const fastB = load(state, async (draft) => {
+      draft.runId = "B";
+    });
+
+    expect(await fastB).toEqual({ runId: "B" });
+    finishA();
+    expect(await slowA).toBeNull();
+    expect(state).toEqual({ runId: "a" });
   });
 });
 

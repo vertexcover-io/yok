@@ -170,3 +170,28 @@ export const rejectBody = (feedback: string): AuditEventBody => {
   const text = feedback.trim();
   return text === "" ? { type: "rejected" } : { type: "rejected", feedback: text };
 };
+
+// Publish gives every auto-fixed result of a repo that repo's one PR, and the board shows one
+// repo, so the first PR found is the column's; null when the fix stage opened none.
+export const autoFixedPr = (
+  results: readonly Readonly<{ state: AuditResult["state"]; fix: AuditResult["fix"] }>[],
+): string | null =>
+  results.find((result) => result.state === "auto_fixed" && result.fix?.pr !== undefined)?.fix
+    ?.pr ?? null;
+
+// yok has no cancel: a stopped run is resumed, or removed so the next tick marks its results failed.
+export const stoppedRunHelp = (runId: string): string =>
+  `resume it with yok resume --run-id ${runId}, or remove it with yok rm ${runId}`;
+
+// Each load works on its own copy of the state, and only the newest load's copy comes back: an
+// older, slower one that ends last would otherwise show one run's results under another's name.
+export const newestWins = <S extends object>() => {
+  let latest = 0;
+  return async (state: S, load: (draft: S) => Promise<void>): Promise<S | null> => {
+    latest += 1;
+    const mine = latest;
+    const draft = { ...state };
+    await load(draft);
+    return mine === latest ? draft : null;
+  };
+};
