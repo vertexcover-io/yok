@@ -25,7 +25,7 @@ export type AuditRouteDeps = RunDeps & Readonly<{ now: () => Date }>;
 // What the trigger tick passes: TriggerDeps, named here so this file never imports trigger.ts.
 export type AuditTickDeps = AuditRouteDeps & GitDeps & Readonly<{ log: ILogger }>;
 
-// The workflow that applies an accepted fix or reverts an undone one; PR 4 ships it.
+// The workflow that applies an accepted fix or reverts an undone one; PR 2 ships it.
 const APPLY_WORKFLOW = "test-audit-apply";
 
 // The run behind the result's newest apply_started or revert_started, while it is still stored.
