@@ -16,7 +16,7 @@ const toProject = (row: ProjectRow): Project =>
   ProjectSchema.parse({
     path: row.path,
     ...(row.git === null ? {} : { git: row.git }),
-    addedBy: { channel: row.channel },
+    addedBy: { channel: row.channel, ...(row.addedBy === null ? {} : { user: row.addedBy }) },
     addedAt: row.createdAt,
   });
 
@@ -25,6 +25,7 @@ const toProjectRow = (name: string, project: Project) => ({
   path: project.path,
   git: project.git ?? null,
   channel: project.addedBy.channel,
+  addedBy: project.addedBy.user ?? null,
   createdAt: project.addedAt,
   updatedAt: now(),
 });

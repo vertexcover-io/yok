@@ -391,8 +391,10 @@ const startRun = async (
   deps: RunDeps & GitDeps,
   body: StartRunBody,
 ) => {
+  const user = c.get("caller")?.userId;
   const launched = await startProjectRun(body, deps, c.get("log").child({ component: "runs" }), {
     source: "api",
+    ...(user === undefined ? {} : { user }),
   });
   if (!launched.ok) {
     const { status, code, message, details } = launched.error;
@@ -496,6 +498,13 @@ const relaunchRun = async (
   const log = c.get("log").child({ component: "runs", runId: id });
   const run = await deps.storage.runs.findRun(id);
   if (run === undefined) return errorResponse(c, 404, "not-found", `no run with id ${id}`);
+  // A relaunch launches with the owner's GitHub token, so only the owner may ask for one.
+  const caller = c.get("caller");
+  if (caller !== undefined && run.user !== undefined && run.user !== caller.userId) {
+    const owner = (await deps.storage.users.find(run.user))?.name ?? "another person";
+    const message = `run ${run.name ?? id} belongs to ${owner}; only ${owner} can resume or retry it`;
+    return errorResponse(c, 403, "forbidden", message);
+  }
   const linked = run.sessions.at(-1);
   if (run.name === null || run.terminal === null || linked === undefined) {
     return conflict(c, `run ${id} never started its agent session; start it again with yok run`);

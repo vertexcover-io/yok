@@ -144,18 +144,26 @@ This takes about an hour. The doctor runs first and names anything the run is mi
 
 ## 9. Run yok on a server
 
-To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1` and has no login of its own. Caddy does https and the login, then forwards each request to yok. On the server itself, nothing asks for a login.
+To start runs on another machine, run the release `yok` there as a systemd user service, with Caddy in front of it. The yok server listens only on `127.0.0.1`. Caddy does https and nothing else: yok itself checks who is calling, per person, through GitHub sign-in ([ADR 0045](../adr/0045-yok-checks-the-caller-on-every-route-of-a-gated-server.md)).
+
+**To share a server, set `SERVER_DOMAIN`. A server without it is open.** With no `SERVER_DOMAIN`, yok is local: `yok run`, the local browser and every command on the machine work with no login, exactly as on your laptop. With it, the server is gated, and every route needs a signed-in caller: a browser with yok's session cookie, or a CLI token sent as `Authorization: Bearer`. The routes left open are `/api/health`, `/login`, the GitHub sign-in routes, the device-login routes the CLI uses, and `/api/hooks/slack`, whose gate is Slack's signature.
 
 On the server, as the user who will own the runs:
 
 1. Install yok, tmux, git, claude (or codex) and Caddy. Log in to claude once: every run uses that login.
-2. Set the public domain in `~/.yok/.env`, so dashboard links point at Caddy and yok accepts the requests Caddy forwards:
+2. Register a GitHub OAuth app (Settings > Developer settings > OAuth Apps) with the callback URL `https://yok.example.com/auth/github/callback`. Then write `~/.yok/.env`:
 
    ```sh
    SERVER_DOMAIN=yok.example.com
+   GITHUB_CLIENT_ID=…
+   GITHUB_CLIENT_SECRET=…
+   SUPER_ADMIN_LOGINS=your-github-login
+   GITHUB_ORGS=acme
    ```
 
-   yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+   `SERVER_DOMAIN` makes dashboard links point at Caddy, lets yok accept the requests Caddy forwards, and turns the gate on. yok lowercases the value and drops a scheme and trailing slashes. It reads the file once, when the server starts, so after changing `SERVER_DOMAIN` run `yok server stop`; the next command starts the server again.
+
+   Who may sign in is decided only when someone signs in with GitHub ([ADR 0046](../adr/0046-sign-in-is-decided-by-github-org-or-a-super-admin-login.md)). `SUPER_ADMIN_LOGINS` lists GitHub logins that get in with no org. `GITHUB_ORGS` lists org slugs, and a member of any of them gets in. Both are comma-separated, compared without regard to case, and read on each sign-in, so a change needs no restart. A gated server with neither still starts and logs a warning; its `/login` page says which key is missing. The sign-in asks GitHub for the `read:org` scope so private org memberships show; this comes from GitHub's documentation and was not tested against GitHub. Someone who is refused sees a 403 page, and yok revokes the GitHub token it was just given and creates no user. Removing someone from the org, or from `SUPER_ADMIN_LOGINS`, takes effect at their next sign-in: yok has no way to cut a person off before that. When the refused account already has a yok user, that user is marked as revoked and their CLI tokens are deleted; a later successful sign-in clears the mark. A revoked user is refused by cookie, by token and in Slack.
 
 3. Write `~/.config/systemd/user/yok.service`:
 
@@ -184,20 +192,11 @@ On the server, as the user who will own the runs:
    journalctl --user -u yok -f           # follow the log
    ```
 
-5. Print a password hash with `caddy hash-password`, then write `/etc/caddy/Caddyfile`. The domain on its first line must match `SERVER_DOMAIN`:
+5. Write `/etc/caddy/Caddyfile`. The domain on its first line must match `SERVER_DOMAIN`. There is no `basic_auth` and no exemption for Slack:
 
    ```caddyfile
    yok.example.com {
-       # Slack cannot send the password; the server checks Slack's signature on this path instead.
-       handle /api/hooks/slack {
-           reverse_proxy 127.0.0.1:7777
-       }
-       handle {
-           basic_auth {
-               ritesh HASH_FROM_CADDY_HASH_PASSWORD
-           }
-           reverse_proxy 127.0.0.1:7777
-       }
+       reverse_proxy 127.0.0.1:7777
    }
    ```
 
@@ -210,15 +209,19 @@ On the server, as the user who will own the runs:
 On your laptop:
 
 ```bash
-YOK_SERVER_PASSWORD=… yok-remote login https://yok.example.com --user ritesh
+yok login --server https://yok.example.com
 yok-remote project add web --git git@github.com:acme/web.git
 yok-remote run task --prompt "fix login" --project web
 yok-remote server status
 ```
 
-`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login`, `ls`, `resume`, `retry` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. `ls` takes `--project` only as a filter, and `resume` and `retry` need it only with a run name, not with `--run-id`. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` without the flag answers `run it as yok-remote login`.
+`yok-remote` is `yok --remote`: the same commands, aimed at the saved server instead of this machine. The flag may go anywhere on the line. The saved login is read only with that flag, so a plain `yok run` never leaves your laptop. `run`, `project`, `trigger`, `doctor`, `login`, `ls`, `resume`, `retry` and `server status` take the flag; `--project` is required with it, because the folder you are in means nothing on the server. `ls` takes `--project` only as a filter, and `resume` and `retry` need it only with a run name, not with `--run-id`. Anything else refuses it with one line, such as `yok attach works only on this machine: run it as yok attach, without --remote`, and `login` and `logout` need no `--remote`: they always talk to the server you name.
 
-`login` takes the password from `YOK_SERVER_PASSWORD`, or from `--password`, which shows in the process list. It sends one request with the login. It saves `YOK_SERVER_URL`, `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` to `~/.yok/.env` only when the server accepts it. When the shell sets `YOK_SERVER_URL`, all three are read from the shell and the file is ignored; otherwise all three come from the file. So a CI job sets all three and needs no login, and a shell password is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
+`yok login --server URL` works like `gh auth login`. It posts this machine's name to the server, prints a page address and a short code such as `ABCD-EFGH`, and opens the page when it can. On the page, sign in with GitHub if you are not, check the code, and press Approve ("Give the yok CLI on MACHINE access as YOU?"). The CLI polls until you do; the request lives for 10 minutes. It then receives a token once, checks it against `GET /api/me`, and saves `YOK_SERVER_URL` and `YOK_SERVER_TOKEN` to `~/.yok/.env` with mode 0600, removing the old `YOK_SERVER_USER` and `YOK_SERVER_PASSWORD` lines. A failed login never replaces a working one. The server keeps only the token's SHA-256, and the token never expires: it ends when you revoke it. `yok logout` revokes this machine's token on the server and removes `YOK_SERVER_TOKEN` from the file.
+
+Open `/settings` on the server in a browser to see each token with its last use, revoke one, or create one for a script or CI, which is shown once. When the shell sets `YOK_SERVER_URL`, both it and `YOK_SERVER_TOKEN` are read from the shell and the file is ignored; otherwise both come from the file. So a CI job sets both and needs no login, and a shell token is never sent to the saved server. `yok-dev --remote …` does the same from this checkout, with `~/.yok-dev/.env`.
+
+A plain command on the server's own machine, such as `yok ls`, sends no token. On a gated server it gets a 401 and tells you to run `yok login --server URL` and then use `--remote`. A `--remote` command whose saved login is an old password says to run `yok login --server URL`.
 
 Every `--remote` command checks the server first. If the versions differ, it prints `warning: this CLI is A, the server is B` and carries on. To fix that, run `yok update` on the laptop, or upgrade yok on the server and run `systemctl --user restart yok`. `yok update` never restarts a server itself: on the server it prints `warning: restart the yok server (pid N) so it runs the installed version`, and the service restart is yours to run.
 
@@ -232,11 +235,23 @@ yok-remote retry fix-login --project web --answered
 
 When the agent stopped on a run that did not fail, after a reboot or a crash, Resume on the page, or `yok-remote resume fix-login --project web`, starts it again where it stopped. Either command takes `--run-id ID` instead of a name and `--project`, and prints the run's id and link as `yok-remote run` does. The server checks the run as it checks a new one, so a resume the doctor blocks names the failing checks and their fixes.
 
-The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same login and the same Host and Origin check as the rest of the page. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
+The terminal is a websocket at `/api/runs/RUN_ID/terminal`, behind the same caller check and the same Host and Origin check as the rest of the page: a request with no signed-in caller is answered 401 before the upgrade. Caddy's `reverse_proxy` passes websockets through by default, so the Caddyfile above needs no change; the page uses `wss://` when it is served over https. Ctrl-\ detaches, and the page offers Reattach.
 
 On Linux and Windows the browser keeps Ctrl-W and Ctrl-T for itself: they close or open a tab instead of reaching the agent. Install the page as an app (Chrome's "Install page as app") to get them back. On macOS those keys reach the agent, and Cmd-W closes the window either way.
 
-You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after the browser's login box. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
+You know it worked when `yok-remote server status` prints the server's version and pid, and the `view:` link from `yok-remote run` opens the dashboard after you sign in with GitHub. If every request through Caddy gets a 403, `SERVER_DOMAIN` does not match the domain Caddy serves.
+
+### Move a server from the shared password
+
+A server set up before the sign-in gate had one Caddy password for everybody. No release accepts both, so move in this order:
+
+1. On the server, upgrade yok (`yok update`), add `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SUPER_ADMIN_LOGINS` and `GITHUB_ORGS` to `~/.yok/.env` as above, and run `yok server stop`. If people already sign in with GitHub for Slack, the OAuth app exists and is reused; its sign-in now also asks for `read:org`.
+2. In the Caddyfile, remove the `basic_auth` block and the `handle /api/hooks/slack` exemption, leaving the domain and `reverse_proxy`, then `sudo systemctl reload caddy`.
+3. Each person runs `yok login --server https://yok.example.com` once. Until they do, `--remote` commands say the saved login was a password and name that command.
+4. In each repo that uses the GitHub Action, delete the `YOK_USER` and `YOK_PASSWORD` secrets and add `YOK_TOKEN` (below).
+5. In Slack, each person types `@yok login` once; commands from anyone not linked get one private reply that says so.
+
+The upgrade does not check anyone's access. A person who used yok before it and is in neither `SUPER_ADMIN_LOGINS` nor `GITHUB_ORGS` keeps their 30-day cookie and their Slack link until they next sign in with GitHub, which refuses them and ends both.
 
 ### Drive yok from Slack
 
@@ -250,7 +265,9 @@ You know it worked when `yok-remote server status` prints the server's version a
    SLACK_COMMAND_CHANNEL=C0123456789
    ```
 
-4. Type `@yok help` in the channel. Only messages in that channel are answered, so the channel's member list is who can use yok.
+4. Type `@yok help` in the channel. Only messages in that channel are answered.
+
+On a server with `SERVER_DOMAIN`, a command also needs the person to be linked to a yok user who still has access. Anyone else gets one reply only they can see, telling them to type `@yok login`. `login`, `whoami` and `help` are open to everyone in the channel. A run or project started from Slack records the linked user.
 
 A command is typed as on the command line, quotes included: `@yok run task --project web --prompt "fix login"`. Curly quotes, which Slack often types for you, work the same. A prompt without `--prompt` is refused. `--input KEY=VALUE` and the policy flags work as with `yok run`, except that `interaction` stays off whatever you pass: nobody sits at a Slack-started run's terminal to answer it.
 
@@ -260,7 +277,7 @@ A run started from Slack posts its updates in the thread under the message, in w
 
 1. Register the repo on the server: `yok --remote project add web --git git@github.com:ORG/web.git`.
 2. Copy [.github/workflows/yok.yml](../../.github/workflows/yok.yml) from this repo to the same path in the repo, on its default branch. The yok repo runs the same file on its own pull requests.
-3. Under the repo's Settings > Secrets and variables > Actions, add the variables `YOK_SERVER_URL` and `YOK_PROJECT` (`web`) and the secrets `YOK_USER` and `YOK_PASSWORD` (Caddy's login).
+3. Under the repo's Settings > Secrets and variables > Actions, add the variables `YOK_SERVER_URL` and `YOK_PROJECT` (`web`) and the secret `YOK_TOKEN`: sign in to the server, open `/settings`, create a token named for the repo, and copy it at once, since the server shows it only once. The job sends it as `Authorization: Bearer` straight to the server's API, since it has no browser. Revoke the token in `/settings` to cut the job off.
 
 Comment `/yok fix the review comments` on a pull request. The comment can be in the conversation, in a review thread, where the prompt carries the comment's link so `/yok fix this` works, or in a review's summary. A review starts one run for its summary and one for each line comment that starts with `/yok`, so put `/yok` in one place. The job replies where `/yok` was typed, in the review thread or on the conversation, with a link to the run's page, posted as github-actions[bot]; its log prints the same link. Only people with write access to the repo start runs, with `interaction` off; the job checks the commenter's permission with GitHub. The run pushes and replies with the server's own `gh` login.
 
@@ -275,7 +292,8 @@ yok-dev server restart          # stop it if running, start it in the background
 yok-dev project list            # the checkouts the server runs on, and their status
 yok-dev project add [NAME]      # add this checkout, or --path DIR, or --git URL to clone
 yok-dev project rm NAME         # forget one; --force deletes its runs and a folder yok cloned
-yok-dev --remote login URL --user U  # save a server's login (YOK_SERVER_PASSWORD); checks it first
+yok-dev login --server URL      # sign in to a shared server in the browser; saves YOK_SERVER_TOKEN
+yok-dev logout                  # revoke this machine's token and remove it from the file
 yok-dev --remote server status  # the server's version, pid and start time
 yok-dev --remote run task --prompt "…" --project NAME  # start a run there, unattended
 yok-dev --remote retry NAME --project P --answered  # bring a failed run back there
@@ -293,6 +311,10 @@ LOG_LEVEL=debug yok-dev run …   # stacks and debug lines on stderr
 ## When it breaks
 
 **"yok server did not start within 5s."** Read the tail it prints, or `~/.yok-dev/server.log`. A port another program took is not the cause: the server falls back to a free port and rewrites `server.port`. The usual cause is a missing tmux.
+
+**`/login` says "No one can sign in yet".** The server has `SERVER_DOMAIN` but neither `SUPER_ADMIN_LOGINS` nor `GITHUB_ORGS`. Set one in the server's `~/.yok/.env`; no restart is needed. If it says GitHub sign-in is not set up, `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is missing.
+
+**A `--remote` command says "run yok login".** The server answered 401: there is no token, it was revoked, or the person's access ended. Run `yok login --server URL`.
 
 **The doctor says `.yok/` is not gitignored.** Add `.yok/*` to `.gitignore`. This repo already has it.
 

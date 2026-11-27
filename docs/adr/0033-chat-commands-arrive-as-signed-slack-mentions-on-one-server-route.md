@@ -25,3 +25,5 @@ App mentions on one signed route, because a mention is a real message the person
 ## Consequences
 
 Amends 0027: `/api/hooks/slack` skips the proxy's password and yok checks Slack's signature there itself, so that check must never be weakened. Who may drive yok is managed in Slack, not in yok's config.
+
+> Amended by [0045](0045-yok-checks-the-caller-on-every-route-of-a-gated-server.md): Caddy exempts nothing now; `/api/hooks/slack` is one of the routes `requireCaller` leaves open, and Slack's signature plus the allowed channel stay its gate. On a gated server a command also runs only for a member linked to a yok user who still has access; anyone else gets one private reply telling them to type `@yok login`. `login`, `whoami` and `help` stay open to everyone in the channel, so channel membership alone is no longer the access list.

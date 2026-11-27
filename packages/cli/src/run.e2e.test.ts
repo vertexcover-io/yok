@@ -1357,13 +1357,13 @@ describe("remote settings", () => {
   );
 });
 
-const REMOTE_PASSWORD = `p#ss'w"rd`;
-const REMOTE_BASIC = `Basic ${Buffer.from(`ritesh:${REMOTE_PASSWORD}`).toString("base64")}`;
+const REMOTE_TOKEN = "yok_cmVtb3RlLXRva2Vu";
+const REMOTE_BEARER = `Bearer ${REMOTE_TOKEN}`;
 const STARTED_AT = Date.parse("2026-10-27T08:00:00.000Z");
 
 type SeenRequest = Readonly<{ request: string; body: unknown }>;
 
-// A yok server behind Caddy's basic_auth, as yok remote sees it: 401 without ritesh's login.
+// A gated yok server, as yok remote sees it: 401 without ritesh's token.
 const fakeRemote = (
   answers: Readonly<Record<string, () => Response>> = {},
   version: string = VERSION,
@@ -1377,7 +1377,7 @@ const fakeRemote = (
       const text = await request.text();
       const body: unknown = text === "" ? null : JSON.parse(text);
       seen.push({ request: `${request.method} ${url.pathname}${url.search}`, body });
-      if (request.headers.get("authorization") !== REMOTE_BASIC) {
+      if (request.headers.get("authorization") !== REMOTE_BEARER) {
         return new Response("unauthorized", { status: 401 });
       }
       if (url.pathname === "/api/health") {
@@ -1395,7 +1395,7 @@ const fakeRemote = (
 const remoteYok = async (
   url: string,
   args: readonly string[],
-  password: string = REMOTE_PASSWORD,
+  token: string = REMOTE_TOKEN,
 ): Promise<{ code: number; stdout: string; stderr: string; home: string }> => {
   const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
@@ -1403,8 +1403,7 @@ const remoteYok = async (
     ...process.env,
     YOK_HOME: home,
     YOK_SERVER_URL: url,
-    YOK_SERVER_USER: "ritesh",
-    YOK_SERVER_PASSWORD: password,
+    YOK_SERVER_TOKEN: token,
   };
   return { ...(await spawnHarness(home, env, ["--remote", ...args])), home };
 };
@@ -1472,13 +1471,13 @@ describe("yok --remote", () => {
   );
 
   test(
-    "SC4007: a login the server rejects stops a remote command with the advice to log in again",
+    "SC4007: a token the server rejects stops a remote command with the advice to log in again",
     async () => {
       const server = fakeRemote();
 
       const listed = await remoteYok(server.url, ["project", "list"], "wrong");
 
-      expect(listed.stderr).toContain("wrong username or password; run yok-remote login again");
+      expect(listed.stderr).toContain(`run yok login --server ${server.url}`);
       expect(listed.code).toBe(1);
       expect(server.seen.map((call) => call.request)).toEqual(["GET /api/health"]);
     },
@@ -1824,8 +1823,7 @@ describe("yok --remote", () => {
         ...process.env,
         YOK_HOME: home,
         YOK_SERVER_URL: server.url,
-        YOK_SERVER_USER: "ritesh",
-        YOK_SERVER_PASSWORD: REMOTE_PASSWORD,
+        YOK_SERVER_TOKEN: REMOTE_TOKEN,
       };
 
       const later = await spawnHarness(home, env, args);
@@ -1856,45 +1854,6 @@ describe("yok --remote", () => {
   );
 
   test(
-    "SC4022: login without --remote is refused and points at yok-remote login",
-    async () => {
-      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
-      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-
-      const refused = await spawnHarness(home, { ...process.env, YOK_HOME: home }, [
-        ...["login", "https://yok.example.com", "--user", "ritesh", "--password", "x"],
-      ]);
-
-      expect(refused.stderr.trim()).toBe(
-        "yok login works only with a server on another machine: run it as yok-remote login",
-      );
-      expect(refused.code).toBe(1);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "SC4026: login with neither --password nor YOK_SERVER_PASSWORD stops naming both, before any request",
-    async () => {
-      const server = fakeRemote();
-      const home = mkdtempSync(join(tmpdir(), "yok-remote-e2e-home-"));
-      cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-      const env = { ...process.env, YOK_HOME: home, YOK_SERVER_PASSWORD: undefined };
-
-      const refused = await spawnHarness(home, env, [
-        ...["--remote", "login", server.url, "--user", "ritesh"],
-      ]);
-
-      expect(refused.stderr.trim()).toBe(
-        "no password: set YOK_SERVER_PASSWORD, or pass --password (visible in ps)",
-      );
-      expect(refused.code).toBe(1);
-      expect(server.seen).toEqual([]);
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
     "SC4023: without --remote, a saved login in HOME/.env is never read: server status answers for this machine",
     async () => {
       const server = fakeRemote();
@@ -1902,7 +1861,7 @@ describe("yok --remote", () => {
       cleanups.push(() => rmSync(home, { recursive: true, force: true }));
       writeFileSync(
         join(home, ".env"),
-        `YOK_SERVER_URL=${server.url}\nYOK_SERVER_USER=ritesh\nYOK_SERVER_PASSWORD=${REMOTE_PASSWORD}\n`,
+        `YOK_SERVER_URL=${server.url}\nYOK_SERVER_TOKEN=${REMOTE_TOKEN}\n`,
       );
 
       const status = await spawnHarness(home, { ...process.env, YOK_HOME: home }, [
@@ -1916,14 +1875,14 @@ describe("yok --remote", () => {
   );
 });
 
-// Caddy's basic_auth and reverse_proxy: 401 without ritesh's login, else the request goes to the
+// A proxy in front of a gated server: 401 without ritesh's token, else the request goes to the
 // yok server at 127.0.0.1:PORT, with that address as its Host, as Caddy's upstream would get it.
-const basicAuthProxy = (port: number): string => {
+const bearerProxy = (port: number): string => {
   const proxy = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
-      if (request.headers.get("authorization") !== REMOTE_BASIC) {
+      if (request.headers.get("authorization") !== REMOTE_BEARER) {
         return new Response("unauthorized", { status: 401 });
       }
       const { pathname, search } = new URL(request.url);
@@ -1940,14 +1899,18 @@ const basicAuthProxy = (port: number): string => {
   return `http://127.0.0.1:${proxy.port}`;
 };
 
+// What the process was started with, from ps: `ps eww` appends the environment to the command.
+const processEnvironment = (pid: number): string =>
+  spawnSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout;
+
 describe("yok --remote beside a local server", () => {
   test(
-    "SC4019: a run started through a Basic-auth proxy saves interaction false from cli, and the laptop side starts no server",
+    "SC4019: a run started through a token-checking proxy saves interaction false from cli, and the laptop side starts no server",
     async () => {
       const repo = makeRepo();
       const server = makeEnv();
       expect(yok(repo, server.env, "project", "add", "web", "--path", repo).code).toBe(0);
-      const proxy = basicAuthProxy(readPort(server.home) ?? 0);
+      const proxy = bearerProxy(readPort(server.home) ?? 0);
 
       const remote = await remoteYok(proxy, [
         "run",
@@ -1974,15 +1937,42 @@ describe("yok --remote beside a local server", () => {
   );
 
   test(
-    "SC4020: a server yok starts gives none of the remote login variables to a run's agent session",
+    "a server yok starts holds neither the shell's remote login token, its URL, nor the old shared password in its own process environment",
+    () => {
+      const repo = makeRepo();
+      const { home, env } = makeEnv();
+      const shell = {
+        ...env,
+        YOK_SERVER_URL: "https://yok.example.com",
+        YOK_SERVER_TOKEN: "yok_secret_in_shell",
+        YOK_SERVER_USER: "team",
+        YOK_SERVER_PASSWORD: "shared_password_in_shell",
+      };
+
+      expect(yok(repo, shell, "project", "add", "web", "--path", repo).code).toBe(0);
+
+      const [pid = 0] = serverPids(home);
+      const serverEnv = processEnvironment(pid);
+      expect(serverEnv).toContain(`YOK_HOME=${home}`);
+      expect(serverEnv).not.toContain("yok_secret_in_shell");
+      expect(serverEnv).not.toContain("YOK_SERVER_URL");
+      expect(serverEnv).not.toContain("shared_password_in_shell");
+      expect(serverEnv).not.toContain("YOK_SERVER_USER");
+
+      stopServer(repo, env);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC33, SC4020: a server yok starts gives no remote login URL and an empty token to a run's agent session",
     () => {
       const repo = makeRepo();
       const { env, fakeOut } = makeEnv();
       const shell = {
         ...env,
         YOK_SERVER_URL: "https://yok.example.com",
-        YOK_SERVER_USER: "ritesh",
-        YOK_SERVER_PASSWORD: "secret",
+        YOK_SERVER_TOKEN: "yok_secret",
       };
 
       const run = yok(repo, shell, "run", "ok.yaml", "--prompt", "x", "--no-attach", "--no-open");
@@ -1990,11 +1980,8 @@ describe("yok --remote beside a local server", () => {
       expect(run.code).toBe(0);
       waitFor(() => readLines(fakeOut).some(isLaunch));
       const launched = readLines(fakeOut).find(isLaunch)?.env as Record<string, string>;
-      expect(Object.keys(launched)).not.toContainAnyValues([
-        "YOK_SERVER_URL",
-        "YOK_SERVER_USER",
-        "YOK_SERVER_PASSWORD",
-      ]);
+      expect(Object.keys(launched)).not.toContain("YOK_SERVER_URL");
+      expect(launched.YOK_SERVER_TOKEN).toBe("");
 
       stopServer(repo, env);
     },

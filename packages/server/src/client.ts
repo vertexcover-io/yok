@@ -18,7 +18,9 @@ import {
 
 export type YokClientOptions = Readonly<{
   url: string;
-  login?: Readonly<{ user: string; password: string }>;
+  token?: string;
+  // what a 401 says instead of the server's own text, which cannot know how this caller logs in
+  unauthenticated?: string;
   log?: ILogger;
   // what sends each request; the network's fetch unless the caller answers it in memory
   send?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -51,12 +53,16 @@ export const apiErrorText = (error: ApiError): string => `${error.code}: ${error
 
 const unwrap = async <R extends ClientResponse<unknown, number, "json">>(
   pending: Promise<R>,
+  unauthenticated?: string,
 ): Promise<Result<SuccessBody<R>, ApiError>> => {
   const res = await pending.catch(() => null);
   if (res === null)
     return { ok: false, error: { code: "internal", message: "server unreachable" } };
   const text = await res.text();
   const json = parseJson(text);
+  if (res.status === 401 && unauthenticated !== undefined) {
+    return { ok: false, error: { code: "unauthenticated", message: unauthenticated } };
+  }
   return res.ok
     ? { ok: true, value: json as SuccessBody<R> }
     : { ok: false, error: replyError(res.status, text, json) };
@@ -85,41 +91,45 @@ const loggedFetch = (
 
 // One method per API call, named like the CLI command that makes it. Inputs and outputs are
 // typed from the server's routes, so neither side restates the other's schemas. url is the
-// server's origin; login is for the reverse proxy in front of a remote server.
+// server's origin; token is the CLI token a gated server asks every caller for.
 export const createYokClient = ({
   url,
-  login,
+  token,
+  unauthenticated,
   log = noopLogger,
   send = (input, init) => fetch(input, init),
 }: YokClientOptions) => {
   const logged = loggedFetch(log.child({ component: "client" }), send);
-  const basic = login && Buffer.from(`${login.user}:${login.password}`).toString("base64");
-  const headers = basic === undefined ? {} : { authorization: `Basic ${basic}` };
+  const headers = token === undefined ? {} : { authorization: `Bearer ${token}` };
   const api = hc<ApiType>(`${url.replace(/\/+$/, "")}/api`, { fetch: logged, headers });
+  const call = <R extends ClientResponse<unknown, number, "json">>(pending: Promise<R>) =>
+    unwrap(pending, unauthenticated);
   return {
-    health: () => unwrap(api.health.$get()),
-    run: (body: StartRunBody) => unwrap(api.runs.$post({ json: body })),
-    resume: (body: ResumeRunBody) => unwrap(api.runs.resume.$post({ json: body })),
-    retry: (body: RetryRunBody) => unwrap(api.runs.retry.$post({ json: body })),
-    projects: () => unwrap(api.projects.$get()),
-    addProject: (body: AddProjectRequest) => unwrap(api.projects.$post({ json: body })),
+    health: () => call(api.health.$get()),
+    me: () => call(api.me.$get()),
+    revokeCurrentToken: () => call(api.tokens.current.$delete()),
+    run: (body: StartRunBody) => call(api.runs.$post({ json: body })),
+    resume: (body: ResumeRunBody) => call(api.runs.resume.$post({ json: body })),
+    retry: (body: RetryRunBody) => call(api.runs.retry.$post({ json: body })),
+    projects: () => call(api.projects.$get()),
+    addProject: (body: AddProjectRequest) => call(api.projects.$post({ json: body })),
     removeProject: (name: string, flags: Readonly<{ force: boolean }>) =>
-      unwrap(
+      call(
         api.projects[":name"].$delete({
           param: { name },
           query: { force: flags.force ? "true" : "false" },
         }),
       ),
-    doctor: (body: DoctorBody) => unwrap(api.doctor.$post({ json: body })),
-    view: (runId: string) => unwrap(api.runs[":id"].view.$get({ param: { id: runId } })),
-    viewRuns: () => unwrap(api.runs.view.$get()),
-    runs: (query: ListRunsQuery) => unwrap(api.runs.$get({ query })),
-    removeRun: (id: string) => unwrap(api.runs[":id"].$delete({ param: { id } })),
-    addTrigger: (body: AddTriggerBody) => unwrap(api.triggers.$post({ json: body })),
-    listTriggers: () => unwrap(api.triggers.$get()),
-    fireTrigger: (ref: TriggerRef) => unwrap(api.triggers.fire.$post({ json: ref })),
-    triggerLog: (ref: TriggerRef) => unwrap(api.triggers.log.$get({ query: ref })),
-    removeTrigger: (ref: TriggerRef) => unwrap(api.triggers.$delete({ query: ref })),
+    doctor: (body: DoctorBody) => call(api.doctor.$post({ json: body })),
+    view: (runId: string) => call(api.runs[":id"].view.$get({ param: { id: runId } })),
+    viewRuns: () => call(api.runs.view.$get()),
+    runs: (query: ListRunsQuery) => call(api.runs.$get({ query })),
+    removeRun: (id: string) => call(api.runs[":id"].$delete({ param: { id } })),
+    addTrigger: (body: AddTriggerBody) => call(api.triggers.$post({ json: body })),
+    listTriggers: () => call(api.triggers.$get()),
+    fireTrigger: (ref: TriggerRef) => call(api.triggers.fire.$post({ json: ref })),
+    triggerLog: (ref: TriggerRef) => call(api.triggers.log.$get({ query: ref })),
+    removeTrigger: (ref: TriggerRef) => call(api.triggers.$delete({ query: ref })),
   };
 };
 

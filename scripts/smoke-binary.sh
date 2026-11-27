@@ -29,4 +29,28 @@ YOK_HOME="$home" "$bin" ls --json >/dev/null
 [ "$(ls -l "$home/yok.db" | cut -c1-10)" = "-rw-------" ] ||
   { echo "the binary did not create yok.db with mode 0600" >&2; exit 1; }
 
+# A home whose .env sets SERVER_DOMAIN is a gated server: every route but a few needs a caller.
+# yok ls starts the server; with no login it is refused, which is the point.
+gated="$tmp/gated"
+mkdir -p "$gated"
+printf '%s\n' 'SERVER_DOMAIN=yok.example.com' >"$gated/.env"
+trap 'YOK_HOME="$home" "$bin" server stop >/dev/null 2>&1 || true; YOK_HOME="$gated" "$bin" server stop >/dev/null 2>&1 || true' EXIT
+YOK_HOME="$gated" "$bin" ls --json >/dev/null 2>&1 || true
+port=$(cat "$gated/server.port")
+api="http://127.0.0.1:$port"
+
+status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+[ "$(status "$api/api/runs")" = "401" ] ||
+  { echo "a gated server did not answer a bare /api/runs with 401" >&2; exit 1; }
+[ "$(status "$api/api/health")" = "200" ] ||
+  { echo "a gated server did not answer /api/health with 200" >&2; exit 1; }
+
+# The terminal websocket is refused before the upgrade, so the client gets a plain 401, not a 101.
+upgrade=$(status --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  "$api/api/runs/r-smoke/terminal")
+[ "$upgrade" = "401" ] ||
+  { echo "a websocket upgrade with no caller got $upgrade, not 401 before the upgrade" >&2; exit 1; }
+
 echo "ok: $bin $version runs without bun"

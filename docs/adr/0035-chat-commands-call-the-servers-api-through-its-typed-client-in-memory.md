@@ -23,3 +23,5 @@ The in-memory client, because every body schema, lock and error shape the API ap
 ## Consequences
 
 A new chat command is a client call plus a formatter; a new route needs a client method before chat can use it. The CLI's reply formatters live in `@yok/server`.
+
+> Amended by [0045](0045-yok-checks-the-caller-on-every-route-of-a-gated-server.md): the in-memory client is how Slack keeps working with the caller check, which sits in `createRoot` outside `createApi`, so these calls carry no cookie or token. The dispatcher decides who may run a command before it calls the client.

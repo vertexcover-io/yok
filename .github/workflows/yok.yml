@@ -5,7 +5,11 @@
 #   variable  YOK_SERVER_URL  the yok server's address, such as https://yok.example.com
 #   variable  YOK_PROJECT     the repo's project name on that server
 #                             (yok --remote project add NAME --git URL)
-#   secret    YOK_USER, YOK_PASSWORD   the login Caddy asks for in front of the server
+#   secret    YOK_TOKEN       a yok CLI token, sent as Authorization: Bearer. Sign in to the
+#                             server in a browser, open /settings, create a token named for this
+#                             repo, and copy it at once: the server shows it only that once.
+#                             A CI job has no browser, so it holds the token and calls the server's
+#                             API directly. Revoke it in /settings to cut the job off.
 #
 # Comment `/yok WHAT TO DO` on a pull request to run pr-fix on it, or
 # `/yok --workflow NAME WHAT TO DO` for any workflow that takes a prompt. The prompt ends with a
@@ -53,8 +57,7 @@ jobs:
           LINK: ${{ github.event.comment.html_url || github.event.review.html_url }}
           YOK_SERVER_URL: ${{ vars.YOK_SERVER_URL }}
           YOK_PROJECT: ${{ vars.YOK_PROJECT }}
-          YOK_USER: ${{ secrets.YOK_USER }}
-          YOK_PASSWORD: ${{ secrets.YOK_PASSWORD }}
+          YOK_TOKEN: ${{ secrets.YOK_TOKEN }}
         run: |
           set -euo pipefail
           permission=$(gh api "repos/$REPO/collaborators/$COMMENTER/permission" --jq .permission 2>/dev/null) || permission=none
@@ -67,7 +70,7 @@ jobs:
             echo "Ignored: the comment does not start with /yok."
             exit 0
           fi
-          for name in YOK_SERVER_URL YOK_PROJECT YOK_USER YOK_PASSWORD; do
+          for name in YOK_SERVER_URL YOK_PROJECT YOK_TOKEN; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name is not set: add it under Settings > Secrets and variables > Actions."
               exit 1
@@ -110,7 +113,7 @@ jobs:
             '{project: $project, workflow: $workflow, inputs: {prompt: $prompt},
               policies: {interaction: false}}')
           reply=$(mktemp)
-          status=$(curl -sS -o "$reply" -w '%{http_code}' -u "$YOK_USER:$YOK_PASSWORD" \
+          status=$(curl -sS -o "$reply" -w '%{http_code}' -H "Authorization: Bearer $YOK_TOKEN" \
             -H 'Content-Type: application/json' --data "$body" "${YOK_SERVER_URL%/}/api/runs")
           if [ "$status" = 201 ]; then
             view=$(jq -r .view "$reply")

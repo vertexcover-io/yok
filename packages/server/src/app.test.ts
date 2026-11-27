@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import {
   accessSync,
   constants,
@@ -13,6 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
@@ -40,10 +41,12 @@ import {
   type IStorage,
   noopLogger,
   runDirOf,
+  sessionEnv,
   WorkflowRunSchema,
 } from "@yok/sdk";
 import { type EventDraft, memoryStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
+import { websocket } from "hono/bun";
 import * as z from "zod";
 import { createApi } from "./app.ts";
 import { createYokClient } from "./client.ts";
@@ -57,7 +60,8 @@ import {
   seedUser,
   seedRun as storeRun,
 } from "./fake-host.ts";
-import { AddProjectBodySchema, type ListRunsQuery } from "./protocol.ts";
+import { hashToken, sessionSecret, signValue } from "./identity.ts";
+import { AddProjectBodySchema, ErrorBodySchema, type ListRunsQuery } from "./protocol.ts";
 import { type Reply, replyText } from "./render.ts";
 import { startProjectRun } from "./run.ts";
 import { type CheckCheckout, checkCheckoutWith, createRoot } from "./server.ts";
@@ -669,6 +673,9 @@ describe("POST /runs", () => {
       PATH: expect.stringContaining(join(deps.home, "shims")),
       YOK_RUN_ID: run.id,
       YOK_HOME: deps.home,
+      YOK_SERVER_TOKEN: "",
+      YOK_SERVER_USER: "",
+      YOK_SERVER_PASSWORD: "",
     });
   });
 
@@ -981,7 +988,7 @@ describe("createYokClient", () => {
     }
   });
 
-  test("SC1003: the client calls every route under /api, with a UTF-8 Basic header only when given a login", async () => {
+  test("SC26 (SC1003): the client calls every route under /api, sending Authorization: Bearer when given a token and never Basic", async () => {
     const seen: Array<readonly [string, string | null]> = [];
     const { url, server } = serveOn((request) => {
       seen.push([new URL(request.url).pathname, request.headers.get("authorization")]);
@@ -991,21 +998,20 @@ describe("createYokClient", () => {
       const keyless = createYokClient({ url });
       await keyless.health();
       await keyless.viewRuns();
-      const login = { user: "ritesh", password: "pässwörd" };
-      const withLogin = createYokClient({ url, login });
-      await withLogin.health();
-      await withLogin.viewRuns();
+      const withToken = createYokClient({ url, token: "yok_abc-123" });
+      await withToken.health();
+      await withToken.viewRuns();
       await createYokClient({ url: `${url}/` }).health();
     } finally {
       await server.stop(true);
     }
 
-    const basic = "Basic cml0ZXNoOnDDpHNzd8O2cmQ=";
+    const bearer = "Bearer yok_abc-123";
     expect(seen).toEqual([
       ["/api/health", null],
       ["/api/runs/view", null],
-      ["/api/health", basic],
-      ["/api/runs/view", basic],
+      ["/api/health", bearer],
+      ["/api/runs/view", bearer],
       ["/api/health", null],
     ]);
   });
@@ -1059,7 +1065,7 @@ describe("createYokClient", () => {
 
 // The one app the server's listener serves, on port 4000 behind DOMAIN, with project demo and a
 // named run r-1 on its checkout; launched counts agent launches.
-const rootApp = async (domain: string) => {
+const rootApp = async (domain: string, gated = false) => {
   let launched = 0;
   const deps = await buildDeps(() => {
     launched += 1;
@@ -1086,6 +1092,7 @@ const rootApp = async (domain: string) => {
     ...deps,
     port: 4000,
     domain,
+    gated,
     now: () => new Date(),
     openInEditor: () => ({ ok: true, value: null }),
   });
@@ -1204,6 +1211,278 @@ describe("createRoot guard", () => {
   });
 });
 
+const DOMAIN = "yok.example.com";
+const SIGNED_IN = { host: DOMAIN, origin: `https://${DOMAIN}` };
+
+// A gated root with Ada signed in two ways: a session cookie, and a CLI token.
+const gatedRoot = async () => {
+  const root = await rootApp(DOMAIN, true);
+  const { storage, home } = root.deps;
+  const userId = await seedUser(storage, { name: "Ada", github: { id: 1, login: "ada" } });
+  const session = signValue(await sessionSecret(home), {
+    sub: userId,
+    purpose: "session",
+    exp: Date.now() + 60_000,
+  });
+  const token = `yok_${randomBytes(32).toString("base64url")}`;
+  await storage.users.createToken(userId, "laptop", hashToken(token));
+  return {
+    ...root,
+    userId,
+    cookie: { cookie: `yok_session=${session}` },
+    bearer: { authorization: `Bearer ${token}` },
+  };
+};
+
+// Routes the gate leaves open: the paths are the spec's list, not read from the code under test.
+const OPEN = [
+  "/api/health",
+  "/login",
+  "/auth/github",
+  "/auth/github/callback",
+  "/api/hooks/slack",
+  "/api/auth/device",
+  "/api/auth/device/token",
+];
+
+// A path from a registered route pattern, with a made-up value for each parameter or wildcard.
+const concretePath = (pattern: string): string =>
+  pattern.replace(/:[A-Za-z]+/g, "x").replace(/\*/g, "x");
+
+describe("createRoot caller gate", () => {
+  test("SC1: with the gate on, a bare request to every registered route outside the open list is refused", async () => {
+    const { app } = await gatedRoot();
+    const routes = app.routes;
+    const gated = routes.filter((route) => !OPEN.includes(route.path.replace(/\/$/, "")));
+
+    expect(routes.map((route) => route.path)).toEqual(
+      expect.arrayContaining(["/api/runs", "/api/runs/:id/terminal", "/settings", "/runs/:id"]),
+    );
+    expect(gated.length).toBeGreaterThan(20);
+    for (const route of gated) {
+      const res = await app.request(concretePath(route.path), {
+        method: route.method === "ALL" ? "GET" : route.method,
+        headers: { host: DOMAIN },
+      });
+      expect([route.method, route.path, [302, 401].includes(res.status)]).toEqual([
+        route.method,
+        route.path,
+        true,
+      ]);
+    }
+  });
+
+  test("SC1: the open routes still answer a bare request", async () => {
+    const { app, deps } = await gatedRoot();
+    writeFileSync(join(deps.home, ".env"), "SUPER_ADMIN_LOGINS=ada\n");
+    const get = async (path: string, method = "GET") =>
+      (await app.request(path, { method, headers: { host: DOMAIN } })).status;
+
+    expect(await get("/api/health")).toBe(200);
+    expect(await get("/login")).toBe(200);
+    expect(await get("/auth/github")).toBe(503);
+    expect(await get("/auth/github/callback")).toBe(503);
+    expect(await get("/api/hooks/slack", "POST")).toBe(503);
+    expect(await get("/api/auth/device", "POST")).toBe(400);
+    expect(await get("/api/auth/device/token", "POST")).toBe(400);
+    expect(await get("/device")).toBe(401);
+  });
+
+  test("SC2: without SERVER_DOMAIN the dashboard, the API and a run start answer a bare request as before", async () => {
+    const { app, deps } = await rootApp("localhost:4000");
+    const headers = { host: "localhost:4000", "content-type": "application/json" };
+
+    for (const path of ["/", "/runs", "/runs/r-1", "/api/projects"]) {
+      const res = await app.request(path, { headers });
+      expect([path, res.status]).toEqual([path, 200]);
+    }
+    const started = await app.request("/api/runs", { method: "POST", headers, body: runBody() });
+    expect(started.status).toBe(201);
+    expect((await deps.storage.runs.listRuns()).length).toBe(2);
+    expect(await (await app.request("/api/me", { headers })).json()).toEqual({ user: null });
+  });
+
+  test("SC3: a valid Bearer token reaches /api/me as its user and stamps the token's last use", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    const [before] = await deps.storage.users.listTokens(userId);
+    expect(before?.lastUsedAt).toBeNull();
+
+    const res = await app.request("/api/me", { headers: { host: DOMAIN, ...bearer } });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      user: { id: userId, name: "Ada", email: "", login: "ada" },
+    });
+    const [after] = await deps.storage.users.listTokens(userId);
+    expect(after?.lastUsedAt).not.toBeNull();
+  });
+
+  test("SC3: a valid session cookie reaches /api/me as its user", async () => {
+    const { app, userId, cookie } = await gatedRoot();
+
+    const res = await app.request("/api/me", { headers: { host: DOMAIN, ...cookie } });
+
+    expect(((await res.json()) as { user: { id: string } }).user.id).toBe(userId);
+  });
+
+  test("SC3: a token nobody issued, a bad cookie and a Bearer header with no token are refused", async () => {
+    const { app } = await gatedRoot();
+    const refused = [
+      { authorization: "Bearer yok_nope" },
+      { authorization: "Bearer " },
+      { cookie: "yok_session=garbage" },
+    ];
+
+    for (const headers of refused) {
+      const res = await app.request("/api/me", { headers: { host: DOMAIN, ...headers } });
+      expect([headers, res.status]).toEqual([headers, 401]);
+    }
+  });
+
+  test("SC23: DELETE /api/tokens/current with a token revokes that token, so it no longer works, and leaves the person's other tokens", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    await deps.storage.users.createToken(userId, "ci", hashToken("yok_other"));
+    const status = async () =>
+      (await app.request("/api/me", { headers: { host: DOMAIN, ...bearer } })).status;
+    expect(await status()).toBe(200);
+
+    const res = await app.request("/api/tokens/current", {
+      method: "DELETE",
+      headers: { host: DOMAIN, ...bearer },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await status()).toBe(401);
+    expect((await deps.storage.users.listTokens(userId)).map((t) => t.name)).toEqual(["ci"]);
+  });
+
+  test("DELETE /api/tokens/current from a browser session has no token to revoke and answers 400", async () => {
+    const { app, deps, userId, cookie } = await gatedRoot();
+
+    const res = await app.request("/api/tokens/current", {
+      method: "DELETE",
+      headers: { host: DOMAIN, ...cookie, origin: SIGNED_IN.origin },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await deps.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
+  test("SC4: a user with access revoked is refused by cookie and by token; a restore brings the cookie back, not the deleted token", async () => {
+    const { app, deps, userId, cookie, bearer } = await gatedRoot();
+    const status = async (headers: Record<string, string>) =>
+      (await app.request("/api/me", { headers: { host: DOMAIN, ...headers } })).status;
+    expect([await status(cookie), await status(bearer)]).toEqual([200, 200]);
+
+    await deps.storage.users.setAccessRevokedAt(userId, new Date().toISOString());
+
+    expect([await status(cookie), await status(bearer)]).toEqual([401, 401]);
+    await deps.storage.users.setAccessRevokedAt(userId, null);
+    expect([await status(cookie), await status(bearer)]).toEqual([200, 401]);
+  });
+
+  test("SC5: a cookie caller's POST with no Origin is refused and starts nothing; with the Origin, or by token, it goes through", async () => {
+    const { app, deps, cookie, bearer } = await gatedRoot();
+    const post = (headers: Record<string, string>) =>
+      app.request("/api/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json", host: DOMAIN, ...headers },
+        body: runBody(),
+      });
+
+    expect((await post(cookie)).status).toBe(403);
+    expect((await deps.storage.runs.listRuns()).length).toBe(1);
+    expect((await post({ ...cookie, origin: SIGNED_IN.origin })).status).toBe(201);
+    expect((await post(bearer)).status).toBe(201);
+    const read = await app.request("/api/projects", { headers: { host: DOMAIN, ...cookie } });
+    expect(read.status).toBe(200);
+  });
+
+  test("SC6: a browser navigation to a page with no caller is redirected to /login with the page as next", async () => {
+    const { app } = await gatedRoot();
+    const browser = { host: DOMAIN, accept: "text/html,application/xhtml+xml" };
+
+    for (const [path, next] of [
+      ["/", "%2F"],
+      ["/runs/r-1?tab=terminal", "%2Fruns%2Fr-1%3Ftab%3Dterminal"],
+      ["/settings", "%2Fsettings"],
+    ] as const) {
+      const res = await app.request(path, { headers: browser });
+      expect([path, res.status, res.headers.get("location")]).toEqual([
+        path,
+        302,
+        `/login?next=${next}`,
+      ]);
+    }
+  });
+
+  test("SC6: a dashboard data request with no caller gets 401 text, not a redirect", async () => {
+    const { app } = await gatedRoot();
+
+    for (const path of ["/runs", "/stream", "/runs/r-1/files", "/assets/shared.js"]) {
+      const res = await app.request(path, { headers: { host: DOMAIN, accept: "*/*" } });
+      expect([path, res.status, res.headers.get("content-type")]).toEqual([
+        path,
+        401,
+        expect.stringContaining("text/plain"),
+      ]);
+    }
+  });
+
+  test("SC7: an /api/* request with no caller gets 401 JSON with the code unauthenticated", async () => {
+    const { app } = await gatedRoot();
+
+    const res = await app.request("/api/runs", { headers: { host: DOMAIN } });
+
+    expect(res.status).toBe(401);
+    expect(ErrorBodySchema.parse(await res.json()).error.code).toBe("unauthenticated");
+  });
+
+  // The upgrade request as a browser sends it, over a real listener, since app.request cannot
+  // upgrade. It reports how the server answered: a plain reply (the refusal) or the upgrade.
+  const upgrade = async (app: ReturnType<typeof createRoot>, headers: Record<string, string>) => {
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch, websocket });
+    try {
+      return await new Promise<"upgraded" | number>((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port: server.port,
+          path: "/api/runs/r-1/terminal",
+          headers: {
+            host: DOMAIN,
+            connection: "Upgrade",
+            upgrade: "websocket",
+            "sec-websocket-version": "13",
+            "sec-websocket-key": randomBytes(16).toString("base64"),
+            ...headers,
+          },
+        });
+        req.on("response", (res) => resolve(res.statusCode ?? 0));
+        req.on("upgrade", (_res, socket) => {
+          socket.destroy();
+          resolve("upgraded");
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    } finally {
+      await server.stop(true);
+    }
+  };
+
+  test("SC8: a terminal websocket upgrade with no caller is answered 401 before the upgrade", async () => {
+    const { app } = await gatedRoot();
+
+    expect(await upgrade(app, {})).toBe(401);
+  });
+
+  test("SC8: the same upgrade with a session cookie still upgrades, so the 401 comes from the gate", async () => {
+    const { app, cookie } = await gatedRoot();
+
+    expect(await upgrade(app, { ...cookie, origin: SIGNED_IN.origin })).toBe("upgraded");
+  });
+});
+
 const SLACK_NOW = new Date("2026-10-29T12:00:00.000Z");
 const SLACK_ENV =
   "SLACK_SIGNING_SECRET=s3cret\nSLACK_COMMAND_CHANNEL=C1\nSLACK_BOT_TOKEN=xoxb-test\n";
@@ -1215,6 +1494,7 @@ const slackRoot = async (
   env = SLACK_ENV,
   launch: Parameters<typeof buildDeps>[0] = launchesOk,
   checkCheckout: CheckCheckout = readyCheckout,
+  gated = false,
 ) => {
   const deps = { ...(await buildDeps(launch)), checkCheckout };
   writeFileSync(join(deps.home, ".env"), env);
@@ -1223,6 +1503,7 @@ const slackRoot = async (
     ...deps,
     port: 4000,
     domain: "localhost:4000",
+    gated,
     now: () => SLACK_NOW,
     openInEditor: () => ({ ok: true, value: null }),
     slackFetch: async (url, init) => {
@@ -1459,18 +1740,24 @@ type SlackRunSetup = Readonly<{
   // the project config's notifier block
   notifier?: string;
   checkCheckout?: CheckCheckout;
+  gated?: boolean;
 }>;
 
 // slackRoot with project demo holding ok.yaml, a config turning the notifier on and a .env that
 // sends its updates to C1; launches records every agent launch.
 const slackRunRoot = async (setup: SlackRunSetup = {}) => {
-  const { channel = "C1", notifier = "{ type: slack }", checkCheckout = readyCheckout } = setup;
+  const {
+    channel = "C1",
+    notifier = "{ type: slack }",
+    checkCheckout = readyCheckout,
+    gated = false,
+  } = setup;
   const launches: LaunchOptions[] = [];
   const recordLaunch = (options: LaunchOptions) => {
     launches.push(options);
     return launchesOk();
   };
-  const root = await slackRoot(SLACK_ENV, recordLaunch, checkCheckout);
+  const root = await slackRoot(SLACK_ENV, recordLaunch, checkCheckout, gated);
   const { cwd } = await tempWorkspace(root.deps.storage);
   writeFileSync(join(cwd, "orchestrate.config.yaml"), `version: 2\nnotifier: ${notifier}\n`);
   writeFileSync(join(cwd, ".env"), `SLACK_CHANNEL_ID=${channel}\nSLACK_BOT_TOKEN=xoxb-test\n`);
@@ -1660,7 +1947,7 @@ const chatDeps = async () => {
     url: "http://yok.internal",
     send: async (input, init) => api.request(input, init),
   });
-  return { deps: { ...deps, client, now: () => new Date() }, launches };
+  return { deps: { ...deps, client, gated: false, now: () => new Date() }, launches };
 };
 
 const chatReply = (deps: DispatchDeps, text: string): Promise<Reply> =>
@@ -1747,7 +2034,7 @@ describe("Slack run owner", () => {
     expect(reply).not.toContain("not connected");
   });
 
-  test("SC125 (SC29): @yok run from unlinked U8 starts as a Slack run with no user, with no GitHub token, and says to @yok login", async () => {
+  test("SC125 (SC29): @yok run from unlinked U8 on a server that is not gated starts as a Slack run with no user and no GitHub token, and tells the member to type @yok login", async () => {
     const { deps, launches, from } = await ownedRunSetup(CONNECTED);
 
     const reply = await from("U8");
@@ -1757,7 +2044,8 @@ describe("Slack run owner", () => {
     expect(run?.user).toBeUndefined();
     expect(launches[0]?.env?.GH_TOKEN).toBe("");
     expect(launches[0]?.env?.GH_CONFIG_DIR).toBe(join(deps.home, "gh-owned"));
-    expect(reply).toContain("`@yok login`");
+    expect(reply).toContain("not linked to a yok user, so the run cannot push");
+    expect(reply).toContain("@yok login");
   });
 
   test("SC125 (SC30): a token GitHub answers 401 for is dropped, the account kept, and the run starts as Ritesh with no token and the settings link", async () => {
@@ -1785,7 +2073,7 @@ describe("Slack run owner", () => {
     expect(await deps.storage.users.list()).toEqual(before);
   });
 
-  test("SC125: @yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user, told to @yok login", async () => {
+  test("SC125: @yok run with no Slack member on the thread is treated as unlinked: a Slack run with no user", async () => {
     const { deps } = await ownedRunSetup(CONNECTED);
 
     const reply = await chat(deps, 'run ok.yaml --project demo --prompt "x"');
@@ -1803,6 +2091,263 @@ describe("Slack run owner", () => {
 
     expect((await deps.storage.users.find(userId))?.accounts.github?.token).toBe(CONNECTED);
     expect(launches[0]?.env?.GH_TOKEN).toBe("gho_u1");
+  });
+});
+
+const LOGIN_HINT = "`@yok login`";
+
+// A gated Slack root with project demo; Ada is linked to member U7 and Bo to U9, whose access is
+// revoked. Member U8 has no yok user.
+const gatedSlack = async (checkCheckout: CheckCheckout = readyCheckout) => {
+  const root = await slackRunRoot({ gated: true, checkCheckout });
+  const { storage } = root.deps;
+  const ada = await seedUser(storage, {
+    name: "Ada",
+    github: { id: 1, login: "ada" },
+    slack: "U7",
+  });
+  const bo = await seedUser(storage, { name: "Bo", github: { id: 2, login: "bo" }, slack: "U9" });
+  await storage.users.setAccessRevokedAt(bo, SLACK_NOW.toISOString());
+  const say = async (member: string, text: string, eventId: string, count = 1) => {
+    const before = root.posts.length;
+    await signedHook(root.app, mention(`<@UBOT> ${text}`, { user: member }, eventId));
+    await until(() => root.posts.length >= before + count);
+    await Bun.sleep(60);
+    return root.posts.slice(before);
+  };
+  return { ...root, ada, say };
+};
+
+const COMMANDS_AS_UNLINKED = [
+  'run ok.yaml --project demo --prompt "x"',
+  "ls",
+  "project list",
+  "status",
+  "logout",
+];
+
+describe("Slack gate", () => {
+  test.each(COMMANDS_AS_UNLINKED)(
+    "SC29: %s from a member linked to no yok user gets one private reply naming @yok login, and nothing runs",
+    async (command) => {
+      const { say, launches, deps } = await gatedSlack();
+
+      const posts = await say("U8", command, "Ev1");
+
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+      expect(posts[0]?.form).toMatchObject({ channel: "C1", thread_ts: "100.1", user: "U8" });
+      expect(replies(posts)[0]).toContain(LOGIN_HINT);
+      expect(launches).toEqual([]);
+      expect(await deps.storage.runs.listRuns()).toEqual([]);
+    },
+  );
+
+  test("SC29: a mention that names no Slack member is refused the same way", async () => {
+    const { app, posts, launches } = await gatedSlack();
+    const noUser = mention("<@UBOT> status");
+    await signedHook(app, { ...noUser, event: { ...noUser.event, user: undefined } });
+
+    await until(() => posts.length > 0);
+    await Bun.sleep(60);
+    expect(posts).toHaveLength(1);
+    expect(replies(posts)[0]).toContain(LOGIN_HINT);
+    expect(launches).toEqual([]);
+  });
+
+  test.each(COMMANDS_AS_UNLINKED)(
+    "SC30: %s from a member linked to a user whose access was revoked gets the same private refusal",
+    async (command) => {
+      const { say, launches, deps } = await gatedSlack();
+
+      const posts = await say("U9", command, "Ev1");
+
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+      expect(posts[0]?.form.user).toBe("U9");
+      expect(replies(posts)[0]).toContain(LOGIN_HINT);
+      expect(launches).toEqual([]);
+      expect(await deps.storage.runs.listRuns()).toEqual([]);
+    },
+  );
+
+  test("SC31: help, whoami and login from an unlinked member still work", async () => {
+    const { say } = await gatedSlack();
+
+    const help = await say("U8", "help", "Ev1");
+    const whoami = await say("U8", "whoami", "Ev2");
+    const login = await say("U8", "login", "Ev3");
+
+    expect(replies(help)[0]).toStartWith("*Type `@yok` and one of:*");
+    expect(replies(whoami)[0]).toContain("not linked to a yok user");
+    expect(login[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+    expect(replies(login)[0]).toContain("/link/slack?state=");
+  });
+
+  test("SC31: a revoked member's login points them to sign in again, or to link another yok account, not to an already-linked line", async () => {
+    const { say } = await gatedSlack();
+
+    const login = await say("U9", "login", "Ev1");
+
+    expect(login[0]?.url).toBe("https://slack.com/api/chat.postEphemeral");
+    expect(replies(login)[0]).toContain("/login");
+    expect(replies(login)[0]).toContain("/link/slack?state=");
+    expect(replies(login)[0]).not.toContain("Already linked");
+  });
+
+  test("a linked member with access runs a command on a gated server", async () => {
+    const { say, launches } = await gatedSlack();
+
+    const posts = await say("U7", 'run ok.yaml --project demo --prompt "x"', "Ev1", 2);
+
+    expect(posts.length).toBeGreaterThanOrEqual(2);
+    expect(posts.every((post) => post.form.user === undefined)).toBe(true);
+    expect(launches).toHaveLength(1);
+  });
+
+  test("an ungated server still runs an unlinked member's command, as it did before", async () => {
+    const { app, posts, launches } = await slackRunRoot();
+
+    await signedHook(
+      app,
+      mention('<@UBOT> run ok.yaml --project demo --prompt "x"', { user: "U8" }),
+    );
+
+    await until(() => posts.length >= 2);
+    expect(launches).toHaveLength(1);
+  });
+});
+
+describe("run and project owners", () => {
+  test("SC32: a token caller who starts a run is recorded as its user, and the run keeps the server's GitHub login", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+
+    const started = await app.request("/api/runs", {
+      method: "POST",
+      headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+      body: runBody(),
+    });
+
+    expect(started.status).toBe(201);
+    const { run } = (await started.json()) as { run: { id: string } };
+    const stored = await deps.storage.runs.findRun(run.id);
+    expect(stored).toMatchObject({ source: "api", user: userId });
+    const env = await sessionEnv(deps.storage, { GH_TOKEN: "server" }, run.id, deps.home, "/shims");
+    expect(env.GH_TOKEN).toBe("server");
+  });
+
+  test("SC32: a cookie caller who adds a project is recorded as its user", async () => {
+    const { app, deps, userId, cookie } = await gatedRoot();
+    const path = gitRepo();
+
+    const added = await app.request("/api/projects", {
+      method: "POST",
+      headers: {
+        host: DOMAIN,
+        origin: SIGNED_IN.origin,
+        "content-type": "application/json",
+        ...cookie,
+      },
+      body: JSON.stringify({ name: "mine", path }),
+    });
+
+    expect(added.status).toBe(201);
+    expect((await deps.storage.projects.find("mine"))?.addedBy).toEqual({
+      channel: "api",
+      user: userId,
+    });
+  });
+
+  test("a signed-in caller cannot resume or retry another person's run, which would launch with that person's GitHub token", async () => {
+    const { app, deps, bearer } = await gatedRoot();
+    const github = { id: 2, login: "bo", token: "gho_bo" };
+    const other = await seedUser(deps.storage, { name: "Bo", github });
+    const run = await seedRun(deps.storage, { run: { source: "slack", user: other } });
+
+    const answers = await Promise.all(
+      ["resume", "retry"].map((action) =>
+        app.request(`/api/runs/${action}`, {
+          method: "POST",
+          headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+          body: JSON.stringify({ run: { id: run.id } }),
+        }),
+      ),
+    );
+
+    for (const res of answers) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: { code: string; message: string } }).error).toEqual({
+        code: "forbidden",
+        message: `run ${run.name} belongs to Bo; only Bo can resume or retry it`,
+      });
+    }
+  });
+
+  test("a signed-in caller resumes their own run past the owner check", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    const run = await seedRun(deps.storage, { run: { source: "slack", user: userId } });
+
+    const res = await app.request("/api/runs/resume", {
+      method: "POST",
+      headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+      body: JSON.stringify({ run: { id: run.id } }),
+    });
+
+    expect(res.status).not.toBe(403);
+  });
+
+  test("SC32: a caller cannot name another user in the body: the caller is the one recorded", async () => {
+    const { app, deps, userId, bearer } = await gatedRoot();
+    const other = await seedUser(deps.storage, { name: "Bo", github: { id: 2, login: "bo" } });
+
+    await app.request("/api/projects", {
+      method: "POST",
+      headers: { host: DOMAIN, "content-type": "application/json", ...bearer },
+      body: JSON.stringify({
+        name: "mine",
+        path: gitRepo(),
+        addedBy: { channel: "api", id: other },
+      }),
+    });
+
+    expect((await deps.storage.projects.find("mine"))?.addedBy.user).toBe(userId);
+  });
+
+  test("SC32: a linked Slack member who adds a project is recorded as its user", async () => {
+    const { say, deps, ada } = await gatedSlack();
+
+    await say("U7", `project add mine --path ${gitRepo()}`, "Ev1");
+
+    expect((await deps.storage.projects.find("mine"))?.addedBy).toEqual({
+      channel: "slack",
+      user: ada,
+    });
+  });
+
+  test("SC32: a linked Slack member who starts a run is recorded as its user", async () => {
+    const { say, deps, ada } = await gatedSlack();
+
+    await say("U7", 'run ok.yaml --project demo --prompt "x"', "Ev1", 2);
+
+    expect((await deps.storage.runs.listRuns())[0]).toMatchObject({ source: "slack", user: ada });
+  });
+
+  test("SC34: a YOK_SERVER_TOKEN in the server's own env reaches no launched agent session as anything but an empty string", async () => {
+    const withToken: CheckCheckout = async (input) => {
+      const checked = await readyCheckout(input);
+      return {
+        ...checked,
+        env: checked.env.ok
+          ? { ok: true, value: { ...checked.env.value, YOK_SERVER_TOKEN: "yok_secret" } }
+          : checked.env,
+      };
+    };
+    const { say, launches } = await gatedSlack(withToken);
+
+    await say("U7", 'run ok.yaml --project demo --prompt "x"', "Ev1", 2);
+
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.env?.YOK_SERVER_TOKEN).toBe("");
   });
 });
 

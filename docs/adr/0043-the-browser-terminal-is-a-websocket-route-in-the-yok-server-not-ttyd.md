@@ -23,3 +23,5 @@ Chosen option: the websocket route in the yok server, because it keeps one compi
 ## Consequences
 
 Anyone past Caddy's login, or any local process that reaches the loopback port, can type into a run's agent session, so 0027's single-user assumption now guards a shell; a terminal feature (read-only mode, per-user access) is built in this route, not by adding ttyd.
+
+> Amended by [0045](0045-yok-checks-the-caller-on-every-route-of-a-gated-server.md): on a gated server the upgrade passes `requireCaller` as well as the Host/Origin guard, and a request with no caller is answered 401 before the upgrade, so the "no new auth" above no longer holds. The `refused` frame and close 4001 still cover a run with nothing to attach.

@@ -228,10 +228,25 @@ A named target a run verifies its change against, with its own commands.
 The check that a machine, repository and config have everything a run needs.
 
 **Remote server**:
-A yok server on another machine, reached through the reverse proxy in front of it, which does https and the login.
+A yok server on another machine, reached through the reverse proxy in front of it, which does https only.
 
 **Server domain**:
-`SERVER_DOMAIN` in the yok home's `.env`: the domain that proxy answers on. Dashboard links start with it, and the Host/Origin guard accepts it.
+`SERVER_DOMAIN` in the yok home's `.env`: the domain that proxy answers on. Dashboard links start with it, and the Host/Origin guard accepts it. Setting it also makes the server gated.
+
+**Gated server**:
+A server with `SERVER_DOMAIN` set, worked out once at start. Every route but a few open ones needs a caller. A server without it is local and open.
+
+**Caller**:
+Who a request comes from, found on every request: a yok user with a valid `yok_session` cookie, or with a CLI token sent as `Authorization: Bearer`. A user whose access was revoked is no caller.
+
+**CLI token**:
+A `yok_` secret a person's machine or a CI job sends as a Bearer header. The server keeps only its SHA-256, and the token never expires until it is revoked.
+
+**Device login**:
+How `yok login --server URL` gets a CLI token without a password: the CLI shows a short code, the person approves it in the browser, and the CLI receives the token once.
+
+**Super-admin**:
+A GitHub login named in `SUPER_ADMIN_LOGINS`, which may sign in to a gated server with no org. Everyone else needs `GITHUB_ORGS`.
 
 ## People and feedback
 

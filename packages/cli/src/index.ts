@@ -9,7 +9,7 @@ import { checkRemoteFlag, commandPath, fail } from "./client.ts";
 import { doctorCommand } from "./doctor.ts";
 import { importFilesCommand } from "./import-files.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
-import { loginCommand } from "./login.ts";
+import { loginCommand, logoutCommand } from "./login.ts";
 import { lsCommand } from "./ls.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
@@ -41,7 +41,7 @@ await new Command()
   .description("Yok engineering CLI")
   .version(VERSION)
   .enablePositionalOptions()
-  .option("--remote", "act on the server saved by yok-remote login instead of this machine")
+  .option("--remote", "act on the server saved by yok login instead of this machine")
   .hook("preAction", (root, action) =>
     checkRemoteFlag(root.opts().remote === true, commandPath(action)),
   )
@@ -51,6 +51,7 @@ await new Command()
   .addCommand(agentCommand("codex"))
   .addCommand(doctorCommand())
   .addCommand(loginCommand())
+  .addCommand(logoutCommand())
   .addCommand(lsCommand())
   .addCommand(orchestrateCommand())
   .addCommand(pluginCommand())

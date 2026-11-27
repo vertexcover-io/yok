@@ -1,9 +1,13 @@
 export { type ApiDeps, type ApiType, createApi } from "./app.ts";
 export { createYokClient, type YokClient, type YokClientOptions } from "./client.ts";
+export { signValue } from "./identity.ts";
 export {
   AddProjectBodySchema,
   type AddProjectRequest,
   type ApiError,
+  DeviceStartReplySchema,
+  type DeviceTokenReply,
+  DeviceTokenReplySchema,
   type DoctorBody,
   type ErrorBody,
   ErrorBodySchema,
@@ -16,12 +20,14 @@ export {
   type ProjectView,
   pidPath,
   portPath,
+  publicOrigin,
   type RunPick,
   RunPickSchema,
   readHomeEnv,
   readPort,
   type StartRunBody,
   StartRunBodySchema,
+  serverDomain,
   updateHomeEnv,
 } from "./protocol.ts";
 export {

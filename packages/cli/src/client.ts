@@ -12,7 +12,7 @@ import {
 } from "@yok/core";
 import { type ILogger, type Result, spawnDetached, withLock, yokHome } from "@yok/sdk";
 import { isCompiled, selfArgv, VERSION } from "@yok/sdk/internal";
-import { logPath, pidPath, readHomeEnv, readPort } from "@yok/server";
+import { logPath, pidPath, publicOrigin, readHomeEnv, readPort, serverDomain } from "@yok/server";
 import { createYokClient, type YokClient } from "@yok/server/client";
 import * as z from "zod";
 
@@ -92,56 +92,67 @@ export const checkServerUrl = (url: string): Result<string> => {
   return { ok: false, error: `${url} must use https:// unless the server is on this machine` };
 };
 
-// Read on every call, since the first server start writes the port.
-export const yokClient = (home: string = yokHome()): YokClient =>
-  createYokClient({ url: localUrl(home), log: cliLog() });
+// Read on every call, since the first server start writes the port. A local command sends no
+// token, so a gated server on this machine refuses it with the way to sign in.
+export const yokClient = (home: string = yokHome()): YokClient => {
+  const origin = publicOrigin(serverDomain(home, readPort(home) ?? 1));
+  return createYokClient({
+    url: localUrl(home),
+    unauthenticated: `this server needs you signed in: run yok login --server ${origin}, then use --remote on your commands`,
+    log: cliLog(),
+  });
+};
 
 export const ENV_KEYS = {
   url: "YOK_SERVER_URL",
-  user: "YOK_SERVER_USER",
-  password: "YOK_SERVER_PASSWORD",
+  token: "YOK_SERVER_TOKEN",
 } as const;
+
+// Saved by yok versions that logged in with a password, which a server no longer accepts.
+export const OLD_PASSWORD_KEYS = ["YOK_SERVER_USER", "YOK_SERVER_PASSWORD"] as const;
 
 export type RemoteSettings = Readonly<Record<keyof typeof ENV_KEYS, string>>;
 
 const REQUEST_TIMEOUT_MS = 10_000;
-export const WRONG_LOGIN = "wrong username or password";
 
-// All three come from the shell when it sets YOK_SERVER_URL, else all three from HOME/.env, so a
-// shell password is never sent to the saved server and a CI job needs no login.
+// Both come from the shell when it sets YOK_SERVER_URL, else both from HOME/.env, so a shell
+// token is never sent to the saved server and a CI job needs no login.
 export const remoteSettings = (
   env: Readonly<Record<string, string | undefined>>,
   home: string,
 ): RemoteSettings => {
   const source = env[ENV_KEYS.url] ? env : readHomeEnv(home);
-  const settings = {
-    url: source[ENV_KEYS.url] ?? "",
-    user: source[ENV_KEYS.user] ?? "",
-    password: source[ENV_KEYS.password] ?? "",
-  };
-  const missing = Object.values(ENV_KEYS).filter((key) => !source[key]);
-  if (missing.length > 0) {
-    throw new Error(`${missing.join(", ")} not set; run yok-remote login URL --user USER`);
+  const url = source[ENV_KEYS.url];
+  if (!url) throw new Error(`${ENV_KEYS.url} not set; run yok login --server URL`);
+  const token = source[ENV_KEYS.token];
+  if (!token) {
+    const hasPassword = OLD_PASSWORD_KEYS.some((key) => source[key]);
+    throw new Error(
+      hasPassword
+        ? `${url} was saved with a password, which servers no longer accept; run yok login --server ${url}`
+        : `${ENV_KEYS.token} not set; run yok login --server ${url}`,
+    );
   }
-  unwrap(checkServerUrl(settings.url));
-  return { ...settings, url: settings.url.replace(/\/+$/, "") };
+  unwrap(checkServerUrl(url));
+  return { url: url.replace(/\/+$/, ""), token };
 };
 
-// The typed client folds every failure into one ApiError, and login and the health check need
-// the status itself: Caddy answers 401 for a wrong login and 502 when yok is down.
-export const getWithLogin = async (
-  { url, user, password }: RemoteSettings,
+const refusedLogin = (url: string): string =>
+  `the server did not accept this login: run yok login --server ${url}`;
+
+// The health check needs the status itself, which the typed client folds into one ApiError: a
+// proxy answers 502 when yok is down.
+export const getFromServer = async (
+  { url, token }: RemoteSettings,
   path: string,
-  wrongLogin: string,
 ): Promise<Response> => {
   const host = new URL(url).host;
-  const basic = Buffer.from(`${user}:${password}`).toString("base64");
   const reply = await fetch(`${url}${path}`, {
-    headers: { authorization: `Basic ${basic}` },
+    headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   }).catch(() => null);
   if (reply === null || reply.status === 502) throw new Error(`${host} is not answering`);
-  if (reply.status === 401) throw new Error(wrongLogin);
+  if (reply.status === 401) throw new Error(refusedLogin(url));
   if (reply.ok) return reply;
   const text = (await reply.text().catch(() => "")).trim().slice(0, 200);
   throw new Error(`${host} answered ${path} with ${reply.status}${text === "" ? "" : `: ${text}`}`);
@@ -155,18 +166,14 @@ export type Remote = Readonly<{
   health: z.infer<typeof HealthSchema>;
 }>;
 
-// Every --remote command but login starts here. It never starts a server, which needs the
+// Every --remote command but login and logout starts here. It never starts a server, which needs the
 // server's own machine. A version mismatch only warns, since most releases change no routes.
 export const connect = async (
   env: Readonly<Record<string, string | undefined>>,
   home: string,
 ): Promise<Remote> => {
   const settings = remoteSettings(env, home);
-  const reply = await getWithLogin(
-    settings,
-    "/api/health",
-    `${WRONG_LOGIN}; run yok-remote login again`,
-  );
+  const reply = await getFromServer(settings, "/api/health");
   const health = HealthSchema.safeParse(await reply.json().catch(() => null));
   if (!health.success) {
     throw new Error(`${new URL(settings.url).host} did not answer /api/health as a yok server`);
@@ -174,8 +181,13 @@ export const connect = async (
   if (health.data.version !== VERSION) {
     console.error(`warning: this CLI is ${VERSION}, the server is ${health.data.version}`);
   }
-  const { url, user, password } = settings;
-  const client = createYokClient({ url, login: { user, password }, log: cliLog() });
+  const { url, token } = settings;
+  const client = createYokClient({
+    url,
+    token,
+    unauthenticated: refusedLogin(url),
+    log: cliLog(),
+  });
   return { client, url, health: health.data };
 };
 
@@ -203,6 +215,7 @@ const REMOTE_COMMANDS = new Set([
   "trigger",
   "doctor",
   "login",
+  "logout",
   "ls",
   "resume",
   "retry",
@@ -210,16 +223,11 @@ const REMOTE_COMMANDS = new Set([
 ]);
 const SERVER_MACHINE_COMMANDS = new Set(["server start", "server stop", "server restart"]);
 
-// Refuses --remote on a command that acts on this machine, and login without it, before the
-// action runs: the message names the command and the exact thing to type instead.
+// Refuses --remote on a command that acts on this machine before the action runs: the message
+// names the command and the exact thing to type instead.
 export const checkRemoteFlag = (remote: boolean, path: string): void => {
   const [head = ""] = path.split(" ");
-  if (!remote) {
-    if (path !== "login") return;
-    throw new Error(
-      "yok login works only with a server on another machine: run it as yok-remote login",
-    );
-  }
+  if (!remote) return;
   if (REMOTE_COMMANDS.has(path) || REMOTE_COMMANDS.has(head)) return;
   if (SERVER_MACHINE_COMMANDS.has(path)) {
     throw new Error(
@@ -354,6 +362,7 @@ export const ensureServer = async (
       env: {
         YOK_HOME: home,
         YOK_SERVER_URL: undefined,
+        YOK_SERVER_TOKEN: undefined,
         YOK_SERVER_USER: undefined,
         YOK_SERVER_PASSWORD: undefined,
       },

@@ -144,10 +144,17 @@ const addProject = async (
   if (!root.ok) return refuse(400, root.error);
   const owned = findProjectConflict(projects, { name, root: root.value });
   if (owned !== null) return refuse(409, owned);
+  // The caller wins over the body: the in-memory Slack client has no caller and names the
+  // member's yok user in addedBy.id, which only counts when that user exists.
+  const user = c.get("caller")?.userId ?? addedBy.id;
+  const known = user === undefined ? undefined : await deps.storage.users.find(user);
   const project: Project = {
     path: root.value,
     ...(git === undefined ? {} : { git }),
-    addedBy: { channel: addedBy.channel },
+    addedBy: {
+      channel: addedBy.channel,
+      ...(known === undefined || user === undefined ? {} : { user }),
+    },
     addedAt: new Date().toISOString(),
   };
   const saved = await deps.storage.projects.add(name, project);

@@ -32,6 +32,7 @@ const chatDeps = (home: string, storage: IStorage = memoryStorage()): DispatchDe
   publicOrigin: "http://localhost:1",
   checkCheckout: async () => ({ env: { ok: true, value: {} }, report: summarize([]) }),
   git: createGit(),
+  gated: false,
   now: () => NOW,
 });
 

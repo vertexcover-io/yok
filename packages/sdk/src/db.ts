@@ -3,11 +3,12 @@ import { Database, SQLiteError } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import type { Result } from "./contracts.ts";
 import m0000 from "./migrations/0000_init.sql" with { type: "text" };
+import m0001 from "./migrations/0001_sign_in_gate.sql" with { type: "text" };
 
 export const MIN_SQLITE = "3.38.0";
 
 // Every file drizzle-kit wrote to migrations/, in its number order; a test checks none is missing.
-export const MIGRATIONS: readonly string[] = [m0000];
+export const MIGRATIONS: readonly string[] = [m0000, m0001];
 
 const MEMORY = ":memory:";
 const OWNER_ONLY = 0o600;

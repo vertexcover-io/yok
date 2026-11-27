@@ -36,6 +36,9 @@ export const readPort = (home: string): number | null => {
 export const serverDomain = (home: string, port: number): string =>
   readServerDomain(home) ?? `localhost:${port}`;
 
+// A server with a SERVER_DOMAIN is shared, and every caller must sign in; one without is local and open.
+export const isGated = (home: string): boolean => readServerDomain(home) !== undefined;
+
 const envLineKey = (line: string): string => line.slice(0, line.indexOf("=")).trim();
 
 type EnvValues = Record<string, string | null>;
@@ -69,8 +72,11 @@ export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
       "bad-request",
+      "unauthenticated",
+      "forbidden",
       "not-found",
       "conflict",
+      "too-many-requests",
       "agent-failed",
       "git-failed",
       "internal",
@@ -82,6 +88,28 @@ export const ErrorBodySchema = z.strictObject({
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 export type ErrorCode = ErrorBody["error"]["code"];
+
+export const DeviceStartBodySchema = z.strictObject({
+  hostname: z.string().trim().min(1).max(100),
+});
+
+export const DeviceStartReplySchema = z.strictObject({
+  deviceCode: NonEmptyStringSchema,
+  // what the person types at verificationUrl, like ABCD-EFGH
+  userCode: NonEmptyStringSchema,
+  verificationUrl: z.url(),
+  expiresIn: z.number().int(),
+  interval: z.number().int(),
+});
+
+export const DeviceTokenBodySchema = z.strictObject({ deviceCode: NonEmptyStringSchema });
+
+// An expired or unknown device code is a 404, not a status.
+export const DeviceTokenReplySchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("pending") }),
+  z.strictObject({ status: z.literal("approved"), token: NonEmptyStringSchema }),
+]);
+export type DeviceTokenReply = z.infer<typeof DeviceTokenReplySchema>;
 
 // The agent, tiers and env come from the compiled workflow and the checkout, on the server.
 export const StartRunBodySchema = z.strictObject({

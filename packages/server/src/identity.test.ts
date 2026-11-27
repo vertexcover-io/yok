@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,10 @@ import { memoryStorage } from "@yok/sdk/internal";
 import { Hono } from "hono";
 import {
   dropGitHubToken,
+  hashToken,
   identityRoutes,
+  MAX_PENDING_DEVICE_REQUESTS,
+  requireCaller,
   safeNext,
   sessionSecret,
   signValue,
@@ -52,11 +55,20 @@ describe("signed values", () => {
     for (const next of ["//evil.com", "https://evil.com", undefined])
       expect(safeNext(next)).toBe("/");
   });
+
+  test("safeNext refuses a backslash or a tab that a browser reads as //evil.com, and keeps the device and Slack links", () => {
+    for (const next of ["/\\evil.com", "/\t/evil.com", "/\n/evil.com"])
+      expect(safeNext(next)).toBe("/");
+    for (const next of ["/device?code=ABCD-1234", "/link/slack?state=a.b_c-d"])
+      expect(safeNext(next)).toBe(next);
+  });
 });
 
 type Call = Readonly<{ url: string; method: string; body: string }>;
 
-const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => {
+const OAUTH_APP = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n";
+
+const setup = (env = OAUTH_APP, gated = false) => {
   const home = mkdtempSync(join(tmpdir(), "identity-"));
   writeFileSync(join(home, ".env"), env);
   const calls: Call[] = [];
@@ -65,13 +77,32 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
     name: "Ritesh" as string | null,
     down: false,
     // a reply that replaces GitHub's usual one for that endpoint
-    replies: {} as Partial<Record<"token" | "user" | "emails", () => Response>>,
+    replies: {} as Partial<Record<"token" | "user" | "emails" | "orgs", () => Response>>,
+    // the org slugs /user/orgs lists, one array per page
+    orgPages: [] as string[][],
   };
   const githubFetch = async (url: string, init: RequestInit) => {
     calls.push({ url, method: init.method ?? "GET", body: String(init.body ?? "") });
     if (github.down) throw new TypeError("fetch failed");
     if (url.endsWith("/login/oauth/access_token"))
       return github.replies.token?.() ?? Response.json({ access_token: github.token });
+    if (url.includes("/user/orgs")) {
+      const page = Number(new URL(url).searchParams.get("page") ?? 1);
+      const hasNext = page < github.orgPages.length;
+      return (
+        github.replies.orgs?.() ??
+        Response.json(
+          (github.orgPages[page - 1] ?? []).map((login) => ({ login })),
+          hasNext
+            ? {
+                headers: {
+                  link: `<https://api.github.com/user/orgs?per_page=100&page=${page + 1}>; rel="next"`,
+                },
+              }
+            : {},
+        )
+      );
+    }
     if (url.endsWith("/user/emails"))
       return (
         github.replies.emails?.() ??
@@ -86,15 +117,17 @@ const setup = (env = "GITHUB_CLIENT_ID=cid\nGITHUB_CLIENT_SECRET=csecret\n") => 
   };
   let clock = NOW;
   const storage = memoryStorage();
-  const app = new Hono().route(
+  const now = () => clock;
+  const app = new Hono().use("*", requireCaller({ home, storage, now, gated })).route(
     "/",
     identityRoutes({
       home,
       storage,
       publicOrigin: "http://localhost:4000",
-      now: () => clock,
+      now,
       log: noopLogger,
       githubFetch,
+      gated,
     }),
   );
   return { app, home, storage, calls, github, setClock: (at: Date) => (clock = at) };
@@ -107,6 +140,13 @@ const cookieOf = (res: Response, name = "yok_session"): string =>
     .getSetCookie()
     .find((cookie) => cookie.startsWith(`${name}=`))
     ?.split(";")[0] ?? "";
+
+// A token for a user whose access is not ended; the test fails here if none is made.
+const madeToken = async (s: Setup, userId: string, name: string, token: string) => {
+  const made = await s.storage.users.createToken(userId, name, hashToken(token));
+  if (made === undefined) throw new Error(`no token made for ${userId}`);
+  return made;
+};
 
 const startSignIn = async ({ app }: Setup, next = "/settings") => {
   const start = await app.request(`/auth/github?next=${encodeURIComponent(next)}`);
@@ -132,7 +172,7 @@ describe("GitHub sign-in", () => {
     const s = setup();
     const { authorize, done } = await signIn(s);
 
-    expect(authorize.searchParams.get("scope")).toBe("repo workflow read:user user:email");
+    expect(authorize.searchParams.get("scope")).toBe("repo workflow read:user user:email read:org");
     expect(authorize.searchParams.get("redirect_uri")).toBe(
       "http://localhost:4000/auth/github/callback",
     );
@@ -286,6 +326,134 @@ describe("GitHub sign-in", () => {
   });
 });
 
+const setSignInEnv = (home: string, keys: string): void =>
+  writeFileSync(join(home, ".env"), OAUTH_APP + keys);
+
+describe("who may sign in on a shared server", () => {
+  test("SC10: a login in SUPER_ADMIN_LOGINS, written in another case, signs in without asking GitHub for orgs", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=other, Ritesh-GH\n`, true);
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect(cookieOf(done)).toStartWith("yok_session=");
+    expect(await s.storage.users.list()).toHaveLength(1);
+    expect(s.calls.some((call) => call.url.includes("/user/orgs"))).toBe(false);
+  });
+
+  test("SC11: a member of an org in GITHUB_ORGS, written in another case and listed on the second page of /user/orgs, signs in", async () => {
+    const s = setup(`${OAUTH_APP}GITHUB_ORGS=Acme,beta\n`, true);
+    s.github.orgPages = [["elsewhere"], ["ACME"]];
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect(cookieOf(done)).toStartWith("yok_session=");
+    expect(await s.storage.users.list()).toHaveLength(1);
+    expect(s.calls.filter((call) => call.url.includes("/user/orgs"))).toHaveLength(2);
+  });
+
+  test("SC12: an account that is no super-admin and in no registered org gets a 403 page, its fresh GitHub token is revoked and no user is created", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=someone\nGITHUB_ORGS=acme\n`, true);
+    s.github.orgPages = [["elsewhere"]];
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(403);
+    expect(await done.text()).toContain("registered");
+    expect(cookieOf(done)).toBe("");
+    expect(await s.storage.users.list()).toEqual([]);
+    const revoke = s.calls.find((call) => call.method === "DELETE");
+    expect(JSON.parse(revoke?.body ?? "{}")).toEqual({ access_token: "gho_a" });
+  });
+
+  test("SC13: a refused sign-in by a known GitHub id sets access_revoked_at, deletes its CLI tokens and ends its old session", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    const cookie = cookieOf((await signIn(s)).done);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(403);
+    const user = await s.storage.users.find(userId);
+    expect(user?.accessRevokedAt).toBe(NOW.toISOString());
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+    expect(await s.storage.users.list()).toHaveLength(1);
+    const old = await s.app.request("/settings", { headers: { cookie, accept: "text/html" } });
+    expect(old.headers.get("location")).toBe("/login?next=%2Fsettings");
+  });
+
+  test("a sign-in while both key lists are empty answers 503, revokes only the new GitHub token and leaves a known user and their CLI tokens alone", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    setSignInEnv(s.home, "");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(503);
+    expect(await done.text()).toContain("No one can sign in yet");
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+    const revoke = s.calls.find((call) => call.method === "DELETE");
+    expect(JSON.parse(revoke?.body ?? "{}")).toEqual({ access_token: "gho_a" });
+  });
+
+  test("SC14: a revoked user who is later allowed signs in again with access_revoked_at cleared", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+    await signIn(s);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeDefined();
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=ritesh-gh\n");
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(302);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    const page = await s.app.request("/settings", { headers: { cookie: cookieOf(done) } });
+    expect(page.status).toBe(200);
+  });
+
+  test("SC15: a gated server with neither SUPER_ADMIN_LOGINS nor GITHUB_ORGS answers /login naming both keys and offers no GitHub button", async () => {
+    const s = setup(OAUTH_APP, true);
+
+    const res = await s.app.request("/login");
+
+    expect(res.status).toBe(503);
+    const text = await res.text();
+    expect(text).toContain("SUPER_ADMIN_LOGINS");
+    expect(text).toContain("GITHUB_ORGS");
+    expect(text).not.toContain("/auth/github?next");
+  });
+
+  test("SC16: SUPER_ADMIN_LOGINS edited in .env between two sign-ins decides the second one, with no restart", async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    expect((await signIn(s)).done.status).toBe(302);
+    setSignInEnv(s.home, "SUPER_ADMIN_LOGINS=someone-else\n");
+
+    expect((await signIn(s)).done.status).toBe(403);
+  });
+
+  test("a /user/orgs reply GitHub fails answers 502, revokes the token and leaves the known user's access alone", async () => {
+    const s = setup(`${OAUTH_APP}GITHUB_ORGS=acme\n`, true);
+    s.github.orgPages = [["acme"]];
+    await signIn(s);
+    const [[userId = ""] = []] = await s.storage.users.list();
+    s.github.replies.orgs = () => new Response("busy", { status: 502 });
+
+    const { done } = await signIn(s);
+
+    expect(done.status).toBe(502);
+    expect((await s.storage.users.find(userId))?.accessRevokedAt).toBeUndefined();
+    expect(s.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+  });
+});
+
 const linkState = async (home: string, member = "U7", exp = NOW.getTime() + 60_000) =>
   signValue(await sessionSecret(home), { sub: member, purpose: "link", exp });
 
@@ -426,6 +594,70 @@ describe("Slack link page", () => {
     expect((await s.storage.users.list())[0]?.[1]?.slack).toBeUndefined();
     expect(await (await s.app.request("/settings", { headers })).text()).toContain("Not linked");
   });
+
+  test("a CLI token cannot unlink Slack or disconnect GitHub: those routes take a cookie only", async () => {
+    const s = setup();
+    const { done } = await signIn(s);
+    const userId = (await s.storage.users.list())[0]?.[0] ?? "";
+    await s.storage.users.addUserAccount(userId, { provider: "slack", providerId: "U7" });
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const bearer = { authorization: "Bearer yok_abc" };
+
+    for (const path of ["/settings/slack/unlink", "/settings/github/disconnect"]) {
+      const res = await s.app.request(path, { method: "POST", headers: bearer });
+      expect([path, res.status]).toEqual([path, 401]);
+    }
+    expect((await s.storage.users.find(userId))?.slack).toBe("U7");
+    expect((await s.storage.users.find(userId))?.accounts.github?.token).toBe("gho_a");
+    const unlink = await s.app.request("/settings/slack/unlink", {
+      method: "POST",
+      headers: { cookie: cookieOf(done) },
+    });
+    expect(unlink.status).toBe(302);
+    expect((await s.storage.users.find(userId))?.slack).toBeUndefined();
+  });
+});
+
+describe("a CLI token's last use", () => {
+  const withToken = async () => {
+    const s = setup(`${OAUTH_APP}SUPER_ADMIN_LOGINS=ritesh-gh\n`, true);
+    await signIn(s);
+    const userId = (await s.storage.users.list())[0]?.[0] ?? "";
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const ask = () => s.app.request("/settings", { headers: { authorization: "Bearer yok_abc" } });
+    return { s, ask };
+  };
+
+  test("two requests a minute apart write the stamp once", async () => {
+    const { s, ask } = await withToken();
+    const touch = spyOn(s.storage.users, "touchToken");
+
+    expect((await ask()).status).toBe(200);
+    s.setClock(new Date(NOW.getTime() + 60_000));
+    expect((await ask()).status).toBe(200);
+
+    expect(touch).toHaveBeenCalledTimes(1);
+  });
+
+  test("a request ten minutes after the stamp writes it again", async () => {
+    const { s, ask } = await withToken();
+    const touch = spyOn(s.storage.users, "touchToken");
+
+    expect((await ask()).status).toBe(200);
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000));
+    expect((await ask()).status).toBe(200);
+
+    expect(touch).toHaveBeenCalledTimes(2);
+  });
+
+  test("a stamp that cannot be written does not fail the request", async () => {
+    const { s, ask } = await withToken();
+    spyOn(s.storage.users, "touchToken").mockImplementation(async () => {
+      throw new Error("database is locked");
+    });
+
+    expect((await ask()).status).toBe(200);
+  });
 });
 
 describe("the identity pages look like the dashboard", () => {
@@ -537,5 +769,322 @@ describe("GitHub access in settings", () => {
     expect(res.headers.get("location")).toBe("/login?next=%2Fsettings");
     expect(await s.storage.users.list()).toEqual(before);
     expect(s.calls.length).toBe(callsBefore);
+  });
+});
+
+const FORM = { "content-type": "application/x-www-form-urlencoded" };
+
+const postJson = (s: Setup, path: string, body: unknown) =>
+  s.app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const startDevice = async (s: Setup, hostname = "ritesh-mbp") => {
+  const res = await postJson(s, "/api/auth/device", { hostname });
+  return (await res.json()) as { deviceCode: string; userCode: string; verificationUrl: string };
+};
+
+const pollDevice = (s: Setup, deviceCode: string) =>
+  postJson(s, "/api/auth/device/token", { deviceCode });
+
+const approveDevice = (s: Setup, headers: Record<string, string>, userCode: string) =>
+  s.app.request("/device", {
+    method: "POST",
+    headers: { ...headers, ...FORM },
+    body: new URLSearchParams({ code: userCode }),
+  });
+
+const signedInHeaders = async (s: Setup) => ({ cookie: cookieOf((await signIn(s)).done) });
+
+describe("CLI device login", () => {
+  test("starting a request returns a device code, a user code like ABCD-EFGH and the /device URL", async () => {
+    const s = setup();
+
+    const started = await startDevice(s);
+
+    expect(started.userCode).toMatch(/^[A-Z]{4}-[A-Z]{4}$/);
+    expect(started.deviceCode.length).toBeGreaterThan(30);
+    expect(started.verificationUrl).toBe("http://localhost:4000/device");
+  });
+
+  test("SC17: approving the request gives the polling CLI a yok_ token once, keeps only its hash, and a second poll gets nothing", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+
+    const approved = await approveDevice(s, headers, userCode);
+    const first = await pollDevice(s, deviceCode);
+    const { token } = (await first.json()) as { token: string };
+    const second = await pollDevice(s, deviceCode);
+
+    expect(approved.status).toBe(200);
+    expect(first.status).toBe(200);
+    expect(token).toMatch(/^yok_[A-Za-z0-9_-]{43}$/);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect((await s.storage.users.listTokens(userId)).map((t) => t.name)).toEqual([
+      "CLI on ritesh-mbp",
+    ]);
+    expect((await s.storage.users.findToken(hashToken(token)))?.userId).toBe(userId);
+    expect(await s.storage.users.findToken(token)).toBeUndefined();
+    expect(second.status).toBe(404);
+    expect(JSON.stringify(await second.json())).not.toContain(token);
+  });
+
+  test("two polls at once on an approved request give one token to one of them and a 404 to the other", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    await approveDevice(s, headers, userCode);
+
+    const polls = await Promise.all([pollDevice(s, deviceCode), pollDevice(s, deviceCode)]);
+
+    expect(polls.map((res) => res.status).sort()).toEqual([200, 404]);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
+  test("SC18: polling before anyone approves answers pending and mints no token", async () => {
+    const s = setup();
+    await signIn(s);
+    const { deviceCode } = await startDevice(s);
+
+    const res = await pollDevice(s, deviceCode);
+
+    expect(await res.json()).toEqual({ status: "pending" });
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+
+  test("SC19: a request older than 10 minutes is expired for the poll and for the approval, and a code never issued is the same", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000 + 1));
+
+    const poll = await pollDevice(s, deviceCode);
+    const approve = await approveDevice(s, headers, userCode);
+    const unknown = await pollDevice(s, "never-issued");
+
+    expect(poll.status).toBe(404);
+    expect(approve.status).toBe(400);
+    expect(unknown.status).toBe(404);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+
+  test("the request past the pending cap answers 429 and issues no code, and room comes back when old ones expire", async () => {
+    const s = setup();
+    for (let i = 0; i < MAX_PENDING_DEVICE_REQUESTS; i++) await startDevice(s);
+
+    const refused = await postJson(s, "/api/auth/device", { hostname: "one-too-many" });
+
+    expect(refused.status).toBe(429);
+    expect(JSON.stringify(await refused.json())).not.toContain("deviceCode");
+    s.setClock(new Date(NOW.getTime() + 10 * 60_000 + 1));
+    expect((await postJson(s, "/api/auth/device", { hostname: "later" })).status).toBe(200);
+  });
+
+  test("a request already approved cannot be approved again by another person, and still hands its token to the first approver", async () => {
+    const s = setup();
+    const first = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    expect((await approveDevice(s, first, userCode)).status).toBe(200);
+    const [[firstId = ""] = []] = await s.storage.users.list();
+    const other = await s.storage.users.saveGitHubUser({
+      id: 42,
+      login: "mallory",
+      name: "Mallory",
+      email: "m@example.com",
+      token: "gho_m",
+    });
+    const second = await signValue(await sessionSecret(s.home), {
+      sub: other[0],
+      purpose: "session",
+      exp: NOW.getTime() + 60_000,
+    });
+
+    const again = await approveDevice(s, { cookie: `yok_session=${second}` }, userCode);
+    const poll = await pollDevice(s, deviceCode);
+
+    expect(again.status).toBe(400);
+    expect(poll.status).toBe(200);
+    expect(await s.storage.users.listTokens(other[0])).toEqual([]);
+    expect(await s.storage.users.listTokens(firstId)).toHaveLength(1);
+  });
+
+  test("the same person pressing Back and Approve again before the CLI polls sees the approved page again, and the CLI gets one token", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { deviceCode, userCode } = await startDevice(s);
+    await approveDevice(s, headers, userCode);
+
+    const again = await approveDevice(s, headers, userCode);
+    const poll = await pollDevice(s, deviceCode);
+
+    expect(again.status).toBe(200);
+    expect(await again.text()).toContain("yok CLI approved");
+    expect(((await poll.json()) as { status: string }).status).toBe("approved");
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
+  test("SC20: /device with no session cookie goes to sign-in and comes back to /device", async () => {
+    const s = setup();
+
+    const res = await s.app.request("/device");
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/login?next=%2Fdevice");
+  });
+
+  test("/device asks for the code, then names the machine and the person with an Approve button", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { userCode } = await startDevice(s, "build-box");
+
+    const ask = await (await s.app.request("/device", { headers })).text();
+    const confirm = await (
+      await s.app.request(`/device?code=${userCode.toLowerCase().replace("-", "")}`, { headers })
+    ).text();
+    const wrong = await s.app.request("/device?code=ZZZZ-ZZZZ", { headers });
+
+    expect(ask).toContain('name="code"');
+    expect(confirm).toContain("Give the yok CLI on <code>build-box</code> access as Ritesh?");
+    expect(confirm).toContain("only if you just ran <code>yok login</code> yourself");
+    expect(confirm).toContain('action="/device"');
+    expect(confirm).toContain(`value="${userCode}"`);
+    expect(wrong.status).toBe(400);
+  });
+
+  test("/device wraps a long unbroken machine name inside the card instead of widening the page", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const { userCode } = await startDevice(s, "b".repeat(100));
+
+    const confirm = await (await s.app.request(`/device?code=${userCode}`, { headers })).text();
+
+    expect(confirm).toContain(`<code>${"b".repeat(100)}</code>`);
+    expect(confirm.match(/code\{([^}]*)\}/)?.[1]).toContain("overflow-wrap:anywhere");
+  });
+
+  test("SC21: approving with a Bearer token instead of a cookie is refused and the request stays pending", async () => {
+    const s = setup();
+    await signIn(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+    const { deviceCode, userCode } = await startDevice(s);
+
+    const res = await approveDevice(s, { authorization: "Bearer yok_abc" }, userCode);
+
+    expect(res.status).toBe(401);
+    expect(await (await pollDevice(s, deviceCode)).json()).toEqual({ status: "pending" });
+  });
+
+  test("a person whose access was revoked cannot approve, and a request approved before the revoke mints no token", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const early = await startDevice(s);
+    await approveDevice(s, headers, early.userCode);
+    const late = await startDevice(s);
+    await s.storage.users.setAccessRevokedAt(userId, NOW.toISOString());
+
+    const approve = await approveDevice(s, headers, late.userCode);
+    const poll = await pollDevice(s, early.deviceCode);
+
+    expect(approve.status).toBe(302);
+    expect(poll.status).toBe(404);
+    expect(await (await pollDevice(s, late.deviceCode)).json()).toEqual({ status: "pending" });
+    expect(await s.storage.users.listTokens(userId)).toEqual([]);
+  });
+});
+
+describe("tokens in settings", () => {
+  const createToken = (s: Setup, headers: Record<string, string>, name: string) =>
+    s.app.request("/settings/tokens", {
+      method: "POST",
+      headers: { ...headers, ...FORM },
+      body: new URLSearchParams({ name }),
+    });
+
+  test("settings lists each token with its last use and a Revoke button", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const used = await madeToken(s, userId, "laptop", "yok_a");
+    await s.storage.users.touchToken(used.id, NOW);
+    const idle = await madeToken(s, userId, "ci", "yok_b");
+
+    const page = await (await s.app.request("/settings", { headers })).text();
+
+    expect(page).toContain("<code>laptop</code>");
+    expect(page).toContain("Last used 2026-11-04");
+    expect(page).toContain("<code>ci</code>");
+    expect(page).toContain("Never used");
+    expect(page).toContain(`action="/settings/tokens/${idle.id}/revoke"`);
+  });
+
+  test("SC22: creating a CI token shows it once, and the database finds it only by its hash", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+
+    const res = await createToken(s, headers, "github actions");
+    const shown = (await res.text()).match(/yok_[A-Za-z0-9_-]{43}/)?.[0] ?? "";
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    expect((await s.storage.users.listTokens(userId)).map((t) => t.name)).toEqual([
+      "github actions",
+    ]);
+    expect((await s.storage.users.findToken(hashToken(shown)))?.name).toBe("github actions");
+    expect(await s.storage.users.findToken(shown)).toBeUndefined();
+    const settings = await (await s.app.request("/settings", { headers })).text();
+    expect(settings).not.toContain(shown);
+  });
+
+  test("a blank name makes no token, and a Bearer token cannot make one", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    await s.storage.users.createToken(userId, "laptop", hashToken("yok_abc"));
+
+    const blank = await createToken(s, headers, "   ");
+    const viaToken = await createToken(s, { authorization: "Bearer yok_abc" }, "more");
+
+    expect(blank.status).toBe(400);
+    expect(viaToken.status).toBe(401);
+    expect(await s.storage.users.listTokens(userId)).toHaveLength(1);
+  });
+
+  test("Revoke deletes that token so it stops working, and another person's token id deletes nothing", async () => {
+    const s = setup();
+    const headers = await signedInHeaders(s);
+    const [userId] = (await s.storage.users.list())[0] ?? [""];
+    const mine = await madeToken(s, userId, "laptop", "yok_mine");
+    const other = await s.storage.users.saveGitHubUser({
+      id: 2,
+      login: "bo",
+      name: "Bo",
+      email: "",
+      token: "gho_b",
+    });
+    const theirs = await madeToken(s, other[0], "bo-laptop", "yok_theirs");
+
+    const foreign = await s.app.request(`/settings/tokens/${theirs.id}/revoke`, {
+      method: "POST",
+      headers,
+    });
+    const own = await s.app.request(`/settings/tokens/${mine.id}/revoke`, {
+      method: "POST",
+      headers,
+    });
+
+    expect(foreign.status).toBe(302);
+    expect(own.headers.get("location")).toBe("/settings");
+    expect(await s.storage.users.findToken(hashToken("yok_mine"))).toBeUndefined();
+    expect(await s.storage.users.findToken(hashToken("yok_theirs"))).toBeDefined();
   });
 });

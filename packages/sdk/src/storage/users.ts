@@ -1,15 +1,23 @@
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Result } from "../contracts.ts";
 import type { GitHubSignIn, ImportedUser, IUserRepository, UserAccount } from "../repositories.ts";
 import * as tables from "../schema.ts";
-import { type Accounts, type UserEntry, UserSchema } from "../users.ts";
+import {
+  type Accounts,
+  type ApiToken,
+  ApiTokenSchema,
+  type UserEntry,
+  UserSchema,
+} from "../users.ts";
 import { type Db, IMMEDIATE, now } from "./common.ts";
 
 type UserRow = typeof tables.users.$inferSelect;
 type AccountRow = typeof tables.userAccounts.$inferSelect;
 
-const { users, userAccounts } = tables;
+const { users, userAccounts, apiTokens } = tables;
+// A busy CLI would otherwise write last_used_at on every call.
+const TOUCH_EVERY_MS = 5 * 60_000;
 const GITHUB = "github";
 const SLACK = "slack";
 const newUserId = (): string => `u_${randomBytes(4).toString("hex")}`;
@@ -32,9 +40,21 @@ const toUserEntry = (row: UserRow, accounts: readonly AccountRow[]): UserEntry =
     email: row.email,
     accounts: githubAccount(accounts.find((account) => account.provider === GITHUB)),
     ...(slack === undefined ? {} : { slack: slack.providerId }),
+    ...(row.accessRevokedAt === null ? {} : { accessRevokedAt: row.accessRevokedAt }),
   });
   return [row.id, user];
 };
+
+const newTokenId = (): string => `t_${randomBytes(4).toString("hex")}`;
+
+const toApiToken = (row: typeof apiTokens.$inferSelect): ApiToken =>
+  ApiTokenSchema.parse({
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    createdAt: row.createdAt,
+    lastUsedAt: row.lastUsedAt,
+  });
 
 // All users, or those with the given ids, oldest first.
 const userEntries = (db: Db, ids?: readonly string[]): readonly UserEntry[] => {
@@ -175,4 +195,56 @@ export const userRepository = (db: Db): IUserRepository => ({
       .run();
   },
   importUser: async (id, user) => importUserIn(db, id, user, now()),
+  // One write each, so a token approved while access is being ended cannot outlive it.
+  setAccessRevokedAt: async (userId, at) => {
+    db.transaction((tx) => {
+      tx.update(users).set({ accessRevokedAt: at }).where(eq(users.id, userId)).run();
+      if (at !== null) tx.delete(apiTokens).where(eq(apiTokens.userId, userId)).run();
+    }, IMMEDIATE);
+  },
+  createToken: async (userId, name, tokenHash) =>
+    db.transaction((tx) => {
+      const revoked = tx
+        .select({ at: users.accessRevokedAt })
+        .from(users)
+        .where(eq(users.id, userId))
+        .get()?.at;
+      if (revoked !== null && revoked !== undefined) return undefined;
+      const row = tx
+        .insert(apiTokens)
+        .values({ id: newTokenId(), userId, name, tokenHash, createdAt: now() })
+        .returning()
+        .get();
+      return toApiToken(row);
+    }, IMMEDIATE),
+  findToken: async (tokenHash) => {
+    const row = db.select().from(apiTokens).where(eq(apiTokens.tokenHash, tokenHash)).get();
+    return row === undefined ? undefined : toApiToken(row);
+  },
+  listTokens: async (userId) =>
+    db
+      .select()
+      .from(apiTokens)
+      .where(eq(apiTokens.userId, userId))
+      .orderBy(sql`rowid`)
+      .all()
+      .map(toApiToken),
+  deleteToken: async (userId, tokenId) =>
+    db
+      .delete(apiTokens)
+      .where(and(eq(apiTokens.userId, userId), eq(apiTokens.id, tokenId)))
+      .returning({ id: apiTokens.id })
+      .all().length > 0,
+  touchToken: async (tokenId, at) => {
+    const stale = new Date(at.getTime() - TOUCH_EVERY_MS).toISOString();
+    db.update(apiTokens)
+      .set({ lastUsedAt: at.toISOString() })
+      .where(
+        and(
+          eq(apiTokens.id, tokenId),
+          or(isNull(apiTokens.lastUsedAt), lt(apiTokens.lastUsedAt, stale)),
+        ),
+      )
+      .run();
+  },
 });
