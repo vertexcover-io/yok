@@ -34,8 +34,10 @@ process.env.YOK_HOME = join(testTmp, "yok-home");
 // and never write the person's ~/.claude.json.
 process.env.CLAUDE_CONFIG_DIR = join(testTmp, "claude-config");
 
-// Tests run outside the yok CLI, so they set what its entry sets when run from source.
-process.env.YOK_SELF ??= JSON.stringify([
+// Tests run outside the yok CLI, so they set what its entry sets when run from source. Always set,
+// never kept: inside a yok session YOK_SELF names the installed binary, whose skills and workflows
+// are not this checkout's.
+process.env.YOK_SELF = JSON.stringify([
   process.execPath,
   "--no-env-file",
   join(import.meta.dir, "..", "packages", "cli", "src", "index.ts"),
