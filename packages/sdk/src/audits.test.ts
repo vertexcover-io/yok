@@ -1,4 +1,8 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AUDIT_CLICK_TYPES,
   AUDIT_RUN_START_TYPES,
@@ -17,7 +21,7 @@ import {
 import type { State } from "./contracts.ts";
 import * as internal from "./internal.ts";
 import type { IStorage } from "./repositories.ts";
-import { memoryStorage } from "./storage.ts";
+import { memoryStorage, openStorage } from "./storage.ts";
 
 const AT = "2026-11-01T00:00:00.000Z";
 
@@ -72,8 +76,10 @@ const addRun = async (
 };
 
 // Project web with runs r-1 (weekly-test) and r-2 (weekly-test-2); more runs when named.
-const seeded = async (extra: readonly string[] = []): Promise<IStorage> => {
-  const storage = memoryStorage();
+const seeded = async (
+  extra: readonly string[] = [],
+  storage: IStorage = memoryStorage(),
+): Promise<IStorage> => {
   const added = await storage.projects.add("web", {
     path: "/abs/web",
     addedBy: { channel: "cli" },
@@ -226,6 +232,37 @@ describe("storage.audits", () => {
     expect(await storage.audits.list("web", "test")).toEqual([held]);
     const qa = await storage.audits.start(week("r-2", { audit: "qa" }));
     expect(qa.ok).toBe(true);
+  });
+
+  test("SC7233: audit runs, metrics and results record when they last changed", async () => {
+    const home = mkdtempSync(join(tmpdir(), "yok-audit-"));
+    const storage = await seeded([], openStorage(home));
+    const stamps = (table: string): readonly string[] => {
+      const db = new Database(join(home, "yok.db"), { readonly: true });
+      const rows = db.query(`select updated_at as at from ${table}`).all() as { at: string }[];
+      db.close();
+      return rows.map((row) => row.at);
+    };
+    try {
+      setSystemTime(new Date("2026-11-08T02:00:00.000Z"));
+      const started = await startOk(storage, week("r-1"));
+      expect(stamps("audit_runs")).toEqual(["2026-11-08T02:00:00.000Z"]);
+
+      setSystemTime(new Date("2026-11-08T02:14:00.000Z"));
+      await storage.audits.finish(started.id, {
+        status: "complete",
+        metrics: [metric()],
+        results: [result(started.id, "one")],
+      });
+
+      expect(stamps("audit_runs")).toEqual(["2026-11-08T02:14:00.000Z"]);
+      expect(stamps("audit_metrics")).toEqual(["2026-11-08T02:14:00.000Z"]);
+      expect(stamps("audit_results")).toEqual(["2026-11-08T02:14:00.000Z"]);
+      expect(await storage.audits.read(started.id)).not.toHaveProperty("run.updatedAt");
+    } finally {
+      setSystemTime();
+      await storage.close();
+    }
   });
 
   test("SC7230: an audit naming a project other than its run's is refused and writes nothing", async () => {
