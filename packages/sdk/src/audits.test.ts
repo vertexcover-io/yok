@@ -625,6 +625,21 @@ describe("storage.audits result events", () => {
     expect(await storage.audits.decision(one.id)).toBeUndefined();
     expect(await storage.audits.run(one.id)).toBeUndefined();
   });
+
+  test("SC7236: a run start written by anyone but yok is refused", async () => {
+    const { storage, one } = await finished();
+
+    await expect(
+      storage.audits.addEvent({
+        resultId: one.id,
+        type: "apply_started",
+        who: "savitha",
+        startedRunId: "r-2",
+        payload: {},
+      } as unknown as AuditResultEventDraft),
+    ).rejects.toThrow();
+    expect(await storage.audits.run(one.id)).toBeUndefined();
+  });
 });
 
 describe("storage.audits fixes", () => {
@@ -732,6 +747,53 @@ describe("storage.audits fixes", () => {
       "a fix patch sets commit, pr or error",
     );
     expect(await fixOf(storage, run.id, one.id)).toEqual(instruction);
+  });
+
+  test("SC7234: a retried finish keeps the commit, pr, error and time the apply run wrote", async () => {
+    const { storage, run, one, two } = await finished();
+    await storage.audits.setFix(one.id, {
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+    });
+    await storage.audits.setFix(one.id, { error: "revert failed" });
+    const written = await fixOf(storage, run.id, one.id);
+
+    await storage.audits.finish(run.id, {
+      status: "complete",
+      metrics: [],
+      results: [{ ...one, title: "retitled", fix: { summary: "merge them again" } }, two],
+    });
+
+    const retried = (await storage.audits.read(run.id))?.results.find((row) => row.id === one.id);
+    expect(retried?.title).toBe("retitled");
+    expect(retried?.fix).toEqual({
+      summary: "merge them again",
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+      error: "revert failed",
+      at: written?.at,
+    });
+  });
+
+  test("SC7235: a pr is refused unless the patch or the stored fix has a commit", async () => {
+    const { storage, run, one } = await finished();
+
+    const refused = await storage.audits.setFix(one.id, { pr: "https://github.com/o/web/pull/7" });
+    expect(refused).toEqual({
+      ok: false,
+      error: `audit result ${one.id} has no commit for its pr`,
+    });
+    expect(await fixOf(storage, run.id, one.id)).toEqual(instruction);
+
+    await storage.audits.setFix(one.id, { commit: "abc123" });
+    const added = await storage.audits.setFix(one.id, { pr: "https://github.com/o/web/pull/7" });
+    expect(added.ok).toBe(true);
+    expect(await fixOf(storage, run.id, one.id)).toEqual({
+      ...instruction,
+      commit: "abc123",
+      pr: "https://github.com/o/web/pull/7",
+      at: expect.any(String),
+    });
   });
 });
 

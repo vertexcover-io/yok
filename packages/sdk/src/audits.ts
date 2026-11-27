@@ -145,7 +145,11 @@ const eventFields = {
   payload: z.union([z.strictObject({ feedback: NonEmptyStringSchema }), z.strictObject({})]),
 };
 const clickFields = { ...eventFields, type: z.enum(AUDIT_CLICK_TYPES), startedRunId: z.null() };
-const runStartFields = { ...eventFields, type: z.enum(AUDIT_RUN_START_TYPES) };
+const runStartFields = {
+  ...eventFields,
+  type: z.enum(AUDIT_RUN_START_TYPES),
+  who: z.literal("yok"),
+};
 const stamp = { id: z.uuid(), ts: z.iso.datetime() };
 
 // Append-only: a later click or run start is a new event.
