@@ -103,7 +103,7 @@ describe("startAudit", () => {
     });
   });
 
-  test("SC3: starting the same run's audit twice keeps one running audit with the later period end", async () => {
+  test("SC3: starting the same run's audit twice keeps one running audit with its first period", async () => {
     await withSeededStorage(async (storage, run, repo) => {
       const first = await started(storage, run, repo);
       const later = new Date(NOW.getTime() + 60_000);
@@ -113,7 +113,7 @@ describe("startAudit", () => {
         expect.objectContaining({
           id: first.id,
           status: "running",
-          periodEnd: later.toISOString(),
+          periodEnd: first.periodEnd,
         }),
       ]);
     });
