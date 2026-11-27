@@ -264,11 +264,14 @@ const changeText = (info, series) => {
 const tileCaption = (tile) => {
   const share = metricOf("duplicatesPct");
   if (tile.metric !== "duplicates" || share?.status !== "measured") return tile.caption;
-  return `${tile.caption} · ${formatMetric("percent", share.value)} of all tests`;
+  return `${tile.caption} · ${formatMetric("percent", share.value)} of the tests added`;
 };
 
 const tileBody = (tile) => {
   const stored = metricOf(tile.metric);
+  if (stored === undefined && view.detail.run.status === "running") {
+    return [span("name", tile.name), span("big dim", "measuring"), span("cap", "this audit is still running")];
+  }
   if (stored === undefined || stored.status === "not_measured") {
     return [span("name", tile.name), span("big dim", "not measured"), span("cap", stored?.reason ?? "this audit did not measure it")];
   }
@@ -396,7 +399,7 @@ const DRAWERS = {
     how: "We compare what each test sets up, calls and checks. A test is a duplicate when another test already proves the same thing, and each one names the test that still covers it.",
     charts: [
       { kind: "bar", title: "Duplicate tests found", metric: "duplicates" },
-      { kind: "line", title: "Duplicates, % of all tests", metric: "duplicatesPct" },
+      { kind: "line", title: "Duplicates, % of the tests added", metric: "duplicatesPct" },
     ],
   },
 };

@@ -65,7 +65,10 @@ nodes:
       These items come from the test audit, not from a bug report. An item whose hint is a diff:
       apply it with git apply, and when it no longer applies make the change its summary and
       trigger describe. An item whose hint is a git revert: run it. Neither needs a failing test
-      first; prove each by running the files it touches, all passing. Only a fix(audit-apply-1 …)
+      first. Prove a diff by running the files it touches, all passing. Prove a revert by running
+      the files it touches and showing each fails or passes as it did before the reverted commit:
+      undoing a fix for a flaky or failing test brings that failure back, which is the revert
+      working, so it is no new failure and never a reason to drop the revert. Only a fix(audit-apply-1 …)
       commit after the repo's startSha in the workspace input is an earlier attempt of this run;
       one at or before startSha came from an earlier apply run, so do that item again. Every other
       step of the skill holds.
