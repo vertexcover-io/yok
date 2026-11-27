@@ -85,7 +85,7 @@ A skill's scripts live beside it, declared as references, and run through `yok o
 
 ### `workflows/`: the shipped graphs
 
-`task.yaml` is the full pipeline; `quick.yaml`, `regression.yaml`, `skill.yaml` and `pr-fix.yaml` are the others, and `pr-fix.yaml` works on an open pull request's own branch. `demo-workflows/` holds smaller ones used by tests and for trying things: `step-demo` runs only exec nodes, `kitchen-sink` uses every node type, `context-demo` exercises session resets.
+`task.yaml` is the full pipeline; `quick.yaml`, `regression.yaml`, `skill.yaml`, `pr-fix.yaml`, `test-audit.yaml` and `test-audit-apply.yaml` are the others: `pr-fix.yaml` works on an open pull request's own branch, `test-audit.yaml` audits the test suite every Saturday on a cron trigger, and `test-audit-apply.yaml` applies the audit fixes people accept. `demo-workflows/` holds smaller ones used by tests and for trying things: `step-demo` runs only exec nodes, `kitchen-sink` uses every node type, `context-demo` exercises session resets.
 
 ## The processes at run time
 

@@ -71,6 +71,24 @@ const findHolder = (db: Db, start: AuditStart) =>
     )
     .get();
 
+// Another run still auditing this project. Checked in start's transaction, so two starts a few
+// milliseconds apart, whose clock-read periods differ, cannot both open an audit; an audit whose
+// run stopped without closing it (cancelled, failed) no longer blocks.
+const findOpenAudit = (db: Db, start: AuditStart) =>
+  db
+    .select({ runId: tables.auditRuns.runId, runName: tables.runs.name })
+    .from(tables.auditRuns)
+    .innerJoin(tables.runs, eq(tables.runs.id, tables.auditRuns.runId))
+    .where(
+      and(
+        eq(tables.auditRuns.project, start.project),
+        eq(tables.auditRuns.audit, start.audit),
+        eq(tables.auditRuns.status, "running"),
+        sql`json_extract(${tables.runs.state}, '$.status') in ('running', 'blocked')`,
+      ),
+    )
+    .get();
+
 // A run starting again (a retried audit-start) gets back the audit it first opened, period and
 // commits unchanged: its start step reads the clock, so a retry names a slightly later periodEnd,
 // and moving the row would carry its clicked results into another period. Only a different
@@ -117,6 +135,13 @@ const startIn = (db: Db, start: AuditStart, at: string): Result<AuditRun> =>
       return {
         ok: false,
         error: `the ${start.audit} audit of ${start.project} for ${start.periodStart} to ${start.periodEnd} is held by run ${holder.runName ?? holder.runId}`,
+      };
+    }
+    const open = findOpenAudit(tx, start);
+    if (open !== undefined) {
+      return {
+        ok: false,
+        error: `run ${open.runName ?? open.runId} is still auditing ${start.project}`,
       };
     }
     const run = AuditRunSchema.parse({

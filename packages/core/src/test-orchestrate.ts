@@ -7,7 +7,7 @@ import { runDirOf, type State, type WorkflowRun } from "@yok/sdk";
 import { withStorage } from "@yok/sdk/internal";
 import { DEMO_STAGES, type DemoStage, writeStages } from "./workflow/test-stages.ts";
 
-const CLI = join(import.meta.dir, "..", "..", "cli", "src", "index.ts");
+export const CLI = join(import.meta.dir, "..", "..", "cli", "src", "index.ts");
 
 // One --artifact value for a file the node wrote, named after its type.
 export const fileArtifact = (type: string, path: string): string =>

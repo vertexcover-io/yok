@@ -93,6 +93,11 @@ const PackageSchema = z.strictObject({
   runner: NonEmptyStringSchema.optional(),
   timeoutSeconds: z.int().positive().default(300),
   commands: CommandsSchema.default({}),
+  // For a package whose testAll runs every kind of test: the globs that mark integration and
+  // e2e test files, relative to the package. A test file no glob marks is a unit test.
+  testTypes: z
+    .partialRecord(z.enum(["integration", "e2e"]), z.array(NonEmptyStringSchema).min(1))
+    .optional(),
   description: NonEmptyStringSchema.optional(),
 });
 

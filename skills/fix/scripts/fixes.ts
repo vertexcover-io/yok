@@ -1,5 +1,7 @@
 import {
   type Finding,
+  type FixResult,
+  FixResultsSchema,
   NonEmptyStringSchema,
   parseJson,
   type Result,
@@ -8,25 +10,6 @@ import {
   type VerifierResult,
 } from "@yok/sdk";
 import * as z from "zod";
-
-// What the fix stage did with one fix request, written to artifacts/fixes/SOURCE-ROUND.json.
-const fixResultBase = { id: NonEmptyStringSchema, decision: NonEmptyStringSchema.optional() };
-const FixResultSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    ...fixResultBase,
-    status: z.literal("closed"),
-    commit: NonEmptyStringSchema,
-  }),
-  z.strictObject({ ...fixResultBase, status: z.literal("left"), reason: NonEmptyStringSchema }),
-]);
-
-const FixResultsSchema = z
-  .array(FixResultSchema)
-  .refine((items) => new Set(items.map((item) => item.id)).size === items.length, {
-    message: "each id appears once",
-  });
-
-type FixResult = z.infer<typeof FixResultSchema>;
 
 const readResults = async (path: string): Promise<Result<readonly FixResult[], Finding[]>> => {
   const text = await readText(path);
