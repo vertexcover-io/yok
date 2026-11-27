@@ -3,6 +3,7 @@
 export {
   AUDIT_CLICK_TYPES,
   AUDIT_RUN_START_TYPES,
+  type AuditAwaitingOutcome,
   type AuditFix,
   type AuditFixPatch,
   AuditFixPatchSchema,

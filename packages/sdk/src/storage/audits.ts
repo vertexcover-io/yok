@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, lte, notInArray, sql } from "drizzle-
 import {
   AUDIT_CLICK_TYPES,
   AUDIT_RUN_START_TYPES,
+  type AuditAwaitingOutcome,
   type AuditFix,
   type AuditFixPatch,
   AuditFixPatchSchema,
@@ -370,6 +371,30 @@ const pendingWorkIn = (db: Db, project: string): readonly AuditPendingWork[] =>
         : [{ auditRunId: row.result.auditRunId, result, event, action }];
     });
 
+const runStartTypes = sql.join(
+  AUDIT_RUN_START_TYPES.map((type) => sql`${type}`),
+  sql`, `,
+);
+const isNewestRunStart = sql`${tables.auditResultEvents}.rowid = (SELECT max(newest.rowid) FROM ${tables.auditResultEvents} AS newest WHERE newest.result_id = ${tables.auditResultEvents.resultId} AND newest.type IN (${runStartTypes}))`;
+// fix.at stamps setFix's last write and ts is the same clock's ISO text, so they compare as text.
+const hasNoOutcomeSince = sql`${tables.auditResults.fix} IS NOT NULL AND coalesce(json_extract(${tables.auditResults.fix}, '$.at'), '') < ${tables.auditResultEvents.ts} AND NOT (${tables.auditResultEvents.type} = ${revertStarted} AND json_extract(${tables.auditResults.fix}, '$.commit') IS NULL)`;
+
+// One query, so the tick's sweep reads only the results still waiting on a run rather than
+// every result of every audit kept.
+const awaitingOutcomeIn = (db: Db, project: string): readonly AuditAwaitingOutcome[] =>
+  db
+    .select({ result: tables.auditResults, started: tables.auditResultEvents })
+    .from(tables.auditResultEvents)
+    .innerJoin(tables.auditResults, eq(tables.auditResults.id, tables.auditResultEvents.resultId))
+    .innerJoin(tables.auditRuns, eq(tables.auditRuns.id, tables.auditResults.auditRunId))
+    .where(and(eq(tables.auditRuns.project, project), isNewestRunStart, hasNoOutcomeSince))
+    .orderBy(asc(sql`${tables.auditResultEvents}.rowid`))
+    .all()
+    .map((row) => ({
+      result: toResult(row.result),
+      started: AuditResultEventSchema.parse(row.started),
+    }));
+
 // Normalized before the holder lookup, so two spellings of one period find the same row.
 const parseStart = (start: AuditStart): AuditStart => {
   const parsed = AuditStartSchema.parse(start);
@@ -391,4 +416,5 @@ export const auditRepository = (db: Db): IAuditRepository => ({
   setFix: async (resultId, patch) =>
     setFixIn(db, resultId, AuditFixPatchSchema.parse(patch), now()),
   pendingWork: async (project) => pendingWorkIn(db, project),
+  awaitingOutcome: async (project) => awaitingOutcomeIn(db, project),
 });
