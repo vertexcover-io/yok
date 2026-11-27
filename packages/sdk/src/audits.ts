@@ -173,3 +173,7 @@ export type AuditPendingWork = Readonly<{
   event: AuditResultEvent;
   action: "apply" | "revert";
 }>;
+
+// A result handed to an apply run that has written nothing for it since: started is the result's
+// newest apply_started or revert_started.
+export type AuditAwaitingOutcome = Readonly<{ result: AuditResult; started: AuditResultEvent }>;

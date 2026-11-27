@@ -11,7 +11,7 @@ import {
   withLock,
   yokHome,
 } from "@yok/sdk";
-import type { Project } from "@yok/sdk/internal";
+import { AUDIT_CLICK_TYPES, AuditRunSchema, type Project } from "@yok/sdk/internal";
 import * as z from "zod";
 import { RunStatusSchema } from "./overview.ts";
 
@@ -86,6 +86,7 @@ export const ErrorBodySchema = z.strictObject({
   error: z.strictObject({
     code: z.enum([
       "bad-request",
+      "unauthorized",
       "not-found",
       "conflict",
       "agent-failed",
@@ -150,6 +151,13 @@ export type ResumeRunBody = z.infer<typeof ResumeRunBodySchema>;
 export const RetryRunBodySchema = ResumeRunBodySchema.extend({ answered: z.boolean().optional() });
 export type RetryRunBody = z.infer<typeof RetryRunBodySchema>;
 
+// Query values arrive as text.
+const LimitSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
+  .transform(Number)
+  .pipe(z.int().max(Number.MAX_SAFE_INTEGER, "limit is too large"));
+
 // GET /runs. Query values arrive as text; status is one comma list.
 export const ListRunsQuerySchema = z
   .strictObject({
@@ -159,11 +167,7 @@ export const ListRunsQuerySchema = z
       .transform((text) => text.split(","))
       .pipe(z.array(RunStatusSchema))
       .optional(),
-    limit: z
-      .string()
-      .regex(/^[1-9][0-9]*$/, "limit must be a whole number above 0")
-      .transform(Number)
-      .optional(),
+    limit: LimitSchema.optional(),
     all: z.enum(["true", "false"]).optional(),
     // a yok user id, GitHub login, GitHub id or email
     by: NonEmptyStringSchema.optional(),
@@ -173,6 +177,31 @@ export const ListRunsQuerySchema = z
   });
 export type ListRunsQuery = z.input<typeof ListRunsQuerySchema>;
 export type RunsFilter = z.output<typeof ListRunsQuerySchema>;
+
+// GET /audits/projects
+export const AuditProjectsQuerySchema = z.strictObject({ audit: AuditRunSchema.shape.audit });
+
+// GET /audits: the run picker, newest period first
+export const AuditRunsQuerySchema = AuditProjectsQuerySchema.extend({
+  project: SlugSchema,
+  // the page asks for 12; past 100 a picker is no longer a picker
+  limit: LimitSchema.pipe(z.int().max(100, "limit must be at most 100")).default(12),
+});
+
+// GET /audits/metrics: the trend charts of one repo
+export const AuditMetricsQuerySchema = AuditProjectsQuerySchema.extend({
+  project: SlugSchema,
+  repo: NonEmptyStringSchema,
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
+});
+
+// POST /audits/results/:resultId/events: a person's click; the server sets who
+export const AuditEventBodySchema = z.strictObject({
+  type: z.enum(AUDIT_CLICK_TYPES),
+  feedback: NonEmptyStringSchema.optional(),
+});
+export type AuditEventBody = z.infer<typeof AuditEventBodySchema>;
 
 export type ApiError = ErrorBody["error"];
 

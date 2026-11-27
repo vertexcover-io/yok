@@ -1014,4 +1014,39 @@ describe("storage.audits pending work", () => {
       { auditRunId: first.id, resultId: older.id, eventId: olderAccepted.id, action: "apply" },
     ]);
   });
+
+  test("SC7238: awaiting outcome lists only the results whose newest run start has nothing written since", async () => {
+    const storage = await seeded();
+    const run = await startOk(storage, week("r-1"));
+    const slugs = ["started", "applied", "failed", "reverting", "reverted", "unanswered"] as const;
+    const results = slugs.map((slug) => result(run.id, slug, { fix: instruction }));
+    await storage.audits.finish(run.id, { status: "complete", metrics: [], results });
+    const id = (slug: (typeof slugs)[number]) => `${run.id}:web:duplicates:${slug}`;
+    for (const slug of slugs) {
+      await click(storage, id(slug), "accepted");
+      await startRun(storage, id(slug), "apply_started");
+    }
+    await setFix(storage, id("applied"), { commit: "c1" });
+    await setFix(storage, id("failed"), { error: "patch does not apply" });
+    for (const slug of ["reverting", "reverted"] as const) {
+      await setFix(storage, id(slug), { commit: "c1" });
+      await click(storage, id(slug), "undone");
+      await startRun(storage, id(slug), "revert_started");
+    }
+    await setFix(storage, id("reverted"), { clear: true });
+    const reverting = (await storage.audits.run(id("reverting")))?.id ?? "none";
+    const started = (await storage.audits.run(id("started")))?.id ?? "none";
+    const unanswered = (await storage.audits.run(id("unanswered")))?.id ?? "none";
+
+    const awaiting = await storage.audits.awaitingOutcome("web");
+
+    expect(
+      awaiting.map((entry) => ({ resultId: entry.result.id, eventId: entry.started.id })),
+    ).toEqual([
+      { resultId: id("started"), eventId: started },
+      { resultId: id("unanswered"), eventId: unanswered },
+      { resultId: id("reverting"), eventId: reverting },
+    ]);
+    expect(await storage.audits.awaitingOutcome("api")).toEqual([]);
+  });
 });

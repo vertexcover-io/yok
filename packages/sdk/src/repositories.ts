@@ -1,5 +1,6 @@
 import type * as z from "zod";
 import type {
+  AuditAwaitingOutcome,
   AuditFixPatch,
   AuditName,
   AuditPendingWork,
@@ -169,6 +170,10 @@ export interface IAuditRepository {
   // apply_started or revert_started after that click, or once an error was written at or after
   // it. A result with no fix is never listed.
   pendingWork(project: string): Promise<readonly AuditPendingWork[]>;
+  // The project's results whose newest run start has no outcome written since, oldest start
+  // first: no commit, pr or error stamped at or after it, and for a revert the commit still there.
+  // Clicks made since are listed too; the caller decides what they mean.
+  awaitingOutcome(project: string): Promise<readonly AuditAwaitingOutcome[]>;
 }
 
 export interface IStorage {

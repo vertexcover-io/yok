@@ -8,7 +8,7 @@ import type {
   WorkflowRun,
 } from "@yok/sdk";
 import { emitRunEvent } from "@yok/sdk";
-import { deliveryMessage } from "@yok/sdk/internal";
+import { deliveryMessage, isRunLive } from "@yok/sdk/internal";
 
 export type DeliveryOutcome =
   | Readonly<{ kind: "delivered"; ids: readonly string[] }>
@@ -33,6 +33,22 @@ export const readStateOrNull = (storage: IStorage, runId: string): Promise<State
 
 export const isAgentAlive = async (run: WorkflowRun, host: ITerminalHost): Promise<boolean> =>
   run.terminal !== null && (await host.find(run.terminal).isAlive());
+
+// A run names itself in its first minute. One still unnamed 5 minutes after it was started has
+// stalled, so it no longer counts as going.
+const STARTING_MS = 5 * 60 * 1000;
+
+// since: when the run was started, which decides whether an unnamed run has stalled
+export const isRunGoing = async (
+  run: WorkflowRun,
+  since: string,
+  deps: Readonly<{ storage: IStorage; host: ITerminalHost; now: () => Date }>,
+): Promise<boolean> => {
+  if (!(await isAgentAlive(run, deps.host))) return false;
+  if (run.name === null) return deps.now().getTime() - new Date(since).getTime() < STARTING_MS;
+  const state = await readStateOrNull(deps.storage, run.id);
+  return state === null || isRunLive(state.status);
+};
 
 export const deliverComments = async (
   run: WorkflowRun,
