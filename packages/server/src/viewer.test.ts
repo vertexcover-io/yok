@@ -943,16 +943,33 @@ describe("audit page rules", () => {
     ]).toEqual(["+2 pts", "−35s", "−3"]);
   });
 
+  const HIGHER = { better: "higher", unit: "count" } as const;
+  const LOWER = { better: "lower", unit: "count" } as const;
+
   test("SC8003: metricChange calls a rise better when higher is better, worse when lower is, same at no change, and null with no value before", () => {
     const series = [70, 72, null, 72];
-    expect(metricChange("higher", series, 1)).toEqual({ delta: 2, verdict: "better" });
-    expect(metricChange("lower", series, 1)).toEqual({ delta: 2, verdict: "worse" });
-    expect(metricChange("higher", [72, 72], 1)).toEqual({ delta: 0, verdict: "same" });
-    expect([0, 3, -1].map((index) => metricChange("higher", series, index))).toEqual([
+    expect(metricChange(HIGHER, series, 1)).toEqual({ delta: 2, verdict: "better" });
+    expect(metricChange(LOWER, series, 1)).toEqual({ delta: 2, verdict: "worse" });
+    expect(metricChange(HIGHER, [72, 72], 1)).toEqual({ delta: 0, verdict: "same" });
+    expect([0, 3, -1].map((index) => metricChange(HIGHER, series, index))).toEqual([
       null,
       null,
       null,
     ]);
+  });
+
+  test("SC8024: a change too small to show at the metric's precision is no change, not better or worse", () => {
+    const { testTime, coverage } = TEST_AUDIT_METRICS;
+    expect(metricChange(testTime, [2.52, 2.51], 1)).toEqual({
+      delta: expect.any(Number),
+      verdict: "same",
+    });
+    expect(metricChange(coverage, [64.3, 64.32], 1)).toEqual({
+      delta: expect.any(Number),
+      verdict: "same",
+    });
+    expect(metricChange(testTime, [2.52, 1.4], 1)?.verdict).toBe("better");
+    expect(metricChange(coverage, [64.3, 64.4], 1)?.verdict).toBe("better");
   });
 
   test("SC8004: meetsLimit holds coverage at or above 80 and test time at or below 240, and has no answer for a metric with no limit", () => {
@@ -1011,7 +1028,7 @@ describe("result buttons", () => {
     [{ kind: "needs-work" }, true, ["copy-prompt"]],
     [{ kind: "needs-work" }, false, []],
     [{ kind: "auto-fixed" }, false, []],
-    [{ kind: "applying", runId: "r-9" }, false, []],
+    [{ kind: "applying", runId: "r-9", action: "revert" }, false, []],
     [{ kind: "stopped", runId: "r-9" }, false, []],
     [{ kind: "waiting", action: "apply" }, false, ["undo"]],
     [{ kind: "run-failed", runId: "r-9" }, false, ["undo"]],
@@ -1130,13 +1147,18 @@ describe("resultPageState", () => {
     });
   });
 
-  test("SC8014: a starting, running or blocked apply run is applying after an accept or an undo, never open", () => {
-    const states = (["starting", "running", "blocked"] as const).flatMap((status) =>
+  test("SC8014: a starting, running or blocked apply run is applying after an accept and reverting after an undo, never open", () => {
+    const states = (["starting", "running", "blocked"] as const).map((status) =>
       (["accepted", "undone"] as const).map((type) =>
         resultPageState(result({}), click(type), run(status)),
       ),
     );
-    expect(states).toEqual(Array(6).fill({ kind: "applying", runId: "r-9" }));
+    expect(states).toEqual(
+      Array(3).fill([
+        { kind: "applying", runId: "r-9", action: "apply" },
+        { kind: "applying", runId: "r-9", action: "revert" },
+      ]),
+    );
   });
 
   test("SC8015: an accepted result with a commit is applied with its PR, or with pr null when it has none", () => {

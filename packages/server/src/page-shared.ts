@@ -73,9 +73,10 @@ export const metricSeries = (
         ?.value ?? null,
   );
 
-// The run at index against the run before it in the series; null when either has no value.
+// The run at index against the run before it in the series; null when either has no value. A
+// change that formatChange would round to nothing, such as 0.01s of suite time, is the same.
 export const metricChange = (
-  better: MetricInfo["better"],
+  info: Pick<MetricInfo, "better" | "unit">,
   series: readonly (number | null)[],
   index: number,
 ): MetricChange | null => {
@@ -83,8 +84,10 @@ export const metricChange = (
   const previous = series[index - 1] ?? null;
   if (value === null || previous === null) return null;
   const delta = value - previous;
-  if (delta === 0) return { delta, verdict: "same" };
-  return { delta, verdict: delta > 0 === (better === "higher") ? "better" : "worse" };
+  if (formatChange(info.unit, Math.abs(delta)) === formatChange(info.unit, 0)) {
+    return { delta, verdict: "same" };
+  }
+  return { delta, verdict: delta > 0 === (info.better === "higher") ? "better" : "worse" };
 };
 
 // null when the metric has no limit: it is charted and never flagged.
@@ -106,7 +109,8 @@ export type AuditApplyRun = Readonly<{ id: string; status: RunStatus }>;
 export type ResultPageState =
   | Readonly<{ kind: "auto-fixed" | "needs-work" | "open" }>
   | Readonly<{ kind: "waiting"; action: "apply" | "revert" }>
-  | Readonly<{ kind: "applying" | "stopped" | "run-failed"; runId: string }>
+  | Readonly<{ kind: "applying"; runId: string; action: "apply" | "revert" }>
+  | Readonly<{ kind: "stopped" | "run-failed"; runId: string }>
   | Readonly<{ kind: "applied"; commit: string; pr: string | null }>
   | Readonly<{ kind: "failed"; reason: string }>
   | Readonly<{ kind: "rejected"; feedback: string | null }>;
@@ -128,7 +132,11 @@ export const resultPageState = (
   if (result.state === "auto_fixed") return { kind: "auto-fixed" };
   if (result.state === "needs_work") return { kind: "needs-work" };
   if (applyRun !== null && ACTIVE_RUN.has(applyRun.status)) {
-    return { kind: "applying", runId: applyRun.id };
+    return {
+      kind: "applying",
+      runId: applyRun.id,
+      action: decision?.type === "undone" ? "revert" : "apply",
+    };
   }
   // A run whose agent died stays open until someone resumes or cancels it from its run page.
   if (applyRun?.status === "gone") return { kind: "stopped", runId: applyRun.id };

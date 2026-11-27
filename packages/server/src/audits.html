@@ -109,6 +109,7 @@ dl.how dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
 .card .open:hover { text-decoration: underline; }
 .meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 pre.block { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--panel-2); font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; }
+pre.block.prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
 pre.block .add { color: var(--ok); }
 pre.block .del { color: var(--del); }
 blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
@@ -253,7 +254,7 @@ const limitChip = (info, value) => {
 };
 
 const changeText = (info, series) => {
-  const change = metricChange(info.better, series, shownIndex());
+  const change = metricChange(info, series, shownIndex());
   if (change === null) return span("change dim", "no earlier run in range");
   const text = change.verdict === "same" ? "no change" : `${formatChange(info.unit, change.delta)} ${change.verdict}`;
   const node = span("change", text);
@@ -569,7 +570,7 @@ const fixSection = (fix) => labelled("The fix", [
   el("p", { textContent: fix.summary }),
   ...(fix.diff === undefined ? [] : [diffBlock(fix.diff)]),
   ...(fix.pr === undefined ? [] : [el("p", {}, [safeLink(fix.pr, prLabel(fix.pr))])]),
-  ...(fix.prompt === undefined ? [] : [el("pre", { className: "block", textContent: fix.prompt })]),
+  ...(fix.prompt === undefined ? [] : [el("pre", { className: "block prompt", textContent: fix.prompt })]),
 ]);
 
 const resultDrawer = (result) => [
@@ -591,7 +592,7 @@ const runLink = (runId, text) => el("a", { href: `/runs/${encodeURIComponent(run
 // The words for each state that has some; "open", "auto-fixed" and "needs-work" show buttons only.
 const STATE_LINE = {
   waiting: (state) => [`waiting for yok to ${state.action} it`],
-  applying: (state) => ["applying… ", runLink(state.runId, "see the run")],
+  applying: (state) => [state.action === "revert" ? "reverting… " : "applying… ", runLink(state.runId, "see the run")],
   stopped: (state) => [`apply run stopped: ${stoppedRunHelp(state.runId)} · `, runLink(state.runId, "see the run")],
   "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
   applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
