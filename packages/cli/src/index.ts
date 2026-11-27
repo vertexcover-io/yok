@@ -11,6 +11,7 @@ import { importFilesCommand } from "./import-files.ts";
 import { uninstallCommand, updateCommand } from "./install.ts";
 import { loginCommand, logoutCommand } from "./login.ts";
 import { lsCommand } from "./ls.ts";
+import { packCommand } from "./pack.ts";
 import { pluginCommand } from "./plugin.ts";
 import { projectCommand } from "./project.ts";
 import { rmCommand } from "./rm.ts";
@@ -54,6 +55,7 @@ await new Command()
   .addCommand(logoutCommand())
   .addCommand(lsCommand())
   .addCommand(orchestrateCommand())
+  .addCommand(packCommand())
   .addCommand(pluginCommand())
   .addCommand(projectCommand())
   .addCommand(runCommand())
