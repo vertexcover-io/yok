@@ -1033,7 +1033,7 @@ describe("result buttons", () => {
     [{ kind: "waiting", action: "apply" }, false, ["undo"]],
     [{ kind: "run-failed", runId: "r-9" }, false, ["undo"]],
     [{ kind: "applied", commit: "abc1234", pr: null }, false, ["undo"]],
-    [{ kind: "failed", reason: "tests failed" }, false, ["undo"]],
+    [{ kind: "failed", reason: "tests failed", runId: null }, false, ["undo"]],
     [{ kind: "rejected", feedback: null }, false, ["undo"]],
   ] as const)("a result in state %o (prompt %p) offers %p", (state, hasPrompt, actions) => {
     expect(resultActions(state, hasPrompt)).toEqual(actions);
@@ -1105,7 +1105,11 @@ describe("trendRange", () => {
   });
 
   test("a range from b to c keeps a out of its run ids, though a lies inside b's wider window", () => {
-    expect(trendRange(runs, "b", "c").runIds).toEqual(["b", "c"]);
+    expect(trendRange(runs, "b", "c")?.runIds).toEqual(["b", "c"]);
+  });
+
+  test("a project with no audit runs has no range", () => {
+    expect(trendRange([], "", "")).toBeNull();
   });
 });
 
@@ -1185,6 +1189,12 @@ describe("resultPageState", () => {
     expect(resultPageState(failed("2026-11-20T10:05:00.000Z"), decision, null)).toEqual({
       kind: "failed",
       reason: "tests failed",
+      runId: null,
+    });
+    expect(resultPageState(failed("2026-11-20T10:05:00.000Z"), decision, run("failed"))).toEqual({
+      kind: "failed",
+      reason: "tests failed",
+      runId: "r-9",
     });
     expect(resultPageState(failed("2026-11-20T09:00:00.000Z"), decision, null)).toEqual({
       kind: "waiting",

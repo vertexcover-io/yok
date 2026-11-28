@@ -248,16 +248,20 @@ describe("GET /audits", () => {
     });
   });
 
-  test("SC7305: a limit input that is not a number is ignored", async () => {
+  test.each([
+    ["the CLI's string 75", "75", 75],
+    ["a word", "high", 80],
+    ["an empty string", "", 80],
+  ])("SC7305: a limit input of %s gives a coverage limit of %s", async (_case, input, limit) => {
     const storage = memoryStorage();
     await addProject(storage, "web");
-    await addRun(storage, "r-1", { inputs: { coverageLimit: "75" } });
+    await addRun(storage, "r-1", { inputs: { coverageLimit: input } });
     const audit = await addAudit(storage, { runId: "r-1" });
     const app = createApi(buildDeps(storage));
 
     const { body } = await getJson(app, `/audits/${audit.id}`);
 
-    expect(body.limits.coverage.limit).toBe(80);
+    expect(body.limits.coverage.limit).toBe(limit);
   });
 
   test("SC7306: an unknown audit run id is a 404", async () => {
@@ -466,6 +470,46 @@ describe("POST /audits/results/:resultId/events", () => {
 
     expect(response.status).toBe(201);
   });
+
+  test.each(["accepted", "rejected", "undone"] as const)(
+    "SC7325: %s on a needs-work result, which has no fix to apply, is refused and nothing is stored",
+    async (type) => {
+      const storage = memoryStorage();
+      await addProject(storage, "web");
+      await addRun(storage, "r-audit");
+      const started = await storage.audits.start({
+        runId: "r-audit",
+        project: "web",
+        audit: "test",
+        ...weekEnding(8),
+        commits: { web: "8c38b2c" },
+      });
+      if (!started.ok) throw new Error(started.error);
+      const resultId = `${started.value.id}:web:flaky:retry`;
+      const finished = await storage.audits.finish(started.value.id, {
+        status: "complete",
+        metrics: [],
+        results: [
+          {
+            ...result(started.value.id, "retry"),
+            id: resultId,
+            problemType: "flaky",
+            state: "needs_work",
+            fix: { summary: "make it wait for the upload", prompt: "Fix the flaky retry test." },
+          },
+        ],
+      });
+      if (!finished.ok) throw new Error(finished.error);
+
+      const response = await click(createApi(buildDeps(storage)), resultId, { type });
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.message).toBe(
+        "a needs-work result has no fix to apply; copy its prompt instead",
+      );
+      expect(await storage.audits.decision(resultId)).toBeUndefined();
+    },
+  );
 
   test("SC7313: a click on an unknown result is a 404", async () => {
     const { storage, audit } = await oneResult();

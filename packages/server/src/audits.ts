@@ -49,13 +49,20 @@ const describeApplyRun = async (resultId: string, deps: AuditRouteDeps) => {
   return { id: run.id, status: gone ? "gone" : state.status };
 };
 
+// A limit input as a number: yok run --input passes every value as a string, so "75" is 75.
+const limitOf = (own: unknown): number | null => {
+  if (typeof own === "number") return own;
+  if (typeof own !== "string" || own.trim() === "") return null;
+  const parsed = Number(own);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 // A project sets its own limit with a workflow input named after the metric, such as coverageLimit.
 const mergeLimits = (inputs: JsonObject) =>
   Object.fromEntries(
     TEST_AUDIT_METRIC_NAMES.map((metric) => {
-      const own = inputs[`${metric}Limit`];
       const info = TEST_AUDIT_METRICS[metric];
-      return [metric, { ...info, limit: typeof own === "number" ? own : info.limit }];
+      return [metric, { ...info, limit: limitOf(inputs[`${metric}Limit`]) ?? info.limit }];
     }),
   );
 
@@ -117,8 +124,18 @@ const recordClick = async (
   // a result id opens with its audit run's id: AUDIT_RUN_ID:repo:problemType:slug
   const [auditRunId = ""] = resultId.split(":");
   const record = await deps.storage.audits.read(auditRunId);
-  if (record?.results.some((result) => result.id === resultId) !== true) {
+  const target = record?.results.find((result) => result.id === resultId);
+  if (target === undefined) {
     return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
+  }
+  // Its fix is a prompt for a person, not a change an apply run can make.
+  if (target.state === "needs_work") {
+    return errorResponse(
+      c,
+      409,
+      "conflict",
+      "a needs-work result has no fix to apply; copy its prompt instead",
+    );
   }
   // Reject too: the run would still apply the fix, leaving a rejected result with a commit.
   const applyRun = await findApplyRun(resultId, deps.storage);

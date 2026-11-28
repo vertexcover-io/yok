@@ -362,9 +362,11 @@ const barChart = ({ title, unit, labels, series }) => {
   const hi = Math.ceil(Math.max(1, ...totals) / 4) * 4;
   const slot = (CHART.width - CHART.left - CHART.right) / labels.length;
   const x = (index) => CHART.left + (index + 0.5) * slot;
-  const bars = labels.flatMap((label, index) => series.map((s, k) => {
+  // A week that measured nothing is a gap, not a 0 bar.
+  const bars = labels.flatMap((label, index) => series.flatMap((s, k) => {
+    if ((s.values[index] ?? null) === null) return [];
     const below = series.slice(0, k).reduce((sum, t) => sum + (t.values[index] ?? 0), 0);
-    const value = s.values[index] ?? 0;
+    const value = s.values[index];
     const top = plotY(below + value, 0, hi);
     return svg("rect", { x: x(index) - slot * 0.3, width: slot * 0.6, y: top, height: plotY(below, 0, hi) - top, style: `fill: ${COLORS[k]}` }, [
       svg("title", {}, [`${label} · ${s.name}: ${formatMetric(unit, value)}`]),
@@ -596,7 +598,7 @@ const STATE_LINE = {
   stopped: (state) => [`apply run stopped: ${stoppedRunHelp(state.runId)} · `, runLink(state.runId, "see the run")],
   "run-failed": (state) => ["couldn't apply: run failed · ", runLink(state.runId, "see the run's log")],
   applied: (state) => ["applied, ", state.pr === null ? state.commit.slice(0, 7) : safeLink(state.pr, prLabel(state.pr))],
-  failed: (state) => [`couldn't apply: ${state.reason}`],
+  failed: (state) => [`couldn't apply: ${state.reason}`, ...(state.runId === null ? [] : [" · ", runLink(state.runId, "see the run's log")])],
   rejected: (state) => [state.feedback === null ? "rejected" : `rejected: ${state.feedback}`],
 };
 
@@ -748,7 +750,12 @@ const render = () => {
 };
 
 const loadPoints = async (draft) => {
-  const { from, to, runIds } = trendRange(oldestFirst(draft), draft.from, draft.to);
+  const range = trendRange(oldestFirst(draft), draft.from, draft.to);
+  if (range === null) {
+    draft.points = [];
+    return;
+  }
+  const { from, to, runIds } = range;
   const { points } = await getJson(`/api/audits/metrics?${query({ project: draft.project, audit: "test", repo: draft.repo, from, to })}`);
   draft.points = points.filter((point) => runIds.includes(point.auditRunId));
 };

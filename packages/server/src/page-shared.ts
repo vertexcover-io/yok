@@ -112,7 +112,7 @@ export type ResultPageState =
   | Readonly<{ kind: "applying"; runId: string; action: "apply" | "revert" }>
   | Readonly<{ kind: "stopped" | "run-failed"; runId: string }>
   | Readonly<{ kind: "applied"; commit: string; pr: string | null }>
-  | Readonly<{ kind: "failed"; reason: string }>
+  | Readonly<{ kind: "failed"; reason: string; runId: string | null }>
   | Readonly<{ kind: "rejected"; feedback: string | null }>;
 
 const ACTIVE_RUN: ReadonlySet<RunStatus> = new Set<RunStatus>(["starting", "running", "blocked"]);
@@ -149,7 +149,7 @@ export const resultPageState = (
   }
   const fix = result.fix;
   const error = freshError(fix, decision);
-  if (error !== null) return { kind: "failed", reason: error };
+  if (error !== null) return { kind: "failed", reason: error, runId: applyRun?.id ?? null };
   if (decision.type === "undone" && fix?.commit === undefined) return { kind: "open" };
   if (decision.type === "accepted" && fix?.commit !== undefined) {
     return { kind: "applied", commit: fix.commit, pr: fix.pr ?? null };
@@ -165,11 +165,13 @@ type PeriodRun = Readonly<{ id: string; periodStart: string; periodEnd: string }
 
 // The metrics route keeps only runs wholly inside from..to, so from is the earliest start of any
 // run in the range, not the first run's; runIds then drops a run that window pulls in from outside.
+// null when no run is in range, as for a project with no audits yet.
 export const trendRange = (runs: readonly PeriodRun[], fromId: string, toId: string) => {
   const inRange = runs.slice(
     runs.findIndex((run) => run.id === fromId),
     runs.findIndex((run) => run.id === toId) + 1,
   );
+  if (inRange.length === 0) return null;
   return {
     from: inRange.map((run) => run.periodStart).reduce((a, b) => (b < a ? b : a)),
     to: inRange.map((run) => run.periodEnd).reduce((a, b) => (b > a ? b : a)),
