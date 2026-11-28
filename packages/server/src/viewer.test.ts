@@ -37,6 +37,7 @@ import {
   autoFixedPr,
   formatChange,
   formatMetric,
+  keepsRefreshing,
   meetsLimit,
   metricChange,
   metricSeries,
@@ -1085,6 +1086,18 @@ describe("audit page fixes", () => {
     finishA();
     expect(await slowA).toBeNull();
     expect(state).toEqual({ runId: "a" });
+  });
+});
+
+describe("keepsRefreshing", () => {
+  test.each([
+    ["a card is waiting", ["waiting"], "complete", true],
+    ["a card is applying", ["open", "applying"], "complete", true],
+    ["a card's apply run stopped, so a resume can still end it", ["stopped"], "complete", true],
+    ["the audit is still running", [], "running", true],
+    ["nothing is in hand", ["open", "applied", "failed"], "complete", false],
+  ] as const)("the page keeps re-reading when %s", (_case, kinds, status, expected) => {
+    expect(keepsRefreshing(kinds, status)).toBe(expected);
   });
 });
 

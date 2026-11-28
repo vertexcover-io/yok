@@ -179,6 +179,15 @@ export const trendRange = (runs: readonly PeriodRun[], fromId: string, toId: str
   };
 };
 
+// The page re-reads while yok has work in hand: a card waiting or applying, a stopped run that a
+// resume can still finish, or an audit still running, so each turns into its outcome without a
+// reload.
+const IN_HAND: ReadonlySet<ResultPageState["kind"]> = new Set(["waiting", "applying", "stopped"]);
+export const keepsRefreshing = (
+  kinds: readonly ResultPageState["kind"][],
+  auditStatus: string,
+): boolean => auditStatus === "running" || kinds.some((kind) => IN_HAND.has(kind));
+
 export type ResultAction = "accept" | "reject" | "undo" | "copy-prompt";
 
 // Undo is offered once the person has decided; nothing while yok's run holds the result.

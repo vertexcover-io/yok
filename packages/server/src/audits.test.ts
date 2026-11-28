@@ -471,9 +471,28 @@ describe("POST /audits/results/:resultId/events", () => {
     expect(response.status).toBe(201);
   });
 
-  test.each(["accepted", "rejected", "undone"] as const)(
-    "SC7325: %s on a needs-work result, which has no fix to apply, is refused and nothing is stored",
-    async (type) => {
+  test.each([
+    ["needs_work", "accepted", "a needs-work result has no fix to apply; copy its prompt instead"],
+    ["needs_work", "rejected", "a needs-work result has no fix to apply; copy its prompt instead"],
+    ["needs_work", "undone", "a needs-work result has no fix to apply; copy its prompt instead"],
+    [
+      "auto_fixed",
+      "accepted",
+      "an auto-fixed result is already in its pull request; change it there",
+    ],
+    [
+      "auto_fixed",
+      "rejected",
+      "an auto-fixed result is already in its pull request; change it there",
+    ],
+    [
+      "auto_fixed",
+      "undone",
+      "an auto-fixed result is already in its pull request; change it there",
+    ],
+  ] as const)(
+    "SC7325: on a %s result, %s is refused, as the page offers no such button, and nothing is stored",
+    async (state, type, message) => {
       const storage = memoryStorage();
       await addProject(storage, "web");
       await addRun(storage, "r-audit");
@@ -494,7 +513,7 @@ describe("POST /audits/results/:resultId/events", () => {
             ...result(started.value.id, "retry"),
             id: resultId,
             problemType: "flaky",
-            state: "needs_work",
+            state,
             fix: { summary: "make it wait for the upload", prompt: "Fix the flaky retry test." },
           },
         ],
@@ -504,9 +523,7 @@ describe("POST /audits/results/:resultId/events", () => {
       const response = await click(createApi(buildDeps(storage)), resultId, { type });
 
       expect(response.status).toBe(409);
-      expect((await response.json()).error.message).toBe(
-        "a needs-work result has no fix to apply; copy its prompt instead",
-      );
+      expect((await response.json()).error.message).toBe(message);
       expect(await storage.audits.decision(resultId)).toBeUndefined();
     },
   );
@@ -616,9 +633,14 @@ const auditWith = async (storage: IStorage, project: string, slugs: readonly str
 };
 
 // Sets the stored state of run RUN_ID to STATUS, naming it as orchestrate init does.
-const setState = async (storage: IStorage, runId: string, status: State["status"]) => {
+const setState = async (
+  storage: IStorage,
+  runId: string,
+  status: State["status"],
+  nodeRuns: State["nodeRuns"] = {},
+) => {
   await storage.runs.releaseRun(runId);
-  const state = { ...seedState(`/abs/.yok/${runId}`, {}), runId, status };
+  const state = { ...seedState(`/abs/.yok/${runId}`, nodeRuns), runId, status };
   const named = await storage.runs.initRun(runId, `apply-${runId}`, state);
   if (!named.ok) throw new Error(named.error);
 };
@@ -759,6 +781,30 @@ describe("the tick's audit apply runs", () => {
         commit: "abc",
       });
       expect(launches).toHaveLength(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "SC7326: a failed apply run's error names why its failed step stopped",
+    async () => {
+      const { storage, deps, a, runId } = await appliedOnce();
+      const failedFix = {
+        nodeRunId: "nr-fix",
+        nodeType: "agent" as const,
+        status: "failed" as const,
+        startedAt: TICK_AT,
+        completedAt: TICK_AT,
+        artifacts: [],
+        output: { kind: "needs-input", message: "the audit diff does not apply with git apply" },
+      };
+      await setState(storage, runId, "failed", { fix: failedFix });
+
+      await tick(deps());
+
+      expect((await fixOf(storage, a))?.error).toBe(
+        `apply run ${runId} failed: the audit diff does not apply with git apply`,
+      );
     },
     TIMEOUT_MS,
   );

@@ -158,7 +158,7 @@ blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--l
 <footer class="foot">yok v{{VERSION}}</footer>
 
 <script type="module">
-import { autoFixedPr, formatChange, formatMetric, meetsLimit, metricChange, metricSeries, newestWins, prLabel, rejectBody, resultActions, resultPageState, stoppedRunHelp, trendRange } from "/assets/shared.js";
+import { autoFixedPr, formatChange, formatMetric, keepsRefreshing, meetsLimit, metricChange, metricSeries, newestWins, prLabel, rejectBody, resultActions, resultPageState, stoppedRunHelp, trendRange } from "/assets/shared.js";
 
 // A year of weekly audits, for the run picker and the trend range.
 const LIST_LIMIT = 52;
@@ -175,7 +175,7 @@ const TILES = {
   plannedCases: { name: "Planned cases not tested", later: true },
   e2eCoverage: { name: "E2E coverage", later: true },
   speed: { name: "Speed", metric: "testTime", caption: "the whole suite, run alone" },
-  flakiness: { name: "Flakiness", metric: "flakyTests", caption: "tests that failed at least once in 3 runs" },
+  flakiness: { name: "Flakiness", metric: "flakyTests", caption: "tests that passed in some of 3 runs and failed in others" },
   redundancy: { name: "Redundancy", metric: "duplicates", caption: "duplicate tests found" },
 };
 const AREAS = [
@@ -272,6 +272,9 @@ const tileBody = (tile) => {
   const stored = metricOf(tile.metric);
   if (stored === undefined && view.detail.run.status === "running") {
     return [span("name", tile.name), span("big dim", "measuring"), span("cap", "this audit is still running")];
+  }
+  if (stored === undefined && view.detail.run.status === "failed") {
+    return [span("name", tile.name), span("big dim", "not measured"), span("cap", "this audit failed before publishing; its run is linked above")];
   }
   if (stored === undefined || stored.status === "not_measured") {
     return [span("name", tile.name), span("big dim", "not measured"), span("cap", stored?.reason ?? "this audit did not measure it")];
@@ -394,7 +397,7 @@ const DRAWERS = {
   },
   flakiness: {
     problemType: "flaky",
-    how: "We run the whole suite 3 times with retries turned off. A test that fails at least once is counted.",
+    how: "We run the whole suite 3 times with retries turned off. A test that passes in some runs and fails in others is counted; one that fails every run is a failing test, not a flaky one.",
     charts: [{ kind: "bar", title: "Flaky tests", metric: "flakyTests" }],
   },
   redundancy: {
@@ -706,11 +709,11 @@ const show = async (load) => {
 };
 
 const refresh = () => show((draft) => loadDetail(draft));
-// Keeps re-reading while yok has work in hand, so "waiting" turns into "applying" and then "applied" without a reload.
+// Keeps re-reading while yok has work in hand (keepsRefreshing), so "waiting" turns into "applying" and then "applied", and a running audit into its numbers, without a reload.
 // It skips a beat while a reject box is open, since a re-render would wipe what the person is typing.
 const scheduleRefresh = () => {
   clearTimeout(view.timer);
-  const busy = view.detail.results.some((r) => ["waiting", "applying"].includes(pageState(r).kind));
+  const busy = keepsRefreshing(view.detail.results.map((r) => pageState(r).kind), view.detail.run.status);
   const tick = () => {
     if (document.querySelector("form.reject") !== null) return scheduleRefresh();
     // render re-arms the timer after a good re-read; a failed one, such as during a server restart, re-arms it here
@@ -734,7 +737,8 @@ const renderHeader = () => {
   fillSelect($("run"), view.runs.map((run) => [run.id, runLabel(run)]), view.runId);
   fillSelect($("repo"), repos.map((repo) => [repo, repo]), view.repo);
   $("repo").hidden = repos.length < 2;
-  $("ran").textContent = ranText(view.detail);
+  const failed = view.detail.run.status === "failed";
+  $("ran").replaceChildren(ranText(view.detail), ...(failed ? [" · failed · ", runLink(view.detail.run.runId, "see the run")] : []));
   fillSelect($("from"), rangeOptions(), view.from);
   fillSelect($("to"), rangeOptions(), view.to);
 };

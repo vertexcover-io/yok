@@ -1,4 +1,4 @@
-import type { ILogger, IStorage, JsonObject, WorkflowRun } from "@yok/sdk";
+import type { ILogger, IStorage, JsonObject, NodeRun, WorkflowRun } from "@yok/sdk";
 import {
   type AuditAwaitingOutcome,
   type AuditPendingWork,
@@ -113,6 +113,11 @@ const findDecider = (c: Context<{ Variables: Vars }>, deps: AuditRouteDeps): str
   return oauthApp(deps.home) === null ? "local" : null;
 };
 
+const CLICK_REFUSALS: Partial<Record<AuditResult["state"], string>> = {
+  needs_work: "a needs-work result has no fix to apply; copy its prompt instead",
+  auto_fixed: "an auto-fixed result is already in its pull request; change it there",
+};
+
 const recordClick = async (
   c: Context<{ Variables: Vars }>,
   deps: AuditRouteDeps,
@@ -128,15 +133,10 @@ const recordClick = async (
   if (target === undefined) {
     return errorResponse(c, 404, "not-found", `no audit result with id ${resultId}`);
   }
-  // Its fix is a prompt for a person, not a change an apply run can make.
-  if (target.state === "needs_work") {
-    return errorResponse(
-      c,
-      409,
-      "conflict",
-      "a needs-work result has no fix to apply; copy its prompt instead",
-    );
-  }
+  // The page offers no button on these, so neither does the API: a needs-work fix is a prompt
+  // for a person, and an auto-fix is already committed into the audit's pull request.
+  const refusal = CLICK_REFUSALS[target.state];
+  if (refusal !== undefined) return errorResponse(c, 409, "conflict", refusal);
   // Reject too: the run would still apply the fix, leaving a rejected result with a commit.
   const applyRun = await findApplyRun(resultId, deps.storage);
   if (applyRun !== undefined && (await isApplyRunGoing(applyRun, deps))) {
@@ -244,9 +244,38 @@ const failIfAbandoned = async (
   if (run !== undefined && (await isApplyRunGoing(run, deps))) return;
   // the run may have written its outcomes since they were listed, just before it ended
   if (isOutcomeWritten(await readFix(result.id, deps.storage), started)) return;
+  if (runId === null) {
+    await deps.storage.audits.setFix(result.id, { error: "apply run failed: it was removed" });
+    return;
+  }
+  const why = failedStepMessage((await readStateOrNull(deps.storage, runId))?.nodeRuns ?? {});
   await deps.storage.audits.setFix(result.id, {
-    error: runId === null ? "apply run failed: it was removed" : `apply run ${runId} failed`,
+    error: why === null ? `apply run ${runId} failed` : `apply run ${runId} failed: ${why}`,
   });
+};
+
+const REASON_LIMIT = 300;
+
+// The message of the first failed step, looking inside loops and switches, so the card can say
+// why without the person opening the run.
+const failedStepMessage = (nodeRuns: Readonly<Record<string, NodeRun>>): string | null => {
+  for (const node of Object.values(nodeRuns)) {
+    const output = node.output;
+    if (
+      node.status === "failed" &&
+      typeof output === "object" &&
+      output !== null &&
+      "message" in output
+    ) {
+      const message = String(output.message).trim();
+      if (message !== "") {
+        return message.length > REASON_LIMIT ? `${message.slice(0, REASON_LIMIT)}…` : message;
+      }
+    }
+    const inner = node.nodes === undefined ? null : failedStepMessage(node.nodes);
+    if (inner !== null) return inner;
+  }
+  return null;
 };
 
 // Only the results still waiting on a run, so a tick costs the same however many audits are kept.
