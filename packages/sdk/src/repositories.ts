@@ -1,4 +1,18 @@
 import type * as z from "zod";
+import type {
+  AuditAwaitingOutcome,
+  AuditFixPatch,
+  AuditName,
+  AuditPendingWork,
+  AuditRecord,
+  AuditReport,
+  AuditResult,
+  AuditResultEvent,
+  AuditResultEventDraft,
+  AuditRun,
+  AuditRunFilter,
+  AuditStart,
+} from "./audits.ts";
 import type { AgentReply, Comment } from "./comments.ts";
 import type { Event, EventSchema, Result, State } from "./contracts.ts";
 import type { CommentDraft } from "./events.ts";
@@ -142,11 +156,46 @@ export interface ITriggerRepository {
 
 export type EventDraft = Omit<z.input<typeof EventSchema>, "schemaVersion" | "seq">;
 
+export interface IAuditRepository {
+  // Stores the audit run as running, or sets the one this run already holds back to running with
+  // this period and commits, keeping its id. Refused, naming the run, when another run holds the
+  // project, audit and period. Rejects when the run or the project has no row.
+  start(start: AuditStart): Promise<Result<AuditRun>>;
+  // Sets the status and makes the audit run's metrics and results exactly the listed ones, but
+  // keeps an unlisted result that has events. Refused, with nothing written, for an unknown audit
+  // run or a result id that does not start with `AUDIT_RUN_ID:`.
+  finish(auditRunId: string, report: AuditReport): Promise<Result<AuditRun>>;
+  // newest period first
+  list(project: string, audit: AuditName, filter?: AuditRunFilter): Promise<readonly AuditRun[]>;
+  read(auditRunId: string): Promise<AuditRecord | undefined>;
+  // Appends a click or a run start with a new id and the current time. Append-only: there is no
+  // update or delete. Rejects when the result or startedRunId has no row.
+  addEvent(draft: AuditResultEventDraft): Promise<AuditResultEvent>;
+  // the result's newest click (accepted, rejected or undone); undefined before the first click
+  decision(resultId: string): Promise<AuditResultEvent | undefined>;
+  // the result's newest apply_started or revert_started; undefined before yok starts a run
+  run(resultId: string): Promise<AuditResultEvent | undefined>;
+  // Merges commit, pr or error into the result's fix and stamps fix.at with the current time,
+  // keeping summary, diff and prompt; a commit or pr drops an earlier error, an error keeps the
+  // commit. clear removes commit, pr, error and at. Refused for an unknown result or one with no fix.
+  setFix(resultId: string, patch: AuditFixPatch): Promise<Result<AuditResult>>;
+  // The project's results whose newest click still owes work, oldest click first: accepted with
+  // no commit (apply), or undone with a commit (revert). Not listed once yok wrote the matching
+  // apply_started or revert_started after that click, or once an error was written at or after
+  // it. A result with no fix is never listed.
+  pendingWork(project: string): Promise<readonly AuditPendingWork[]>;
+  // The project's results whose newest run start has no outcome written since, oldest start
+  // first: no commit, pr or error stamped at or after it, and for a revert the commit still there.
+  // Clicks made since are listed too; the caller decides what they mean.
+  awaitingOutcome(project: string): Promise<readonly AuditAwaitingOutcome[]>;
+}
+
 export interface IStorage {
   users: IUserRepository;
   runs: IRunRepository;
   projects: IProjectRepository;
   comments: ICommentRepository;
   triggers: ITriggerRepository;
+  audits: IAuditRepository;
   close(): Promise<void>;
 }

@@ -228,17 +228,22 @@ const completedRuns = (runs: Readonly<Record<string, NodeRun>>): readonly NodeRu
     ...completedRuns(run.nodes ?? {}),
   ]);
 
-// The artifacts a stage consumes that a completed node listed; when several did, the latest wins.
-export const findConsumedArtifacts = (
-  stage: PlanStage,
+// Every artifact of TYPE that the newest completed node listing one listed, such as visual-pr's
+// pull-request for each repo; an older node's refs of that type are superseded.
+export const findNewestArtifacts = (
+  type: string,
   nodeRuns: Readonly<Record<string, NodeRun>>,
 ): readonly ArtifactRef[] => {
   const newestFirst = [...completedRuns(nodeRuns)].sort((a, b) =>
     (b.completedAt ?? "").localeCompare(a.completedAt ?? ""),
   );
-  const listed = newestFirst.flatMap((run) => run.artifacts);
-  return stage.consumes.flatMap(({ artifact }) => {
-    const ref = listed.find((candidate) => candidate.type === artifact);
-    return ref === undefined ? [] : [ref];
-  });
+  const owner = newestFirst.find((run) => run.artifacts.some((ref) => ref.type === type));
+  return owner === undefined ? [] : owner.artifacts.filter((ref) => ref.type === type);
 };
+
+// The artifacts a stage consumes that a completed node listed; when several did, the latest wins.
+export const findConsumedArtifacts = (
+  stage: PlanStage,
+  nodeRuns: Readonly<Record<string, NodeRun>>,
+): readonly ArtifactRef[] =>
+  stage.consumes.flatMap(({ artifact }) => findNewestArtifacts(artifact, nodeRuns));

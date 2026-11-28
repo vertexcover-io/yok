@@ -102,7 +102,7 @@ export const sessionSecret = async (home: string): Promise<string> => {
 
 type OAuthApp = Readonly<{ clientId: string; clientSecret: string }>;
 
-const oauthApp = (home: string): OAuthApp | null => {
+export const oauthApp = (home: string): OAuthApp | null => {
   const env = readHomeEnv(home);
   const clientId = env.GITHUB_CLIENT_ID;
   const clientSecret = env.GITHUB_CLIENT_SECRET;

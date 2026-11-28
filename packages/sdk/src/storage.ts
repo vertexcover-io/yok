@@ -6,6 +6,7 @@ import { openDatabase } from "./db.ts";
 import { yokHome } from "./registry.ts";
 import type { IStorage } from "./repositories.ts";
 import * as tables from "./schema.ts";
+import { auditRepository } from "./storage/audits.ts";
 import { commentRepository } from "./storage/comments.ts";
 import { projectRepository } from "./storage/projects.ts";
 import { runRepository } from "./storage/runs.ts";
@@ -20,6 +21,7 @@ const sqliteStorage = (sqlite: Database): IStorage => {
     projects: projectRepository(db),
     comments: commentRepository(db),
     triggers: triggerRepository(db),
+    audits: auditRepository(db),
     close: async () => sqlite.close(),
   };
 };

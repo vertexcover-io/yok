@@ -34,6 +34,7 @@ import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import * as z from "zod";
 // @ts-expect-error Bun's text import yields the file's source; TypeScript types the module instead.
 import ANCHOR_SOURCE from "./anchor.ts" with { type: "text" };
+import AUDITS_HTML from "./audits.html" with { type: "text" };
 import { isAgentAlive, lastDelivery, readStateOrNull, scheduleDelivery } from "./delivery.ts";
 import {
   listRunSummaries,
@@ -53,6 +54,7 @@ import VIEWER_HTML from "./viewer.html" with { type: "text" };
 // The document styles live in core, shared with the plan page; the viewer page carries a slot for them.
 const VIEWER_PAGE = (VIEWER_HTML as unknown as string).replace("/* {{DOC_STYLES}} */", DOC_STYLES);
 const RUNS_PAGE = (RUNS_HTML as unknown as string).replace("{{VERSION}}", VERSION);
+const AUDITS_PAGE = (AUDITS_HTML as unknown as string).replace("{{VERSION}}", VERSION);
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 const ANCHOR_JS = transpiler.transformSync(ANCHOR_SOURCE as string);
@@ -487,6 +489,7 @@ export const viewerRoutes = (deps: ViewerDeps) =>
   new Hono()
     .get("/", (c) => c.html(RUNS_PAGE))
     .get("/runs", async (c) => c.json({ runs: await listRunSummaries(deps.storage, deps.host) }))
+    .get("/audits", (c) => c.html(AUDITS_PAGE))
     .get("/stream", (c) => streamSSE(c, (stream) => streamRuns(stream, deps)))
     .get("/runs/:id", (c) => c.html(VIEWER_PAGE))
     .get("/assets/anchor.js", (c) =>
