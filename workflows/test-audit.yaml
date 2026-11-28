@@ -74,8 +74,9 @@ nodes:
   - id: audit-sort
     type: agent
     stage: audit-sort
-    dependsOn: [audit-start, run-tests, test-duplicates]
+    dependsOn: [create-workspace, audit-start, run-tests, test-duplicates]
     input:
+      workspace: "{{ nodes.create-workspace.output }}"
       audit: "{{ nodes.audit-start.output }}"
       tests: "{{ nodes.run-tests.output }}"
       duplicates: "{{ nodes.test-duplicates.output }}"

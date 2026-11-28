@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as z from "zod";
-import { AuditSortOutputSchema } from "./sort.ts";
+import { AuditSortOutputSchema, checkDiffsApply } from "./sort.ts";
 
 const result = (overrides: object) => ({
   id: "a-1:yok:flaky:a-test",
@@ -80,5 +84,68 @@ describe("AuditSortOutputSchema", () => {
     ],
   ])("SC28: %s is refused", (_label, results, fixes, autoFix, message) => {
     expect(errorOf(results, fixes, autoFix)).toContain(message);
+  });
+});
+
+describe("checkDiffsApply", () => {
+  // A repo whose src/a.ts reads one, two, three; the workspace names it as yok.
+  const repoWith = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "audit-sort-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args]);
+    git("init", "-q");
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "a.ts"), "one\ntwo\nthree\n");
+    git("add", ".");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    return dir;
+  };
+  const GOOD = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n";
+  // the context line it names is not in the file
+  const BAD = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,3 @@\n zero\n-two\n+TWO\n three\n";
+  const verify = (dir: string, diffs: readonly string[]) =>
+    checkDiffsApply({
+      run: "r",
+      nodeRunId: "nr",
+      artifacts: [],
+      args: {},
+      nodeInput: { workspace: { repos: [{ name: "yok", worktreeDir: dir }] } },
+      output: {
+        results: diffs.map((diff, index) =>
+          result({ id: `a-1:yok:flaky:t${index}`, fix: { summary: "fix it", diff } }),
+        ),
+        autoFix: false,
+        fixes: [],
+      },
+    });
+
+  test("SC19: diffs that apply to the audited checkout pass", async () => {
+    expect(await verify(repoWith(), [GOOD])).toEqual({ pass: true, findings: [] });
+  });
+
+  test("SC20: a diff that does not apply fails, naming its result, and leaves the checkout alone", async () => {
+    const dir = repoWith();
+    const checked = await verify(dir, [GOOD, BAD]);
+
+    expect(checked.pass).toBe(false);
+    expect(checked.findings).toHaveLength(1);
+    expect(checked.findings[0]?.message).toStartWith(
+      "a-1:yok:flaky:t1: its diff does not apply with git apply --check",
+    );
+    expect(readFileSync(join(dir, "src", "a.ts"), "utf8")).toBe("one\ntwo\nthree\n");
+  });
+
+  test("SC21: a result in a repo the workspace does not list fails", async () => {
+    const checked = await checkDiffsApply({
+      run: "r",
+      nodeRunId: "nr",
+      artifacts: [],
+      args: {},
+      nodeInput: { workspace: { repos: [] } },
+      output: { results: [result({})], autoFix: false, fixes: [] },
+    });
+
+    expect(checked.findings[0]?.message).toBe(
+      "a-1:yok:flaky:a-test: the workspace has no repo yok to check its diff in",
+    );
   });
 });

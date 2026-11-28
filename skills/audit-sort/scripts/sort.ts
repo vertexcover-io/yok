@@ -1,4 +1,11 @@
-import { AuditResultSchema, NonEmptyStringSchema } from "@yok/sdk";
+import { spawnSync } from "node:child_process";
+import {
+  AuditResultSchema,
+  type Finding,
+  NonEmptyStringSchema,
+  type VerifierInput,
+  type VerifierResult,
+} from "@yok/sdk";
 import * as z from "zod";
 
 const ProofBlockSchema = z.strictObject({
@@ -72,3 +79,48 @@ export const AuditSortOutputSchema = z
   }, "fixes holds one item per auto_fixed result, and autoFix is true exactly when it has any");
 export type AuditSortOutput = z.infer<typeof AuditSortOutputSchema>;
 export const schemas = { "audit-sort.output.v1": AuditSortOutputSchema };
+
+const NodeInputSchema = z.object({
+  workspace: z.object({
+    repos: z.array(z.object({ name: NonEmptyStringSchema, worktreeDir: NonEmptyStringSchema })),
+  }),
+});
+
+// A diff offered as a fix must apply to the checkout the audit measured, or Accept can never work.
+// git apply --check reads the diff from stdin and changes nothing.
+const diffFinding = (result: SortedResult, dirs: ReadonlyMap<string, string>): Finding | null => {
+  const diff = result.fix.diff;
+  if (diff === undefined) return null;
+  const dir = dirs.get(result.repo);
+  if (dir === undefined) {
+    return {
+      message: `${result.id}: the workspace has no repo ${result.repo} to check its diff in`,
+    };
+  }
+  const checked = spawnSync("git", ["-C", dir, "apply", "--check", "-"], {
+    input: diff.endsWith("\n") ? diff : `${diff}\n`,
+    encoding: "utf8",
+  });
+  if (checked.status === 0) return null;
+  return {
+    message: `${result.id}: its diff does not apply with git apply --check: ${checked.stderr.trim()}`,
+    hint: "rewrite the diff against the file as it is in the worktree, with its context lines, and check it again",
+  };
+};
+
+// The audit-sort stage's verifier: every fix diff applies in its repo's worktree.
+export const checkDiffsApply = async (input: VerifierInput): Promise<VerifierResult> => {
+  const output = AuditSortOutputSchema.safeParse(input.output);
+  const nodeInput = NodeInputSchema.safeParse(input.nodeInput);
+  if (!output.success)
+    return { pass: false, findings: [{ message: "the output is not audit-sort.output.v1" }] };
+  if (!nodeInput.success) {
+    return {
+      pass: false,
+      findings: [{ message: "the node input has no workspace to check diffs in" }],
+    };
+  }
+  const dirs = new Map(nodeInput.data.workspace.repos.map((repo) => [repo.name, repo.worktreeDir]));
+  const findings = output.data.results.flatMap((result) => diffFinding(result, dirs) ?? []);
+  return { pass: findings.length === 0, findings };
+};

@@ -15,6 +15,8 @@ outputs:
 protocols: []
 scopes: []
 references: {}
+verifiers:
+  - { id: diffs-apply, module: scripts/sort.ts, functionName: checkDiffsApply }
 ---
 
 # Audit sort
@@ -40,7 +42,9 @@ This stage runs unattended. Ask nobody anything.
    deletes the test. Any other change you can show and a person can judge, such as making a flaky
    wait deterministic, is `needs_approval`, and its fix carries the `diff`. A problem whose cause
    or fix needs a person to investigate is `needs_work`, and its fix carries the `prompt` that
-   would start that work. Every fix has a one-line `summary`.
+   would start that work. Every fix has a one-line `summary`. Write each `diff` against the file
+   as it is in the worktree, with its context lines, and check it there with `git apply --check`;
+   done refuses a diff that does not apply.
 4. **List the auto-fixes for the fix stage.** For each auto_fixed result, add one item to `fixes`
    with the result's `id` and `repo`, the test's `file`, a `summary` naming the test to delete, a
    `trigger` saying which keeper proves the same thing, and a `hint` naming the keeper's file and
